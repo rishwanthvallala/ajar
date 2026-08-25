@@ -1,4 +1,7 @@
-import * as monaco from "monaco-editor";
+// The core API only — same reason as viewer.ts: the language services
+// and their workers cannot run here and are nine megabytes of dead
+// weight in the deploy.
+import * as monaco from "monaco-editor/editor/editor.api";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 

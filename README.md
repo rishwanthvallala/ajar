@@ -197,7 +197,17 @@ bargain `tmate` has offered for a decade. A product that needs its central
 caveat hidden is not ready to be shared.
 
 Monaco is loaded lazily, so a visitor to the front page — or a session where
-nobody opens a file — downloads 90 kB gzipped rather than 1 MB.
+nobody opens a file — downloads 89 kB gzipped rather than 1 MB.
+
+The whole deploy is 3.8 MB, down from 56 MB. Two things were paying for
+nothing: production sourcemaps, which were 42 MB of Monaco's own vendor code
+mapping back to source that is public here anyway; and the TypeScript, JSON,
+HTML and CSS language services, which `monaco-editor`'s index pulls in whether
+or not you use them. Those four can never run — `MonacoEnvironment.getWorker`
+returns the editor worker for every request — so importing `editor.api` plus
+the basic-languages contribution keeps syntax highlighting for every language
+the viewer maps and drops nine megabytes of workers that were only ever
+sitting on disk.
 
 ## Dogfooding
 

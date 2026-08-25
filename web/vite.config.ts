@@ -7,5 +7,12 @@ export default defineConfig({
     proxy: {},
   },
   appType: "spa",
-  build: { outDir: "dist", sourcemap: true },
+  build: {
+    outDir: "dist",
+    // Off for the shipped build. Monaco's vendor maps were 42 MB of a 56 MB
+    // deploy — rsynced every time, on a 20 GB disk — and the source they map
+    // back to is public on GitHub anyway. `npm run build -- --sourcemap` when
+    // something needs debugging against a production bundle.
+    sourcemap: false,
+  },
 });

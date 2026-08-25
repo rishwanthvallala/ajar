@@ -1,4 +1,11 @@
-import * as monaco from "monaco-editor";
+// The core editor plus Monarch tokenizers, rather than `monaco-editor`'s
+// index. That index also pulls in the TypeScript, JSON, HTML and CSS language
+// services and their web workers — roughly nine megabytes of them — which can
+// never run here: `MonacoEnvironment.getWorker` below returns the editor
+// worker for every request, so nothing else is ever instantiated. Highlighting
+// comes from the basic-languages contribution and needs no worker at all.
+import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/basic-languages/monaco.contribution";
 import { codeFontPx } from "./scale";
 // monaco-editor 0.56 exposes workers through its exports map, which rewrites
 // `./editor/…` to `./esm/vs/editor/…`. Importing the esm path directly
@@ -28,7 +35,12 @@ const BY_EXTENSION: Record<string, string> = {
   jsx: "javascript",
   mjs: "javascript",
   cjs: "javascript",
-  json: "json",
+  // Monaco has no Monarch tokenizer for JSON — it ships a full language
+  // service instead, whose worker cannot run here. JSON is a subset of a
+  // JavaScript object literal, so the JS tokenizer colours it correctly;
+  // what is lost is validation, which nothing else has either until
+  // language servers land.
+  json: "javascript",
   html: "html",
   css: "css",
   scss: "scss",
