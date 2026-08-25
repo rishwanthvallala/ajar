@@ -11,7 +11,7 @@
 
 set -eu
 
-REPO="${AJAR_REPO:-ajar-sh/ajar}"
+REPO="${AJAR_REPO:-rishwanthvallala/ajar}"
 VERSION="${AJAR_VERSION:-latest}"
 BIN_DIR="${AJAR_BIN_DIR:-$HOME/.local/bin}"
 # Point at a directory of tarballs instead of GitHub, for testing a build
@@ -136,8 +136,9 @@ main() {
     esac
 
     say ""
-    say "  ajar has no sandbox yet. Anyone who opens a session link gets a"
-    say "  shell as you. Share only with people you trust that far."
+    say "  A guest gets a shell with your toolchain, confined by the operating"
+    say "  system to the folder you share. It is a sandbox, not a virtual"
+    say "  machine. Share with people you have some reason to trust."
     say ""
 }
 
