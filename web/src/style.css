@@ -11,6 +11,28 @@
   --warn: #8a5a0b;
   --hard: #a63a2a;
   --mono: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
+
+  /* Sizes in rem, so they follow the browser's font setting instead of
+     ignoring it. Page zoom scaled px fine; a reader who has set a larger
+     default font was getting 11px regardless. */
+  --fs-xs: 0.69rem;
+  --fs-sm: 0.75rem;
+  --fs-md: 0.8125rem;
+  --fs-lg: 0.875rem;
+
+  /* One row height, read by the tree's virtualisation too — see tree.ts.
+     It used to be written twice, in px here and as a constant there, which
+     silently breaks the scroll maths the moment either moves. */
+  --tree-row: 1.5rem;
+
+  /* Terminal and editor text. Both take a number of pixels rather than a CSS
+     length, so it is read from here once and passed in — otherwise the chrome
+     scales with the reader's font setting and the code does not. */
+  --code-size: 0.8125rem;
+
+  /* How much of the main column the file viewer gets. Dragged by the
+     splitter, remembered per browser. */
+  --split: 45%;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -54,7 +76,7 @@ code, kbd {
 .landing {
   max-width: 62ch;
   margin: 0 auto;
-  padding: 72px 24px 96px;
+  padding: clamp(2rem, 7vh, 4.5rem) 1.5rem clamp(3rem, 10vh, 6rem);
   line-height: 1.6;
 }
 
@@ -163,8 +185,11 @@ code, kbd {
 
 form {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
 }
 
 input {
@@ -174,7 +199,9 @@ input {
   border-radius: 5px;
   background: var(--surface);
   color: var(--ink);
-  min-width: 220px;
+  min-width: 0;
+  flex: 1 1 12rem;
+  max-width: 20rem;
 }
 
 input:focus-visible, button:focus-visible {
@@ -218,15 +245,19 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .body {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  /* Fluid rather than a fixed 260px, which became a third of the window at
+     high zoom. */
+  grid-template-columns: clamp(11rem, 20vw, 19rem) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
 
-@media (max-width: 720px) {
-  .body { grid-template-columns: 1fr; }
-  #sidebar { display: none; }
-}
+/* Collapsed by choice, or because the window is too narrow to be worth it.
+   Either way it is a toggle, never a disappearance: the old rule hid the
+   file tree outright below 720px, which is what a laptop at 200% zoom is,
+   and left no way to get it back. */
+.body.no-sidebar { grid-template-columns: 0 minmax(0, 1fr); }
+.body.no-sidebar > #sidebar { display: none; }
 
 #sidebar {
   display: grid;
@@ -237,9 +268,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 
 .side-head {
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--rule);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
@@ -251,11 +282,11 @@ button:disabled { opacity: 0.45; cursor: default; }
 .tree-surface { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
 
 .tree-row {
-  height: 22px;
+  height: var(--tree-row);
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--ink-2);
   cursor: default;
   white-space: nowrap;
@@ -264,17 +295,55 @@ button:disabled { opacity: 0.45; cursor: default; }
 .tree-row:hover { background: var(--surface-2); }
 .tree-row.active { background: var(--accent-soft, var(--surface-2)); color: var(--accent); }
 
-.twisty { width: 12px; flex: none; color: var(--muted); font-size: 10px; }
+.twisty { width: 0.75rem; flex: none; color: var(--muted); font-size: var(--fs-xs); }
 .name { overflow: hidden; text-overflow: ellipsis; }
 .name.dir { color: var(--ink); }
 
 .main {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  /* viewer · splitter · terminals. A fixed half each meant that on a short
+     window — or a zoomed one — both panes were too small to use and there
+     was nothing to do about it. */
+  grid-template-rows: minmax(0, var(--split)) auto minmax(4rem, 1fr);
   min-height: 0;
   overflow: hidden;
 }
-.main:has(.viewer[hidden]) { grid-template-rows: 0 minmax(0, 1fr); }
+.main:has(.viewer[hidden]) { grid-template-rows: 0 0 minmax(0, 1fr); }
+
+/* Placed explicitly rather than auto-flowed.
+ *
+ * `.viewer` sets `display: grid`, which beats the browser's `[hidden] {
+ * display: none }` — so a hidden viewer still occupies a cell, while the
+ * splitter (which sets no display) really does vanish. Auto-placement then
+ * slides the terminals up into a row sized `0` and they disappear. Naming
+ * the rows makes all of that irrelevant. */
+.viewer { grid-row: 1; }
+.splitter { grid-row: 2; }
+.terminals { grid-row: 3; }
+.splitter[hidden] { display: none; }
+
+.splitter {
+  height: 0.5rem;
+  cursor: row-resize;
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+  touch-action: none;
+}
+.splitter::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2.5rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+.splitter:hover::after,
+.splitter.dragging::after { background: var(--accent); }
+.splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .viewer {
   display: grid;
@@ -317,16 +386,36 @@ button:disabled { opacity: 0.45; cursor: default; }
 header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 14px;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.85rem;
   border-bottom: 1px solid var(--rule);
   background: var(--surface);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
-header strong { font-weight: 600; }
+header strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 3rem;
+}
 
 .spacer { flex: 1; }
+
+.side-toggle {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  font-size: var(--fs-sm);
+  line-height: 1.2;
+  flex: none;
+}
+.side-toggle:hover { color: var(--ink); }
+.side-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
 
 .badge {
   font-size: 10.5px;
@@ -338,7 +427,7 @@ header strong { font-weight: 600; }
   color: var(--warn);
 }
 
-.status { color: var(--muted); font-size: 11.5px; letter-spacing: 0.04em; }
+.status { color: var(--muted); font-size: var(--fs-xs); letter-spacing: 0.04em; }
 
 .dot {
   width: 8px;
@@ -351,11 +440,11 @@ header strong { font-weight: 600; }
 .dot.connecting, .dot.reconnecting { background: var(--warn); }
 .dot.closed { background: var(--hard); }
 
-.people { display: flex; gap: 6px; flex-wrap: wrap; }
+.people { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 
 .person {
-  font-size: 11.5px;
-  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  padding: 2px 0.5rem;
   border-radius: 10px;
   background: var(--surface-2);
   color: var(--ink-2);
@@ -389,8 +478,8 @@ header strong { font-weight: 600; }
 }
 
 .tab {
-  font-size: 12px;
-  padding: 5px 12px;
+  font-size: var(--fs-sm);
+  padding: 0.3rem 0.75rem;
   border-radius: 4px;
   border: 1px solid transparent;
   background: transparent;
@@ -428,6 +517,17 @@ header strong { font-weight: 600; }
 .split.on { color: var(--accent); border-color: var(--accent); }
 
 .terms { display: flex; min-height: 0; overflow: hidden; }
+
+/* Below this a split pane is narrower than a usable terminal, so stack them
+   instead of crushing both. Hiding one would be less cramped and more
+   confusing — a terminal someone opened should stay where they can see it. */
+@media (max-width: 45rem) {
+  .terms.split { flex-direction: column; }
+  .terms.split .term.shown + .term.shown {
+    border-left: none;
+    border-top: 1px solid var(--rule);
+  }
+}
 
 .term {
   display: none;

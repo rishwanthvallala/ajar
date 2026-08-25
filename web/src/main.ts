@@ -8,6 +8,7 @@ import { FileTree } from "./tree";
 import type { Viewer } from "./viewer";
 import type { DocSession } from "./editing";
 import type { Sealer } from "./sealed";
+import { codeFontPx } from "./scale";
 import {
   Channel,
   Control,
@@ -183,6 +184,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   app.innerHTML = `
     <div class="shell">
       <header>
+        <button class="side-toggle" id="side-toggle" title="Show or hide the file tree" aria-label="Toggle file tree">☰</button>
         <span class="dot" id="dot"></span>
         <strong id="workspace">${session}</strong>
         <span class="status" id="status">connecting</span>
@@ -205,6 +207,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             </div>
             <div class="viewer-body" id="viewer"></div>
           </section>
+          <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal"
+               aria-label="Resize the file view" tabindex="0" hidden></div>
           <section class="terminals">
             <nav class="tabs" id="tabs">
               <button class="new" id="new-terminal" title="New terminal">+</button>
@@ -227,6 +231,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   const emptyEl = document.getElementById("empty")!;
   const newBtn = document.getElementById("new-terminal") as HTMLButtonElement;
   const splitBtn = document.getElementById("split") as HTMLButtonElement;
+
+  const bodyEl = document.querySelector(".body") as HTMLElement;
+  const mainEl = document.querySelector(".main") as HTMLElement;
+  const splitterEl = document.getElementById("splitter") as HTMLElement;
+  const sideToggle = document.getElementById("side-toggle") as HTMLButtonElement;
 
   const awayEl = document.getElementById("away")!;
   const lockedEl = document.getElementById("locked") as HTMLElement;
@@ -282,6 +291,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
 
   const tree = new FileTree(document.getElementById("tree")!, async (path) => {
     viewerPane.hidden = false;
+    splitterEl.hidden = false;
     tree.setActive(path);
     closeDocument();
     // Load the editor before asking for content, so the reply can never
@@ -312,6 +322,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   (document.getElementById("close-file") as HTMLButtonElement).onclick = () => {
     closeDocument();
     viewerPane.hidden = true;
+    splitterEl.hidden = true;
     tree.setActive(null);
     requestAnimationFrame(layout);
   };
@@ -523,7 +534,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     const term = new Terminal({
       cols,
       rows,
-      fontSize: 13,
+      fontSize: codeFontPx(),
       fontFamily:
         'ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace',
       cursorBlink: true,
@@ -735,15 +746,100 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     conn.send(jsonFrame(Channel.Pty, TARGET_ALL, { t: "open", cols, rows } satisfies Pty));
   };
 
+  // ---- the file tree is a toggle, never a disappearance ---------------
+  //
+  // It used to be hidden outright below 720px, which is what a laptop at
+  // 200% zoom is — the tree vanished with no way to bring it back.
+  const NARROW = window.matchMedia("(max-width: 40rem)");
+  function applySidebar(hidden: boolean) {
+    bodyEl.classList.toggle("no-sidebar", hidden);
+    sideToggle.setAttribute("aria-expanded", String(!hidden));
+    requestAnimationFrame(layout);
+  }
+  const stored = localStorage.getItem("ajar.sidebar");
+  applySidebar(stored === null ? NARROW.matches : stored === "hidden");
+  sideToggle.onclick = () => {
+    const hidden = !bodyEl.classList.contains("no-sidebar");
+    localStorage.setItem("ajar.sidebar", hidden ? "hidden" : "shown");
+    applySidebar(hidden);
+  };
+  // Only follow the window while the reader has expressed no preference.
+  NARROW.addEventListener("change", (e) => {
+    if (localStorage.getItem("ajar.sidebar") === null) applySidebar(e.matches);
+  });
+
+  // ---- and the split between file and terminals is theirs to set -------
+  const MIN_FRACTION = 0.15;
+  const MAX_FRACTION = 0.85;
+
+  function setSplit(fraction: number) {
+    const clamped = Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction));
+    mainEl.style.setProperty("--split", `${(clamped * 100).toFixed(1)}%`);
+    localStorage.setItem("ajar.split", String(clamped));
+    layout();
+  }
+  const savedSplit = Number(localStorage.getItem("ajar.split"));
+  if (savedSplit > 0) setSplit(savedSplit);
+
+  splitterEl.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    splitterEl.setPointerCapture(e.pointerId);
+    splitterEl.classList.add("dragging");
+
+    const move = (ev: PointerEvent) => {
+      const box = mainEl.getBoundingClientRect();
+      if (box.height > 0) setSplit((ev.clientY - box.top) / box.height);
+    };
+    const done = () => {
+      splitterEl.classList.remove("dragging");
+      splitterEl.removeEventListener("pointermove", move);
+      splitterEl.removeEventListener("pointerup", done);
+      splitterEl.removeEventListener("pointercancel", done);
+    };
+    splitterEl.addEventListener("pointermove", move);
+    splitterEl.addEventListener("pointerup", done);
+    splitterEl.addEventListener("pointercancel", done);
+  });
+
+  // Draggable things should be operable without a pointer.
+  splitterEl.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 0.1 : 0.02;
+    if (e.key === "ArrowUp") setSplit(currentSplit() - step);
+    else if (e.key === "ArrowDown") setSplit(currentSplit() + step);
+    else return;
+    e.preventDefault();
+  });
+
+  function currentSplit(): number {
+    const declared = getComputedStyle(mainEl).getPropertyValue("--split").trim();
+    return parseFloat(declared) / 100 || 0.45;
+  }
+
   splitBtn.onclick = toggleSplit;
-  window.addEventListener("resize", layout);
+  window.addEventListener("resize", () => {
+    // Zoom lands here too, and it changes what a rem resolves to — so the
+    // terminals need a new font size, not just a refit.
+    const px = codeFontPx();
+    for (const tab of tabs.values()) {
+      if (tab.term.options.fontSize !== px) tab.term.options.fontSize = px;
+    }
+    layout();
+  });
 }
 
 /** A rough size for a brand-new terminal before its element is measured. */
 function probeSize(): { cols: number; rows: number } {
+  // Only used for the moment between asking for a terminal and measuring the
+  // element it lands in; `fit()` corrects it. Derived from the actual font
+  // size so a zoomed-in reader does not start with a wildly wrong guess.
+  const px = codeFontPx();
+  const cell = { w: px * 0.6, h: px * 1.35 };
   const w = Math.max(320, window.innerWidth - 32);
-  const h = Math.max(200, window.innerHeight - 120);
-  return { cols: Math.max(20, Math.floor(w / 8)), rows: Math.max(6, Math.floor(h / 18)) };
+  const h = Math.max(200, window.innerHeight * 0.5);
+  return {
+    cols: Math.max(20, Math.floor(w / cell.w)),
+    rows: Math.max(6, Math.floor(h / cell.h)),
+  };
 }
 
 function terminalTheme() {

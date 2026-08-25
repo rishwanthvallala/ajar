@@ -1,4 +1,5 @@
 import * as monaco from "monaco-editor";
+import { codeFontPx } from "./scale";
 // monaco-editor 0.56 exposes workers through its exports map, which rewrites
 // `./editor/…` to `./esm/vs/editor/…`. Importing the esm path directly
 // resolves to a doubled prefix and fails only at build time.
@@ -123,7 +124,7 @@ export class Viewer {
         readOnly,
         automaticLayout: true,
         theme: theme(),
-        fontSize: 13,
+        fontSize: codeFontPx(),
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         renderLineHighlight: "none",

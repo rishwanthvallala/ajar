@@ -8,7 +8,26 @@ import type { Entry } from "./proto";
  * tree that dies at ten thousand nodes will die during the first real demo.
  */
 
-const ROW_HEIGHT = 22;
+/**
+ * Read from CSS rather than declared here.
+ *
+ * The row height lives in `--tree-row` and drives both the stylesheet and the
+ * scroll maths below. Written twice — once as `height: 22px`, once as a
+ * constant here — the two drift the moment either is touched, and rows either
+ * overlap or leave gaps with nothing obviously wrong in either file.
+ *
+ * It is also in rem, so a reader with a larger default font gets taller rows
+ * and the virtualisation still lands on them.
+ */
+function rowHeight(el: HTMLElement): number {
+  const declared = getComputedStyle(el).getPropertyValue("--tree-row").trim();
+  if (declared.endsWith("rem")) {
+    const root = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return parseFloat(declared) * (root || 16);
+  }
+  return parseFloat(declared) || 22;
+}
+
 const OVERSCAN = 8;
 
 interface Node {
@@ -32,6 +51,7 @@ export class FileTree {
   private viewport: HTMLDivElement;
   private spacer: HTMLDivElement;
   private surface: HTMLDivElement;
+  private rowPx = 22;
 
   constructor(
     private host: HTMLElement,
@@ -48,8 +68,14 @@ export class FileTree {
     this.viewport.appendChild(this.spacer);
     this.host.appendChild(this.viewport);
 
+    this.rowPx = rowHeight(this.host);
     this.viewport.addEventListener("scroll", () => this.paint(), { passive: true });
-    window.addEventListener("resize", () => this.paint());
+    // Zoom and font-size changes both land here. Re-reading the row height is
+    // cheap and keeps the scroll maths matching what is actually rendered.
+    window.addEventListener("resize", () => {
+      this.rowPx = rowHeight(this.host);
+      this.rebuild();
+    });
   }
 
   private seeded = false;
@@ -143,20 +169,20 @@ export class FileTree {
     };
     walk(roots);
 
-    this.spacer.style.height = `${this.rows.length * ROW_HEIGHT}px`;
+    this.spacer.style.height = `${this.rows.length * this.rowPx}px`;
     this.paint();
   }
 
   private paint() {
     const scrollTop = this.viewport.scrollTop;
     const height = this.viewport.clientHeight || 400;
-    const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const first = Math.max(0, Math.floor(scrollTop / this.rowPx) - OVERSCAN);
     const last = Math.min(
       this.rows.length,
-      Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN,
+      Math.ceil((scrollTop + height) / this.rowPx) + OVERSCAN,
     );
 
-    this.surface.style.transform = `translateY(${first * ROW_HEIGHT}px)`;
+    this.surface.style.transform = `translateY(${first * this.rowPx}px)`;
     this.surface.replaceChildren();
 
     for (let i = first; i < last; i++) {
@@ -164,7 +190,8 @@ export class FileTree {
       const row = document.createElement("div");
       row.className = "tree-row";
       if (node.path === this.active) row.classList.add("active");
-      row.style.paddingLeft = `${6 + node.depth * 12}px`;
+      // Indent in em so it tracks the row's own font size.
+      row.style.paddingLeft = `${0.4 + node.depth * 0.85}em`;
       row.title = node.path;
 
       const twisty = document.createElement("span");
