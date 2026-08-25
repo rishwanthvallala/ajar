@@ -58,7 +58,7 @@ development, open the same path on the Vite server instead:
 
 | | |
 |---|---|
-| `cargo test` | 112 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store |
+| `cargo test` | 118 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store |
 | `npx tsc --noEmit` | web client typecheck |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | ignore rules, reads, path-traversal refusal, patches, and an install-sized burst |
@@ -526,3 +526,63 @@ Surviving a restart needs stable identity — a device key the content key can
 be wrapped to — which is written down as decision 12 and not yet built. And
 the whole snapshot is re-sent rather than diffed; at 25 MB that is fine, and
 chunked transfer is the obvious optimisation when it stops being.
+
+## Deploying the relay
+
+The relay is one small binary with no database and no persistent state —
+sessions live in memory and die with them. That makes it the easy half: a
+single box, and moving to a different one is repointing DNS.
+
+```sh
+./deploy/deploy.sh root@your-host --bootstrap   # first time
+./deploy/deploy.sh root@your-host               # every time after
+```
+
+`deploy/` holds a Caddyfile (TLS, and nothing else), a hardened systemd unit,
+and the script above. Caddy handles WebSocket upgrades without configuration,
+which is most of why it is there rather than nginx.
+
+### Put it near the people using it
+
+The relay sits in the path of every keystroke: `guest → relay → agent → back`.
+Latency to the relay is doubled and paid on every character.
+
+| Relay location, for users in India | Keystroke to echo |
+|---|---|
+| Mumbai or Bangalore | ~20–40 ms |
+| Singapore | ~200–250 ms |
+| Germany | ~500–600 ms |
+
+The cheapest host and the right host are usually not the same one. Pick the
+region first, then the provider.
+
+### Do not proxy the WebSocket through Cloudflare's orange cloud
+
+Free and Pro plans close idle WebSockets after **100 seconds**. A terminal
+nobody touches for two minutes drops. The agent reconnects and replays, so
+nothing is lost, but guests see churn for no reason. Use Cloudflare for DNS
+only on that subdomain, or add heartbeats first.
+
+## Backpressure
+
+Every connection has a bounded outbox, and one that falls too far behind is
+**closed rather than fed a lossy stream**. Terminal output with holes in it is
+worse than a clean disconnect: a client would render a corrupted screen with
+no way to know. Dropping the socket puts it on the reconnect-and-replay path,
+which is already tested.
+
+| | |
+|---|---|
+| Accumulation cap | 8 MB, or 2,048 frames |
+| One large frame | Always allowed when the queue is empty — a snapshot is legitimately megabytes |
+| Inbound frames | Capped at 32 MB by the relay, above the 25 MB the store accepts |
+
+The cap governs *accumulation*, not the size of any single frame. Refusing a
+snapshot to defend against a problem snapshots do not cause would be breaking
+a working feature for nothing.
+
+Writing this found a bug in the first version of it: signalling an overflow
+with `notify_waiters` alone wakes only tasks that are *already parked*, so an
+overflow landing while the writer was mid-send vanished and the connection
+limped on. It latches a flag now, checked before parking. There is a test
+named after that failure.

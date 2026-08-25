@@ -1,0 +1,46 @@
+# TLS, and nothing else.
+#
+# The relay speaks plain HTTP on loopback; Caddy fetches and renews the
+# certificate and forwards everything through. WebSocket upgrades pass without
+# configuration — there is no `transport` block or connection-header dance to
+# get right, which is most of why Caddy is here rather than nginx.
+#
+# Put this at /etc/caddy/Caddyfile and `systemctl reload caddy`.
+
+ajar.rishwanth.dev {
+	# The relay serves the web client, the join pages, /install.sh and /ws.
+	reverse_proxy 127.0.0.1:8787 {
+		# A terminal can sit untouched for a long time and must not be
+		# hung up on. Caddy's default read timeout is already generous,
+		# but say it out loud rather than inherit it.
+		transport http {
+			read_timeout 24h
+			write_timeout 24h
+		}
+	}
+
+	encode zstd gzip
+
+	header {
+		# The web client is self-contained: no CDN, no third-party
+		# anything. Say so, so a compromised dependency has nowhere to
+		# phone home to.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' wss://ajar.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# The session key lives in the URL fragment, which browsers never
+		# send anywhere — but a referrer leak of the path alone would
+		# still name the session, so send none at all.
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/ajar.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		# Session ids appear in paths. They are not secrets on their own —
+		# the key is — but there is no reason to keep them for a year.
+		format json
+	}
+}

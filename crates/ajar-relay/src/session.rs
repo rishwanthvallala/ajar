@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use ajar_proto::{Participant, Role};
 use dashmap::DashMap;
-use tokio::sync::mpsc;
 
 /// How long a session survives its host's socket dropping. Terminals keep
 /// running the whole time — the agent process never noticed. Long enough to
@@ -16,7 +15,11 @@ use tokio::sync::mpsc;
 /// session doesn't linger.
 pub const HOST_GRACE: Duration = Duration::from_secs(45);
 
-pub type Tx = mpsc::UnboundedSender<Vec<u8>>;
+/// The sending half of a connection's bounded queue. Sends can fail — a
+/// socket that has fallen too far behind is closed rather than fed a lossy
+/// stream. Call sites ignore the result because the writer task tears the
+/// connection down on their behalf.
+pub type Tx = crate::outbox::Outbox;
 
 pub struct Conn {
     pub participant: Participant,
@@ -275,8 +278,8 @@ impl Registry {
 mod tests {
     use super::*;
 
-    fn tx() -> (Tx, mpsc::UnboundedReceiver<Vec<u8>>) {
-        mpsc::unbounded_channel()
+    fn tx() -> (Tx, crate::outbox::Drain) {
+        crate::outbox::channel()
     }
 
     #[test]

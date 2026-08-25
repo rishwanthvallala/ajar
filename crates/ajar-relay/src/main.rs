@@ -3,6 +3,7 @@
 //! It holds a session map and forwards bytes. It does not know what a
 //! terminal is, what a file is, or what any payload contains.
 
+mod outbox;
 mod session;
 mod ws;
 
@@ -21,7 +22,7 @@ use tracing::info;
 use crate::session::Registry;
 
 #[derive(Parser, Debug)]
-#[command(name = "ajar-relay", about = "Frame relay for ajar sessions")]
+#[command(name = "ajar-relay", version, about = "Frame relay for ajar sessions")]
 struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:8787")]
@@ -117,5 +118,11 @@ async fn install_script() -> impl IntoResponse {
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws::handle(socket, state.registry.clone()))
+    // Cap what one client may send in a single frame. The largest legitimate
+    // payload is a workspace snapshot, which the store already refuses above
+    // 25 MB — so anything much larger than that is either a bug or an attempt
+    // to make the relay allocate on demand.
+    ws.max_message_size(32 * 1024 * 1024)
+        .max_frame_size(32 * 1024 * 1024)
+        .on_upgrade(move |socket| ws::handle(socket, state.registry.clone()))
 }

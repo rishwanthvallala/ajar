@@ -9,19 +9,21 @@ use std::sync::Arc;
 use ajar_proto::{Channel, Control, Frame, Participant, Role, Store, SNAPSHOT_STREAM, TARGET_ALL};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::outbox::{self, Outbox};
 use crate::session::{HostExit, JoinError, Registry, HOST_GRACE};
 
 pub async fn handle(socket: WebSocket, registry: Arc<Registry>) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, mut rx) = outbox::channel();
 
-    // Everything written to this socket goes through one task, so the
-    // routing side never blocks on a slow reader.
+    // Everything written to this socket goes through one task, so the routing
+    // side never blocks on a slow reader. The queue behind it is bounded:
+    // `next` returns `None` once this connection has fallen too far behind,
+    // which ends the task and closes the socket.
     let writer = tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
+        while let Some(bytes) = rx.next().await {
             if sink.send(Message::Binary(bytes.into())).await.is_err() {
                 break;
             }
@@ -296,19 +298,19 @@ async fn next_frame(stream: &mut futures_util::stream::SplitStream<WebSocket>) -
     None
 }
 
-fn send_control(tx: &mpsc::UnboundedSender<Vec<u8>>, msg: &Control) {
+fn send_control(tx: &Outbox, msg: &Control) {
     if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, msg) {
         let _ = tx.send(f.encode());
     }
 }
 
-fn send_json<T: serde::Serialize>(tx: &mpsc::UnboundedSender<Vec<u8>>, channel: Channel, msg: &T) {
+fn send_json<T: serde::Serialize>(tx: &Outbox, channel: Channel, msg: &T) {
     if let Ok(f) = Frame::json(channel, TARGET_ALL, msg) {
         let _ = tx.send(f.encode());
     }
 }
 
-fn send_error(tx: &mpsc::UnboundedSender<Vec<u8>>, code: &str, message: &str) {
+fn send_error(tx: &Outbox, code: &str, message: &str) {
     send_control(
         tx,
         &Control::Error {

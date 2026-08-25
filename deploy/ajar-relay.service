@@ -1,0 +1,58 @@
+# The relay, as a service that survives reboots.
+#
+# Install to /etc/systemd/system/ajar-relay.service, then:
+#     systemctl daemon-reload && systemctl enable --now ajar-relay
+#
+# It binds loopback only. Caddy is what faces the internet.
+
+[Unit]
+Description=ajar relay
+Documentation=https://github.com/rishwanthvallala/ajar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ajar
+Group=ajar
+ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web
+Environment=RUST_LOG=ajar_relay=info
+
+Restart=always
+RestartSec=2s
+# Sessions are in-memory and die with the process, so a restart loop would
+# quietly destroy people's sessions over and over. Give up and page instead.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# The relay reads a directory of static files and talks to one socket. It has
+# no business doing anything else, and saying so costs nothing.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Loopback and outbound DNS is all it needs; it never listens publicly.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/srv/ajar
+
+# A stalled connection is bounded at 8 MB by the outbox, but a memory ceiling
+# is the backstop for whatever the next mistake turns out to be.
+MemoryMax=512M
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
