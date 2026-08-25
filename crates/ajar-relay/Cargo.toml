@@ -1,0 +1,21 @@
+[package]
+name = "ajar-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ajar-proto = { version = "0.0.1", path = "../ajar-proto" }
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["ws"] }
+clap = { version = "4.6.6", features = ["derive"] }
+dashmap = "6.2.1"
+futures-util = "0.3.34"
+serde = "1.0.229"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+tower-http = { version = "0.7.0", features = ["cors", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+[[bin]]
+name = "ajar-relay"
+path = "src/main.rs"

@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/ajar-proto", "crates/ajar", "crates/ajar-relay"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ajar-sh/ajar"
+
+[profile.release]
+lto = "thin"
+strip = true
