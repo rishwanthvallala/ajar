@@ -92,6 +92,7 @@ dependencies = [
  "clap",
  "dashmap",
  "futures-util",
+ "parking_lot",
  "serde",
  "tokio",
  "tower-http",

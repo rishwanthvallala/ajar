@@ -8,6 +8,7 @@ mod client;
 mod docs;
 mod guard;
 mod ids;
+mod limits;
 mod pty;
 mod sandbox;
 mod secrets;
@@ -87,6 +88,15 @@ struct Args {
     /// moment your connection drops, and get it back when you return.
     #[arg(long)]
     no_sync: bool,
+
+    /// Terminals one session may have open at once.
+    #[arg(long, default_value_t = limits::DEFAULT_TERMINALS)]
+    max_terminals: usize,
+
+    /// Processes a guest may create, enforced at fork. Low enough to stop a
+    /// fork bomb, high enough for a parallel build.
+    #[arg(long, default_value_t = limits::DEFAULT_PROCESSES)]
+    max_processes: u32,
 }
 
 /// Everything the frame handler needs. Bundled because passing eight
@@ -232,6 +242,10 @@ async fn run() -> Result<()> {
     } else {
         sandbox::Sandbox::build(&verdict.path, !args.no_network)
     };
+    let caps = limits::Limits {
+        terminals: args.max_terminals,
+        processes: args.max_processes,
+    };
     let mark = checkpoint::create(&verdict.path);
     let found = secrets::scan(&verdict.path, &workspace.filter());
 
@@ -293,15 +307,7 @@ async fn run() -> Result<()> {
         warnings.clone(),
     );
     if !ui.is_panel() {
-        banner(
-            &warnings,
-            &folder,
-            &verdict.path,
-            &link,
-            scan,
-            &sandbox,
-            !args.no_sync,
-        );
+        banner(&state, &caps);
     }
 
     // Held for its lifetime: dropping the watcher stops the notifications,
@@ -317,7 +323,7 @@ async fn run() -> Result<()> {
         " · copy pending".into()
     };
     let mut host = Host {
-        ptys: PtyRegistry::new(verdict.path.clone(), &sandbox),
+        ptys: PtyRegistry::new(verdict.path.clone(), &sandbox, caps),
         workspace,
         docs: Docs::new(),
         sizes: HashMap::new(),
@@ -546,6 +552,17 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
         Channel::Pty if frame.stream_id == STREAM_CONTROL => match frame.parse_json::<Pty>()? {
             Pty::Open { cols, rows } => {
                 let asker = frame.target;
+                if let Err(reason) = host.ptys.may_open() {
+                    host.outbound.send(Frame::json(
+                        Channel::Pty,
+                        asker,
+                        &Pty::Refused {
+                            reason: reason.clone(),
+                        },
+                    )?)?;
+                    host.log(format!("refused a terminal — {reason}"));
+                    return Ok(());
+                }
                 host.sizes.insert(asker, (cols, rows));
                 let id =
                     host.ptys
@@ -1042,39 +1059,30 @@ fn farewell(root: &Path, mark: Option<&checkpoint::Checkpoint>) {
     println!("      {}\n", mark.restore_command());
 }
 
-fn banner(
-    warnings: &[String],
-    folder: &str,
-    root: &Path,
-    link: &str,
-    files: usize,
-    sandbox: &sandbox::Sandbox,
-    syncing: bool,
-) {
+/// The plain-mode equivalent of the panel, for when stdout is piped.
+///
+/// Reads from the same `State` the panel draws rather than taking the same
+/// eight values a second time — two renderings of one set of facts is how
+/// they end up disagreeing.
+fn banner(state: &ui::State, caps: &limits::Limits) {
     println!();
-    println!("{}", guard::notice(sandbox.is_confined()));
+    println!("{}", guard::notice(state.confined));
     println!();
-    for w in warnings {
+    for w in &state.warnings {
         println!("  !  {w}");
     }
-    if !warnings.is_empty() {
+    if !state.warnings.is_empty() {
         println!();
     }
-    println!("  ●  open  {}  ({})", folder, root.display());
-    println!("     {files} files shared");
-    println!("     {}", sandbox.summary());
+    println!("  \u{25cf}  open  {}  ({})", state.folder, state.path);
+    println!("     {} files shared", state.files);
+    println!("     {}", state.sandbox);
+    println!("     {}", caps.summary());
     // Said before the link, because "a copy of your source is being kept" is
-    // not something to find out about later.
-    println!(
-        "     {}",
-        if syncing {
-            "keeping a copy so guests can read while you are away — --no-sync to stop"
-        } else {
-            "keeping no copy — guests lose the folder if your connection drops"
-        }
-    );
+    // not something to find out about afterwards.
+    println!("     {}", state.sync.trim_start_matches([' ', '\u{b7}']));
     println!();
-    println!("     {link}");
+    println!("     {}", state.link);
     println!();
     println!("     ctrl-c to close");
     println!();

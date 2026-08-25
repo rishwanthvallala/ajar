@@ -4,13 +4,14 @@
 //! terminal is, what a file is, or what any payload contains.
 
 mod outbox;
+mod quota;
 mod session;
 mod ws;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ws::WebSocketUpgrade, State};
+use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -31,11 +32,21 @@ struct Args {
     /// Optional directory of built web-client assets to serve.
     #[arg(long)]
     web: Option<String>,
+
+    /// Read the caller's address from `X-Forwarded-For`.
+    ///
+    /// Only when something you control sets it. Left on with nothing in
+    /// front, any caller can claim to be any address and the per-address
+    /// limits become decorative.
+    #[arg(long)]
+    trust_forwarded_for: bool,
 }
 
 #[derive(Clone)]
 struct AppState {
     registry: Arc<Registry>,
+    quota: Arc<quota::Quota>,
+    trust_forwarded: bool,
 }
 
 #[tokio::main]
@@ -50,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let state = AppState {
         registry: Arc::new(Registry::new()),
+        quota: Arc::new(quota::Quota::new()),
+        trust_forwarded: args.trust_forwarded_for,
     };
 
     // Sessions whose host never came back are swept here. Without this a
@@ -94,7 +107,14 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     info!("relay listening on {}", args.bind);
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` so the quota can see who is
+    // calling. Behind a proxy every connection is the proxy, which is why
+    // `--trust-forwarded-for` exists.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -117,12 +137,29 @@ async fn install_script() -> impl IntoResponse {
     )
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let caller = if state.trust_forwarded {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| peer.ip())
+    } else {
+        peer.ip()
+    };
     // Cap what one client may send in a single frame. The largest legitimate
     // payload is a workspace snapshot, which the store already refuses above
     // 25 MB — so anything much larger than that is either a bug or an attempt
     // to make the relay allocate on demand.
     ws.max_message_size(32 * 1024 * 1024)
         .max_frame_size(32 * 1024 * 1024)
-        .on_upgrade(move |socket| ws::handle(socket, state.registry.clone()))
+        .on_upgrade(move |socket| {
+            ws::handle(socket, state.registry.clone(), state.quota.clone(), caller)
+        })
 }

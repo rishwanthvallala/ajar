@@ -265,6 +265,11 @@ pub enum Pty {
     ReadOnly {
         read_only: bool,
     },
+    /// The host declined to open one. Said out loud: a button that silently
+    /// does nothing reads as a bug.
+    Refused {
+        reason: String,
+    },
 }
 
 // --------------------------------------------------------------------- FS

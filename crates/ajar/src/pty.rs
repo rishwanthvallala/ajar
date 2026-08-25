@@ -102,20 +102,40 @@ pub struct PtyRegistry {
     /// wrapped around it.
     launch: (String, Vec<String>),
     confined: bool,
+    limits: crate::limits::Limits,
     cwd: std::path::PathBuf,
 }
 
 impl PtyRegistry {
-    pub fn new(cwd: std::path::PathBuf, sandbox: &crate::sandbox::Sandbox) -> Self {
+    pub fn new(
+        cwd: std::path::PathBuf,
+        sandbox: &crate::sandbox::Sandbox,
+        limits: crate::limits::Limits,
+    ) -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        // Limits outermost: rlimits are inherited across `exec`, so whatever
+        // the sandbox launches inherits them too.
+        let (program, args) = sandbox.wrap(&shell);
         // Ids start at 1 because 0 means "this frame is JSON, not stream bytes".
         Self {
             sessions: HashMap::new(),
             next_id: 1,
-            launch: sandbox.wrap(&shell),
+            launch: limits.wrap(program, args),
             confined: sandbox.is_confined(),
+            limits,
             cwd,
         }
+    }
+
+    /// Whether another terminal may be opened, and why not if not.
+    pub fn may_open(&self) -> Result<(), String> {
+        if self.sessions.len() >= self.limits.terminals {
+            return Err(format!(
+                "{} terminals already open, which is the limit for one session",
+                self.limits.terminals
+            ));
+        }
+        Ok(())
     }
 
     pub fn ids(&self) -> Vec<u32> {

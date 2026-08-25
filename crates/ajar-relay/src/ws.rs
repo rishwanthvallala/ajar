@@ -12,9 +12,15 @@ use futures_util::{SinkExt, StreamExt};
 use tracing::{debug, info, warn};
 
 use crate::outbox::{self, Outbox};
+use crate::quota::Quota;
 use crate::session::{HostExit, JoinError, Registry, HOST_GRACE};
 
-pub async fn handle(socket: WebSocket, registry: Arc<Registry>) {
+pub async fn handle(
+    socket: WebSocket,
+    registry: Arc<Registry>,
+    quota: Arc<Quota>,
+    caller: std::net::IpAddr,
+) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = outbox::channel();
 
@@ -57,6 +63,23 @@ pub async fn handle(socket: WebSocket, registry: Arc<Registry>) {
     let (session_id, role) = match hello.parse_json::<Control>() {
         Ok(Control::Hello { session, role }) => (session, role),
         _ => refuse!("expected_hello", "first frame must be a hello"),
+    };
+
+    // Only opening a session is metered. Joining one costs an address
+    // nothing: a guest already needs the link, and rationing the people a
+    // host invited would be limiting the wrong side.
+    // Held for the life of this connection; releases on every exit path,
+    // including the refusals below.
+    let _slot = if role == Role::Host {
+        match quota.claim(caller, std::time::Instant::now()) {
+            Ok(slot) => Some(slot),
+            Err(denied) => {
+                warn!(%caller, "refused: {}", denied.message());
+                refuse!("rate_limited", denied.message());
+            }
+        }
+    } else {
+        None
     };
 
     let joined = match role {

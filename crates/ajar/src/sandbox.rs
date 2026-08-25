@@ -344,7 +344,7 @@ mod macos {
 pub mod linux {
     use super::*;
     use landlock::{
-        path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr,
+        path_beneath_rules, Access, AccessFs, AccessNet, Ruleset, RulesetAttr, RulesetCreatedAttr,
         RulesetStatus, ABI,
     };
 
@@ -359,14 +359,31 @@ pub mod linux {
         }
     }
 
+    /// Whether this kernel can refuse outbound TCP.
+    ///
+    /// Network rules arrived in ABI 4 (Linux 6.7). Older kernels can still
+    /// confine the filesystem, so this is asked separately rather than
+    /// refusing to sandbox at all.
+    pub fn can_restrict_network() -> bool {
+        Ruleset::default()
+            .handle_access(AccessNet::ConnectTcp)
+            .and_then(|r| r.create())
+            .is_ok()
+    }
+
     pub fn describe(_abi: ABI, allow_network: bool) -> Vec<String> {
         vec![
             "writes confined to the shared folder, temp and build caches".to_string(),
             "the rest of your home directory unreadable — ssh, cloud, browser".to_string(),
-            if allow_network {
-                "network allowed".to_string()
-            } else {
-                "network unrestricted (landlock port rules need ABI 4)".to_string()
+            match (allow_network, can_restrict_network()) {
+                (true, _) => "network allowed".to_string(),
+                (false, true) => "no outbound network".to_string(),
+                // Said plainly rather than implied. A flag that reports
+                // success while enforcing nothing is worse than one that
+                // admits it cannot.
+                (false, false) => {
+                    "network NOT restricted — this kernel is older than 6.7".to_string()
+                }
             },
         ]
     }
@@ -479,8 +496,16 @@ pub mod linux {
         let existing =
             |v: Vec<PathBuf>| -> Vec<PathBuf> { v.into_iter().filter(|p| p.exists()).collect() };
 
-        let status = Ruleset::default()
-            .handle_access(AccessFs::from_all(abi))?
+        // Cutting off the network means handling the access and then adding
+        // no rule for it: Landlock only grants, so an unmentioned port is a
+        // refused one.
+        let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
+        let restricting_network = !network && can_restrict_network();
+        if restricting_network {
+            ruleset = ruleset.handle_access(AccessNet::ConnectTcp)?;
+        }
+
+        let status = ruleset
             .create()?
             .add_rules(path_beneath_rules(existing(readable), read))?
             .add_rules(path_beneath_rules(existing(writable), write))?
@@ -488,6 +513,14 @@ pub mod linux {
 
         if status.ruleset == RulesetStatus::NotEnforced {
             anyhow::bail!("landlock accepted the rules but is not enforcing them");
+        }
+        if !network && !restricting_network {
+            // The caller asked for no network and this kernel cannot give it.
+            // Starting anyway while reporting success is how a security flag
+            // becomes decorative.
+            anyhow::bail!(
+                "--no-network needs landlock ABI 4 (linux 6.7); this kernel cannot enforce it"
+            );
         }
 
         let mut cmd = std::process::Command::new(&program);

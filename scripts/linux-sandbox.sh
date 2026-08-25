@@ -107,6 +107,29 @@ check "cannot escape with .. out of the project" \
     "cat $HOME/project/../.ssh/id_rsa" \
     '! printf "%s" "$out" | grep -q "PRIVATE KEY MATERIAL"'
 
+
+# ---- --no-network, which used to be accepted and enforce nothing --------
+echo
+if "$BIN" __confine "$HOME/project" no-net -- /bin/sh -c 'exit 0' 2>/dev/null; then
+    out=$("$BIN" __confine "$HOME/project" no-net -- /bin/sh -c \
+        'timeout 4 sh -c "exec 3<>/dev/tcp/1.1.1.1/80" 2>&1; echo "rc=$?"' 2>&1 || true)
+    if printf '%s' "$out" | grep -q "rc=0"; then
+        echo "  LEAK  --no-network was accepted but outbound tcp still worked"
+        failures=$((failures + 1))
+    else
+        echo "  ok    --no-network actually refuses outbound tcp"
+    fi
+    # And the same shell must still work locally, or the flag is useless.
+    if "$BIN" __confine "$HOME/project" no-net -- /bin/sh -c 'echo local-ok' 2>/dev/null | grep -q local-ok; then
+        echo "  ok    the shell still runs with the network cut"
+    else
+        echo "  LEAK  the shell would not start with --no-network"
+        failures=$((failures + 1))
+    fi
+else
+    echo "  ~~    --no-network refused outright on this kernel (needs 6.7+), which is the honest answer"
+fi
+
 rm -rf "$WORK"
 echo
 if [ "$failures" -ne 0 ]; then

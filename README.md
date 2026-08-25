@@ -58,7 +58,7 @@ development, open the same path on the Vite server instead:
 
 | | |
 |---|---|
-| `cargo test` | 118 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store |
+| `cargo test` | 131 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits |
 | `npx tsc --noEmit` | web client typecheck |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | ignore rules, reads, path-traversal refusal, patches, and an install-sized burst |
@@ -323,7 +323,7 @@ restricted rather than the environment replaced.
 | Writes | Confined to the shared folder, temp, and build caches |
 | Credentials | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, keychains and browser profiles are unreadable |
 | Everything else | Readable, so compilers and language servers still work |
-| Network | Allowed by default; `--no-network` cuts it off, which is what an interview wants |
+| Network | Allowed by default. `--no-network` cuts it off — Seatbelt on macOS, Landlock `ConnectTcp` on Linux. On a kernel older than 6.7 it **refuses to start** rather than pretend |
 
 Confining writes to the project *alone* was the obvious first design and it is
 wrong: it breaks `cargo`, `npm` and everything else that keeps a per-user
@@ -586,3 +586,53 @@ with `notify_waiters` alone wakes only tasks that are *already parked*, so an
 overflow landing while the writer was mid-send vanished and the connection
 limped on. It latches a flag now, checked before parking. There is a test
 named after that failure.
+
+## What a guest can spend
+
+The sandbox decides which *paths* a guest can touch and has nothing to say
+about processes — and a shell is a process factory. Until this existed, a
+guest could fork-bomb the machine they were lent. For a product whose pitch is
+"lend me your machine", that undercut the offer more than any file-access
+question.
+
+| | |
+|---|---|
+| Terminals | 12 per session, `--max-terminals` |
+| Processes | 512, enforced at `fork`, `--max-processes` |
+| CPU, memory, disk | **Not capped** — and the panel says so |
+
+That last row is deliberate. `RLIMIT_CPU` would kill a long build, `RLIMIT_AS`
+breaks anything that maps aggressively including `rustc`, and disk is hard to
+bound portably. Those are recoverable; a machine that cannot fork is not. A
+host who read "limits are on" and assumed memory was covered would be worse
+off than one told plainly that it is not.
+
+Applied with `ulimit` in a wrapper shell rather than a syscall — no `unsafe`,
+identical on both platforms, and rlimits are inherited across `exec` so the
+sandbox wrappers compose with it rather than fighting it.
+
+## What one address can ask for
+
+Opening a session needs no account and no invitation, which is the point and
+also means a public relay would accept sessions from anyone until it ran out
+of memory.
+
+| | |
+|---|---|
+| Open at once | 8 per address |
+| Started per minute | 20 per address |
+| Joining a session | Unmetered — a guest already needs the link |
+
+Only *opening* is metered. Rationing the people a host invited would be
+limiting the wrong side.
+
+The slot is a Drop guard rather than a matching `release()` call, because the
+handshake has several ways to fail after a slot is taken — a session id
+already in use, most obviously — and every one is a path where a manual
+release is easy to forget. Forgetting leaks an address's allowance to sessions
+that never existed.
+
+Behind a proxy, every connection is the proxy. `--trust-forwarded-for` reads
+`X-Forwarded-For` instead, and should only be on when something you control
+sets that header — otherwise any caller can claim any address and the limits
+become decorative.
