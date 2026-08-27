@@ -39,7 +39,11 @@ async function seal(key, frame) {
   if (!isEncrypted(frame.channel)) return frame;
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, frame.payload),
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: header(frame) },
+      key,
+      frame.payload,
+    ),
   );
   const payload = new Uint8Array(NONCE_LEN + ct.length);
   payload.set(nonce, 0);
@@ -53,7 +57,11 @@ async function open(key, frame) {
   try {
     const plain = new Uint8Array(
       await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: frame.payload.subarray(0, NONCE_LEN) },
+        {
+          name: "AES-GCM",
+          iv: frame.payload.subarray(0, NONCE_LEN),
+          additionalData: header(frame),
+        },
         key,
         frame.payload.subarray(NONCE_LEN),
       ),
@@ -62,6 +70,15 @@ async function open(key, frame) {
   } catch {
     return null;
   }
+}
+
+function header(frame) {
+  const out = new Uint8Array(HEADER_LEN);
+  const view = new DataView(out.buffer);
+  out[0] = frame.channel;
+  view.setUint32(1, frame.streamId, true);
+  view.setUint32(5, frame.target, true);
+  return out;
 }
 
 /**
@@ -270,13 +287,17 @@ export class Guest {
 
   /** Accepts an encoded frame, as the older call sites produce. */
   send(bytes) {
+    const frame = decode(bytes.buffer ? bytes : new Uint8Array(bytes));
+    const routed =
+      this.role === "guest" && isEncrypted(frame.channel)
+        ? { ...frame, target: this.participantId }
+        : frame;
     if (!this.key) {
-      this.ws.send(bytes);
+      this.ws.send(encode(routed));
       return;
     }
-    const frame = decode(bytes.buffer ? bytes : new Uint8Array(bytes));
     this.outChain = this.outChain.then(async () => {
-      this.ws.send(encode(await seal(this.key, frame)));
+      this.ws.send(encode(await seal(this.key, routed)));
     });
   }
 

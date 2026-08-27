@@ -13,7 +13,10 @@
 //! relay operator can see that a session is busy. They cannot see what is in
 //! it.
 
-use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce, Payload};
 use aes_gcm::{Aes256Gcm, Key};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -31,6 +34,8 @@ pub enum CryptoError {
     TooShort,
     #[error("could not decrypt — wrong key, or the frame was tampered with")]
     Failed,
+    #[error("encrypted frame was already received")]
+    Replayed,
 }
 
 /// One session's key. Cheap to clone; the underlying cipher is stateless.
@@ -38,6 +43,12 @@ pub enum CryptoError {
 pub struct Cipher {
     cipher: Aes256Gcm,
     key: [u8; KEY_LEN],
+    received: Arc<Mutex<ReceivedNonces>>,
+}
+
+#[derive(Default)]
+struct ReceivedNonces {
+    set: HashSet<[u8; NONCE_LEN]>,
 }
 
 impl std::fmt::Debug for Cipher {
@@ -61,6 +72,7 @@ impl Cipher {
         Self {
             cipher: Aes256Gcm::new(&key),
             key: bytes,
+            received: Arc::new(Mutex::new(ReceivedNonces::default())),
         }
     }
 
@@ -98,14 +110,58 @@ impl Cipher {
     }
 
     pub fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        self.open_inner(sealed, &[], false)
+    }
+
+    /// Seal while authenticating data that remains visible on the wire.
+    pub fn seal_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Vec<u8> {
+        let nonce = Nonce::<Aes256Gcm>::generate();
+        let mut out = Vec::with_capacity(NONCE_LEN + plaintext.len() + 16);
+        out.extend_from_slice(nonce.as_slice());
+        match self.cipher.encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        ) {
+            Ok(ct) => out.extend_from_slice(&ct),
+            Err(_) => return Vec::new(),
+        }
+        out
+    }
+
+    /// Open an authenticated frame and reject a nonce already accepted for
+    /// this session key. Nonces are recorded only after authentication.
+    pub fn open_with_aad(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        self.open_inner(sealed, aad, true)
+    }
+
+    fn open_inner(
+        &self,
+        sealed: &[u8],
+        aad: &[u8],
+        reject_replay: bool,
+    ) -> Result<Vec<u8>, CryptoError> {
         if sealed.len() < NONCE_LEN {
             return Err(CryptoError::TooShort);
         }
         let (nonce, ct) = sealed.split_at(NONCE_LEN);
         let nonce = Nonce::<Aes256Gcm>::try_from(nonce).map_err(|_| CryptoError::TooShort)?;
-        self.cipher
-            .decrypt(&nonce, ct)
-            .map_err(|_| CryptoError::Failed)
+        let plain = self
+            .cipher
+            .decrypt(&nonce, Payload { msg: ct, aad })
+            .map_err(|_| CryptoError::Failed)?;
+
+        if reject_replay {
+            let nonce_bytes: [u8; NONCE_LEN] =
+                nonce.as_slice().try_into().expect("nonce length");
+            let mut received = self.received.lock().map_err(|_| CryptoError::Failed)?;
+            if !received.set.insert(nonce_bytes) {
+                return Err(CryptoError::Replayed);
+            }
+        }
+        Ok(plain)
     }
 }
 

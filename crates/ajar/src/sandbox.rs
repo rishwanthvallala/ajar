@@ -23,15 +23,19 @@ use std::path::{Path, PathBuf};
 /// else that keeps a per-user cache — which is worse than useless, because
 /// people would turn the sandbox off.
 const CACHE_DIRS: &[&str] = &[
-    ".cargo",
-    ".rustup",
-    ".npm",
-    ".cache",
-    ".bun",
-    ".deno",
+    ".cargo/registry",
+    ".cargo/git",
+    ".npm/_cacache",
+    ".cache/pip",
+    ".cache/uv",
+    ".cache/go-build",
+    ".bun/install/cache",
+    ".deno/npm",
+    ".deno/gen",
     ".pnpm-store",
-    ".gradle",
-    ".m2",
+    ".gradle/caches",
+    ".gradle/wrapper/dists",
+    ".m2/repository",
     "go/pkg",
     "Library/Caches",
 ];

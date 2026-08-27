@@ -1,5 +1,5 @@
 import { Channel, decode, encode, Frame, jsonFrame, Role, TARGET_ALL } from "./proto";
-import { Sealer } from "./sealed";
+import { isEncrypted, Sealer } from "./sealed";
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
@@ -30,6 +30,8 @@ export class Connection {
   private attempt = 0;
   private closedByUs = false;
   private queue: Frame[] = [];
+  private pendingContent: Frame[] = [];
+  private participantId: number | null = null;
   /**
    * Sealing and opening are asynchronous, and terminal bytes have to keep
    * their order. Both directions run through their own promise chain, so a
@@ -72,14 +74,14 @@ export class Connection {
       }
       const sealer = this.opts.sealer;
       if (!sealer) {
-        this.opts.onFrame(frame);
+        this.deliver(frame);
         return;
       }
       this.inbound = this.inbound.then(async () => {
         const opened = await sealer.open(frame);
         // Wrong key, or a frame that was interfered with. Neither is worth
         // guessing at.
-        if (opened) this.opts.onFrame(opened);
+        if (opened) this.deliver(opened);
       });
     };
 
@@ -102,13 +104,42 @@ export class Connection {
 
   send(f: Frame) {
     const sealer = this.opts.sealer;
+    if (this.isGuest() && isEncrypted(f.channel) && this.participantId === null) {
+      this.pendingContent.push(f);
+      return;
+    }
+    const routed = this.isGuest() && isEncrypted(f.channel)
+      ? { ...f, target: this.participantId! }
+      : f;
     if (!sealer) {
-      this.write(f);
+      this.write(routed);
       return;
     }
     this.outbound = this.outbound.then(async () => {
-      this.write(await sealer.seal(f));
+      this.write(await sealer.seal(routed));
     });
+  }
+
+  private deliver(f: Frame) {
+    if (f.channel === Channel.Control) {
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(f.payload)) as {
+          t?: string;
+          participant_id?: number;
+        };
+        if (msg.t === "welcome" && typeof msg.participant_id === "number") {
+          this.participantId = msg.participant_id;
+          for (const pending of this.pendingContent.splice(0)) this.send(pending);
+        }
+      } catch {
+        // The application owns malformed control-message handling.
+      }
+    }
+    this.opts.onFrame(f);
+  }
+
+  private isGuest() {
+    return (this.opts.role ?? "guest") === "guest";
   }
 
   private write(f: Frame) {

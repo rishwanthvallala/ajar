@@ -511,6 +511,10 @@ async fn run() -> Result<()> {
         }
     }
 
+    // The debounce timer will never tick again. Persist every CRDT change
+    // before telling the relay and guests that the session is gone.
+    flush_all_documents(&mut host);
+
     // Tell the relay this is deliberate, so it tears the session down now
     // instead of holding it open for a reconnect that is not coming.
     let _ = host
@@ -846,13 +850,102 @@ fn broadcast_roster(host: &Host) -> Result<()> {
 
 /// Write a document back to the file it came from.
 fn write_back(path: &str, contents: &str, host: &mut Host) {
-    let Some(abs) = host.workspace.filter().resolve_unchecked(path) else {
+    let filter = host.workspace.filter();
+    let Some(abs) = filter.resolve(path) else {
         return;
     };
-    if let Err(e) = std::fs::write(&abs, contents) {
+    if let Err(e) = atomic_write(&abs, filter.root(), contents.as_bytes()) {
         warn!("could not write {path}: {e}");
         host.log(format!("could not write {path}: {e}"));
     }
+}
+
+/// Replace the directory entry rather than opening it for writing. If a
+/// sandboxed process swaps the file for a symlink, persistence replaces that
+/// symlink itself and never follows it to an outside target.
+fn atomic_write(
+    path: &std::path::Path,
+    workspace: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    let trusted_root = workspace.canonicalize()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("document has no parent directory"))?
+        .canonicalize()?;
+    if !parent.starts_with(&trusted_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "document parent escaped the workspace",
+        ));
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("document has no file name"))?;
+    let destination = parent.join(file_name);
+    let permissions = std::fs::metadata(path)?.permissions();
+    for _ in 0..100 {
+        let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(".ajar-write-{}-{n}", std::process::id()));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        if !temp
+            .canonicalize()
+            .is_ok_and(|real| real.starts_with(&trusted_root))
+        {
+            drop(file);
+            let _ = std::fs::remove_file(&temp);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "temporary document escaped the workspace",
+            ));
+        }
+        let written = file
+            .write_all(contents)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| file.set_permissions(permissions.clone()));
+        drop(file);
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        if !matches!(parent.canonicalize(), Ok(ref real) if real == &parent) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "document parent changed during write-back",
+            ));
+        }
+        // Unix rename atomically replaces the entry. Windows requires
+        // removing it first; remove_file deletes a symlink itself.
+        #[cfg(windows)]
+        match std::fs::remove_file(&destination) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(e);
+            }
+        }
+        let result = std::fs::rename(&temp, &destination);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        return result;
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a temporary document path",
+    ))
 }
 
 /// Fold changes that happened on disk into any document that is open on them.
@@ -887,6 +980,12 @@ fn reconcile_docs(paths: &[String], host: &mut Host) {
 /// Write back every document that has stopped changing.
 fn flush_documents(host: &mut Host) {
     for (_, path, contents) in host.docs.due_for_write(Instant::now()) {
+        write_back(&path, &contents, host);
+    }
+}
+
+fn flush_all_documents(host: &mut Host) {
+    for (_, path, contents) in host.docs.pending_writes() {
         write_back(&path, &contents, host);
     }
 }

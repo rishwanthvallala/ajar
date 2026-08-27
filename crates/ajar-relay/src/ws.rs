@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::outbox::{self, Outbox};
 use crate::quota::Quota;
-use crate::session::{HostExit, JoinError, Registry, HOST_GRACE};
+use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYTES};
 
 pub async fn handle(
     socket: WebSocket,
@@ -145,14 +145,20 @@ pub async fn handle(
     // socket is a blip, and the session waits for it.
     let mut host_exit = HostExit::Dropped;
     // Set between an accepted offer and the blob that follows it.
-    let mut expecting: Option<u32> = None;
+    let mut expecting: Option<(u64, u32)> = None;
 
     while let Some(frame) = next_frame(&mut stream).await {
         // The host may address one guest or broadcast; a guest may only
         // reach the host. Four cells, and it stays four cells.
         match me.role {
             Role::Guest => {
-                if frame.target != TARGET_ALL {
+                if frame.channel.is_encrypted() && frame.target != me.id {
+                    debug!(
+                        "guest sent encrypted content without its authenticated sender id; dropped"
+                    );
+                    continue;
+                }
+                if !frame.channel.is_encrypted() && frame.target != TARGET_ALL {
                     debug!("guest tried to address a participant directly; dropped");
                     continue;
                 }
@@ -180,17 +186,27 @@ pub async fn handle(
                     }
                     continue;
                 }
-                // Stamp the sender so the host knows who asked.
-                let stamped =
-                    Frame::new(frame.channel, frame.stream_id, me.id, frame.payload).encode();
-                registry.with(&session_id, |s| s.send_host(&stamped));
+                // Encrypted frames already carry the sender in authenticated
+                // routing metadata. Rewriting it here would invalidate them.
+                registry.with(&session_id, |s| s.send_host(&frame.encode()));
             }
             Role::Host if frame.channel == Channel::Store => {
                 if frame.stream_id == SNAPSHOT_STREAM {
                     // The blob for the offer we just accepted. Anything not
                     // announced is dropped rather than trusted.
                     match expecting.take() {
-                        Some(files) => registry.put_snapshot(&session_id, frame.payload, files),
+                        Some((bytes, files))
+                            if bytes <= MAX_SNAPSHOT_BYTES
+                                && frame.payload.len() as u64 == bytes =>
+                        {
+                            registry.put_snapshot(&session_id, frame.payload, files)
+                        }
+                        Some((bytes, _)) => warn!(
+                            session = %session_id,
+                            advertised = bytes,
+                            actual = frame.payload.len(),
+                            "snapshot blob did not match its accepted offer; dropped"
+                        ),
                         None => debug!("unannounced snapshot blob; dropped"),
                     }
                     continue;
@@ -199,7 +215,7 @@ pub async fn handle(
                     Ok(Store::Offer { bytes, files }) => {
                         match registry.offer_snapshot(&session_id, bytes, files) {
                             Ok(()) => {
-                                expecting = Some(files);
+                                expecting = Some((bytes, files));
                                 send_json(&tx, Channel::Store, &Store::Accepted);
                             }
                             Err(reason) => {
