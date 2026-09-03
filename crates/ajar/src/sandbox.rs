@@ -23,19 +23,32 @@ use std::path::{Path, PathBuf};
 /// else that keeps a per-user cache — which is worse than useless, because
 /// people would turn the sandbox off.
 const CACHE_DIRS: &[&str] = &[
+    // cargo. The registry and git checkouts are the cache; the lock files
+    // beside them are what a build takes before it reads either, so granting
+    // the caches without them buys a `cargo build` that cannot start.
     ".cargo/registry",
     ".cargo/git",
+    ".cargo/.package-cache",
+    ".cargo/.package-cache-mutate",
+    ".cargo/.global-cache",
+    // npm. `_cacache` is the package store, `_logs` is written on every
+    // single invocation, and `_npx` is where `npx` stages a package before
+    // running it — deny that one and `npx vite` fails with EPERM and advice
+    // to `sudo chown` your own npm cache, which is not the problem.
     ".npm/_cacache",
-    ".cache/pip",
-    ".cache/uv",
-    ".cache/go-build",
-    ".bun/install/cache",
-    ".deno/npm",
-    ".deno/gen",
+    ".npm/_logs",
+    ".npm/_npx",
     ".pnpm-store",
-    ".gradle/caches",
-    ".gradle/wrapper/dists",
-    ".m2/repository",
+    // Below this line the grant is the whole tree, because these are tools
+    // this codebase has no way to exercise. Narrowing an allow-list you
+    // cannot test does not produce a tighter sandbox, it produces a build
+    // that fails in front of a guest with an error naming the wrong cause.
+    // Anything here earns a narrower entry the day a test can prove it.
+    ".cache",
+    ".bun",
+    ".deno",
+    ".gradle",
+    ".m2",
     "go/pkg",
     "Library/Caches",
 ];
@@ -683,13 +696,31 @@ mod tests {
     fn toolchain_caches_stay_writable() {
         // Confining writes to the project alone breaks every build tool that
         // keeps a per-user cache, and a sandbox people switch off protects
-        // nobody.
+        // nobody. Probing the paths the tools actually use, rather than a
+        // bare file in `~/.cache`, because the list is narrowed per tool now
+        // and a sibling one directory over is exactly how this breaks.
         let f = fixture("cache", true);
         let home = std::env::var("HOME").unwrap();
-        let probe = format!("{home}/.cache/ajar-sandbox-probe");
-        let (ok, out) = run(&f, &format!("mkdir -p {home}/.cache && echo x > {probe}"));
-        assert!(ok, "a toolchain cache was not writable: {out}");
-        let _ = fs::remove_file(&probe);
+        for rel in [
+            ".cargo/registry",
+            ".npm/_cacache",
+            ".npm/_logs",
+            ".npm/_npx",
+            ".cache",
+        ] {
+            let dir = format!("{home}/{rel}");
+            let probe = format!("{dir}/ajar-sandbox-probe");
+            let (ok, out) = run(&f, &format!("mkdir -p {dir} && echo x > {probe}"));
+            assert!(ok, "a toolchain cache was not writable: {rel}: {out}");
+            let _ = fs::remove_file(&probe);
+        }
+
+        // cargo's lock is a file, not a directory, and it is the one a build
+        // takes before it reads the registry at all. Opened for append and
+        // given nothing, so a real one is never disturbed.
+        let lock = format!("{home}/.cargo/.package-cache");
+        let (ok, out) = run(&f, &format!(": >> {lock}"));
+        assert!(ok, "cargo's package lock was not writable: {out}");
     }
 
     #[test]

@@ -13,7 +13,19 @@ import { Channel, Frame } from "./proto";
 
 const NONCE_LEN = 12;
 
+/**
+ * How many recent nonces to remember when rejecting replays.
+ *
+ * Mirrors `REMEMBERED` in `crypto.rs`, and exists for the same reason: one
+ * `ls -R` is a couple of thousand frames, and remembering every one for the
+ * life of the tab is tens of megabytes that are never released. A frame
+ * replayed after this many others have arrived will be accepted — the same
+ * bargain DTLS makes.
+ */
+const REMEMBERED = 4096;
+
 export class Sealer {
+  /** Insertion-ordered, so the first entry is always the oldest. */
   private received = new Set<string>();
 
   private constructor(private key: CryptoKey) {}
@@ -64,6 +76,12 @@ export class Sealer {
         ),
       );
       this.received.add(nonceKey);
+      if (this.received.size > REMEMBERED) {
+        // A Set iterates in insertion order, so this is the oldest nonce and
+        // no second structure is needed to find it.
+        const oldest = this.received.values().next().value;
+        if (oldest !== undefined) this.received.delete(oldest);
+      }
       return { ...f, payload: plain };
     } catch {
       return null;

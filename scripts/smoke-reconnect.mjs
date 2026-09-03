@@ -113,6 +113,34 @@ async function main() {
   );
   ok("the shell still accepts input — it never restarted");
 
+  // ------------------------------------------------- typing through a blip
+  //
+  // Everything above rejoins with a *fresh* guest, which is the one thing the
+  // browser never does — it keeps one `Connection` and reopens the socket
+  // underneath it. That distinction is the whole test: content frames carry
+  // an authenticated sender id, the relay issues a new one on every join and
+  // refuses a frame stamped with any other, so a client that seals what you
+  // typed during the blip against its previous identity has it silently
+  // dropped. A new object has no previous identity and cannot show this.
+  const staleId = rejoined.participantId;
+  const AGAIN = "typed-while-the-socket-was-down";
+  const before = rejoined.screen.split(AGAIN).length - 1;
+
+  rejoined.ws.close();
+  await sleep(200);
+  // Typed with no socket at all. A real person does this constantly.
+  rejoined.type(samePty, `echo ${AGAIN}\r`);
+  await rejoined.reconnect();
+
+  if (rejoined.participantId === staleId) {
+    fail(`participant id did not change across the rejoin (${staleId}) — proves nothing`);
+  }
+  await rejoined.waitUntil(
+    (g) => g.screen.split(AGAIN).length - 1 >= before + 2,
+    "input typed during the outage to arrive after reconnecting",
+  );
+  ok(`typing survived the blip (participant ${staleId} → ${rejoined.participantId})`);
+
   rejoined.close();
   finish(procs, "reconnect works: the relay died, the session did not");
 }

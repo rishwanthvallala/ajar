@@ -13,8 +13,10 @@
 //! relay operator can see that a session is busy. They cannot see what is in
 //! it.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce, Payload};
 use aes_gcm::{Aes256Gcm, Key};
@@ -46,9 +48,47 @@ pub struct Cipher {
     received: Arc<Mutex<ReceivedNonces>>,
 }
 
+/// How many recent nonces to remember when rejecting replays.
+///
+/// This has to be bounded or it becomes the leak it was added to prevent: a
+/// single `ls -R` is a couple of thousand frames, and remembering every one
+/// for the life of the session costs tens of megabytes on the host and in
+/// every guest's tab.
+///
+/// So it is a *window*, and the bargain is explicit: a frame replayed after
+/// another `REMEMBERED` have arrived will be accepted. DTLS and IPsec make
+/// the same trade for the same reason — replay matters while a frame is
+/// still current, and an attacker who can hold one for four thousand frames
+/// can hold it forever.
+const REMEMBERED: usize = 4096;
+
+/// The nonces seen recently, newest last.
+///
+/// A set to answer "have I seen this", and a queue to know which to forget.
+/// Counter nonces would need neither, but the session key is shared by the
+/// host and every guest, so independent counters would collide — and a
+/// repeated nonce under GCM leaks the authentication key. Random 96-bit
+/// nonces are the right choice here precisely because the key is shared.
 #[derive(Default)]
 struct ReceivedNonces {
     set: HashSet<[u8; NONCE_LEN]>,
+    order: VecDeque<[u8; NONCE_LEN]>,
+}
+
+impl ReceivedNonces {
+    /// True when this nonce has not been seen inside the window.
+    fn accept(&mut self, nonce: [u8; NONCE_LEN]) -> bool {
+        if !self.set.insert(nonce) {
+            return false;
+        }
+        self.order.push_back(nonce);
+        if self.order.len() > REMEMBERED {
+            if let Some(forgotten) = self.order.pop_front() {
+                self.set.remove(&forgotten);
+            }
+        }
+        true
+    }
 }
 
 impl std::fmt::Debug for Cipher {
@@ -126,7 +166,11 @@ impl Cipher {
             },
         ) {
             Ok(ct) => out.extend_from_slice(&ct),
-            Err(_) => return Vec::new(),
+            // Unreachable short of a plaintext measured in exabytes. Loudly
+            // rather than quietly: returning an empty payload would reach the
+            // peer as `TooShort`, which reads as "wrong key or tampered" and
+            // points whoever debugs it at entirely the wrong thing.
+            Err(e) => unreachable!("sealing a frame cannot fail: {e}"),
         }
         out
     }
@@ -154,10 +198,8 @@ impl Cipher {
             .map_err(|_| CryptoError::Failed)?;
 
         if reject_replay {
-            let nonce_bytes: [u8; NONCE_LEN] =
-                nonce.as_slice().try_into().expect("nonce length");
-            let mut received = self.received.lock().map_err(|_| CryptoError::Failed)?;
-            if !received.set.insert(nonce_bytes) {
+            let nonce_bytes: [u8; NONCE_LEN] = nonce.as_slice().try_into().expect("nonce length");
+            if !self.received.lock().accept(nonce_bytes) {
                 return Err(CryptoError::Replayed);
             }
         }
@@ -168,6 +210,53 @@ impl Cipher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replayed_frame_is_refused() {
+        let (cipher, _) = Cipher::generate();
+        let sealed = cipher.seal_with_aad(b"whoami", b"header");
+        assert_eq!(cipher.open_with_aad(&sealed, b"header").unwrap(), b"whoami");
+        assert!(matches!(
+            cipher.open_with_aad(&sealed, b"header"),
+            Err(CryptoError::Replayed)
+        ));
+    }
+
+    #[test]
+    fn remembering_replays_is_bounded() {
+        // The whole point: a long session must not accumulate one entry per
+        // frame. A single `ls -R` is around two thousand frames, so an
+        // unbounded set is tens of megabytes an hour on the host and in
+        // every guest's tab.
+        let (cipher, _) = Cipher::generate();
+        for i in 0..(REMEMBERED * 3) {
+            let sealed = cipher.seal_with_aad(format!("frame {i}").as_bytes(), b"h");
+            cipher.open_with_aad(&sealed, b"h").expect("fresh frame");
+        }
+        let held = cipher.received.lock();
+        assert!(
+            held.set.len() <= REMEMBERED && held.order.len() <= REMEMBERED,
+            "replay window grew past its bound: {} entries",
+            held.set.len()
+        );
+    }
+
+    #[test]
+    fn the_window_forgets_in_order() {
+        let (cipher, _) = Cipher::generate();
+        let first = cipher.seal_with_aad(b"first", b"h");
+        cipher.open_with_aad(&first, b"h").unwrap();
+        // Push it out of the window, then replay it. Accepted, and that is
+        // the documented bargain rather than a bug.
+        for i in 0..REMEMBERED {
+            let s = cipher.seal_with_aad(format!("{i}").as_bytes(), b"h");
+            cipher.open_with_aad(&s, b"h").unwrap();
+        }
+        assert!(
+            cipher.open_with_aad(&first, b"h").is_ok(),
+            "a nonce older than the window should have been forgotten"
+        );
+    }
 
     #[test]
     fn a_sealed_frame_comes_back_whole() {

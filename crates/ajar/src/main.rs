@@ -851,7 +851,13 @@ fn broadcast_roster(host: &Host) -> Result<()> {
 /// Write a document back to the file it came from.
 fn write_back(path: &str, contents: &str, host: &mut Host) {
     let filter = host.workspace.filter();
+    // `resolve` rather than `resolve_unchecked`: it canonicalises, so a
+    // symlink planted where the document used to be cannot redirect the write
+    // out of the workspace. The cost is that a file deleted while it is open
+    // no longer resolves, and the edits stop being persisted — said out loud
+    // here, because a silent return looks exactly like a successful save.
     let Some(abs) = filter.resolve(path) else {
+        host.log(format!("{path} is gone — edits are no longer being saved"));
         return;
     };
     if let Err(e) = atomic_write(&abs, filter.root(), contents.as_bytes()) {

@@ -188,6 +188,13 @@ pub async fn handle(
                 }
                 // Encrypted frames already carry the sender in authenticated
                 // routing metadata. Rewriting it here would invalidate them.
+                //
+                // Note what this costs: nothing stamps a guest's *unencrypted*
+                // frames any more, so control and store traffic reaches the
+                // host with `target` still 0 rather than the sender's id.
+                // Nothing reads it there today — every `frame.target` on the
+                // host sits on pty, fs, doc or presence — but a handler added
+                // later will get 0 and no hint as to why.
                 registry.with(&session_id, |s| s.send_host(&frame.encode()));
             }
             Role::Host if frame.channel == Channel::Store => {
