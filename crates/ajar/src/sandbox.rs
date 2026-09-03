@@ -23,30 +23,24 @@ use std::path::{Path, PathBuf};
 /// else that keeps a per-user cache — which is worse than useless, because
 /// people would turn the sandbox off.
 const CACHE_DIRS: &[&str] = &[
-    // cargo. The registry and git checkouts are the cache; the lock files
-    // beside them are what a build takes before it reads either, so granting
-    // the caches without them buys a `cargo build` that cannot start.
-    ".cargo/registry",
-    ".cargo/git",
-    ".cargo/.package-cache",
-    ".cargo/.package-cache-mutate",
-    ".cargo/.global-cache",
-    // npm. `_cacache` is the package store, `_logs` is written on every
-    // single invocation, and `_npx` is where `npx` stages a package before
-    // running it — deny that one and `npx vite` fails with EPERM and advice
-    // to `sudo chown` your own npm cache, which is not the problem.
-    ".npm/_cacache",
-    ".npm/_logs",
-    ".npm/_npx",
-    ".pnpm-store",
-    // Below this line the grant is the whole tree, because these are tools
-    // this codebase has no way to exercise. Narrowing an allow-list you
-    // cannot test does not produce a tighter sandbox, it produces a build
-    // that fails in front of a guest with an error naming the wrong cause.
-    // Anything here earns a narrower entry the day a test can prove it.
+    // Whole cache roots, deliberately, and not the subdirectories inside
+    // them. Narrowing these to `.npm/_cacache`, `.cargo/registry` and the
+    // like was tried and reverted: a grant whose path does not exist yet is
+    // dropped on the floor (see `existing` in the landlock builder, and the
+    // same is true of an sbpl subpath), and every one of these tools creates
+    // its own subdirectories on demand — npm writes `_logs` on each run and
+    // stages `npx` under `_npx`, cargo makes its lock files beside the
+    // registry. Granting the child and not the parent means the tool cannot
+    // create what it was about to use, so the narrower list works on a
+    // machine where those directories already happen to exist and fails on a
+    // fresh one, with an error that names npm rather than the sandbox.
+    ".cargo",
+    ".rustup",
+    ".npm",
     ".cache",
     ".bun",
     ".deno",
+    ".pnpm-store",
     ".gradle",
     ".m2",
     "go/pkg",
@@ -696,31 +690,35 @@ mod tests {
     fn toolchain_caches_stay_writable() {
         // Confining writes to the project alone breaks every build tool that
         // keeps a per-user cache, and a sandbox people switch off protects
-        // nobody. Probing the paths the tools actually use, rather than a
-        // bare file in `~/.cache`, because the list is narrowed per tool now
-        // and a sibling one directory over is exactly how this breaks.
+        // nobody.
         let f = fixture("cache", true);
         let home = std::env::var("HOME").unwrap();
-        for rel in [
-            ".cargo/registry",
-            ".npm/_cacache",
-            ".npm/_logs",
-            ".npm/_npx",
-            ".cache",
-        ] {
-            let dir = format!("{home}/{rel}");
-            let probe = format!("{dir}/ajar-sandbox-probe");
-            let (ok, out) = run(&f, &format!("mkdir -p {dir} && echo x > {probe}"));
-            assert!(ok, "a toolchain cache was not writable: {rel}: {out}");
-            let _ = fs::remove_file(&probe);
-        }
+        let probe = format!("{home}/.cache/ajar-sandbox-probe");
+        let (ok, out) = run(&f, &format!("mkdir -p {home}/.cache && echo x > {probe}"));
+        assert!(ok, "a toolchain cache was not writable: {out}");
+        let _ = fs::remove_file(&probe);
+    }
 
-        // cargo's lock is a file, not a directory, and it is the one a build
-        // takes before it reads the registry at all. Opened for append and
-        // given nothing, so a real one is never disturbed.
-        let lock = format!("{home}/.cargo/.package-cache");
-        let (ok, out) = run(&f, &format!(": >> {lock}"));
-        assert!(ok, "cargo's package lock was not writable: {out}");
+    #[test]
+    fn a_tool_can_create_a_cache_directory_it_has_not_used_before() {
+        // The reason CACHE_DIRS lists roots rather than the subdirectories
+        // inside them. A grant for a path that does not exist is silently
+        // dropped, so granting `.npm/_npx` on a machine that has one proves
+        // nothing about a machine that does not — there the guest cannot
+        // create it either, and `npx` fails with EPERM and advice to chown a
+        // directory that was never the problem.
+        let f = fixture("fresh-cache", true);
+        let home = std::env::var("HOME").unwrap();
+        let fresh = format!("{home}/.cache/ajar-probe-{}", std::process::id());
+        let (ok, out) = run(
+            &f,
+            &format!("mkdir -p {fresh}/nested && echo x > {fresh}/nested/f"),
+        );
+        assert!(
+            ok,
+            "a tool could not create a cache directory it had not used before: {out}"
+        );
+        let _ = fs::remove_dir_all(&fresh);
     }
 
     #[test]
