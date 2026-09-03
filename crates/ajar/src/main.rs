@@ -242,10 +242,7 @@ async fn run() -> Result<()> {
     } else {
         sandbox::Sandbox::build(&verdict.path, !args.no_network)
     };
-    let caps = limits::Limits {
-        terminals: args.max_terminals,
-        processes: args.max_processes,
-    };
+    let caps = limits::Limits::new(args.max_terminals, args.max_processes);
     let mark = checkpoint::create(&verdict.path);
     let found = secrets::scan(&verdict.path, &workspace.filter());
 
@@ -273,6 +270,16 @@ async fn run() -> Result<()> {
     let link = format!("{}#k={key}", client::join_url(&args.relay, &session));
     let (ui, mut actions) = Ui::start()?;
     let mut warnings = verdict.warnings.clone();
+    if !caps.enforces_processes() {
+        // Worth saying out loud rather than leaving to the summary line: the
+        // fork bomb this was meant to stop takes the machine down, and a host
+        // who thinks it is covered will not think about it again.
+        warnings.push(
+            "no shell here can cap processes — a guest can fork until this machine stops \
+             responding"
+                .to_string(),
+        );
+    }
     if !found.is_empty() {
         warnings.push(format!(
             "{} credential{} in this folder — {}{}",
