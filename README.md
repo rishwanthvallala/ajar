@@ -3,14 +3,21 @@
 Leave a machine open to someone. One command on the host, a link for everyone
 else, no install on the guest's side.
 
-**v1 — collaborative editing.** Shared terminals, a live file tree, and files
-two people can edit at once while a terminal rewrites them underneath. Still
-no sandbox and nothing persists. See the build spec for
-what that deliberately leaves out and why.
+**Live at [ajar.rishwanth.dev](https://ajar.rishwanth.dev).** That is a relay,
+not a service holding your code: it routes encrypted frames between a host and
+their guests and keeps nothing it can read.
 
-> **ajar v0 has no sandbox.** Anyone who opens a session link gets a shell as
-> the host user — their files, their SSH keys, their cloud credentials. Share
-> only with people you would hand your unlocked laptop to.
+Shared terminals, a live file tree, and files two people can edit at once
+while a terminal rewrites them underneath. A guest's shell is confined to the
+shared folder by the OS. Everything on the content channels is encrypted
+end-to-end with a key the relay never sees.
+
+> **A sandbox is not a virtual machine.** A guest runs real commands on a real
+> machine with your toolchain, your network and whatever the shared folder can
+> reach. It stops them writing outside that folder and reading your ssh and
+> cloud credentials; it does not make them harmless. Share with people you
+> have some reason to trust — the agent says exactly what is and is not
+> covered before it prints the link.
 
 ## Layout
 
@@ -25,7 +32,7 @@ what that deliberately leaves out and why.
 ## Installing
 
 ```sh
-curl -sSf https://ajar.sh/install.sh | sh
+curl -sSf https://ajar.rishwanth.dev/install.sh | sh
 ```
 
 One static binary, no runtime, nothing to configure. Native Windows is
@@ -148,8 +155,8 @@ are running, and what it is costing:
   http://127.0.0.1:8787/j/quiet-ember-4417   ← send this
 
 ┌────────────────────────────────────────────────────────────────────┐
-│ no sandbox — anyone with this link gets a shell as you: your files, │
-│ your SSH keys, your cloud credentials                              │
+│ a guest has your toolchain, confined to this folder — not a        │
+│ virtual machine                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ┌ here ──────────────────┐┌ running on your machine ─────────────────┐
 │ 2  priya  3m · 2 term  ││ 1  priya   7% cpu   184M · 3 proc        │
@@ -190,11 +197,11 @@ AJAR_DIST=$PWD/dist AJAR_BIN_DIR=/tmp/ajar-bin sh install.sh
 
 ## Front page
 
-The relay serves a landing page that states the no-sandbox model plainly
-rather than burying it: anyone with a session link gets a shell as you, the
-read-only viewer is a convenience and not a boundary, and this is the same
-bargain `tmate` has offered for a decade. A product that needs its central
-caveat hidden is not ready to be shared.
+The relay serves a landing page that states the bargain plainly rather than
+burying it: a guest gets a real shell on your machine, the sandbox bounds
+which files they reach and not what they can do inside them, and the
+read-only viewer is a convenience rather than a boundary. A product that needs
+its central caveat hidden is not ready to be shared.
 
 Monaco is loaded lazily, so a visitor to the front page — or a session where
 nobody opens a file — downloads 89 kB gzipped rather than 1 MB.
@@ -313,9 +320,13 @@ left alone; they are the template, not the secret. A scanner that cries wolf
 gets ignored, and being ignored is the only real failure mode.
 
 ```
-  !  2 credentials in this folder — .env, deploy.pem. A guest with a
-     terminal can read them; there is no sandbox yet
+  !  2 credentials in this folder — .env, deploy.pem. Readable by a
+     guest, since they are inside the shared folder
 ```
+
+When no sandbox is available the same line ends `A guest with a terminal can
+read them; there is no sandbox` instead — the warning tracks the posture
+rather than stating one.
 
 That last clause is the point. **The scan is a warning, not a boundary.**
 Keeping a file out of the tree would stop it being opened by accident, not
@@ -460,6 +471,31 @@ A relay operator can see that a session is busy. They cannot see what is in
 it — and the claim is stated that precisely rather than as "the server sees
 nothing".
 
+### The header is authenticated, not just the payload
+
+Sealing the payload alone leaves the nine-byte header — channel, stream id and
+target — in the clear *and unauthenticated*. A hostile relay could not read a
+keystroke, but it could take a sealed frame bound for one terminal and deliver
+it to another, or replay it. The plaintext never changes, so nothing detects
+it.
+
+So the header is passed as AES-GCM associated data: it stays readable, because
+the relay has to route on it, but it can no longer be edited without the
+tag failing. Routing metadata is now something the relay reports rather than
+something it can choose.
+
+Replay is refused by remembering recent nonces — a **window of 4,096**, not
+every nonce ever seen. That bound is the point: one `ls -R` is a couple of
+thousand frames, so remembering all of them costs tens of megabytes an hour on
+the host and in every guest's tab. The trade is explicit — a frame replayed
+after another 4,096 have arrived is accepted, the same bargain DTLS and IPsec
+make, and for the same reason.
+
+Counter nonces would remove the window entirely and are the wrong answer here:
+the session key is shared by the host and every guest, so independent counters
+would collide, and a repeated nonce under GCM gives up the authentication key.
+Random 96-bit nonces are correct precisely because the key is shared.
+
 ### Proved by recording the wire
 
 `smoke-encryption.mjs` puts a TCP proxy between the agent and the relay,
@@ -548,6 +584,9 @@ single box, and moving to a different one is repointing DNS.
 ./deploy/deploy.sh root@your-host               # every time after
 ```
 
+The instance at `ajar.rishwanth.dev` runs this, on one small ARM box in
+`ap-south-1` — chosen for the latency table below rather than the price.
+
 `deploy/` holds a Caddyfile (TLS, and nothing else), a hardened systemd unit,
 and the script above. Caddy handles WebSocket upgrades without configuration,
 which is most of why it is there rather than nginx.
@@ -618,8 +657,28 @@ host who read "limits are on" and assumed memory was covered would be worse
 off than one told plainly that it is not.
 
 Applied with `ulimit` in a wrapper shell rather than a syscall — no `unsafe`,
-identical on both platforms, and rlimits are inherited across `exec` so the
-sandbox wrappers compose with it rather than fighting it.
+and rlimits are inherited across `exec`, so the sandbox wrappers compose with
+it rather than fighting it.
+
+### The shell has to be probed, not assumed
+
+`ulimit -u` is not POSIX. bash and zsh have it; **dash does not**, and dash is
+`/bin/sh` on Debian and Ubuntu. The wrapper sent its complaint to `/dev/null`
+and dash exits 0 anyway, so on every Linux host the cap was silently never
+applied — while the panel reported "512 processes" and the fork bomb this
+exists to stop ran freely. It shipped that way in v0.0.1.
+
+So the shell is now chosen by asking: set the limit, read it back, and believe
+only the number. A zero exit status proves nothing here, because the failure
+this catches writes to stderr and exits 0. When no candidate works the wrapper
+is dropped entirely, and both the summary line and the host's warning list say
+plainly that processes are uncapped — claiming a cap that is not there is
+worse than admitting there is none.
+
+The tests missed it for the same reason the code did: they set the limit with
+one shell and read it back with `/bin/sh`, which made a real bug look like a
+platform quirk. The test that would have caught it is the one now in place —
+whatever the summary claims has to match what the wrapper actually does.
 
 ## What one address can ask for
 
