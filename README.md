@@ -29,14 +29,35 @@ end-to-end with a key the relay never sees.
 | `web` | Vite + TypeScript + xterm.js client |
 | `scripts/` | End-to-end tests and the pre-commit gate |
 
+## Sharing a folder
+
+From a machine with nothing on it, standing in the folder you want to share:
+
+```sh
+curl -sSf https://ajar.rishwanth.dev/run.sh | sh
+```
+
+That installs ajar if it is missing, reuses it if it is not, and prints a link.
+Arguments go after `-s --`:
+
+```sh
+curl -sSf https://ajar.rishwanth.dev/run.sh | sh -s -- --read-only
+curl -sSf https://ajar.rishwanth.dev/run.sh | sh -s -- ~/some/project
+```
+
+The relay rewrites that script to point at itself before serving it, so a
+self-hosted relay hands out a one-liner for *its* address rather than this one.
+
 ## Installing
 
 ```sh
 curl -sSf https://ajar.rishwanth.dev/install.sh | sh
 ```
 
-One static binary, no runtime, nothing to configure. Native Windows is
-refused with instructions; use WSL2, and keep projects in the WSL filesystem.
+Then `ajar` in any folder — it dials the public relay unless `--relay` or
+`AJAR_RELAY` says otherwise. One static binary, no runtime, nothing to
+configure. Native Windows is refused with instructions; use WSL2, and keep
+projects in the WSL filesystem.
 
 ## Running it from source
 

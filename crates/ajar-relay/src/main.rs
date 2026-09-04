@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws", get(upgrade))
         .route("/healthz", get(health))
         .route("/install.sh", get(install_script))
+        .route("/run.sh", get(run_script))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -127,6 +128,54 @@ async fn health() -> &'static str {
 /// Compiled in rather than served from disk: the installer and the relay ship
 /// together, so there is no way for the published script to drift from the
 /// version that was built, and nothing extra to deploy.
+/// `curl -sSf https://ajar.sh/run.sh | sh`
+///
+/// Install-if-missing and run, for a machine with nothing on it. The script
+/// is rewritten to point at whichever relay served it: a self-hosted one
+/// would otherwise hand out a script that dials ours, which is both wrong and
+/// a quiet way to send someone else's session to a stranger.
+///
+/// The `Host` header is the only thing that knows the public address, since
+/// the relay binds localhost behind a proxy. A caller can spoof it, but the
+/// only script affected is the one they are downloading for themselves.
+async fn run_script(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    const DEFAULT_ORIGIN: &str = "https://ajar.rishwanth.dev";
+    let script = include_str!("../../../run.sh");
+
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .filter(|h| !h.is_empty() && h.len() < 256 && !h.contains(|c: char| c.is_whitespace()));
+
+    let body = match host {
+        Some(host) => {
+            // Behind a proxy the hop to us is plain http, so the header is
+            // what says what the browser used. Local addresses are the one
+            // place where plain http is the honest answer.
+            let proto = headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(
+                    if host.starts_with("127.0.0.1") || host.starts_with("localhost") {
+                        "http"
+                    } else {
+                        "https"
+                    },
+                );
+            script.replace(DEFAULT_ORIGIN, &format!("{proto}://{host}"))
+        }
+        None => script.to_string(),
+    };
+
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        body,
+    )
+}
+
 async fn install_script() -> impl IntoResponse {
     (
         [(
