@@ -1,5 +1,5 @@
 import { Channel, decode, encode, Frame, jsonFrame, Role, TARGET_ALL } from "./proto";
-import { Sealer } from "./sealed";
+import { isEncrypted, Sealer } from "./sealed";
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
@@ -29,7 +29,18 @@ export class Connection {
   private ws: WebSocket | null = null;
   private attempt = 0;
   private closedByUs = false;
-  private queue: Frame[] = [];
+  /**
+   * Frames waiting to go out, always *unsealed*.
+   *
+   * They have to be. A guest's content frames authenticate their sender id,
+   * the relay allocates a fresh one on every join, and it refuses a frame
+   * stamped with any other. So a frame sealed before a drop is worthless
+   * after it: what waits here is the frame, and it is stamped and sealed at
+   * the moment it actually goes out.
+   */
+  private pending: Frame[] = [];
+  /** Who the relay says we are on *this* socket. Null until it says. */
+  private participantId: number | null = null;
   /**
    * Sealing and opening are asynchronous, and terminal bytes have to keep
    * their order. Both directions run through their own promise chain, so a
@@ -57,7 +68,9 @@ export class Connection {
           role: this.opts.role ?? "guest",
         }),
       );
-      for (const f of this.queue.splice(0)) this.write(f);
+      // Anything that still needs an identity goes straight back to waiting;
+      // `welcome` flushes it again once the relay has named us.
+      this.flush();
       this.opts.onState("open");
     };
 
@@ -72,19 +85,34 @@ export class Connection {
       }
       const sealer = this.opts.sealer;
       if (!sealer) {
-        this.opts.onFrame(frame);
+        this.deliver(frame);
         return;
       }
-      this.inbound = this.inbound.then(async () => {
-        const opened = await sealer.open(frame);
-        // Wrong key, or a frame that was interfered with. Neither is worth
-        // guessing at.
-        if (opened) this.opts.onFrame(opened);
-      });
+      // The `catch` is load-bearing, not defensive dressing: these chains
+      // gate every later frame, so one rejection stops the client receiving
+      // anything ever again — silently, with the socket still open. A frame
+      // that throws is dropped; the next one still gets its turn.
+      this.inbound = this.inbound
+        .then(async () => {
+          const opened = await sealer.open(frame);
+          // Wrong key, or a frame that was interfered with. Neither is worth
+          // guessing at.
+          if (opened) this.deliver(opened);
+        })
+        .catch((e) => console.warn("dropping a frame that could not be handled", e));
     };
 
     ws.onclose = () => {
+      // A close from a socket we have already replaced says nothing about the
+      // one we are on now; acting on it would clear a live identity and
+      // schedule a second reconnect loop alongside the first.
+      if (this.ws !== ws) return;
       this.ws = null;
+      // The identity belonged to the socket that just went away. Clearing it
+      // sends content frames back to waiting instead of out the new socket
+      // stamped with a participant the relay has already forgotten — which
+      // it drops, silently, and the typing that caused them disappears.
+      this.participantId = null;
       if (this.closedByUs) {
         this.opts.onState("closed");
         return;
@@ -101,21 +129,68 @@ export class Connection {
   }
 
   send(f: Frame) {
-    const sealer = this.opts.sealer;
-    if (!sealer) {
-      this.write(f);
-      return;
-    }
-    this.outbound = this.outbound.then(async () => {
-      this.write(await sealer.seal(f));
-    });
+    // Through the chain even when it will only be parked, so that a frame can
+    // never overtake the one before it on the way out.
+    this.outbound = this.outbound
+      .then(() => this.dispatch(f))
+      .catch((e) => console.warn("dropping a frame that could not be sent", e));
   }
 
+  /** Stamp, seal and write one frame — or park it until that is possible. */
+  private async dispatch(f: Frame) {
+    const content = this.isGuest() && isEncrypted(f.channel);
+    if ((content && this.participantId === null) || !this.isOpen()) {
+      this.pending.push(f);
+      return;
+    }
+    const routed = content ? { ...f, target: this.participantId! } : f;
+    const sealer = this.opts.sealer;
+    const outgoing = sealer ? await sealer.seal(routed) : routed;
+    // Sealing is asynchronous, so the socket may have gone in the meantime.
+    // Park the *unsealed* frame, never the one stamped for the old identity.
+    if (!this.isOpen()) {
+      this.pending.push(f);
+      return;
+    }
+    this.write(outgoing);
+  }
+
+  private flush() {
+    for (const f of this.pending.splice(0)) this.send(f);
+  }
+
+  private isOpen() {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  private deliver(f: Frame) {
+    if (f.channel === Channel.Control) {
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(f.payload)) as {
+          t?: string;
+          participant_id?: number;
+        };
+        if (msg.t === "welcome" && typeof msg.participant_id === "number") {
+          this.participantId = msg.participant_id;
+          this.flush();
+        }
+      } catch {
+        // The application owns malformed control-message handling.
+      }
+    }
+    this.opts.onFrame(f);
+  }
+
+  private isGuest() {
+    return (this.opts.role ?? "guest") === "guest";
+  }
+
+  /** Raw, already-stamped-and-sealed. Everything else goes via `dispatch`. */
   private write(f: Frame) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(encode(f));
+    if (this.isOpen()) {
+      this.ws!.send(encode(f));
     } else {
-      this.queue.push(f);
+      this.pending.push(f);
     }
   }
 

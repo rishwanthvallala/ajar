@@ -243,6 +243,23 @@ impl Docs {
         }
         out
     }
+
+    /// Every change not known to be on disk, regardless of debounce age.
+    /// Used during orderly shutdown, when there will be no later tick.
+    pub fn pending_writes(&mut self) -> Vec<(u32, String, String)> {
+        let mut out = Vec::new();
+        for doc in self.docs.values_mut() {
+            let contents = doc.contents();
+            if contents == doc.written {
+                doc.dirty = None;
+                continue;
+            }
+            doc.written = contents.clone();
+            doc.dirty = None;
+            out.push((doc.id, doc.path.clone(), contents));
+        }
+        out
+    }
 }
 
 /// The one edit that turns `old` into `new`.
@@ -537,6 +554,28 @@ mod tests {
                 .is_empty(),
             "the same edit should not be written twice"
         );
+    }
+
+    #[test]
+    fn shutdown_takes_edits_still_inside_the_debounce_window() {
+        let mut docs = Docs::new();
+        let (id, _) = docs.open("a.txt", "hello", 2);
+        let replica_update = {
+            let doc = docs.get(id).unwrap();
+            let before = doc.state_vector();
+            {
+                let mut txn = doc.doc.transact_mut();
+                doc.text.insert(&mut txn, 5, "!");
+            }
+            doc.diff_since(&before)
+        };
+        docs.apply(id, &replica_update).unwrap();
+
+        assert!(docs.due_for_write(Instant::now()).is_empty());
+        let pending = docs.pending_writes();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].2, "hello!");
+        assert!(docs.pending_writes().is_empty());
     }
 
     #[test]

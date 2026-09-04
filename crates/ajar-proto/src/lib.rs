@@ -5,7 +5,8 @@
 //! ```text
 //! byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE
 //! bytes 1..5   stream_id  u32  LE  pty id, or 0 for channel-level JSON
-//! bytes 5..9   target     u32  LE  participant id, or 0 for broadcast
+//! bytes 5..9   target     u32  LE  host→guest destination, or authenticated
+//!                                  guest→host sender; 0 for broadcast
 //! bytes 9..    payload    opaque to the relay
 //! ```
 //!
@@ -79,11 +80,21 @@ pub enum FrameError {
 pub struct Frame {
     pub channel: Channel,
     pub stream_id: u32,
+    /// Destination on host-originated traffic; authenticated sender identity
+    /// on encrypted guest-originated traffic.
     pub target: u32,
     pub payload: Vec<u8>,
 }
 
 impl Frame {
+    fn authenticated_header(&self) -> [u8; HEADER_LEN] {
+        let mut header = [0u8; HEADER_LEN];
+        header[0] = self.channel as u8;
+        header[1..5].copy_from_slice(&self.stream_id.to_le_bytes());
+        header[5..9].copy_from_slice(&self.target.to_le_bytes());
+        header
+    }
+
     pub fn new(channel: Channel, stream_id: u32, target: u32, payload: Vec<u8>) -> Self {
         Self {
             channel,
@@ -145,7 +156,7 @@ impl Frame {
     /// point the frame goes on the wire.
     pub fn seal(mut self, cipher: &Cipher) -> Self {
         if self.channel.is_encrypted() {
-            self.payload = cipher.seal(&self.payload);
+            self.payload = cipher.seal_with_aad(&self.payload, &self.authenticated_header());
         }
         self
     }
@@ -154,7 +165,7 @@ impl Frame {
     /// caller rather than guessed at.
     pub fn open(mut self, cipher: &Cipher) -> Result<Self, CryptoError> {
         if self.channel.is_encrypted() {
-            self.payload = cipher.open(&self.payload)?;
+            self.payload = cipher.open_with_aad(&self.payload, &self.authenticated_header())?;
         }
         Ok(self)
     }
@@ -582,6 +593,20 @@ mod tests {
             after.payload, hello.payload,
             "control must stay in the clear"
         );
+    }
+
+    #[test]
+    fn routing_metadata_is_authenticated_and_replays_are_rejected() {
+        let (cipher, _) = Cipher::generate();
+        let sealed = Frame::stream(Channel::Pty, 7, 2, b"whoami\r".to_vec()).seal(&cipher);
+
+        let mut redirected = sealed.clone();
+        redirected.target = 3;
+        assert!(matches!(redirected.open(&cipher), Err(CryptoError::Failed)));
+
+        let opened = sealed.clone().open(&cipher).unwrap();
+        assert_eq!(opened.payload, b"whoami\r");
+        assert!(matches!(sealed.open(&cipher), Err(CryptoError::Replayed)));
     }
 
     #[test]

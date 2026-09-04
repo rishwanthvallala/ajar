@@ -696,16 +696,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The stored copy arrives sealed; the key is the one from the link. */
   async function useOfflineCopy(sealed: Uint8Array<ArrayBuffer>) {
     if (!sealer) return;
-    const opened = await sealer.open({
-      channel: Channel.Fs, // any sealed channel; only the payload matters
-      streamId: 0,
-      target: 0,
-      payload: sealed,
-    });
+    const opened = await sealer.openPayload(sealed);
     if (!opened) return;
     let body: SnapshotBody;
     try {
-      body = JSON.parse(new TextDecoder().decode(opened.payload));
+      body = JSON.parse(new TextDecoder().decode(opened));
     } catch {
       return;
     }

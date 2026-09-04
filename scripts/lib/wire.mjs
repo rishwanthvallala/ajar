@@ -39,7 +39,11 @@ async function seal(key, frame) {
   if (!isEncrypted(frame.channel)) return frame;
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, frame.payload),
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: header(frame) },
+      key,
+      frame.payload,
+    ),
   );
   const payload = new Uint8Array(NONCE_LEN + ct.length);
   payload.set(nonce, 0);
@@ -53,7 +57,11 @@ async function open(key, frame) {
   try {
     const plain = new Uint8Array(
       await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: frame.payload.subarray(0, NONCE_LEN) },
+        {
+          name: "AES-GCM",
+          iv: frame.payload.subarray(0, NONCE_LEN),
+          additionalData: header(frame),
+        },
         key,
         frame.payload.subarray(NONCE_LEN),
       ),
@@ -62,6 +70,15 @@ async function open(key, frame) {
   } catch {
     return null;
   }
+}
+
+function header(frame) {
+  const out = new Uint8Array(HEADER_LEN);
+  const view = new DataView(out.buffer);
+  out[0] = frame.channel;
+  view.setUint32(1, frame.streamId, true);
+  view.setUint32(5, frame.target, true);
+  return out;
 }
 
 /**
@@ -140,6 +157,8 @@ export class Guest {
     // both directions run through their own chain.
     this.outChain = Promise.resolve();
     this.inChain = Promise.resolve();
+    /** Frames waiting for a live socket and a known identity. Unsealed. */
+    this.pending = [];
     this.reset();
   }
 
@@ -177,6 +196,10 @@ export class Guest {
 
   async connect() {
     if (this.keyText && !this.key) this.key = await importKey(this.keyText);
+    // A new socket starts with new chains. Carrying them over lets a promise
+    // belonging to a dead connection order — or block — the live one.
+    this.outChain = Promise.resolve();
+    this.inChain = Promise.resolve();
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl);
       ws.binaryType = "arraybuffer";
@@ -195,13 +218,29 @@ export class Guest {
       ws.onmessage = (ev) => {
         const raw = decode(ev.data);
         if (this.key) {
-          this.inChain = this.inChain.then(async () => {
-            const f = await open(this.key, raw);
-            if (f) this.dispatch(f, resolve, reject);
-          });
+          this.inChain = this.inChain
+            .then(async () => {
+              const f = await open(this.key, raw);
+              if (f) this.dispatch(f, resolve, reject);
+            })
+            // Same reason as the browser client: a rejection here would gate
+            // every later frame and the handshake would hang with the socket
+            // wide open.
+            .catch((e) => console.warn("dropping inbound frame:", e.message));
         } else {
           this.dispatch(raw, resolve, reject);
         }
+      };
+
+      // The relay hands out a fresh participant id on every join, and it
+      // refuses a content frame stamped with any other. Forgetting the old
+      // one is what makes reusing this object across a drop safe — the
+      // browser client reuses its `Connection` exactly this way.
+      ws.onclose = () => {
+        // Only for the socket we are actually on. A close arriving late from
+        // the previous one would otherwise wipe the identity just issued.
+        if (this.ws !== ws) return;
+        this.participantId = null;
       };
 
       ws.onerror = () => reject(new Error("guest websocket errored"));
@@ -216,6 +255,7 @@ export class Guest {
           this.control.push(msg);
           if (msg.t === "welcome") {
             this.participantId = msg.participant_id;
+            this.flushPending();
             // The relay has no names. Introduce ourselves on the encrypted
             // channel, exactly as the browser client does.
             if (this.role !== "host") {
@@ -268,16 +308,60 @@ export class Guest {
     }
   }
 
-  /** Accepts an encoded frame, as the older call sites produce. */
+  /**
+   * Rejoin on the *same* object, the way the browser does after a blip.
+   * Deliberately not a fresh `Guest`: the bug this guards against is state
+   * carried across the drop, which a new object cannot have.
+   */
+  async reconnect() {
+    try {
+      this.ws?.close();
+    } catch {}
+    await this.connect();
+    return this;
+  }
+
+  /**
+   * Accepts an encoded frame, as the older call sites produce.
+   *
+   * Mirrors `Connection.send` in the browser client, including the part that
+   * matters most: a frame that cannot go out yet waits here *unsealed*, and
+   * is stamped with the sender id only at the moment it actually leaves. A
+   * client that stamped on the way into the queue would put the identity from
+   * the previous socket on everything typed during a blip.
+   */
   send(bytes) {
-    if (!this.key) {
-      this.ws.send(bytes);
+    this.queueOut(decode(bytes.buffer ? bytes : new Uint8Array(bytes)));
+  }
+
+  queueOut(frame) {
+    this.outChain = this.outChain
+      .then(() => this.sendNow(frame))
+      .catch((e) => console.warn("dropping outbound frame:", e.message));
+  }
+
+  async sendNow(frame) {
+    const content = this.role === "guest" && isEncrypted(frame.channel);
+    if ((content && this.participantId === null) || !this.isOpen()) {
+      this.pending.push(frame);
       return;
     }
-    const frame = decode(bytes.buffer ? bytes : new Uint8Array(bytes));
-    this.outChain = this.outChain.then(async () => {
-      this.ws.send(encode(await seal(this.key, frame)));
-    });
+    const routed = content ? { ...frame, target: this.participantId } : frame;
+    const outgoing = this.key ? await seal(this.key, routed) : routed;
+    if (!this.isOpen()) {
+      this.pending.push(frame);
+      return;
+    }
+    this.ws.send(encode(outgoing));
+  }
+
+  /** Re-offer parked frames. They are already decoded, so `send` is wrong. */
+  flushPending() {
+    for (const f of this.pending.splice(0)) this.queueOut(f);
+  }
+
+  isOpen() {
+    return this.ws?.readyState === 1;
   }
 
   openPty(cols = 80, rows = 24) {
