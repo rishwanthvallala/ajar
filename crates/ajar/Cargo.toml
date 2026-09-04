@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ajar-proto = { version = "0.0.1", path = "../ajar-proto" }
+# No version: a path dependency inside a workspace that is never published
+# to crates.io does not need one, and pinning it here means every release
+# bump is three edits with a build failure if you miss one.
+ajar-proto = { path = "../ajar-proto" }
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }
 crossterm = "0.29.0"
