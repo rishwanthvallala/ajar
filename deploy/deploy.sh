@@ -73,7 +73,12 @@ say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) of assets"
 
 if [ "$MODE" = "--bootstrap" ]; then
     say "bootstrapping $HOST"
-    ssh "$HOST" "$SUDO bash -euo pipefail -s" <<BOOTSTRAP
+    # Quoted delimiter: everything below is for the remote shell, so nothing
+    # in it should be expanded here. Unquoted, the backticks in the comment
+    # further down ran `caddy` on the *deploying* machine — harmless by luck,
+    # but the same rule would have let a $VAR silently resolve to this box's
+    # value and bootstrap the server with it.
+    ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'BOOTSTRAP'
 # A service account with no shell and no home. It only runs one binary.
 id -u ajar >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin ajar
 mkdir -p /srv/ajar/web
