@@ -51,7 +51,14 @@ fi
 # readable in a cron job, a CI step and a background shell, and the open then
 # fails with ENXIO. Without a terminal the panel drops to plain output by
 # itself, which is the right answer there anyway.
-if { : < /dev/tty; } 2>/dev/null; then
+#
+# The probe runs in a subshell, and that is load-bearing rather than style.
+# `:` is a POSIX *special* built-in, and a redirection error on one of those
+# makes the shell exit outright — so the bare form killed this script with a
+# silent status 2 on every dash system, which is /bin/sh on Debian and
+# Ubuntu. bash is lenient about it, so it looked fine everywhere it was
+# written. A subshell keeps the exit inside the probe.
+if (: < /dev/tty) 2>/dev/null; then
     exec "$AJAR" --relay "$RELAY" "$@" < /dev/tty
 fi
 exec "$AJAR" --relay "$RELAY" "$@"
