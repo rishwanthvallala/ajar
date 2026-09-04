@@ -59,7 +59,12 @@ struct Args {
     path: PathBuf,
 
     /// Relay to dial out to.
-    #[arg(long, default_value = "http://127.0.0.1:8787", env = "AJAR_RELAY")]
+    ///
+    /// Defaults to the public relay, because that is what someone who just
+    /// installed this wants and typing a flag to reach it every time is a
+    /// papercut. Development points at a local one explicitly — every script
+    /// in `scripts/` already does.
+    #[arg(long, default_value = "https://ajar.rishwanth.dev", env = "AJAR_RELAY")]
     relay: String,
 
     /// Name shown to guests.
