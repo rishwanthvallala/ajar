@@ -15,7 +15,7 @@ Wants=network-online.target
 Type=exec
 User=ajar
 Group=ajar
-ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web
+ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for
 Environment=RUST_LOG=ajar_relay=info
 
 Restart=always

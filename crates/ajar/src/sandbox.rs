@@ -23,6 +23,17 @@ use std::path::{Path, PathBuf};
 /// else that keeps a per-user cache — which is worse than useless, because
 /// people would turn the sandbox off.
 const CACHE_DIRS: &[&str] = &[
+    // Whole cache roots, deliberately, and not the subdirectories inside
+    // them. Narrowing these to `.npm/_cacache`, `.cargo/registry` and the
+    // like was tried and reverted: a grant whose path does not exist yet is
+    // dropped on the floor (see `existing` in the landlock builder, and the
+    // same is true of an sbpl subpath), and every one of these tools creates
+    // its own subdirectories on demand — npm writes `_logs` on each run and
+    // stages `npx` under `_npx`, cargo makes its lock files beside the
+    // registry. Granting the child and not the parent means the tool cannot
+    // create what it was about to use, so the narrower list works on a
+    // machine where those directories already happen to exist and fails on a
+    // fresh one, with an error that names npm rather than the sandbox.
     ".cargo",
     ".rustup",
     ".npm",
@@ -686,6 +697,28 @@ mod tests {
         let (ok, out) = run(&f, &format!("mkdir -p {home}/.cache && echo x > {probe}"));
         assert!(ok, "a toolchain cache was not writable: {out}");
         let _ = fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_tool_can_create_a_cache_directory_it_has_not_used_before() {
+        // The reason CACHE_DIRS lists roots rather than the subdirectories
+        // inside them. A grant for a path that does not exist is silently
+        // dropped, so granting `.npm/_npx` on a machine that has one proves
+        // nothing about a machine that does not — there the guest cannot
+        // create it either, and `npx` fails with EPERM and advice to chown a
+        // directory that was never the problem.
+        let f = fixture("fresh-cache", true);
+        let home = std::env::var("HOME").unwrap();
+        let fresh = format!("{home}/.cache/ajar-probe-{}", std::process::id());
+        let (ok, out) = run(
+            &f,
+            &format!("mkdir -p {fresh}/nested && echo x > {fresh}/nested/f"),
+        );
+        assert!(
+            ok,
+            "a tool could not create a cache directory it had not used before: {out}"
+        );
+        let _ = fs::remove_dir_all(&fresh);
     }
 
     #[test]
