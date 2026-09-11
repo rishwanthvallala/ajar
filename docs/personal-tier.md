@@ -273,28 +273,71 @@ rather than held open, and one id is one shape for its whole life. Shipped in
 `586eb2f`, with `scripts/smoke-peer.mjs` — the first suite here that starts a
 relay and no agent at all.
 
+### First load: self-hosted packages, staged arrival
+
+Measured in September 2026 rather than estimated, because the estimate was
+wrong by a factor of two in the safe direction and the real numbers change the
+design.
+
+| Piece | Size | Notes |
+|---|---|---|
+| Page shell (`index.js`) | **90 KB** gz | ajar's existing client, measured |
+| Monaco | **648 KB** gz | already lazy, on first file open |
+| `@wasmer/sdk` | **4.9 MB** | 4.24 MB of that is wasm |
+| `sharrattj/bash` | **1.8 MB** | |
+| `sharrattj/coreutils` | **1.4 MB** | |
+| `python/python` | **58.9 MB** | served with no `content-encoding` |
+
+Shell plus Python is about **67 MB on a cold visit**. Against *open it and you
+are typing*, that is not a tuning problem.
+
+The comparison that frames the decision: **Pyodide does Python in 5.0 MB** —
+a 2.5 MB wasm and a 2.3 MB zipped stdlib. Twelve times smaller, because it is
+purpose-built and trimmed while Wasmer's `python` is a general container image
+carrying a whole filesystem. The shell is not free; it is currently charging
+59 MB for the Python that Pyodide delivers in 5.
+
+**Decision: keep one runtime and one shell, and pay down the 59 MB by
+hosting the packages.** Three things do that, and none needs a fork:
+
+1. **Serve the `.webc` files ourselves, compressed.** Wasmer's CDN sends them
+   with no content encoding at all. A sampled chunk compresses to 27%, so
+   gzip alone takes Python from 59 MB to roughly 16 MB, and Brotli further.
+   Caddy already does both.
+2. **Cache them properly.** The registry URLs are content-addressed, so
+   `immutable` with a long max-age is safe — a returning visitor pays nothing.
+3. **Stage the arrival.** The editor is usable at 90 KB, the shell at about a
+   megabyte, and Python downloads on first use behind a visible progress line.
+
+This also answers most of "how is a version pinned": hosting the packages *is*
+the pinning. A documented set of `.webc` files at fixed versions, served from
+our own origin, is exactly the "basic binaries we have pre-downloaded" the
+product was described with.
+
+What stays honest in the interface: the first `python` in a fresh browser
+waits on a real download, and the progress line should say so rather than
+appearing to hang.
+
+---
+
 ## Open questions, in the order they should be answered
 
-1. **How big is the first load, and what happens during it?** Pyodide alone is
-   ~10 MB. Instant usability and a 10 MB download are in direct tension — does
-   the editor open before the runtime is ready, with the shell arriving late?
+1. **Which binaries beyond bash, coreutils and Python?** And is there any
+   `pip install` without sockets, or is the answer a pre-baked, documented
+   wheel set served the same way?
 
-2. **What is in the binary set, and how is a version pinned?** Python first.
-   Which coreutils? Is there any `pip install` without sockets, or is the answer
-   a pre-baked, documented wheel set?
-
-3. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
+2. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
    type into. The paste-run-look loop wants the fewest actions between clipboard
    and output.
 
-4. **What is the file size cap, and does every write really sync?** A 50 MB
+3. **What is the file size cap, and does every write really sync?** A 50 MB
    `out.csv` broadcast to four people on every run is a different product from
    a 50 KB one.
 
-5. **Account system: build or buy?** The first one in the project, and the thing
+4. **Account system: build or buy?** The first one in the project, and the thing
    most likely to consume a month if built from scratch.
 
-6. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
+5. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
    least a separate origin; shared branding is a different question.
 
 ---
@@ -304,7 +347,9 @@ relay and no agent at all.
 Enough to find out whether the loop is worth anything:
 
 - One page, separate origin, `COOP`/`COEP` set.
-- Landing mints a random name and drops you into a focused editor.
+- Landing mints a random name and drops you into a focused editor — 90 KB, no
+  runtime needed to start typing.
+- Packages self-hosted and compressed; Python fetched on first use.
 - Python only. No vanity names, no accounts, no locks — everything is open and
   everything expires in a week.
 - Shared filesystem, server-ordered, last write wins.
