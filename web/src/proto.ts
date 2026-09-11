@@ -101,7 +101,18 @@ export function isStream(f: Frame): boolean {
 
 // ---------------------------------------------------------------- messages
 
-export type Role = "host" | "guest";
+/**
+ * `"peer"` belongs to the browser-only tier, which has no agent behind it and
+ * so no host to be a guest of. The session client in this directory never
+ * sends it — but the type mirrors the Rust enum, and a mirror that omits a
+ * variant is how the two sides start disagreeing.
+ *
+ * Note for whoever builds that client: a peer stamps its own participant id on
+ * *every* frame, not only the sealed ones, because there is no host for an
+ * unstamped frame to implicitly mean. `Connection.dispatch` decides that with
+ * `isGuest()`, which would need to know about this.
+ */
+export type Role = "host" | "guest" | "peer";
 
 /** What the relay knows: an id and a role. Never a name. */
 export interface Participant {

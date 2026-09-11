@@ -178,6 +178,13 @@ impl Frame {
 pub enum Role {
     Host,
     Guest,
+    /// One of N equals in a session with no agent behind it.
+    ///
+    /// Hosted sessions have a machine at the centre and the routing reflects
+    /// it — a guest may only reach the host. A peer session has no centre:
+    /// every participant is a browser, and what one does the rest need to
+    /// see. The two shapes never mix inside one session id.
+    Peer,
 }
 
 /// What the relay knows about someone: an id and whether they are the host.

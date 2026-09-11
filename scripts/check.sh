@@ -40,6 +40,9 @@ node scripts/smoke-control.mjs
 echo "── smoke: reconnect ──────────────────────────────────"
 node scripts/smoke-reconnect.mjs
 
+echo "── smoke: peer sessions ──────────────────────────────"
+node scripts/smoke-peer.mjs
+
 echo "── acceptance ────────────────────────────────────────"
 node scripts/acceptance.mjs
 
