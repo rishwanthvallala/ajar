@@ -318,6 +318,51 @@ What stays honest in the interface: the first `python` in a fresh browser
 waits on a real download, and the progress line should say so rather than
 appearing to hang.
 
+### Run is a button that types into the shell
+
+`⌘⏎` (or the button) writes the command into the terminal and presses enter.
+It does not execute anything itself.
+
+```
+[▶ Run]  or  ⌘⏎
+
+  $ python transform.py     ← typed for you
+  wrote out.csv (412 rows)
+  $ █                        ← still your shell
+```
+
+**The point is that there is exactly one execution path.** A button that
+called the runtime directly would be a second one, and two paths drift — a
+different working directory, a different environment, a different view of the
+filesystem — until "it works when I click Run but not when I type it." Driving
+the shell makes that impossible by construction, and has the side effect that
+you watch the command appear and learn it.
+
+**What it types:** the focused file, with the interpreter chosen by extension
+— `.py` → `python`, `.sh` → `sh`. No interpreter for that extension means the
+button is disabled and says why, rather than guessing.
+
+**Flush before typing.** The editor holds a CRDT document; the shell reads the
+WASM filesystem. They are not the same thing. Run must write the current
+document out *before* it types, or the loop silently executes the previous
+version of the file — which is the single most confusing bug this design can
+produce, because the code on screen is right and the output is wrong.
+
+**While something is running**, the button is disabled and says so. Ctrl-C in
+the shell already stops things; a second run mechanism for interrupting would
+be a second execution path by another name.
+
+**Python may not be downloaded yet.** The command still goes in and the
+progress is shown in the shell where the command is. Worth verifying against
+`@wasmer/sdk`'s package resolution: if an unfetched `python` reaches bash as
+"command not found" rather than blocking on the download, the button has to
+wait for the package before typing.
+
+**Prefetch on the first keystroke, not on page load.** Pasting takes a few
+seconds, which is most of the download window, so Python is usually there by
+the time anyone presses Run. Doing it at page load instead would spend 16 MB
+on everyone who opens a shared link only to read it.
+
 ---
 
 ## Open questions, in the order they should be answered
@@ -326,18 +371,14 @@ appearing to hang.
    `pip install` without sockets, or is the answer a pre-baked, documented
    wheel set served the same way?
 
-2. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
-   type into. The paste-run-look loop wants the fewest actions between clipboard
-   and output.
-
-3. **What is the file size cap, and does every write really sync?** A 50 MB
+2. **What is the file size cap, and does every write really sync?** A 50 MB
    `out.csv` broadcast to four people on every run is a different product from
    a 50 KB one.
 
-4. **Account system: build or buy?** The first one in the project, and the thing
+3. **Account system: build or buy?** The first one in the project, and the thing
    most likely to consume a month if built from scratch.
 
-5. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
+4. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
    least a separate origin; shared branding is a different question.
 
 ---
@@ -353,7 +394,8 @@ Enough to find out whether the loop is worth anything:
 - Python only. No vanity names, no accounts, no locks — everything is open and
   everything expires in a week.
 - Shared filesystem, server-ordered, last write wins.
-- One editor pane, one output pane, one run action.
+- Tree, editor and terminal in one window — ajar's existing layout.
+- Run types into the shell; `⌘⏎` is the whole interface.
 - Share copies the bare URL.
 
 If pasting a transform, getting a CSV back, and sending the link to one person
