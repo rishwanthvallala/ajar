@@ -70,7 +70,15 @@ pub async fn handle(
     // host invited would be limiting the wrong side.
     // Held for the life of this connection; releases on every exit path,
     // including the refusals below.
-    let _slot = if role == Role::Host {
+    // Creating a peer session costs the same as opening a hosted one, since
+    // both mint a name nobody had. Two peers racing to create the same name
+    // will both be metered; over-counting by one is not worth a lock here.
+    let metered = match role {
+        Role::Host => true,
+        Role::Peer => !registry.exists(&session_id),
+        Role::Guest => false,
+    };
+    let _slot = if metered {
         match quota.claim(caller, std::time::Instant::now()) {
             Ok(slot) => Some(slot),
             Err(denied) => {
@@ -85,6 +93,11 @@ pub async fn handle(
     let joined = match role {
         Role::Host => registry.open(&session_id, tx.clone()),
         Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
+        // A peer never "resumes": there is no agent whose absence it could
+        // be waiting out.
+        Role::Peer => registry
+            .join_peer(&session_id, tx.clone())
+            .map(|(p, _created)| (p, false)),
     };
 
     let (me, resumed): (Participant, bool) = match joined {
@@ -94,6 +107,10 @@ pub async fn handle(
             refuse!("no_such_session", "no open session with that id")
         }
         Err(JoinError::Locked) => refuse!("locked", "the host has locked this session"),
+        Err(JoinError::WrongShape) => refuse!(
+            "wrong_shape",
+            "that name belongs to a different kind of session"
+        ),
     };
 
     info!(session = %session_id, participant = me.id, role = ?me.role, "joined");
@@ -130,6 +147,17 @@ pub async fn handle(
                 });
             }
         }
+        Role::Peer => {
+            // Everyone already in the room hears about the arrival. Unlike a
+            // hosted session there is nobody to tell separately.
+            let joined = Control::Joined {
+                participant: me.clone(),
+            };
+            if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &joined) {
+                let bytes = f.encode();
+                registry.with(&session_id, |s| s.send_others(me.id, &bytes));
+            }
+        }
         Role::Host if resumed => {
             info!(session = %session_id, "host resumed inside its grace period");
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &Control::HostBack) {
@@ -148,8 +176,16 @@ pub async fn handle(
     let mut expecting: Option<(u64, u32)> = None;
 
     while let Some(frame) = next_frame(&mut stream).await {
-        // The host may address one guest or broadcast; a guest may only
-        // reach the host. Four cells, and it stays four cells.
+        // Two shapes, and the rules differ because the topologies do.
+        //
+        // Hosted: the host may address one guest or broadcast; a guest may
+        // only reach the host. Guests cannot reach each other, which removes
+        // a whole class of question about what one guest can do to another.
+        //
+        // Peer: everyone reaches everyone else, always by broadcast. That is
+        // not a relaxation of the rule above but a different room — there is
+        // no machine at the centre to protect, and the participants are
+        // already editing one shared folder.
         match me.role {
             Role::Guest => {
                 if frame.channel.is_encrypted() && frame.target != me.id {
@@ -196,6 +232,23 @@ pub async fn handle(
                 // host sits on pty, fs, doc or presence — but a handler added
                 // later will get 0 and no hint as to why.
                 registry.with(&session_id, |s| s.send_host(&frame.encode()));
+            }
+            Role::Peer => {
+                // Same rule a guest follows — you may only speak as yourself,
+                // so the id cannot be forged and, on channels that seal their
+                // header, cannot be rewritten by us either. What differs is
+                // where it lands: a guest reaches the host, a peer reaches
+                // everyone else at once.
+                //
+                // Peers therefore broadcast and never address one another
+                // directly. Bringing a newcomer up to date is a broadcast
+                // too, which is how the CRDT layer does it anyway.
+                if frame.target != me.id {
+                    debug!("peer frame not stamped with its own id; dropped");
+                    continue;
+                }
+                let bytes = frame.encode();
+                registry.with(&session_id, |s| s.send_others(me.id, &bytes));
             }
             Role::Host if frame.channel == Channel::Store => {
                 if frame.stream_id == SNAPSHOT_STREAM {
@@ -310,6 +363,18 @@ pub async fn handle(
                     s.send_all_guests(&bytes);
                 });
             }
+        }
+        Role::Peer => {
+            // Told before the drop, so the leaver is still in the map to be
+            // excluded rather than sent their own departure.
+            let left = Control::Left {
+                participant_id: me.id,
+            };
+            if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &left) {
+                let bytes = f.encode();
+                registry.with(&session_id, |s| s.send_others(me.id, &bytes));
+            }
+            registry.drop_peer(&session_id, me.id);
         }
     }
 

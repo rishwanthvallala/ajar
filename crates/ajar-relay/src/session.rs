@@ -1,7 +1,9 @@
 //! The relay's entire state: a map from session id to who is connected.
 //!
-//! Deliberately in-memory. Nothing in v0 persists, so a relay restart
-//! dropping every session is correct rather than merely acceptable.
+//! Deliberately in-memory. Nothing here persists, so a relay restart dropping
+//! every session is correct rather than merely acceptable — a hosted session's
+//! agent reconnects and rebuilds it, and a peer session's files were never
+//! kept here in the first place.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -40,7 +42,22 @@ pub struct Snapshot {
     pub files: u32,
 }
 
+/// What kind of session this id holds.
+///
+/// Fixed when the session is created and never changes. The two shapes have
+/// different routing rules and different lifetimes, and a session that could
+/// be both would need every call site to ask which it is today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// An agent and its guests. Dies with the agent, after a grace period.
+    Hosted,
+    /// N browsers, no centre. Dies when the last one leaves — the files it
+    /// was editing live in the durable store, not here.
+    Peer,
+}
+
 pub struct Session {
+    pub shape: Shape,
     pub host: Option<Conn>,
     /// Latest sealed snapshot, if the host is syncing one.
     pub snapshot: Option<Snapshot>,
@@ -53,15 +70,21 @@ pub struct Session {
 }
 
 impl Session {
-    fn new() -> Self {
-        // 1 is always the host; guests start at 2.
+    fn new(shape: Shape) -> Self {
         Self {
+            shape,
             host: None,
             snapshot: None,
             host_left_at: None,
             guests: HashMap::new(),
             locked: false,
-            next_id: 2,
+            // In a hosted session 1 is reserved for the host, so guests start
+            // at 2. A peer session has no reserved id and starts at 1 — but
+            // never at 0, which is TARGET_ALL on the wire.
+            next_id: match shape {
+                Shape::Hosted => 2,
+                Shape::Peer => 1,
+            },
         }
     }
 
@@ -91,6 +114,21 @@ impl Session {
         }
     }
 
+    /// Everyone except one participant. The sender of a broadcast does not
+    /// need their own frame back, and echoing it would make a CRDT update
+    /// look like a second edit.
+    pub fn send_others(&self, except: u32, bytes: &[u8]) {
+        for (id, c) in &self.guests {
+            if *id != except {
+                let _ = c.tx.send(bytes.to_vec());
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.host.is_none() && self.guests.is_empty()
+    }
+
     pub fn send_one(&self, id: u32, bytes: &[u8]) {
         if let Some(c) = self.guests.get(&id) {
             let _ = c.tx.send(bytes.to_vec());
@@ -110,6 +148,9 @@ pub enum JoinError {
     NoSuchSession,
     /// The host sealed the room.
     Locked,
+    /// Joining a hosted session as a peer, or the reverse. One session id is
+    /// one shape for its whole life.
+    WrongShape,
 }
 
 /// Why a host's socket ended, which decides whether the session survives it.
@@ -139,7 +180,10 @@ impl Registry {
         let mut entry = self
             .sessions
             .entry(id.to_string())
-            .or_insert_with(Session::new);
+            .or_insert_with(|| Session::new(Shape::Hosted));
+        if entry.shape != Shape::Hosted {
+            return Err(JoinError::WrongShape);
+        }
         if entry.host.is_some() {
             return Err(JoinError::HostTaken);
         }
@@ -159,6 +203,9 @@ impl Registry {
     /// away state and their terminals reattach when it returns.
     pub fn join(&self, id: &str, tx: Tx) -> Result<Participant, JoinError> {
         let mut entry = self.sessions.get_mut(id).ok_or(JoinError::NoSuchSession)?;
+        if entry.shape != Shape::Hosted {
+            return Err(JoinError::WrongShape);
+        }
         if entry.locked {
             return Err(JoinError::Locked);
         }
@@ -175,6 +222,61 @@ impl Registry {
             },
         );
         Ok(participant)
+    }
+
+    /// A browser joining a peer session, creating it if this is the first one.
+    ///
+    /// Unlike `join`, there is no "no such session" — a name nobody is using
+    /// is a name you can start using, which is what makes opening a bare URL
+    /// work. Returns whether this call created it, so the caller can meter
+    /// creation without metering arrival.
+    ///
+    /// Nothing here checks whether the caller may *write* to the folder that
+    /// name refers to. That is the durable store's business: the relay routes
+    /// frames and has never known what they mean.
+    pub fn join_peer(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
+        let mut created = false;
+        let mut entry = self.sessions.entry(id.to_string()).or_insert_with(|| {
+            created = true;
+            Session::new(Shape::Peer)
+        });
+        if entry.shape != Shape::Peer {
+            return Err(JoinError::WrongShape);
+        }
+        let pid = entry.take_id();
+        let participant = Participant {
+            id: pid,
+            role: Role::Peer,
+        };
+        entry.guests.insert(
+            pid,
+            Conn {
+                participant: participant.clone(),
+                tx,
+            },
+        );
+        Ok((participant, created))
+    }
+
+    /// True when this id is already in use, whatever its shape.
+    pub fn exists(&self, id: &str) -> bool {
+        self.sessions.contains_key(id)
+    }
+
+    /// A peer left. The session goes when the last one does — there is no
+    /// grace period, because there is nothing running to come back to and the
+    /// files are not kept here.
+    pub fn drop_peer(&self, id: &str, pid: u32) {
+        let empty = match self.sessions.get_mut(id) {
+            Some(mut s) => {
+                s.guests.remove(&pid);
+                s.is_empty()
+            }
+            None => return,
+        };
+        if empty {
+            self.sessions.remove(id);
+        }
     }
 
     pub fn with<R>(&self, id: &str, f: impl FnOnce(&Session) -> R) -> Option<R> {
@@ -280,6 +382,106 @@ mod tests {
 
     fn tx() -> (Tx, crate::outbox::Drain) {
         crate::outbox::channel()
+    }
+
+    // ---- peer sessions ----------------------------------------------
+
+    #[test]
+    fn a_peer_session_starts_the_moment_someone_opens_the_name() {
+        // The whole point of the bare URL: a name nobody is using is a name
+        // you can start using. There is no "no such session" to hit.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let (p, created) = r.join_peer("demowork", a).unwrap();
+        assert!(created, "the first peer should have created the session");
+        assert_eq!(p.role, Role::Peer);
+        assert_ne!(p.id, 0, "0 is TARGET_ALL and can never be a participant");
+    }
+
+    #[test]
+    fn arriving_at_an_existing_peer_session_does_not_report_creation() {
+        // The caller meters creation and not arrival, so this flag decides
+        // whether opening a shared link costs the visitor's address anything.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let (b, _rb) = tx();
+        r.join_peer("demowork", a).unwrap();
+        let (_, created) = r.join_peer("demowork", b).unwrap();
+        assert!(!created, "the second peer must not look like a creation");
+    }
+
+    #[test]
+    fn peers_get_distinct_ids() {
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let (b, _rb) = tx();
+        let (first, _) = r.join_peer("s", a).unwrap();
+        let (second, _) = r.join_peer("s", b).unwrap();
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn the_shapes_never_mix() {
+        // One name is one kind of session for its whole life. Letting an
+        // agent open a name people are already editing in a browser would
+        // put two routing rules in one room.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        r.join_peer("shared", a).unwrap();
+        let (h, _rh) = tx();
+        assert_eq!(r.open("shared", h).err(), Some(JoinError::WrongShape));
+
+        let r2 = Registry::new();
+        let (h2, _rh2) = tx();
+        r2.open("hosted", h2).unwrap();
+        let (p, _rp) = tx();
+        assert_eq!(r2.join_peer("hosted", p).err(), Some(JoinError::WrongShape));
+    }
+
+    #[test]
+    fn a_broadcast_skips_its_own_sender() {
+        // Echoing an update back to whoever made it would read as a second
+        // edit to the CRDT layer.
+        let r = Registry::new();
+        let (a, mut ra) = tx();
+        let (b, mut rb) = tx();
+        let (me, _) = r.join_peer("s", a).unwrap();
+        r.join_peer("s", b).unwrap();
+
+        r.with("s", |s| s.send_others(me.id, b"update")).unwrap();
+        assert!(rb.try_next().is_some(), "the other peer heard nothing");
+        assert!(ra.try_next().is_none(), "the sender got its own frame back");
+    }
+
+    #[test]
+    fn the_session_goes_when_the_last_peer_does() {
+        // Nothing is running and the files live in the durable store, so
+        // there is no reason to hold the room open.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let (b, _rb) = tx();
+        let (first, _) = r.join_peer("s", a).unwrap();
+        let (second, _) = r.join_peer("s", b).unwrap();
+
+        r.drop_peer("s", first.id);
+        assert!(r.exists("s"), "one peer left, the room should stand");
+        r.drop_peer("s", second.id);
+        assert!(!r.exists("s"), "an empty peer session should be forgotten");
+    }
+
+    #[test]
+    fn a_reaped_host_does_not_take_peer_sessions_with_it() {
+        // `reap` walks every session looking for an absent host. A peer
+        // session has no host by definition, and must not read as expired.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        r.join_peer("shared", a).unwrap();
+        let reaped = r.reap(Duration::from_millis(0), b"gone");
+        assert!(
+            reaped.is_empty(),
+            "a peer session was reaped for having no host: {reaped:?}"
+        );
+        assert!(r.exists("shared"));
     }
 
     #[test]

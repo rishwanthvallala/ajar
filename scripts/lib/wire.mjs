@@ -206,7 +206,12 @@ export class Guest {
       this.ws = ws;
 
       ws.onopen = () => {
-        this.send(
+        // Straight onto the socket rather than through `send`. The hello is
+        // what *earns* a participant id, and a peer stamps every other frame
+        // with exactly that id — so routing this one through the queue would
+        // park it waiting for the reply it is supposed to cause. The browser
+        // client writes its hello on the same raw path, for the same reason.
+        this.ws.send(
           json(CH_CONTROL, {
             t: "hello",
             session: this.session,
@@ -341,7 +346,11 @@ export class Guest {
   }
 
   async sendNow(frame) {
-    const content = this.role === "guest" && isEncrypted(frame.channel);
+    // A guest stamps its own id on sealed channels only; on the rest an
+    // unstamped frame already means "to the host". A peer session has no
+    // host, so there is no such default and every frame carries its sender.
+    const content =
+      this.role === "peer" || (this.role === "guest" && isEncrypted(frame.channel));
     if ((content && this.participantId === null) || !this.isOpen()) {
       this.pending.push(frame);
       return;
@@ -485,10 +494,18 @@ export class Procs {
   constructor() {
     this.list = [];
     process.on("exit", () => this.killAll());
-    process.on("SIGINT", () => {
-      this.killAll();
-      process.exit(130);
-    });
+    // SIGINT is ctrl-c; SIGTERM is what a script or CI step sends when it
+    // gives up waiting. Node runs no exit handler for either unless it is
+    // listening, so without this a killed suite leaves its relay holding the
+    // port — and the *next* run's `waitForHealth` passes against that stale
+    // process, which happily serves a binary built before the change under
+    // test. That failure looks exactly like a bug in the new code.
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.on(signal, () => {
+        this.killAll();
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+    }
   }
 
   start(cmd, args, label) {

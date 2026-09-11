@@ -120,6 +120,14 @@ impl Outbox {
 }
 
 impl Drain {
+    /// Whatever is queued right now, without waiting. Tests use it to assert
+    /// that a frame did *not* arrive, which `next` cannot express — it would
+    /// park forever waiting for one.
+    #[cfg(test)]
+    pub fn try_next(&mut self) -> Option<Vec<u8>> {
+        self.inner.try_recv().ok()
+    }
+
     /// The next frame to write, or `None` when the connection is finished —
     /// because the senders are gone, or because one of them overflowed.
     pub async fn next(&mut self) -> Option<Vec<u8>> {
