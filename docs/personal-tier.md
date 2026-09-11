@@ -1,58 +1,71 @@
 # The personal tier
 
-*Design notes, September 2026. A second product on the same domain: a browser
-scratchpad with a real shell, no install, no account, no machine involved but
-the one you are sitting at.*
+*Design notes, September 2026. A second product on the same domain: a shared
+browser scratchpad with a real shell, no install, no account, and no machine
+involved but the ones the participants are already sitting at.*
 
 ---
 
 ## What this is
 
-Open a URL. Paste something. Run it. Share the link.
+Open a URL. Paste something. Run it. Send the link to someone and they carry on
+from where you left off, while you watch.
 
-That is the whole product. The compute runs in your own tab as WebAssembly, so
-there is no agent, no host machine, and nothing to lend. The server stores
-files and serves `.wasm` packages — it never executes anything.
+The compute runs in each participant's own tab as WebAssembly, so there is no
+agent, no host machine, and nothing to lend. The server stores files and serves
+`.wasm` packages — it never executes anything.
 
 **It is not ajar.** ajar shares *someone's actual machine*: their toolchain,
 their GPU, their database connection, and the bug that only reproduces there.
-This shares nothing but files, and runs them in a clean sandbox with a
-documented set of binaries. The two products answer different questions and
-sit on the same domain because the audience overlaps, not because the
-architecture does.
+This shares a folder and runs it in a clean sandbox with a documented set of
+binaries. Same domain, same audience, different architecture.
 
 ---
 
 ## The north star: instant usability
 
 The benchmark is **rustpad.io**. You open it and you are typing. No signup, no
-project wizard, no "choose a template", no decision of any kind before the
-thing is useful.
+project wizard, no template picker, no decision of any kind before the thing is
+useful.
 
-The primary loop, stated plainly, because it should drive every decision below:
+The primary loop, because it should drive every decision below:
 
 > **Paste → Run → Look at the output.**
 
 Not "write a program from scratch." The realistic session is: you have Python
 in your clipboard — often written with an AI's help — a CSV or three, and you
-want the transformed output. Everything in the interface should be in service
-of that, and anything that delays the first paste is wrong.
+want the transformed output. Anything that delays the first paste is wrong.
 
-### What this rules out
+---
 
-This constraint kills the claim-flow we designed in conversation, at least as
-the default path. Asking someone to pick a name and press a lock toggle before
-they can type is exactly the friction rustpad does not have.
+## Open by default; the lock is what publishes
 
-**Resolution — two paths, and the fast one has no decisions in it:**
+This is the polarity, and an earlier draft of this document had it backwards.
+
+**Unclaimed is the normal state, and unclaimed means everyone edits.** Anyone
+with the link can write files, run the shell, and change anything — and
+everyone watching sees it happen. That is rustpad's model and it is the one
+consistent with instant usability.
+
+**Claiming is a lock.** It is the thing you do when the work is finished and
+you want to hand it out without anyone changing it. After the lock, you edit
+and everybody else reads and runs.
+
+| State | Anyone with the link can |
+|---|---|
+| **Open** (default) | edit, run, add files — and see each other live |
+| **Locked** (deliberate) | read, run locally — nothing they do persists |
+
+So the claim is not how you get write access. It is how you take write access
+*away from everyone else*.
+
+### Entry has no decisions in it
 
 | Path | What happens |
 |---|---|
-| **Fast** (the default) | Landing on the site mints a random name, claims it for you silently, and puts you in a focused editor. You are pasting in under a second. |
-| **Vanity** (deliberate) | You type `/demowork` yourself. If it is free you are offered the claim explicitly; if it is taken you are told so. |
-
-The claim still happens on the fast path — it just happens *for* you, rather
-than being a thing you are asked about.
+| **Fast** (default) | Landing mints a random name and drops you into a focused editor. Pasting within a second. Open to anyone you send it to. |
+| **Vanity** | You type `/demowork` yourself. Free names are yours to use; taken ones say so. |
+| **Lock** | A deliberate action, whenever you decide the work is done. |
 
 ---
 
@@ -74,120 +87,141 @@ this is a shipping capability rather than a bet.
   inherits the isolation and every cross-origin thing it loads needs `CORP`
   headers or fails silently.
 - **A non-standard dependency.** WASIX is Wasmer's extension, not a committee
-  standard, and WASI Preview 2 is explicitly not going in this direction — the
-  Component Model replaces the process model rather than completing it. If
-  Wasmer stops, this stack stops. That is an accepted risk, not an oversight.
+  standard, and WASI Preview 2 is explicitly not heading there — the Component
+  Model replaces the process model rather than completing it. If Wasmer stops,
+  this stack stops. Accepted, not overlooked.
 
 ### Files: plaintext on the server
 
 ajar sessions stay end-to-end encrypted. Personal folders do not.
 
 The URL is the clean one — `ajar.rishwanth.dev/demowork` — which means the
-server can read what you store. That is the right trade for scratch work and
-CSVs and the wrong one for secrets, and the interface has to say so rather
-than letting the ajar brand imply an encryption story that does not apply here.
+server can read what you store. Right trade for scratch work and CSVs, wrong
+one for secrets, and the interface has to say so rather than letting the ajar
+brand imply an encryption story that does not apply here.
 
-**The relay's existing snapshot store cannot be reused.** It is in-memory, it
-is attached to a live session, and `host_gone` calls `sessions.remove(id)` —
-the files die with the host by design, and "a restart drops everything" is
-stated in that code as *correct* rather than tolerable. This tier needs the
-opposite: durable storage, no host, indefinite lifetime. That is new
-machinery.
+**The relay's snapshot store cannot be reused.** It is in-memory, attached to a
+live session, and `host_gone` calls `sessions.remove(id)` — files die with the
+host by design, and that code calls "a restart drops everything" *correct*
+rather than tolerable. This tier needs durable storage, no host, indefinite
+lifetime. New machinery, though small: a blob keyed by name, capped around
+25 MB.
 
-It is small machinery, though. A blob keyed by name, a cap around 25 MB, and
-no accounts on the read path.
+### One shared filesystem, last write wins
 
-### Edit rights: a token in the fragment
+Everyone in a folder sees one filesystem. A file written by anyone's shell
+appears for everyone. When two writes race, the later one wins.
 
-Consistent with how ajar already thinks — **the link is the capability, and
-the secret part lives in the fragment where browsers never transmit it.**
+This is the ambitious option and it was chosen deliberately over "your run is
+private." It is what makes *"they can continue or improve my work"* literally
+true rather than approximately true. It also brings four problems that the
+private-run model would not have had.
 
-```
-yours    ajar.rishwanth.dev/demowork#e=k3f9x2…     bookmark this
-shared   ajar.rishwanth.dev/demowork               send this
-```
+**1. Text files and shell writes need different merge rules.**
 
-Same rule on both paths: the edit token is always in the fragment, the
-shareable link is always the bare path. Lose the fragment and you lose write
-access, with no recovery — which is acceptable only if the interface is blunt
-about it at the moment the folder is created.
+`transform.py` open in two editors is a CRDT document — Yjs handles concurrent
+typing properly. But a shell can also write that same file (`sed -i`, a
+formatter, a generator). An LWW blob write landing on a live CRDT document
+would clobber whatever the other person was typing.
+
+This is exactly the problem `docs.rs` already solves for ajar, where the disk
+is a third editor alongside two humans. The answer there is `reconcile()`:
+compute the one splice that turns the old text into the new, fold it into the
+CRDT, never replace wholesale. The reasoning transfers directly even though the
+code does not.
+
+**2. "Last" needs a clock, and browsers do not have one.**
+
+Wall clocks across machines are skewed, and a user can set theirs to anything.
+The server is already in the path holding the files, so **the server assigns
+the ordering** — a sequence number per write. Simple, and correct enough for a
+scratchpad.
+
+**3. A losing write disappears silently.**
+
+Two people run the same script at the same time; both finish; both push
+`out.csv`. One result vanishes, and the loser may not notice, because the file
+*looks* freshly updated.
+
+There is no fix inside LWW — that is the trade. The mitigation is to make it
+visible: show who last wrote each file and when. Cheap, and turns a silent loss
+into an obvious one.
+
+**4. One command can write a thousand files.**
+
+A build, an unpack, anything that generates output at scale. Broadcasting a
+thousand individual file writes to everyone in the room is the same packet
+storm `watch.rs` was written to prevent — it buffers touched paths, flushes a
+few times a second, and past a threshold stops describing changes and asks for
+a full resync instead. Same solution applies here, on a different event source.
 
 ---
 
 ## Claim, lease, account
 
-Anonymous claims are **leases**. A week, renewable by visiting. Accounts make
-them permanent, with a per-account cap on locked names, and paid tiers above
-that cap.
+Locks are **leases**. A week, renewable by visiting. Accounts make them
+permanent, with a per-account cap on locked names, and paid tiers above it.
 
 This is the first revenue mechanism anywhere in the project. Phase 3 — org
 hosts, accounts, billing — was never built for ajar, so the side product would
-ship billing before the main one does.
+ship billing before the main one.
 
-The lease is also self-cleaning: abandoned scratch folders age out without
-anyone having to decide anything.
+The lease is self-cleaning: abandoned folders age out without anyone deciding.
 
 ### Four fixes folded in
 
-**1. Names are never reused.** This is the important one.
+**1. Names are never reused.** The important one.
 
-The failure it prevents: you share `/demowork` in a tutorial, the lease lapses
-a week later, someone else claims the name, and everyone holding your link
-now lands on a stranger's files. If stored HTML ever rendered, that is a
-phishing page on your domain with your reputation behind it.
+You share `/demowork` in a tutorial; the lease lapses a week later; someone
+else claims the name; everyone holding your link now lands on a stranger's
+files. If stored HTML ever rendered, that is a phishing page on your domain.
 
 So expiry deletes the **content** and tombstones the **name**. `/demowork`
 afterwards says "this expired" forever. A name is about twenty bytes; keeping
-every one ever issued is free next to the class of problem it removes.
+every one ever issued is free next to the problem it removes.
 
-**2. Claiming is a POST, never a GET side effect.**
-
-Slack, iMessage, WhatsApp and Twitter all fetch a URL to unfurl it, and
-crawlers fetch everything. If merely *opening* a name claimed it, a link
-preview bot would take the name before your recipient saw the page. Opening
-reports that a name is free; an explicit action takes it.
+**2. Locking is a POST, never a GET side effect.** Slack, iMessage, WhatsApp
+and Twitter fetch URLs to unfurl them, and crawlers fetch everything. Nothing
+that changes state can happen because a page was merely opened.
 
 **3. Lease state has to be durable, and IP limiting is a speed bump.**
-
 `quota.rs` is `Mutex<HashMap<IpAddr, Caller>>` and its own header says it does
-not survive a restart. That is correct for 45-second sessions and useless for
-week-long leases — this state belongs in the durable store.
+not survive a restart — correct for 45-second sessions, useless for week-long
+leases. And IP as identity is weak both ways: CGNAT puts thousands of real
+users behind one address, while a VPN defeats it in one click. Worth having
+against casual bulk-claiming, not worth believing in.
 
-And IP as identity is weak in both directions: CGNAT puts thousands of real
-users behind one address, so a strict limit blocks an entire ISP, while a VPN
-defeats it in one click. Worth having to stop casual bulk-claiming. Not worth
-believing in.
-
-**4. Stored files are never served as HTML.**
-
-By construction in this design, files are fetched by JavaScript and mounted
-into the WASM filesystem — they are never a browsable web root. That property
-is worth protecting deliberately, because the day `…/name/index.html` renders
-is the day this is hosting arbitrary user HTML on the product's domain.
+**4. Stored files are never served as HTML.** By construction, files are
+fetched by JavaScript and mounted into the WASM filesystem — never a browsable
+web root. Worth protecting deliberately, because the day `…/name/index.html`
+renders is the day this hosts arbitrary user HTML on the product's domain.
 
 ### Reserved names
 
-`/ws`, `/healthz`, `/install.sh`, `/run.sh` and `/j/*` are already taken, and
-a bare path currently falls through to the SPA. A reserved list has to exist
-**before** the first claim, not after — it cannot be added retroactively once
-someone owns `/api`.
+`/ws`, `/healthz`, `/install.sh`, `/run.sh` and `/j/*` are taken, and a bare
+path currently falls through to the SPA. The reserved list has to exist
+**before** the first claim — it cannot be applied retroactively once someone
+owns `/api`.
 
 ---
 
 ## What is reusable from ajar
 
-More than expected. The session client already is an editor, a file tree and a
-terminal sharing one window.
+The shared-filesystem decision made this much stronger. Three of the hard
+sub-problems are ones ajar has already solved, because they are the same
+problems wearing different clothes.
 
-| From `web/src` | Reuse |
+| From ajar | Reuse |
 |---|---|
-| `style.css` (587) | **Direct.** The layout, the splitter, the zoom-safe sizing. |
-| `viewer.ts` (167) | **Direct.** Monaco setup and the language map, already trimmed to `editor.api`. |
-| `tree.ts` (220) | **Direct.** Virtualised, takes an entry list — only the data source changes. |
-| `scale.ts` (31) | **Direct.** |
-| `main.ts` (851) | **Partial.** Layout and wiring survive; everything relay-shaped does not. |
-| `editing.ts` (218) | **Later.** The Yjs binding is only needed if this becomes multiplayer. |
-| `connection.ts`, `proto.ts`, `sealed.ts` | **No.** All relay-specific. |
+| `web/src/style.css` (587) | **Direct.** Layout, splitter, zoom-safe sizing. |
+| `web/src/viewer.ts` (167) | **Direct.** Monaco setup, language map, already trimmed. |
+| `web/src/tree.ts` (220) | **Direct.** Virtualised; only the data source changes. |
+| `web/src/scale.ts` (31) | **Direct.** |
+| `web/src/editing.ts` (218) | **Core now.** The Yjs/Monaco binding with cursors — written by hand precisely so it could be repurposed. |
+| `crates/ajar/src/docs.rs` reasoning | **The `reconcile()` splice**, for shell writes landing on live documents. |
+| `crates/ajar/src/workspace/watch.rs` reasoning | **Coalescing and the resync threshold**, for write storms. |
+| `web/src/main.ts` (851) | **Partial.** Layout and wiring survive; relay-shaped parts do not. |
+| `connection.ts`, `proto.ts`, `sealed.ts` | **No.** Relay-specific. |
 
 xterm.js is already wired for terminal output, and a WASIX shell writes to it
 exactly the way a pty does.
@@ -196,53 +230,52 @@ exactly the way a pty does.
 
 ## Open questions, in the order they should be answered
 
-Each of these changes what gets built. None of them is decided.
+1. **What carries the live sync between browsers?** This is now urgent and was
+   not before. The relay is the obvious candidate — it already keeps N
+   connections per session id — but its routing is deliberately host-centric:
+   *the host may address one guest or broadcast; a guest may only reach the
+   host.* Peer broadcast is a change to that table. Extend the relay, or run a
+   second service?
 
-1. **Where does the shell's filesystem actually live at runtime?** The WASM FS
-   is in memory. Does it write through to the server on every change, on a
-   debounce, or only when you press something? ajar's `docs.rs` already solved
-   this shape once with a 400 ms debounce — the reasoning transfers, the code
-   does not.
+2. **How are shell writes detected?** The WASM filesystem is in memory. Diffing
+   it after each command is far simpler than hooking every write, and a command
+   boundary is a natural transaction edge. Is that enough?
 
-2. **What is in the binary set, and how is a version pinned?** Python is the
-   obvious first one. Which coreutils? Does `pip install` exist at all, given
-   there are no sockets — or is the answer a pre-baked wheel set, documented?
+3. **How big is the first load, and what happens during it?** Pyodide alone is
+   ~10 MB. Instant usability and a 10 MB download are in direct tension — does
+   the editor open before the runtime is ready, with the shell arriving late?
 
-3. **How big is the first load?** Pyodide alone is ~10 MB. Instant usability
-   and a 10 MB download are in direct tension. Does the editor open before the
-   runtime is ready, with the shell arriving late?
+4. **What is in the binary set, and how is a version pinned?** Python first.
+   Which coreutils? Is there any `pip install` without sockets, or is the answer
+   a pre-baked, documented wheel set?
 
-4. **What does "run" mean in the interface?** A button, a keystroke, or a
-   shell prompt you type into? The paste-run-look loop wants the fewest
-   possible actions between clipboard and output.
+5. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
+   type into. The paste-run-look loop wants the fewest actions between clipboard
+   and output.
 
-5. **Does output write back into the folder?** The transform generates
-   `out.csv` — is that now part of the shared folder, or does it live only in
-   the tab that made it?
+6. **What is the file size cap, and does every write really sync?** A 50 MB
+   `out.csv` broadcast to four people on every run is a different product from
+   a 50 KB one.
 
-6. **What happens when a visitor runs it?** They have no edit token. Their run
-   has to go somewhere, and "nowhere" is a legitimate answer.
+7. **Account system: build or buy?** The first one in the project, and the thing
+   most likely to consume a month if built from scratch.
 
-7. **Account system: build or buy?** This is the first one in the project. It
-   is also the thing most likely to consume a month if built from scratch.
-
-8. **Does this share a domain, a subdomain, or a separate name?** Cross-origin
-   isolation forces at least a separate origin. Whether it shares branding is
-   a different question.
+8. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
+   least a separate origin; shared branding is a different question.
 
 ---
 
 ## Shape of a v0
 
-Enough to test whether the loop is worth anything, and nothing more:
+Enough to find out whether the loop is worth anything:
 
 - One page, separate origin, `COOP`/`COEP` set.
-- Landing mints a random name and drops you in a focused editor.
-- Python only. No vanity names, no accounts, no leases — everything expires in
-  a week, full stop.
-- Files in a server blob, capped small.
+- Landing mints a random name and drops you into a focused editor.
+- Python only. No vanity names, no accounts, no locks — everything is open and
+  everything expires in a week.
+- Shared filesystem, server-ordered, last write wins.
 - One editor pane, one output pane, one run action.
 - Share copies the bare URL.
 
-If pasting a transform and getting a CSV back is not obviously useful at that
-size, none of the machinery above will save it.
+If pasting a transform, getting a CSV back, and sending the link to one person
+is not obviously useful at that size, none of the machinery above will save it.
