@@ -155,6 +155,41 @@ storm `watch.rs` was written to prevent — it buffers touched paths, flushes a
 few times a second, and past a threshold stops describing changes and asks for
 a full resync instead. Same solution applies here, on a different event source.
 
+### Detecting the writes: diff at command boundaries
+
+**There is no watch mechanism to hook.** `@wasmer/sdk`'s `Directory` exposes
+`writeFile`, `readFile`, `removeFile`, `createDir`, `removeDir` and `readDir`
+— and nothing else. Asking it to emit change events is
+[an open issue](https://github.com/wasmerio/wasmer-js/issues/395), not a
+feature. So "intercept every write" is not a design option without forking the
+runtime the whole product stands on, which is not a debt worth taking before
+v0 has proven anything.
+
+So: **when a command exits, diff the tree and push what changed.** A command
+exiting is a real transaction boundary — it either ran or it did not, and a
+half-written file is never broadcast.
+
+Two details that decide whether this is cheap or ruinous:
+
+- **Diff against the last synced state, not a before/after pair.** The client
+  already holds what it last agreed with the server. Snapshotting the tree
+  before every command would double the memory for nothing.
+- **Walk metadata, not content.** Keep `path → (size, hash)`. A thousand
+  unchanged files then cost a thousand comparisons rather than a thousand
+  reads, and `readFile` is called only for what actually differs.
+
+And it needs the caps `workspace/mod.rs` already learned to want. A `pip
+install` inside the shell can create thousands of files, after which *every*
+later command pays to walk them. So: a ceiling on entries, and the same
+"too much changed, resync instead of enumerating" threshold.
+
+**What this knowingly gives up:** a process that never exits never syncs. A
+dev server, a `--watch`, anything streaming — it writes continuously and
+nobody else sees a thing until it is stopped. That is acceptable for
+paste-run-look and wrong for a live preview, and the interface should say so
+plainly rather than letting people discover it. Adding a slow poll during a
+running command covers it later without changing anything else here.
+
 ---
 
 ## Claim, lease, account
@@ -228,39 +263,38 @@ exactly the way a pty does.
 
 ---
 
+## Settled since
+
+**Transport is the relay.** Extended rather than replaced: a session now has a
+*shape*, and a `Peer` session is N browsers with no centre, everyone reaching
+everyone else by broadcast. Peers stamp their own participant id on every
+frame, a name nobody holds can simply be opened, an empty room is forgotten
+rather than held open, and one id is one shape for its whole life. Shipped in
+`586eb2f`, with `scripts/smoke-peer.mjs` — the first suite here that starts a
+relay and no agent at all.
+
 ## Open questions, in the order they should be answered
 
-1. **What carries the live sync between browsers?** This is now urgent and was
-   not before. The relay is the obvious candidate — it already keeps N
-   connections per session id — but its routing is deliberately host-centric:
-   *the host may address one guest or broadcast; a guest may only reach the
-   host.* Peer broadcast is a change to that table. Extend the relay, or run a
-   second service?
-
-2. **How are shell writes detected?** The WASM filesystem is in memory. Diffing
-   it after each command is far simpler than hooking every write, and a command
-   boundary is a natural transaction edge. Is that enough?
-
-3. **How big is the first load, and what happens during it?** Pyodide alone is
+1. **How big is the first load, and what happens during it?** Pyodide alone is
    ~10 MB. Instant usability and a 10 MB download are in direct tension — does
    the editor open before the runtime is ready, with the shell arriving late?
 
-4. **What is in the binary set, and how is a version pinned?** Python first.
+2. **What is in the binary set, and how is a version pinned?** Python first.
    Which coreutils? Is there any `pip install` without sockets, or is the answer
    a pre-baked, documented wheel set?
 
-5. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
+3. **What does "run" mean in the interface?** Button, keystroke, or a prompt you
    type into. The paste-run-look loop wants the fewest actions between clipboard
    and output.
 
-6. **What is the file size cap, and does every write really sync?** A 50 MB
+4. **What is the file size cap, and does every write really sync?** A 50 MB
    `out.csv` broadcast to four people on every run is a different product from
    a 50 KB one.
 
-7. **Account system: build or buy?** The first one in the project, and the thing
+5. **Account system: build or buy?** The first one in the project, and the thing
    most likely to consume a month if built from scratch.
 
-8. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
+6. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
    least a separate origin; shared branding is a different question.
 
 ---
