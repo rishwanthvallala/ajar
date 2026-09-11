@@ -4,3 +4,14 @@ node_modules/
 web/dist/
 .DS_Store
 *.log
+
+# Credentials. This repo has already had one accidental `git add -A` reach a
+# public remote, and an AWS key CSV was sitting here untracked when this was
+# written — never committed, but one careless add away from it.
+*accessKeys*.csv
+*credentials*.csv
+*.pem
+*.key
+.env
+.env.*
+!.env.example
