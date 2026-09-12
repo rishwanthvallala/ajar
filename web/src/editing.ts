@@ -36,6 +36,27 @@ export interface RemoteCursor {
   id: number;
 }
 
+/**
+ * A name, safe to drop inside a CSS string.
+ *
+ * `replace(/"/g, "")` is not enough, and this is reachable: names are chosen
+ * by whoever joins. A trailing backslash escapes the closing quote, the string
+ * runs on, and the rest of the stylesheet becomes theirs to write — which buys
+ * defacement and, through `url()` on an attribute selector, a way to send what
+ * is on screen somewhere else.
+ *
+ * So backslashes and quotes are escaped, and anything below 0x20 goes out as a
+ * hex escape, since a raw newline ends a CSS string whatever else is done to
+ * it. The trailing space is part of CSS hex-escape syntax: it terminates the
+ * escape so a following digit is not swallowed into it.
+ */
+function cssString(text: string): string {
+  return text.replace(/[\\"\u0000-\u001f]/g, (ch) => {
+    if (ch === "\\" || ch === '"') return "\\" + ch;
+    return "\\" + ch.charCodeAt(0).toString(16) + " ";
+  });
+}
+
 /** One open file, shared. */
 export class DocSession {
   readonly ydoc = new Y.Doc();
@@ -176,7 +197,7 @@ export class DocSession {
       rules.push(
         `.${cls}-caret { border-left: 2px solid ${colour}; margin-left: -1px; }`,
         `.${cls}-selection { background: ${colour}33; }`,
-        `.${cls}-label::after { content: "${user.name.replace(/"/g, "")}"; background: ${colour}; }`,
+        `.${cls}-label::after { content: "${cssString(user.name)}"; background: ${colour}; }`,
       );
 
       const total = model.getValueLength();

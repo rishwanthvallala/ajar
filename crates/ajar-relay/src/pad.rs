@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Total bytes one pad may hold. Matches the snapshot cap the agent tier uses.
@@ -42,9 +43,17 @@ pub const MAX_NAME: usize = 64;
 /// and the list has to be complete *before* the first name is handed out —
 /// there is no taking `api` back once somebody owns it.
 pub const RESERVED: &[&str] = &[
-    "ws", "healthz", "install", "run", "j", "api", "assets", "vendor", "static", "admin", "login",
-    "logout", "signup", "account", "settings", "new", "about", "terms", "privacy", "pricing",
-    "docs", "help", "status", "favicon", "robots", "sitemap",
+    // Served by the relay.
+    "ws", "healthz", "install", "run", "j", "api",
+    // Served by the web server in front of it. `packages` and `sw` were
+    // missing until an audit found them: the browser tier serves `/packages/*`
+    // for the mirrored wasm and `/sw.js` for the worker that rewrites it, and
+    // a pad holding either name would have sat underneath a real path.
+    "assets", "vendor", "packages", "static", "sw", "index", "public", "dist",
+    // Kept back for things that do not exist yet, because a name cannot be
+    // taken back once somebody owns it.
+    "admin", "login", "logout", "signup", "account", "settings", "new", "about", "terms", "privacy",
+    "pricing", "docs", "help", "status", "favicon", "robots", "sitemap",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,15 +214,42 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// How many locks guard the pads.
+///
+/// Striped rather than one per name: a lock map keyed by pad would grow for
+/// the life of the process, and this is a server that is meant to run for
+/// months. Sixty-four is far more than the concurrency a scratchpad sees, so
+/// two pads sharing a stripe is a theoretical wait, not a real one.
+const STRIPES: usize = 64;
+
 pub struct Store {
     dir: PathBuf,
+    /// Serialises the read-modify-write in `write`.
+    ///
+    /// Without it two saves to one pad both read the same starting point and
+    /// the second discards the first — and they collided on the temporary file
+    /// as well, so the loser did not even fail quietly: it failed with
+    /// `No such file or directory` after the winner renamed the file away.
+    /// Two people typing in one folder is the ordinary case here, not an edge.
+    stripes: Vec<Mutex<()>>,
 }
 
 impl Store {
     pub fn open(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            stripes: (0..STRIPES).map(|_| Mutex::new(())).collect(),
+        })
+    }
+
+    fn stripe(&self, name: &str) -> &Mutex<()> {
+        let mut h: usize = 0;
+        for b in name.bytes() {
+            h = h.wrapping_mul(31).wrapping_add(b as usize);
+        }
+        &self.stripes[h % STRIPES]
     }
 
     fn pad_path(&self, name: &str) -> PathBuf {
@@ -254,6 +290,12 @@ impl Store {
         for w in writes {
             check_path(&w.path)?;
         }
+
+        // Held across the read, the change and the save. Blocking I/O under a
+        // lock in an async handler is not free, but a pad is one small JSON
+        // document and the alternative is losing writes.
+        let _guard = self.stripe(name).lock();
+
         if self.tomb_path(name).exists() {
             return Err(Error::Gone);
         }
@@ -303,7 +345,13 @@ impl Store {
         let body = serde_json::to_vec(pad).map_err(|e| Error::Io(e.to_string()))?;
         // Written beside the target and renamed over it. A half-written pad
         // that a restart then tries to parse is worse than a lost write.
-        let tmp = self.dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        // Unique per call, not per process. Sharing one temporary path meant
+        // concurrent writers clobbered each other's file before the rename.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self
+            .dir
+            .join(format!(".{name}.{}.{n}.tmp", std::process::id()));
         std::fs::write(&tmp, &body).map_err(|e| Error::Io(e.to_string()))?;
         std::fs::rename(&tmp, self.pad_path(name)).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
@@ -476,6 +524,22 @@ mod tests {
     }
 
     #[test]
+    fn every_path_the_site_serves_is_reserved() {
+        // The list has to be complete before the first name is handed out —
+        // there is no taking `packages` back once a pad owns it. These are the
+        // prefixes the two origins actually answer on.
+        for path in [
+            "ws", "healthz", "install", "run", "j", "api", "assets", "vendor", "packages", "sw",
+        ] {
+            assert_eq!(
+                check_name(path).err(),
+                Some(Error::Reserved),
+                "{path} is served but claimable"
+            );
+        }
+    }
+
+    #[test]
     fn a_name_has_to_be_a_safe_filename() {
         // The store is a flat directory and the name *is* the filename, so
         // this check is the only thing between a URL and the parent directory.
@@ -573,6 +637,38 @@ mod tests {
         assert_eq!(s.sweep(), vec!["stale".to_string()]);
         assert!(s.get("fresh").unwrap().is_some());
         assert_eq!(s.get("stale").err(), Some(Error::Gone));
+    }
+
+    #[test]
+    fn concurrent_writes_do_not_lose_each_other() {
+        // `write` reads the pad, applies, and saves it back. Two of them at
+        // once both read the same starting point and the second overwrites
+        // the first — and the relay is a tokio server, so two requests for one
+        // pad genuinely do overlap.
+        use std::sync::Arc;
+        let dir = tempdir::Dir::new();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        store.write("p", &[put("seed", "0")]).unwrap();
+
+        let hands: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    store.write("p", &[put(&format!("f{i}"), "x")]).unwrap();
+                })
+            })
+            .collect();
+        for h in hands {
+            h.join().unwrap();
+        }
+
+        let pad = store.get("p").unwrap().unwrap();
+        assert_eq!(
+            pad.files.len(),
+            9,
+            "writes were lost: {:?}",
+            pad.files.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -194,7 +194,11 @@ export class Console {
       this.screen.write(PROMPT);
       return;
     }
-    if (this.history[this.history.length - 1] !== command) this.history.push(command);
+    if (this.history[this.history.length - 1] !== command) {
+      this.history.push(command);
+      // A tab left open for a day should not accumulate a day of commands.
+      if (this.history.length > 200) this.history.shift();
+    }
 
     this.running = true;
     // Said once, the first time something waits: a prompt that has vanished
