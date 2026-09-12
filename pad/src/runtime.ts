@@ -53,6 +53,13 @@ export const PACKAGES = {
   shell: "sharrattj/bash@1.0.18",
   coreutils: "sharrattj/coreutils@1.0.16",
   python: "python/python@3.13.20",
+  // The text-processing three. They live under `wasmer/`, not `sharrattj/`,
+  // which is why an earlier search concluded they did not exist at all — the
+  // registry's own search returns nothing for any query, including `python`,
+  // so a namespace guess is the only way to find anything.
+  grep: "wasmer/grep@3.12.0",
+  sed: "wasmer/sed@4.9.0",
+  find: "wasmer/find@4.10.0",
 } as const;
 
 /** Extension to the command that runs it. Anything absent is not runnable. */
@@ -147,7 +154,14 @@ export class Runtime {
     const bash = shellPkg.command("bash");
 
     const box = await wasmer.sandboxes.create({
-      packages: [shellPkg, PACKAGES.coreutils, PACKAGES.python],
+      packages: [
+        shellPkg,
+        PACKAGES.coreutils,
+        PACKAGES.python,
+        PACKAGES.grep,
+        PACKAGES.sed,
+        PACKAGES.find,
+      ],
       shell: bash,
       files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),
     });
