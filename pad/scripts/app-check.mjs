@@ -258,6 +258,41 @@ try {
   );
   ok("and leaving is noticed too");
 
+  // ---- editing, which is the other half of "they can continue my work" ----
+  //
+  // Nothing here presses Run. Typing on its own has to reach the other
+  // browser, and for a long time it did not: the only thing that published
+  // was a command, so two people could sit in one folder editing the same
+  // file and never see a word of each other's work.
+  const third = await browser.newPage();
+  await third.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await third.waitForSelector(".monaco-editor", { timeout: 30_000 });
+
+  // Typed into the editor the way a person does, not poked into a model:
+  // the first version of this listened on the editor rather than on each
+  // model, so a programmatic change to a background file proved nothing.
+  const TYPED = "edited-and-never-run";
+  await page.click('#files .row.file:has-text("main.py")');
+  await page.click(".monaco-editor .view-lines");
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type(`# ${TYPED}\nprint('hi')\n`);
+
+  await third.waitForFunction(
+    (text) => window.monaco?.editor?.getModels?.().some((m) => m.getValue().includes(text)),
+    TYPED,
+    { timeout: 30_000 },
+  );
+  ok("an edit reaches the other browser without anybody pressing Run");
+
+  // And it has to have reached the server too, or a reload loses it.
+  const savedPad = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
+  is(
+    Object.values(savedPad.files).some((f) => f.content.includes(TYPED)),
+    true,
+    "and the edit was saved, so a reload keeps it",
+  );
+  await third.close();
+
   // ---- typing into the shell, which is the thing it is for ----
   await page.click("#terminal");
   await page.keyboard.type("echo typed-by-hand > hand.txt\n");

@@ -46,6 +46,11 @@ export class App {
   private peers: Peers | null = null;
   private busy = false;
   private missed = false;
+  /** Models edited since the last save. */
+  private dirty = new Set<string>();
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set while a remote change is being written into the editor. */
+  private applyingRemote = false;
 
   constructor(
     private readonly name: string,
@@ -130,6 +135,7 @@ export class App {
     const rt = this.runtime ? await this.runtime : null;
     const incoming = knownFrom(pad.files);
 
+    this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
       this.setFile(path, content);
@@ -142,6 +148,7 @@ export class App {
       this.models.get(path)?.dispose();
       this.models.delete(path);
     }
+    this.applyingRemote = false;
     this.known = incoming;
     if (!this.models.has(this.active)) {
       const first = [...this.models.keys()].sort()[0];
@@ -185,7 +192,20 @@ export class App {
       return;
     }
     const language = path.endsWith(".py") ? "python" : path.endsWith(".json") ? "json" : "plaintext";
-    this.models.set(path, this.monaco.editor.createModel(content, language));
+    const model = this.monaco.editor.createModel(content, language);
+    // Per model, not on the editor. `onDidChangeModelContent` fires only for
+    // whichever model is attached right now, so a change to any other file —
+    // including one arriving from the shell — would never be noticed.
+    model.onDidChangeContent(() => {
+      this.warm();
+      // A change the page just wrote in on somebody else's behalf is not an
+      // edit to send back. Without this every remote update bounces straight
+      // home and two browsers push the same content at each other forever.
+      if (this.applyingRemote) return;
+      this.dirty.add(path);
+      this.saveSoon();
+    });
+    this.models.set(path, model);
     if (!this.active) this.show(path);
   }
 
@@ -256,6 +276,64 @@ export class App {
     this.tree.render([...this.models.keys()], this.active);
   }
 
+
+  /**
+   * Save what has been typed, shortly.
+   *
+   * Debounced rather than immediate: a burst of typing is one save, and every
+   * save is an HTTP write plus a nudge to everyone else in the folder. Long
+   * enough to coalesce a sentence, short enough that stopping to think means
+   * the other person already has it.
+   */
+  private saveSoon(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => void this.saveEdits(), 500);
+  }
+
+  private async saveEdits(): Promise<void> {
+    this.saveTimer = null;
+    const paths = [...this.dirty];
+    this.dirty.clear();
+    const changes = paths
+      .map((path) => ({ path, content: this.models.get(path)?.getValue() }))
+      .filter((c): c is { path: string; content: string } => c.content !== undefined)
+      .filter((c) => this.known.get(c.path) !== c.content);
+    if (changes.length === 0) return;
+
+    try {
+      const seq = await this.store.write(this.name, changes);
+      for (const c of changes) this.known.set(c.path, c.content);
+      // The sandbox too, when there is one, so a shell command run next sees
+      // what is on screen rather than what was there before the typing.
+      if (this.runtime) {
+        const rt = await this.runtime;
+        for (const c of changes) await rt.write(c.path, c.content);
+      }
+      this.peers?.moved(seq);
+      this.say("", "saved");
+    } catch (e) {
+      // Put them back: an unsaved change that nothing will retry is the one
+      // failure this product cannot afford.
+      for (const p of paths) this.dirty.add(p);
+      this.say("error", (e as Error).message);
+      this.saveSoon();
+    }
+  }
+
+  /**
+   * Write every edited model into the sandbox.
+   *
+   * Called before anything diffs the sandbox. The editor holds the text and
+   * the sandbox holds the file; if a typed command publishes while they
+   * disagree, the diff sees the sandbox's older copy as the truth and pushes
+   * it over what somebody just wrote.
+   */
+  private async flushModels(rt: Runtime): Promise<void> {
+    for (const path of this.dirty) {
+      const model = this.models.get(path);
+      if (model) await rt.write(path, model.getValue());
+    }
+  }
 
   // --------------------------------------------------------------- runtime
 
@@ -412,6 +490,7 @@ export class App {
 
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
+    await this.flushModels(rt);
     const { changes, next } = await diff(rt, this.known);
     if (changes.length === 0) return;
     const seq = await this.store.write(this.name, changes);
