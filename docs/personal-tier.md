@@ -1,8 +1,12 @@
 # The personal tier
 
-*Design notes, September 2026. A second product on the same domain: a shared
-browser scratchpad with a real shell, no install, no account, and no machine
-involved but the ones the participants are already sitting at.*
+*Design notes, September 2026, written before any of it was built and kept as
+the record of why it is shaped this way.*
+
+**It exists now, at [code.rishwanth.dev](https://code.rishwanth.dev).** For what
+it actually does, how to run it, and the dozen things about the runtime that
+only building it revealed, see [`pad/README.md`](../pad/README.md). The last
+section here lists where the plan below turned out to be wrong.
 
 ---
 
@@ -365,27 +369,51 @@ on everyone who opens a shared link only to read it.
 
 ---
 
-## Open questions, in the order they should be answered
+## What building it changed
 
-1. **Which binaries beyond bash, coreutils and Python?** And is there any
-   `pip install` without sockets, or is the answer a pre-baked, documented
-   wheel set served the same way?
+The plan held up better than the details did. Nothing in the shape of the
+product moved — open by default, a lock that publishes, one shared filesystem,
+a nudge over the relay with the store as truth — and almost every specific
+about *how* did.
 
-2. **What is the file size cap, and does every write really sync?** A 50 MB
-   `out.csv` broadcast to four people on every run is a different product from
-   a 50 KB one.
+**The binaries existed all along, in a namespace nobody guessed.** This
+document said grep, sed, awk and find were unpublished and the tier would have
+to live without them. Three of the four are `wasmer/grep`, `wasmer/sed` and
+`wasmer/find`; only the `sharrattj/` namespace had been searched, and the
+registry's own search endpoint returns nothing for any query at all, including
+`python`. awk really is absent, and is a python shim.
 
-3. **Account system: build or buy?** The first one in the project, and the thing
-   most likely to consume a month if built from scratch.
+**Run types into the shell — and the shell needed building first.** The
+decision was right and incomplete: bash here prints no prompt, echoes nothing
+of its own input, hangs when a function is called, and dies rather than
+interrupts on ctrl-c. The prompt, the echo, the line editing and the restart
+are all the page's, in `console.ts`, which the plan did not anticipate at all.
 
-4. **Domain, subdomain, or separate name?** Cross-origin isolation forces at
-   least a separate origin; shared branding is a different question.
+**"Diff at command boundaries" survived; the optimisation did not.** The plan
+was to walk metadata and read only what differs. `FileStat` carries `kind` and
+`size` and nothing else — no modification time, no hash — so every file is read
+on every command. Affordable only because of the 500-file cap, which is
+therefore load-bearing rather than tidy.
 
----
+**File-level last-write-wins was replaced within a week of shipping.** It did
+exactly what it says: two people in one file, and whoever saved second
+overwrote the other completely. Text in an open file is a CRDT now; everything
+else still goes through the store.
 
-## Shape of a v0
+**Self-hosting the packages was harder and better than planned.** 73 MB raw
+becomes about 17 compressed, but the SDK has no registry override and cannot
+decode in-memory WEBC in a browser, so the mirror is a service worker. The URL
+list has to be *observed* — asking the registry returns the wrong artefact for
+one package and says nothing about two transitive dependencies.
 
-Enough to find out whether the loop is worth anything:
+**The first-load estimate was wrong twice.** Pyodide is 5 MB, not the ~10 this
+document first claimed; and the WASIX route costs 73 MB raw rather than the
+59 measured for python alone, because packages pull in dependencies.
+
+## Shape of a v0 — shipped
+
+All of this exists. Kept as written, because the list is what it was built
+against:
 
 - One page, separate origin, `COOP`/`COEP` set.
 - Landing mints a random name and drops you into a focused editor — 90 KB, no
@@ -400,3 +428,8 @@ Enough to find out whether the loop is worth anything:
 
 If pasting a transform, getting a CSV back, and sending the link to one person
 is not obviously useful at that size, none of the machinery above will save it.
+
+Since then it has also gained a real shell you can type into, grep/sed/find and
+an awk, a file tree with folders, live collaborative editing, and a package
+mirror. What it still does not have is the thing this list was for: somebody
+using it on real work, twice.

@@ -19,6 +19,23 @@ end-to-end with a key the relay never sees.
 > have some reason to trust — the agent says exactly what is and is not
 > covered before it prints the link.
 
+## Two products, one relay
+
+**[ajar.rishwanth.dev](https://ajar.rishwanth.dev)** shares *a machine*. An
+agent runs on it, a guest gets a real shell with your toolchain, and the relay
+routes frames it cannot read.
+
+**[code.rishwanth.dev](https://code.rishwanth.dev)** shares *a folder*. No
+agent, no machine lent: the compute runs in each visitor's own tab as
+WebAssembly, and the server holds the files. Open a URL, paste, press Run, send
+the link. See [`pad/README.md`](pad/README.md).
+
+They overlap in audience and almost nowhere else, and the relay is the only
+code they share — which is why its routing has two shapes. A *hosted* session
+has a machine at the centre and guests may only reach it; a *peer* session is N
+browsers with no centre, everyone broadcasting to everyone. One session id is
+one shape for its whole life.
+
 ## Layout
 
 | Path | What |
@@ -26,7 +43,9 @@ end-to-end with a key the relay never sees.
 | `crates/ajar-proto` | Wire format shared by agent and relay |
 | `crates/ajar` | The agent — owns the folder, the ptys, the documents, the link |
 | `crates/ajar-relay` | Routes frames. Parses the 9-byte header and nothing else |
-| `web` | Vite + TypeScript + xterm.js client |
+| `crates/ajar-relay/src/pad.rs` | The one durable thing in the relay: folders for the browser tier |
+| `web` | The session client — Vite, TypeScript, xterm.js |
+| `pad` | The browser tier — same stack, plus a WASIX runtime |
 | `scripts/` | End-to-end tests and the pre-commit gate |
 
 ## Sharing a folder
@@ -86,7 +105,7 @@ development, open the same path on the Vite server instead:
 
 | | |
 |---|---|
-| `cargo test` | 131 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits |
+| `cargo test` | 158 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions |
 | `npx tsc --noEmit` | web client typecheck |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | ignore rules, reads, path-traversal refusal, patches, and an install-sized burst |
@@ -97,16 +116,35 @@ development, open the same path on the Vite server instead:
 | `scripts/linux-sandbox.sh` | tries nine ways out of the Landlock sandbox, on a real Linux kernel |
 | `scripts/smoke-reconnect.mjs` | kills the relay mid-session and proves the agent comes back to the same link |
 | `scripts/acceptance.mjs` | the v0 acceptance list from the spec — 11 automated checks, 3 that need a human |
+| `scripts/smoke-peer.mjs` | peer sessions — the only suite here that starts a relay and no agent at all |
 | `scripts/dogfood.mjs` | shares this repo through ajar and does real work in it. Reports numbers, asserts nothing |
+
+The browser tier is checked separately, because each run downloads the wasm
+packages and drives a real Chromium:
+
+```sh
+cd pad && npm run check
+```
+
+| | |
+|---|---|
+| `pad/scripts/browser-check.mjs` | the pieces: the sandbox, the shell, grep/sed/find/awk, the diff, the store |
+| `pad/scripts/app-check.mjs` | the product: mint a name, paste, Run, share, two browsers editing one file |
+
+Both drive headless Chromium and have to. The python package fails wasm
+validation under Node, and cross-origin isolation — which the runtime needs for
+`SharedArrayBuffer` — does not exist outside a browser. `app-check.mjs` takes
+`PAD_ORIGIN` to run against a deployment, which is how it caught a service
+worker that worked locally and broke over https.
 
 ## The wire format
 
 Every message is one binary WebSocket frame:
 
 ```
-byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE
-bytes 1..5   stream_id  u32  LE  pty id, or 0 for channel-level JSON
-bytes 5..9   target     u32  LE  participant id, or 0 for broadcast
+byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE | DOC | STORE
+bytes 1..5   stream_id  u32  LE  pty or document id, or 0 for channel JSON
+bytes 5..9   target     u32  LE  destination, or the authenticated sender
 bytes 9..    payload    opaque to the relay
 ```
 
