@@ -123,6 +123,18 @@ const is = (a, b, m) => (a === b ? ok(m) : fail(`${m} — got ${JSON.stringify(a
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
+
+// Where the bulk actually came from. The mirror is the whole point of the
+// service worker, and "it still works" would pass just as well without it.
+const bytesFrom = { cdn: 0, mirror: 0 };
+page.on("response", (r) => {
+  const len = Number(r.headers()["content-length"] ?? 0);
+  if (r.url().startsWith("https://cdn.wasmer.io/")) {
+    bytesFrom.cdn += len;
+    if (len > 1048576) results.push(`note: CDN ${(len / 1048576).toFixed(1)} MB ${r.url()}`);
+  }
+  else if (r.url().includes("/packages/")) bytesFrom.mirror += len;
+});
 page.on("pageerror", (e) => fail(`page error: ${e.message.slice(0, 160)}`));
 page.on("console", (m) => {
   const t = m.text();
@@ -131,6 +143,23 @@ page.on("console", (m) => {
 
 try {
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
+  {
+    const sw = await page.evaluate(async () => {
+      const seen = [];
+      for (let i = 0; i < 20; i++) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        const r = regs[0];
+        seen.push(
+          `${i * 250}ms installing=${r?.installing?.state ?? "-"} waiting=${r?.waiting?.state ?? "-"} active=${r?.active?.state ?? "-"} ctrl=${navigator.serviceWorker.controller ? "y" : "n"}`,
+        );
+        if (navigator.serviceWorker.controller) break;
+        await new Promise((x) => setTimeout(x, 250));
+      }
+      return seen;
+    });
+    results.push(`note: sw ${sw[0]}`);
+    results.push(`note: sw ${sw[sw.length - 1]}`);
+  }
 
   // Landing on the bare site puts you in a folder without asking.
   await page.waitForFunction(() => location.pathname.length > 1, { timeout: 15_000 });
@@ -218,6 +247,38 @@ try {
     { timeout: 20_000 },
   );
   ok("and leaving is noticed too");
+
+  // ---- the mirror ----
+  //
+  // The service worker's own counters, not the network log. A worker response
+  // keeps the original request URL, so playwright attributes a mirrored
+  // download to cdn.wasmer.io and the network view says the opposite of the
+  // truth — which is exactly what it said while this was working.
+  const swStats = await page.evaluate(async () => {
+    const sw = navigator.serviceWorker.controller;
+    if (!sw) return null;
+    return await new Promise((resolve) => {
+      const done = (e) => {
+        navigator.serviceWorker.removeEventListener("message", done);
+        resolve(e.data);
+      };
+      navigator.serviceWorker.addEventListener("message", done);
+      sw.postMessage("stats");
+      setTimeout(() => resolve(null), 3000);
+    });
+  });
+  if (!swStats) {
+    fail("the service worker never took control");
+  } else {
+    results.push(`note: intercepted ${swStats.intercepted}, served from here ${swStats.mirrored}`);
+    is(swStats.intercepted > 0, true, "the service worker sees the package downloads");
+    is(
+      swStats.mirrored,
+      swStats.intercepted,
+      "and every one of them is served from this origin",
+    );
+  }
+
 } catch (e) {
   fail(`${e.message.split("\n")[0]}`);
 }

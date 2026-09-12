@@ -68,7 +68,17 @@ say "building the web client"
 (cd web && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
 
 say "building the pad"
+# The mirrored wasm packages are 70 MB of binaries, so they are not in git.
+# Refusing here beats shipping a build that silently falls back to Wasmer's
+# CDN — which works, but at four times the download and with the CSP's
+# connect-src doing the only complaining.
+if [ ! -f pad/public/packages/manifest.json ]; then
+    echo "  pad/public/packages is empty — run:" >&2
+    echo "      (cd pad && npx vite build && node scripts/fetch-packages.mjs)" >&2
+    exit 1
+fi
 (cd pad && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
+say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"
 
@@ -108,14 +118,30 @@ BOOTSTRAP
     # move it across with the privilege we actually have.
     scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
     ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service"
-    # Substitute the domain rather than making someone remember to edit it.
-    # Only the bare domain is substituted, so `pad.ajar.rishwanth.dev` cannot
-    # be produced by rewriting a name that already has a prefix.
-    sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
-        | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
-    ssh "$HOST" "$SUDO systemctl daemon-reload && $SUDO systemctl enable ajar-relay && $SUDO systemctl reload-or-restart caddy"
+    ssh "$HOST" "$SUDO systemctl daemon-reload && $SUDO systemctl enable ajar-relay"
     say "bootstrapped — point $DOMAIN at this host's IP before the first request"
 fi
+
+# --------------------------------------------------------------- web config
+#
+# Every deploy, not only a bootstrap. A header, a route or a policy is as much
+# a part of what is being shipped as the binary is, and a config that only
+# moves on the rare path is one that drifts from the repository silently.
+
+say "updating caddy"
+# Only the bare domain is rewritten, anchored, so a name that already carries a
+# prefix — code.rishwanth.dev — is left alone rather than becoming
+# code.<newdomain>.
+sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
+    | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
+# Validated before it is loaded: a reload with a broken file leaves the old
+# config running, which looks like the deploy did nothing at all.
+if ! ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >/dev/null 2>&1; then
+    echo "  the Caddyfile is not valid; nothing was reloaded" >&2
+    ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >&2 || true
+    exit 1
+fi
+ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
 
 # --------------------------------------------------------------- deploy
 

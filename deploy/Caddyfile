@@ -52,7 +52,7 @@ ajar.rishwanth.dev {
 # isolation, which is a property of the whole document — put it on the origin
 # the session client lives on and every cross-origin thing that client loads
 # has to opt in or vanish silently. A subdomain keeps the blast radius at zero.
-pad.rishwanth.dev {
+code.rishwanth.dev {
 	# Everything the runtime needs, and the reason this origin exists.
 	header {
 		Cross-Origin-Opener-Policy "same-origin"
@@ -71,7 +71,7 @@ pad.rishwanth.dev {
 		# The registry and CDN are named because packages are still fetched
 		# from Wasmer at runtime. Self-hosting them, which is the plan,
 		# removes both from this line.
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://pad.rishwanth.dev https://registry.wasmer.io https://cdn.wasmer.io; frame-ancestors 'none'; base-uri 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https://registry.wasmer.io https://cdn.wasmer.io; frame-ancestors 'none'; base-uri 'none'"
 	}
 
 	# The wasm packages are content-addressed by the registry and the vendored
