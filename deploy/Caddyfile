@@ -44,3 +44,73 @@ ajar.rishwanth.dev {
 		format json
 	}
 }
+
+# The browser tier: a folder you open, edit and run without an agent anywhere.
+#
+# A separate origin, not a path on the one above, and that is forced rather
+# than chosen. WASIX threads need SharedArrayBuffer, which needs cross-origin
+# isolation, which is a property of the whole document — put it on the origin
+# the session client lives on and every cross-origin thing that client loads
+# has to opt in or vanish silently. A subdomain keeps the blast radius at zero.
+pad.rishwanth.dev {
+	# Everything the runtime needs, and the reason this origin exists.
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+
+		# `unsafe-eval` rather than the narrower `wasm-unsafe-eval`, because
+		# the Wasmer SDK's worker evaluates a string as JavaScript and fails
+		# inside the worker without it — where the error reads as a hang.
+		# The tighter policy was tried first and measured to break; this is
+		# a real relaxation and the reason for it is here so nobody tightens
+		# it back without running the checks.
+		#
+		# The registry and CDN are named because packages are still fetched
+		# from Wasmer at runtime. Self-hosting them, which is the plan,
+		# removes both from this line.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://pad.rishwanth.dev https://registry.wasmer.io https://cdn.wasmer.io; frame-ancestors 'none'; base-uri 'none'"
+	}
+
+	# The wasm packages are content-addressed by the registry and the vendored
+	# SDK is rebuilt under a new hash whenever it changes, so nothing here is
+	# worth revalidating. This is most of what makes a second visit free.
+	@immutable path /assets/* /vendor/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# The relay holds the durable folders and routes the peer broadcast.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle /ws {
+		reverse_proxy 127.0.0.1:8787 {
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+			}
+		}
+	}
+
+	handle {
+		root * /srv/ajar/pad
+		# Any path that is not a file is a folder name, and the page reads
+		# it off the URL.
+		try_files {path} /index.html
+		file_server
+	}
+
+	# zstd and gzip both: the wasm payloads are the bulk of a cold visit and
+	# Wasmer's own CDN serves them with no encoding at all, which is the
+	# difference between 59 MB and roughly 16.
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/pad.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
