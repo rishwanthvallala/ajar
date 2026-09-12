@@ -39,6 +39,26 @@ const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  // The policy the deploy will carry. Applied here so a CSP that breaks the
+  // runtime is found by a check rather than by a user on a live origin.
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      // `unsafe-eval`, not merely `wasm-unsafe-eval`: the SDK's worker
+      // evaluates a string as JavaScript, and without this the runtime fails
+      // inside the worker where the error is easy to mistake for a hang.
+      // Measured, not assumed — the tighter policy was tried first.
+      "script-src 'self' 'unsafe-eval' blob:",
+      "worker-src 'self' blob:",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "font-src 'self' data:",
+      "connect-src 'self' ws: wss: https://registry.wasmer.io https://cdn.wasmer.io",
+      "frame-ancestors 'none'",
+      "base-uri 'none'",
+    ].join("; "),
+  );
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
   if (path.startsWith("/api/")) {
     const up = httpRequest(
@@ -104,6 +124,10 @@ const is = (a, b, m) => (a === b ? ok(m) : fail(`${m} — got ${JSON.stringify(a
 const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on("pageerror", (e) => fail(`page error: ${e.message.slice(0, 160)}`));
+page.on("console", (m) => {
+  const t = m.text();
+  if (/Content Security Policy|Refused to/i.test(t)) fail(`CSP blocked: ${t.slice(0, 200)}`);
+});
 
 try {
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });

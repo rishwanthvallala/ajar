@@ -67,7 +67,10 @@ fi
 say "building the web client"
 (cd web && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
 
-say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) of assets"
+say "building the pad"
+(cd pad && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
+
+say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"
 
 # ------------------------------------------------------------ bootstrap
 
@@ -81,7 +84,7 @@ if [ "$MODE" = "--bootstrap" ]; then
     ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'BOOTSTRAP'
 # A service account with no shell and no home. It only runs one binary.
 id -u ajar >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin ajar
-mkdir -p /srv/ajar/web
+mkdir -p /srv/ajar/web /srv/ajar/pad
 chown -R ajar:ajar /srv/ajar
 
 if ! command -v caddy >/dev/null 2>&1; then
@@ -106,7 +109,9 @@ BOOTSTRAP
     scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
     ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service"
     # Substitute the domain rather than making someone remember to edit it.
-    sed "s|ajar\.rishwanth\.dev|$DOMAIN|g" deploy/Caddyfile \
+    # Only the bare domain is substituted, so `pad.ajar.rishwanth.dev` cannot
+    # be produced by rewriting a name that already has a prefix.
+    sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
         | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
     ssh "$HOST" "$SUDO systemctl daemon-reload && $SUDO systemctl enable ajar-relay && $SUDO systemctl reload-or-restart caddy"
     say "bootstrapped — point $DOMAIN at this host's IP before the first request"
@@ -119,8 +124,9 @@ say "shipping to $HOST"
 # systemd tries to exec is a worse outage than a few seconds of downtime.
 scp -q "$BIN" "$HOST:/tmp/ajar-relay.new"
 # Staged through a directory the deploy user owns, then moved into place.
-ssh "$HOST" "rm -rf /tmp/ajar-web && mkdir -p /tmp/ajar-web"
+ssh "$HOST" "rm -rf /tmp/ajar-web /tmp/ajar-pad && mkdir -p /tmp/ajar-web /tmp/ajar-pad"
 rsync -a --delete -e ssh web/dist/ "$HOST:/tmp/ajar-web/"
+rsync -a --delete -e ssh pad/dist/ "$HOST:/tmp/ajar-pad/"
 
 ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'SWAP'
 chmod 755 /tmp/ajar-relay.new
@@ -128,7 +134,11 @@ chmod 755 /tmp/ajar-relay.new
 # worse outage than the second of downtime a restart costs.
 mv /tmp/ajar-relay.new /usr/local/bin/ajar-relay
 rsync -a --delete /tmp/ajar-web/ /srv/ajar/web/
+mkdir -p /srv/ajar/pad
+rsync -a --delete /tmp/ajar-pad/ /srv/ajar/pad/
+# Caddy serves the pad directly, so it reads these rather than the relay user.
 chown -R ajar:ajar /srv/ajar
+chmod -R a+rX /srv/ajar/pad
 systemctl restart ajar-relay
 SWAP
 
