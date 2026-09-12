@@ -8,8 +8,9 @@
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import { Console } from "./console";
+import { DocSession } from "./editing";
 import { FileTree } from "./files";
-import { Peers } from "./peers";
+import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
 import { Store, type Pad } from "./store";
@@ -51,6 +52,20 @@ export class App {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** Set while a remote change is being written into the editor. */
   private applyingRemote = false;
+  /**
+   * Live documents, one per file somebody has open.
+   *
+   * Only open files get one. A folder of fifty files does not need fifty
+   * CRDTs; the interesting state is whatever is on somebody's screen.
+   */
+  private docs = new Map<string, DocSession>();
+  private byStream = new Map<number, string>();
+  private unbind: (() => void) | null = null;
+  /** Documents waiting on another browser to send their state. */
+  private awaiting = new Map<string, () => void>();
+  /** This browser's participant id and name, as cursors are labelled. */
+  private me = 1;
+  private whoami = "someone";
 
   constructor(
     private readonly name: string,
@@ -67,6 +82,18 @@ export class App {
     },
   ) {}
 
+  /** Exposed for the browser checks, which need to see what synced. */
+  private expose(): void {
+    (window as unknown as { __pad: unknown }).__pad = {
+      active: () => this.active,
+      docs: () => [...this.docs.keys()],
+      streams: () => [...this.byStream.entries()],
+      text: (p: string) => this.docs.get(p)?.contents() ?? this.models.get(p)?.getValue(),
+      known: () => [...this.known.keys()],
+      counts: () => this.peers?.counts,
+    };
+  }
+
   async start(): Promise<void> {
     this.el.title.textContent = this.name;
     this.say("loading", "opening…");
@@ -82,6 +109,7 @@ export class App {
     const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
     this.known = knownFrom(pad.files);
 
+    this.joinPeers();
     await this.openEditor();
     if (files.length === 0) {
       // A folder nobody has written to opens with something runnable in it, so
@@ -95,7 +123,7 @@ export class App {
     this.renderFiles();
     this.wire();
     await this.openTerminal();
-    this.joinPeers();
+    this.expose();
     this.say("", pad.exists ? "" : "new folder — nothing saved yet");
     this.editor?.focus();
   }
@@ -106,9 +134,14 @@ export class App {
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
     this.peers = new Peers(url, this.name, {
       onMoved: () => void this.refresh(),
-      onPresence: (others) => {
+      onPresence: (others, id) => {
         this.el.presence.textContent = others === 0 ? "" : `${others + 1} here`;
+        if (id) {
+          this.me = id;
+          this.whoami = `guest ${id}`;
+        }
       },
+      onDoc: (stream, kind, bytes) => this.onDoc(stream, kind, bytes),
     });
     this.peers.connect();
   }
@@ -138,6 +171,10 @@ export class App {
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
+      // A file with a live document is owned by the CRDT, which already has
+      // every keystroke. Writing the store's copy over it would undo whatever
+      // has been typed since that copy was saved.
+      if (this.docs.has(path)) continue;
       this.setFile(path, content);
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
@@ -155,6 +192,90 @@ export class App {
       if (first) this.show(first);
     }
     this.renderFiles();
+  }
+
+  // -------------------------------------------------------------- documents
+
+  /**
+   * Give a file a live document and attach it to the editor.
+   *
+   * The store holds the durable copy and Yjs holds the live one. Seeding both
+   * from the store independently would be wrong — two peers inserting the same
+   * text are two different insertions to a CRDT, and the merge produces it
+   * twice. So a newcomer asks for state instead, and only falls back to the
+   * store when nobody answers.
+   */
+  private async readyDoc(path: string): Promise<DocSession> {
+    const existing = this.docs.get(path);
+    if (existing) return existing;
+
+    const stream = streamFor(path);
+    const doc = new DocSession(stream, path, { id: this.me, name: this.whoami }, (kind, bytes) => {
+      this.peers?.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes);
+      // Local changes only — the document returns early on anything applied
+      // from somebody else — which makes this the right place to decide that
+      // something needs saving.
+      if (kind === "update") {
+        this.dirty.add(path);
+        this.saveSoon();
+      }
+    });
+    this.docs.set(path, doc);
+    this.byStream.set(stream, path);
+
+    // The stored copy, or the model's when there is none — a folder nobody
+    // has written to yet holds its starter only on screen. Safe as a seed
+    // because seeding happens only when this browser is alone or nobody
+    // answered, and in both cases no other document exists to disagree.
+    // Wait for the relay to say who is here. Asked a moment earlier, the room
+    // always looks empty and this browser seeds a document somebody else
+    // already owns.
+    await this.peers?.ready;
+
+    const stored = this.known.get(path) ?? this.models.get(path)?.getValue() ?? "";
+    if (!this.peers || this.peers.alone) {
+      doc.seed(stored);
+      return doc;
+    }
+
+    // Somebody else may have had this open for a while, with edits the store
+    // has not seen. Their document is the truth and this one must take it
+    // whole rather than start from the stored copy and merge.
+    //
+    // Seeding both would not merge anyway: `seed` uses a fixed client id so
+    // that two browsers seeding the *same* text produce identical operations,
+    // and two seeding *different* text produce conflicting ones under the same
+    // ids — which Yjs discards as already known. The result is two documents
+    // that exchange updates and silently ignore each other.
+    this.peers.doc(stream, DOC_WANT, doc.stateVector());
+    await new Promise<void>((resolve) => {
+      this.awaiting.set(path, resolve);
+      setTimeout(resolve, 600);
+    });
+    this.awaiting.delete(path);
+    // Nobody answered, so nobody else has it open and the stored copy is safe.
+    if (doc.length === 0) doc.seed(stored);
+    return doc;
+  }
+
+  private onDoc(stream: number, kind: number, bytes: Uint8Array): void {
+    const path = this.byStream.get(stream);
+    // A document nobody here has open. The folder still converges: whoever is
+    // editing it saves, and the nudge that follows brings the text over.
+    if (!path) return;
+    const doc = this.docs.get(path);
+    if (!doc) return;
+
+    if (kind === DOC_UPDATE) {
+      doc.applyUpdate(bytes);
+      // Whoever was waiting for state has it now.
+      this.awaiting.get(path)?.();
+    }
+    else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
+    else if (kind === DOC_WANT) {
+      // Somebody wants what they are missing. Only what they lack is sent.
+      this.peers?.doc(stream, DOC_UPDATE, doc.diffSince(bytes));
+    }
   }
 
   // ---------------------------------------------------------------- editor
@@ -202,6 +323,11 @@ export class App {
       // edit to send back. Without this every remote update bounces straight
       // home and two browsers push the same content at each other forever.
       if (this.applyingRemote) return;
+      // A file with a document marks itself dirty from the document's own
+      // send callback, which fires for local edits and not for applied
+      // remote ones. Marking here as well would save — and nudge everyone —
+      // once for every keystroke anybody else typed.
+      if (this.docs.has(path)) return;
       this.dirty.add(path);
       this.saveSoon();
     });
@@ -211,9 +337,15 @@ export class App {
 
   private show(path: string): void {
     const model = this.models.get(path);
-    if (!model || !this.editor) return;
+    if (!model || !this.editor || !this.monaco) return;
     this.active = path;
     this.editor.setModel(model);
+    this.unbind?.();
+    this.unbind = null;
+    // Bound once the document is ready, which may mean waiting for another
+    // browser to send it. The model already shows the stored copy meanwhile,
+    // so the wait is invisible rather than blank.
+    void this.attach(path, model);
     this.renderFiles();
     this.el.run.disabled = interpreterFor(path) === null;
     this.el.run.title = this.el.run.disabled ? `nothing here runs a ${path.split(".").pop()} file` : "";
@@ -267,6 +399,14 @@ export class App {
   }
 
 
+  private async attach(path: string, model: Monaco.editor.ITextModel): Promise<void> {
+    const doc = await this.readyDoc(path);
+    // Somebody may have clicked another file while this was waiting.
+    if (this.active !== path || !this.editor || !this.monaco) return;
+    this.unbind?.();
+    this.unbind = doc.bind(this.monaco, this.editor, model);
+  }
+
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => this.show(path),
@@ -295,7 +435,12 @@ export class App {
     const paths = [...this.dirty];
     this.dirty.clear();
     const changes = paths
-      .map((path) => ({ path, content: this.models.get(path)?.getValue() }))
+      .map((path) => ({
+        path,
+        // The document is the truth for a file somebody has open; the model
+        // mirrors it, and reading the mirror is a race with the next update.
+        content: this.docs.get(path)?.contents() ?? this.models.get(path)?.getValue(),
+      }))
       .filter((c): c is { path: string; content: string } => c.content !== undefined)
       .filter((c) => this.known.get(c.path) !== c.content);
     if (changes.length === 0) return;
