@@ -1,8 +1,25 @@
 <!doctype html>
-<html>
-  <head><meta charset="utf-8" /><title>ajar pad — checks</title></head>
-  <body style="font: 13px ui-monospace, monospace; padding: 1rem">
-    <pre id="log">running…</pre>
-    <script type="module" src="/src/check.ts"></script>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pad</title>
+  </head>
+  <body>
+    <header>
+      <span id="title" class="name"></span>
+      <span id="status" class="status"></span>
+      <span class="grow"></span>
+      <button id="run" class="primary" title="⌘⏎">Run</button>
+      <button id="share">Share</button>
+    </header>
+    <main>
+      <nav id="files" class="files"></nav>
+      <div class="panes">
+        <div id="editor" class="editor"></div>
+        <div id="terminal" class="terminal"></div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

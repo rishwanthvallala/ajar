@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "tsc --noEmit && vite build && node scripts/browser-check.mjs"
+    "check": "tsc --noEmit && vite build && node scripts/browser-check.mjs && node scripts/app-check.mjs"
   },
   "dependencies": {
     "@wasmer/sdk": "0.11.0",
