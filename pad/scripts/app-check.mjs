@@ -383,6 +383,49 @@ try {
   );
   ok("cat works, and so does everything else bash can reach");
 
+  // ---- a command that reads stdin ----
+  //
+  // `cat` with no arguments hung the terminal: the sentinel was sent as a
+  // second line, `cat` read it as input, printed it, and waited forever with
+  // nothing left to signal the end. And nothing typed afterwards reached it,
+  // because the line editor was swallowing input while a command ran.
+  await page.click("#terminal");
+  await page.keyboard.type("cat\n");
+  await new Promise((r) => setTimeout(r, 1500));
+  const leaked = await page.evaluate(
+    () => (document.getElementById("terminal")?.textContent ?? "").includes("001%s"),
+  );
+  is(leaked, false, "a command that reads stdin does not swallow the sentinel");
+
+  // Twice: once because the terminal echoed it, once because `cat` printed it
+  // back. Either alone would mean half of this is broken.
+  await page.keyboard.type("typed-into-cat\n");
+  await page.waitForFunction(
+    () =>
+      ((document.getElementById("terminal")?.textContent ?? "").match(/typed-into-cat/g) ?? [])
+        .length >= 2,
+    { timeout: 20_000 },
+  );
+  ok("what you type reaches a running command, and it answers");
+
+  // ctrl-c stops it. ctrl-d does not — this pty has no canonical mode, so
+  // there is no EOF to send.
+  //
+  // Asserted on the console's own state and then on a command that leaves a
+  // *file* behind. The first version watched for the command's text in the
+  // terminal, which `cat` was echoing back anyway, so it passed while `cat`
+  // was still running and everything typed after it was going nowhere.
+  await page.keyboard.press("Control+c");
+  await page.waitForFunction(() => window.__pad.shellBusy() === false, { timeout: 20_000 });
+  ok("ctrl-c stops a command that is waiting for input");
+
+  await page.keyboard.type("echo still-works > after-cat.txt\n");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("#files .row.file")].some((r) => r.textContent?.includes("after-cat.txt")),
+    { timeout: 30_000 },
+  );
+  ok("and the shell runs commands again afterwards");
+
   // ---- making a file from the page ----
   page.once("dialog", (d) => d.accept("notes.py"));
   await page.click('#files button[aria-label="New file"]');
@@ -440,6 +483,7 @@ try {
 
 } catch (e) {
   fail(`${e.message.split("\n")[0]}`);
+  await page.screenshot({ path: new URL("../failed.png", import.meta.url).pathname });
   // What the page was showing when it gave up. A bare timeout says only that
   // something did not happen, never what the user would have been looking at.
   try {

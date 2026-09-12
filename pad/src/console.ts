@@ -26,8 +26,15 @@ export class Console {
   /** Where the cursor sits within `line`, so arrow keys mean something. */
   private at = 0;
   private history: string[] = [];
+  private warned = false;
+  private started = false;
   private browsing: number | null = null;
   private running = false;
+
+  /** Whether a command is in the foreground. */
+  get busy(): boolean {
+    return this.running;
+  }
 
   constructor(
     private readonly screen: Screen,
@@ -49,7 +56,8 @@ export class Console {
    * 60 MB download about to happen twice.
    */
   attach(shell: Shell): void {
-    this.shell ??= shell;
+    if (!this.shell?.alive) this.shell = shell;
+    this.started = true;
   }
 
   /** Draw the first prompt. Nothing is on screen until this. */
@@ -59,9 +67,38 @@ export class Console {
 
   /** Bytes from the terminal. */
   handle(data: string): void {
-    // While something is running the only useful key is the one that stops it.
+    // While something is running, typing belongs to *it*, not to the line
+    // editor. `cat` with no arguments, `python` with no script, anything that
+    // reads input — all of them need what is typed, and swallowing it here is
+    // why `cat` looked like a hang rather than a program waiting for you.
+    //
+    // Echoed locally on the way through, because the shell does not.
+    // Exposed so the page and the checks can tell a running command from a
+    // prompt waiting for input — from the outside they look identical.
     if (this.running) {
-      if (data === "\x03") void this.shell?.type("\x03");
+      // Enter arrives from the terminal as a carriage return, and a program
+      // reading lines wants a newline — that translation is normally the
+      // line discipline's job, and there is not one here. Without it `cat`
+      // receives characters and never a complete line, so it answers nothing
+      // and still looks hung.
+      // Not echoed here. The terminal echoes what a running program reads —
+      // bash only silences it for its own input — so doing both showed every
+      // keystroke twice: `ttyyppeedd` for `typed`.
+      // ctrl-c ends the shell, not merely the command.
+      //
+      // Sending the byte and waiting to notice was tried twice and does not
+      // work: bash does not survive the interrupt, the output stream stays
+      // open afterwards so nothing looks wrong, and every later command hangs
+      // against a shell that cannot answer. Tearing it down here makes that
+      // deterministic instead of a race — the next command starts a new one.
+      //
+      // ctrl-d is forwarded and does nothing: this pty has no canonical mode,
+      // so there is no EOF to send and `cat` simply reads on.
+      if (data === "\x03") {
+        void this.interrupt();
+        return;
+      }
+      void this.shell?.type(data.replace(/\r/g, "\n"));
       return;
     }
     for (const ch of data) this.key(ch);
@@ -75,6 +112,8 @@ export class Console {
       case "\x7f":
       case "\b":
         return this.backspace();
+      case "\x04": // ctrl-d on an empty line: nothing to end, so ignore it
+        return;
       case "\x03": // ctrl-c: abandon the line, like a real shell
         this.screen.write("^C\r\n" + PROMPT);
         this.line = "";
@@ -131,6 +170,19 @@ export class Console {
     this.redraw();
   }
 
+  /**
+   * Stop whatever is running by ending the shell it runs in.
+   *
+   * The pending command resolves as the process goes, so the prompt comes
+   * back on its own; the next command gets a fresh shell in the folder root.
+   */
+  private async interrupt(): Promise<void> {
+    const shell = this.shell;
+    this.shell = null;
+    this.screen.write("^C\r\n");
+    await shell?.close().catch(() => {});
+  }
+
   private async submit(): Promise<void> {
     const command = this.line;
     this.screen.write("\r\n");
@@ -145,9 +197,29 @@ export class Console {
     if (this.history[this.history.length - 1] !== command) this.history.push(command);
 
     this.running = true;
+    // Said once, the first time something waits: a prompt that has vanished
+    // and a program waiting for input look exactly the same from here.
+    if (!this.warned) {
+      this.warned = true;
+      this.screen.write("\x1b[2m(ctrl-c stops a running command)\x1b[0m\r\n");
+    }
     try {
+      // A shell that has exited is replaced rather than reused. Interrupting
+      // a command takes bash with it here, so this is the normal path after a
+      // ctrl-c — and a fresh shell starts in the folder root with none of the
+      // previous one's variables, which is worth saying rather than letting
+      // somebody discover their `cd` was forgotten.
+      if (this.shell && !this.shell.alive) this.shell = null;
+      if (!this.shell && this.started) {
+        this.screen.write(
+          "\x1b[2m(the shell restarted — you are back in the folder root)\x1b[0m\r\n",
+        );
+      }
       if (!this.shell) {
-        this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
+        if (!this.started) {
+          this.started = true;
+          this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
+        }
         this.shell = await this.shellFor();
       }
       const { exitCode } = await this.shell.run(command);
