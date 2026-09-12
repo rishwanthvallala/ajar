@@ -53,11 +53,31 @@ self.addEventListener("fetch", (event) => {
     (async () => {
       const local = (await map())[url];
       if (!local) return fetch(event.request);
-      mirrored += 1;
       const res = await fetch(local);
       // A mirror that 404s must not break the app — fall back to the origin it
       // was mirroring rather than failing the request.
-      return res.ok ? res : fetch(event.request);
+      if (!res.ok) return fetch(event.request);
+      mirrored += 1;
+
+      // Strip the encoding headers before handing this back.
+      //
+      // `fetch` has already decompressed the body by the time it reaches us,
+      // but `Content-Encoding` and `Content-Length` still describe the
+      // compressed form. The SDK does its own HTTP decoding inside wasm, sees
+      // the header, and tries to decompress bytes that are already plain —
+      // failing with "zstd content-encoding is not supported on wasm32", which
+      // reads like a server misconfiguration and is the opposite.
+      //
+      // Stripping them is what lets the wire stay compressed: the transfer is
+      // 16 MB of zstd, and what the SDK receives is the 72 MB it expects.
+      const headers = new Headers(res.headers);
+      headers.delete("content-encoding");
+      headers.delete("content-length");
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+      });
     })(),
   );
 });
