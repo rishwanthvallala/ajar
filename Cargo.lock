@@ -95,6 +95,7 @@ dependencies = [
  "futures-util",
  "parking_lot",
  "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",

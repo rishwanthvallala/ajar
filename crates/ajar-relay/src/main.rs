@@ -4,6 +4,7 @@
 //! terminal is, what a file is, or what any payload contains.
 
 mod outbox;
+mod pad;
 mod quota;
 mod session;
 mod ws;
@@ -11,15 +12,17 @@ mod ws;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, State};
+use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, Path, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 
+use crate::pad::Store;
 use crate::session::Registry;
 
 #[derive(Parser, Debug)]
@@ -32,6 +35,19 @@ struct Args {
     /// Optional directory of built web-client assets to serve.
     #[arg(long)]
     web: Option<String>,
+
+    /// Where durable pads live.
+    ///
+    /// Sessions are in-memory and a restart losing them is correct; pads have
+    /// no agent to rebuild them, so they are on disk. Two lifetimes, one
+    /// process, kept apart deliberately.
+    ///
+    /// Relative by default so a dev run and every smoke test can create it
+    /// without privileges. The systemd unit passes an absolute path — an
+    /// unprivileged default of `/var/lib/...` refuses to start on a laptop,
+    /// which is where this is run most often.
+    #[arg(long, default_value = "./ajar-pads")]
+    pad_dir: String,
 
     /// Read the caller's address from `X-Forwarded-For`.
     ///
@@ -46,6 +62,7 @@ struct Args {
 struct AppState {
     registry: Arc<Registry>,
     quota: Arc<quota::Quota>,
+    pads: Arc<Store>,
     trust_forwarded: bool,
 }
 
@@ -59,11 +76,34 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+    let pads = Arc::new(
+        Store::open(&args.pad_dir)
+            .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?,
+    );
+    info!("pads stored in {}", args.pad_dir);
+
     let state = AppState {
         registry: Arc::new(Registry::new()),
         quota: Arc::new(quota::Quota::new()),
+        pads: pads.clone(),
         trust_forwarded: args.trust_forwarded_for,
     };
+
+    // Pads past their lease. Hourly rather than every few seconds: a lease is
+    // a week, and nothing goes wrong if a dead pad lingers an extra hour.
+    // `get` checks the lease too, so nobody is ever served an expired one.
+    {
+        let pads = pads.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                for name in pads.sweep() {
+                    info!(pad = %name, "entombed after its lease expired");
+                }
+            }
+        });
+    }
 
     // Sessions whose host never came back are swept here. Without this a
     // dropped agent would hold its link forever.
@@ -95,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(health))
         .route("/install.sh", get(install_script))
         .route("/run.sh", get(run_script))
+        .route("/api/pad/{name}", get(read_pad).put(write_pad))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -121,6 +162,65 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// What the browser gets when it opens a name.
+///
+/// A name nobody holds is not an error — it is the normal way a pad begins,
+/// and answering 404 would put a red line in the console every time somebody
+/// started something. `exists` carries that instead.
+#[derive(serde::Serialize)]
+struct PadBody {
+    exists: bool,
+    seq: u64,
+    files: std::collections::BTreeMap<String, pad::File>,
+}
+
+#[derive(serde::Deserialize)]
+struct WriteBody {
+    writes: Vec<pad::Write>,
+}
+
+#[derive(serde::Serialize)]
+struct Wrote {
+    seq: u64,
+}
+
+fn refuse(e: pad::Error) -> (StatusCode, String) {
+    let code = match e {
+        pad::Error::Gone => StatusCode::GONE,
+        pad::Error::TooBig { .. } | pad::Error::TooManyFiles => StatusCode::PAYLOAD_TOO_LARGE,
+        pad::Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    (code, e.message())
+}
+
+async fn read_pad(
+    Path(name): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<PadBody>, (StatusCode, String)> {
+    match state.pads.get(&name).map_err(refuse)? {
+        Some(p) => Ok(Json(PadBody {
+            exists: true,
+            seq: p.seq,
+            files: p.files,
+        })),
+        None => Ok(Json(PadBody {
+            exists: false,
+            seq: 0,
+            files: Default::default(),
+        })),
+    }
+}
+
+async fn write_pad(
+    Path(name): Path<String>,
+    State(state): State<AppState>,
+    Json(body): Json<WriteBody>,
+) -> Result<Json<Wrote>, (StatusCode, String)> {
+    let seq = state.pads.write(&name, &body.writes).map_err(refuse)?;
+    Ok(Json(Wrote { seq }))
 }
 
 /// `curl -sSf https://ajar.sh/install.sh | sh`
