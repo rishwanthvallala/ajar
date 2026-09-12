@@ -4,6 +4,11 @@
 during the foundation audit, against a specific proposal: no agent, no relay,
 files on the server, compute in a WASM container in the client.*
 
+**It was built. It is live at [code.rishwanth.dev](https://code.rishwanth.dev),
+and this note's conclusion was right for the wrong reason** — see the postscript
+at the end. [`pad/README.md`](../pad/README.md) describes what exists;
+[`personal-tier.md`](personal-tier.md) is the design that came out of this.
+
 ---
 
 ## The short answer
@@ -214,3 +219,40 @@ with a colleague, on a real bug, twice.
 - [container2wasm](https://medium.com/nttlabs/container2wasm-converter-running-linux-based-containers-on-wasm-and-browser-2dd90a18cc9a) and [CNCF Atlas entry](https://kanywst.github.io/cncf-atlas/tools/container2wasm/) — CPU emulation, QEMU-to-WASM, recommended target architectures
 - [CheerpX 1.0](https://labs.leaningtech.com/blog/cx-10) — x86-to-WASM JIT, 2 GB streamed disk images
 - [Direct Sockets | Isolated Web Apps](https://developer.chrome.com/docs/iwa/direct-sockets) — raw TCP requires an installed IWA
+
+---
+
+## Postscript: what happened
+
+This note answered "can WASM replace ajar's model" and concluded no. That was
+right, and it was answering a question nobody had asked. The narrower one —
+*a separate, small product with pinned binaries and no socket* — was viable,
+and is now running.
+
+Of the four walls above, only one stood as written.
+
+**No `fork`/`exec`** was the wrong wall. That is WASI Preview 2; WASIX has
+threads, fork, exec, pipes and TTY, and a real bash runs in a tab. What
+actually bites is smaller and stranger: bash functions define and then hang
+when called, ctrl-c kills the shell rather than the command, and there is no
+canonical mode so ctrl-d sends no EOF.
+
+**Wrong machine code** stood, exactly as described. The binary set is what
+somebody ported, it is pinned, and the gaps are real — no `git`, no `make`, no
+compiler, and awk had to be written in Python.
+
+**No sockets** stood and cost nothing, because pre-downloading the binaries is
+what removes `npm install` from the critical path. It does mean no `pip
+install` and no `git clone`, permanently.
+
+**"The server does not go away"** was the most useful paragraph here and still
+understated it. The relay grew a durable store — the one persistent thing in a
+binary whose whole design is that a restart losing everything is correct — plus
+an origin of its own, cross-origin isolation headers, and 73 MB of mirrored
+packages to serve. The conservation law held: the agent went away and the
+server grew.
+
+The estimate that was wrong in the reader's favour: Pyodide is 5 MB, not ~10.
+The one wrong against it: WASIX python is 59 MB alone but 73 MB with the
+dependencies a real shell drags in — about 16 MB once compressed and served
+from an origin that bothers to compress it, which Wasmer's CDN does not.
