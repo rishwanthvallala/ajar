@@ -1,37 +1,36 @@
 /**
  * The session's one shell, and how the page knows when a command has finished.
  *
- * ## Why not the prompt
+ * ## bash here does not behave like a terminal, whatever it reports
  *
- * The obvious completion signal is `PS1`: set it to something recognisable and
- * watch for it. Measured, that does not work here — `bash -i` spawned with a
- * terminal attached emits **no prompt and no echo of what it was sent**. A
- * command runs and its output arrives; nothing else does. So the shell behaves
- * like a pipe with a pty bolted on, and anything built on prompt behaviour
- * would be building on sand.
+ * Measured, twice, because the first answer looked self-inflicted and was not:
+ *
+ * ```text
+ *   test -t 0          ->  TTY        (a real pty is attached)
+ *   after spawn        ->  ""         (no prompt)
+ *   after `PS1=...`    ->  ""         (not even echoed)
+ *   after `echo hi`    ->  "hi\n"     (output only)
+ * ```
+ *
+ * So `PS1` cannot be the "I am idle" signal, and nothing a person types will
+ * appear on screen by itself. This build of bash runs commands and returns
+ * their output; everything else a terminal normally does is the page's job.
  *
  * ## The sentinel
  *
- * Each command is sent with a second line after it:
- *
- * ```sh
- *   python transform.py
- *   printf '\x01%s\x01' "$?"
- * ```
- *
- * That is just a command, so it needs no prompt semantics to work, and it
- * carries the exit status back for free. The page strips the marker before
- * anything reaches the terminal, so the user never sees it.
- *
- * `\x01` is used because it cannot appear in ordinary program output — it is a
- * C0 control character no tool emits — so a script printing the marker's shape
- * by accident is not a case worth worrying about.
+ * Each command is sent with a `printf` of `$?` after it, wrapped in `\x01` —
+ * a control character no ordinary tool emits. That needs no prompt to work and
+ * carries the exit status back for free. The marker is stripped before
+ * anything reaches the screen, including one split across two chunks.
  */
 import type { Runtime } from "./runtime";
 
 const MARK = "";
 /** Matches the sentinel and captures the exit status. */
 const DONE = /(\d+)/;
+// `$'...'` — ANSI-C quoting. Inside ordinary single quotes bash takes `\001`
+// as four literal characters and the marker never appears, which reads exactly
+// like the prompt not being printed at all.
 
 export interface Finished {
   exitCode: number;
@@ -106,7 +105,12 @@ export class Shell {
     });
   }
 
-  /** Raw bytes from someone typing. No sentinel, so no completion is reported. */
+  /**
+   * Raw bytes straight to the shell, bypassing the sentinel.
+   *
+   * For the one thing a line editor cannot express: an interrupt has to reach
+   * a *running* process, so it cannot wait for a prompt that will not come.
+   */
   type(data: string): Promise<void> {
     return this.proc.stdin!.write(data);
   }

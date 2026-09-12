@@ -258,6 +258,37 @@ try {
   );
   ok("and leaving is noticed too");
 
+  // ---- typing into the shell, which is the thing it is for ----
+  await page.click("#terminal");
+  await page.keyboard.type("echo typed-by-hand > hand.txt\n");
+  await page.waitForFunction(
+    () => (document.getElementById("terminal")?.textContent ?? "").includes("typed-by-hand"),
+    { timeout: 30_000 },
+  );
+  ok("what you type appears on screen — the page echoes it, bash will not");
+
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "hand.txt"),
+    { timeout: 30_000 },
+  );
+  ok("a file made by a typed command joins the folder");
+
+  await page.keyboard.type("cat hand.txt\n");
+  await page.waitForFunction(
+    () => ((document.getElementById("terminal")?.textContent ?? "").match(/typed-by-hand/g) ?? []).length >= 2,
+    { timeout: 30_000 },
+  );
+  ok("cat works, and so does everything else bash can reach");
+
+  // ---- making a file from the page ----
+  page.once("dialog", (d) => d.accept("notes.py"));
+  await page.click("#add");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.py"),
+    { timeout: 15_000 },
+  );
+  ok("you can make a new file");
+
   // ---- the mirror ----
   //
   // The service worker's own counters, not the network log. A worker response
