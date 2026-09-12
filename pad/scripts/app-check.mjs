@@ -18,21 +18,30 @@ const ROOT = new URL("../dist/", import.meta.url).pathname;
 const PORT = 5200;
 const RELAY_PORT = 8842;
 
+// `PAD_ORIGIN=https://code.rishwanth.dev node scripts/app-check.mjs` runs the
+// same checks against the deployed site instead of a local build. Worth having
+// as one script rather than two: a check that only ever runs locally cannot
+// catch a service worker that registers over http and not https, or a relay
+// that behaves differently behind a proxy.
+const LIVE = process.env.PAD_ORIGIN ?? null;
+
 const TYPES = {
   ".html": "text/html", ".css": "text/css", ".json": "application/json",
   ".map": "application/json", ".wasm": "application/wasm", ".ttf": "font/ttf",
   ".js": "text/javascript", ".mjs": "text/javascript", ".cjs": "text/javascript",
 };
 
-const padDir = await mkdtemp(join(tmpdir(), "ajar-pad-app-"));
-const relay = spawn(
+const padDir = LIVE ? null : await mkdtemp(join(tmpdir(), "ajar-pad-app-"));
+const relay = LIVE ? null : spawn(
   new URL("../../target/debug/ajar-relay", import.meta.url).pathname,
   ["--bind", `127.0.0.1:${RELAY_PORT}`, "--pad-dir", padDir],
   { stdio: "ignore" },
 );
-for (let i = 0; i < 60; i++) {
-  if (await fetch(`http://127.0.0.1:${RELAY_PORT}/healthz`).then(() => true).catch(() => false)) break;
-  await new Promise((r) => setTimeout(r, 250));
+if (!LIVE) {
+  for (let i = 0; i < 60; i++) {
+    if (await fetch(`http://127.0.0.1:${RELAY_PORT}/healthz`).then(() => true).catch(() => false)) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 const server = createServer(async (req, res) => {
@@ -114,7 +123,8 @@ server.on("upgrade", (req, socket, head) => {
   up.end();
 });
 
-await new Promise((r) => server.listen(PORT, r));
+if (!LIVE) await new Promise((r) => server.listen(PORT, r));
+const ORIGIN = LIVE ?? `http://127.0.0.1:${PORT}`;
 
 const results = [];
 const ok = (m) => results.push(`ok   ${m}`);
@@ -142,7 +152,7 @@ page.on("console", (m) => {
 });
 
 try {
-  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
   {
     const sw = await page.evaluate(async () => {
       const seen = [];
@@ -192,7 +202,7 @@ try {
     () => document.getElementById("status")?.textContent === "done",
     { timeout: 30_000 },
   );
-  const stored = await fetch(`http://127.0.0.1:${RELAY_PORT}/api/pad/${name}`).then((r) => r.json());
+  const stored = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is(stored.exists, true, "the folder was saved to the server");
   is(
     (stored.files["out.csv"]?.content ?? "").startsWith("n,square"),
@@ -202,7 +212,7 @@ try {
 
   // The whole point of a link: someone else opens it and the work is there.
   const second = await browser.newPage();
-  await second.goto(`http://127.0.0.1:${PORT}/${name}`, { waitUntil: "domcontentloaded" });
+  await second.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await second.waitForSelector(".monaco-editor", { timeout: 30_000 });
   await second.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"),
@@ -281,12 +291,25 @@ try {
 
 } catch (e) {
   fail(`${e.message.split("\n")[0]}`);
+  // What the page was showing when it gave up. A bare timeout says only that
+  // something did not happen, never what the user would have been looking at.
+  try {
+    const seen = await page.evaluate(() => ({
+      status: document.getElementById("status")?.textContent,
+      terminal: (document.getElementById("terminal")?.textContent ?? "").slice(-300),
+      files: [...document.querySelectorAll("#files .file")].map((b) => b.textContent),
+    }));
+    results.push(`note: status=${JSON.stringify(seen.status)} files=${JSON.stringify(seen.files)}`);
+    results.push(`note: terminal=${JSON.stringify(seen.terminal)}`);
+  } catch {}
 }
 
 await browser.close();
-server.close();
-relay.kill();
-await rm(padDir, { recursive: true, force: true });
+if (!LIVE) {
+  server.close();
+  relay.kill();
+  await rm(padDir, { recursive: true, force: true });
+}
 
 for (const line of results) console.log(`  ${line}`);
 const failed = results.filter((l) => l.startsWith("FAIL"));

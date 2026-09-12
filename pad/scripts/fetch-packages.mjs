@@ -13,11 +13,15 @@
 //
 //   npx vite build && node scripts/fetch-packages.mjs
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { chromium } from "playwright";
+
+const run = promisify(execFile);
 
 const OUT = new URL("../public/packages/", import.meta.url);
 const ROOT = new URL("../dist/", import.meta.url).pathname;
@@ -101,6 +105,38 @@ for (const url of [...wanted].sort()) {
   total += bytes.length;
   console.log(`  ${(bytes.length / 1048576).toFixed(1).padStart(6)} MB  ${file}`);
 }
+
+// Compressed once here rather than per request by Caddy.
+//
+// Caddy's `encode` decides from the response Content-Type, and it has no idea
+// what a `.webc` is — it serves them with no Content-Type at all, so the
+// default match never fires and 72 MB goes out raw. `file_server` with
+// `precompressed` sidesteps that entirely: it serves `<file>.zst` when the
+// client accepts zstd, and it costs nothing at request time.
+//
+// Also worth more: this is zstd -19, which no server would spend per request.
+console.log("  compressing…");
+let raw = 0;
+let small = 0;
+for (const local of Object.values(manifest)) {
+  const file = new URL(local.replace("/packages/", ""), OUT).pathname;
+  raw += (await stat(file)).size;
+  for (const [tool, args, ext] of [
+    ["zstd", ["-19", "-q", "-f", "--keep"], ".zst"],
+    ["gzip", ["-9", "-f", "--keep"], ".gz"],
+  ]) {
+    const out = file + ext;
+    if (await stat(out).catch(() => null)) continue;
+    await run(tool, [...args, file]).catch((e) => {
+      throw new Error(`${tool} failed — is it installed? ${e.message}`);
+    });
+  }
+  small += (await stat(file + ".zst")).size;
+}
+console.log(
+  `  ${(raw / 1048576).toFixed(1)} MB raw, ${(small / 1048576).toFixed(1)} MB zstd ` +
+    `(${Math.round((1 - small / raw) * 100)}% smaller over the wire)`,
+);
 
 await writeFile(new URL("manifest.json", OUT), JSON.stringify(manifest, null, 2));
 console.log(`  ${Object.keys(manifest).length} packages, ${(total / 1048576).toFixed(1)} MB mirrored`);

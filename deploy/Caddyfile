@@ -77,7 +77,7 @@ code.rishwanth.dev {
 	# The wasm packages are content-addressed by the registry and the vendored
 	# SDK is rebuilt under a new hash whenever it changes, so nothing here is
 	# worth revalidating. This is most of what makes a second visit free.
-	@immutable path /assets/* /vendor/*
+	@immutable path /assets/* /vendor/* /packages/*
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 
 	# The relay holds the durable folders and routes the peer broadcast.
@@ -98,7 +98,15 @@ code.rishwanth.dev {
 		# Any path that is not a file is a folder name, and the page reads
 		# it off the URL.
 		try_files {path} /index.html
-		file_server
+		# `precompressed` rather than leaving it to `encode`: Caddy decides
+		# what to compress from the response Content-Type, and it does not
+		# know what a `.webc` is — it serves them with no Content-Type at
+		# all, so the default match never fires and 72 MB goes out raw. The
+		# build writes `.zst` and `.gz` beside each file instead, which also
+		# buys zstd -19, a level no server would spend per request.
+		file_server {
+			precompressed zstd gzip
+		}
 	}
 
 	# zstd and gzip both: the wasm payloads are the bulk of a cold visit and
