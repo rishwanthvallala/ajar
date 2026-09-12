@@ -15,8 +15,12 @@ Wants=network-online.target
 Type=exec
 User=ajar
 Group=ajar
-ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for
+ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for --pad-dir /var/lib/ajar/pads
 Environment=RUST_LOG=ajar_relay=info
+
+# Creates /var/lib/ajar owned by the service user, so the pad store needs no
+# step in the bootstrap script that someone can forget on a new box.
+StateDirectory=ajar
 
 Restart=always
 RestartSec=2s

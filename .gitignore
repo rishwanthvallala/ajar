@@ -15,3 +15,4 @@ web/dist/
 .env
 .env.*
 !.env.example
+./ajar-pads/
