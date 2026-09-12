@@ -101,6 +101,41 @@ async function main() {
   is(second.exitCode, 0, "and each reports separately");
   is(sh.busy, false, "the shell reports itself idle once a command has finished");
 
+  // ---- the text-processing tools ----
+  //
+  // grep, sed and find are real ports; awk is a python shim, because no awk is
+  // published for this runtime. Checked the same way regardless — what matters
+  // is that someone typing them gets what they expect.
+  await rt.write("poem.txt", "alpha one 10\nbeta two 20\ngamma three 30\nalpha four 40\n");
+  for (const [cmd, want] of [
+    ["grep alpha poem.txt", "alpha one 10\nalpha four 40"],
+    ["grep -c alpha poem.txt", "2"],
+    ["grep -n beta poem.txt", "2:beta two 20"],
+    ["grep -iE 'GAMMA|delta' poem.txt", "gamma three 30"],
+    ["sed 's/alpha/ALPHA/' poem.txt | head -1", "ALPHA one 10"],
+    ["sed -n '2p' poem.txt", "beta two 20"],
+    ["cat poem.txt | grep two", "beta two 20"],
+    ["awk '{print $1}' poem.txt | head -1", "alpha"],
+    ["awk '$3 > 20 {print $1}' poem.txt", "gamma\nalpha"],
+    ["awk '/beta/ {print $2}' poem.txt", "two"],
+    ["awk -F' ' '{n += $3} END {print n}' poem.txt", "100"],
+    ["awk '{print $1 \"-\" $3}' poem.txt | head -1", "alpha-10"],
+    ["awk '$1 !~ /alpha/ {print $1}' poem.txt", "beta\ngamma"],
+  ] as const) {
+    printed = "";
+    const r = await sh.run(cmd);
+    if (printed.trim() === want) ok(cmd);
+    else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
+  }
+
+  // find does the work and then fails to change back to where it started,
+  // which is a WASIX quirk rather than ours. Recorded so the exit code is not
+  // mistaken later for a broken search.
+  printed = "";
+  const found = await sh.run("find . -name 'poem*'");
+  is(printed.trim(), "./poem.txt", "find locates the file");
+  report(`note: find exits ${found.exitCode} — it cannot restore its cwd under wasix`);
+
   // ---- the diff, which decides what anyone else ever sees ----
   let known = knownFrom({});
   const first = await diff(rt, known);

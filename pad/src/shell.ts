@@ -23,7 +23,14 @@
  * carries the exit status back for free. The marker is stripped before
  * anything reaches the screen, including one split across two chunks.
  */
+// `?raw` so the python stays python — embedded in a template literal the
+// TypeScript lexer objects to its escape sequences, and every `\` has to be
+// doubled by hand forever after.
+import AWK_PY from "./tools/awk.py?raw";
 import type { Runtime } from "./runtime";
+
+/** Where the shims live. Ignored by the sync, so it never joins the folder. */
+export const TOOLS = ".ajar/awk.py";
 
 const MARK = "";
 /** Matches the sentinel and captures the exit status. */
@@ -39,6 +46,16 @@ export interface Finished {
 export class Shell {
   /** Discards output. Set while the shell is being configured. */
   silent = false;
+  /**
+   * Bytes we wrote that the terminal may hand straight back.
+   *
+   * `stty -echo` is asked for at startup, and mostly holds — but a program
+   * that touches termios on its way out can leave it on again, so some
+   * commands come back echoed and others do not, with no pattern worth
+   * guessing at. Rather than fight the terminal, whatever was written is
+   * remembered and consumed off the front of the output if it reappears.
+   */
+  private echoed = "";
   private buffer = "";
   private waiting: ((f: Finished) => void) | null = null;
   private readonly decoder = new TextDecoder();
@@ -70,6 +87,27 @@ export class Shell {
     // runs. `silent` swallows the setup's own echo along the way.
     shell.silent = true;
     await shell.run("stty -echo 2>/dev/null");
+
+    // `awk`, backed by python, because no awk is published for this runtime —
+    // grep, sed and find are real ports; this one is not.
+    //
+    // An alias, and that is the only mechanism that works. Measured:
+    //
+    //   hi() { echo x; }   defines fine
+    //   hi                 prints `x` and never returns
+    //   /workspace/bin/awk prints correctly and never returns
+    //   alias aw=…         works
+    //
+    // Calling a bash function in this build hangs — the output arrives and the
+    // shell never comes back — and so does a script on PATH. An alias is plain
+    // textual substitution with nothing to fork, so it survives. It needs
+    // `expand_aliases` because this shell is not interactive in bash's sense.
+    //
+    // Absolute path: an alias is expanded wherever the user has cd'd to.
+    await rt.write(TOOLS, AWK_PY);
+    await shell.run("shopt -s expand_aliases");
+    await shell.run(`alias awk='python /workspace/${TOOLS}'`);
+
     shell.silent = false;
     return shell;
   }
@@ -83,6 +121,7 @@ export class Shell {
 
   private absorb(text: string): void {
     this.buffer += text;
+    this.dropEcho();
     for (;;) {
       const found = DONE.exec(this.buffer);
       if (!found) break;
@@ -106,6 +145,28 @@ export class Shell {
   }
 
   /**
+   * Consume an echo of what we sent, if one comes back.
+   *
+   * All three cases have to be distinguished, and a character-at-a-time
+   * comparison cannot do it: `grep …` and its output `gamma …` share a first
+   * letter, so matching greedily ate the real output's `g`.
+   *
+   *   buffer is a prefix of what we sent   -> still arriving, wait
+   *   buffer starts with what we sent      -> a real echo, drop it
+   *   neither                              -> no echo; leave the output alone
+   *
+   * The wait always ends, because the sentinel follows every command.
+   */
+  private dropEcho(): void {
+    if (!this.echoed || !this.buffer) return;
+    if (this.echoed.startsWith(this.buffer)) return;
+    if (this.buffer.startsWith(this.echoed)) {
+      this.buffer = this.buffer.slice(this.echoed.length);
+    }
+    this.echoed = "";
+  }
+
+  /**
    * Run one command and resolve when it finishes.
    *
    * Rejects if another is already running: two commands interleaved in one
@@ -115,7 +176,9 @@ export class Shell {
     if (this.waiting) return Promise.reject(new Error("a command is already running"));
     return new Promise<Finished>((resolve, reject) => {
       this.waiting = resolve;
-      this.proc.stdin!.write(`${command}\nprintf '\\001%s\\001' "$?"\n`).catch((e) => {
+      const sent = `${command}\nprintf '\\001%s\\001' "$?"\n`;
+      this.echoed = sent;
+      this.proc.stdin!.write(sent).catch((e) => {
         this.waiting = null;
         reject(e);
       });

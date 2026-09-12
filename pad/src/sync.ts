@@ -44,7 +44,15 @@ export function knownFrom(files: Record<string, StoredFile>): Known {
  * single `python` run adds every `__pycache__` entry to the shared folder and
  * to everyone else's screen.
  */
-const IGNORED = [/(^|\/)__pycache__\//, /\.pyc$/, /(^|\/)\.git\//, /(^|\/)node_modules\//];
+const IGNORED = [
+  /(^|\/)__pycache__\//,
+  /\.pyc$/,
+  /(^|\/)\.git\//,
+  /(^|\/)node_modules\//,
+  // Our own shims. They live in the sandbox so the shell can reach them, and
+  // they are emphatically not part of anybody's folder.
+  /^\.ajar\//,
+];
 
 export function ignored(path: string): boolean {
   return IGNORED.some((re) => re.test(path));
