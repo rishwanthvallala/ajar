@@ -204,12 +204,12 @@ export class Runtime {
    * single environment, and a fresh process per command would be several.
    */
   spawnShell(columns: number, rows: number) {
-    return this.box.command(this.bash, ["-i"]).spawn({
-      terminal: { columns, rows },
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "pipe",
-    });
+    // Only `terminal`. The SDK's own docs say it implies piped stdio, and
+    // naming the three explicitly alongside it silently replaces the pty with
+    // plain pipes — bash then sees no tty, prints no prompt, echoes nothing,
+    // and the terminal can only ever be written to. That cost this project a
+    // wrong conclusion in a design note: interactive shells are fine here.
+    return this.box.command(this.bash, ["-i"]).spawn({ terminal: { columns, rows } });
   }
 
   close(): Promise<void> {

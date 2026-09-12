@@ -7,6 +7,7 @@
  */
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 
+import { Console } from "./console";
 import { Peers } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
@@ -34,6 +35,7 @@ export class App {
   private active = "";
   private runtime: Promise<Runtime> | null = null;
   private shell: Shell | null = null;
+  private console: Console | null = null;
   private term: { write: (s: string) => void; fit: () => void } | null = null;
   private known: Known = new Map();
   private prefetched = false;
@@ -48,6 +50,7 @@ export class App {
       files: HTMLElement;
       editor: HTMLElement;
       terminal: HTMLElement;
+      add: HTMLButtonElement;
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       status: HTMLElement;
@@ -192,6 +195,27 @@ export class App {
     this.el.run.title = this.el.run.disabled ? `nothing here runs a ${path.split(".").pop()} file` : "";
   }
 
+  /**
+   * Make a file.
+   *
+   * Written straight into the sandbox as well as the editor, so the shell can
+   * see it immediately — someone who makes `notes.py` and types `python
+   * notes.py` should not have to press Run first to bring it into existence.
+   */
+  private addFile(): void {
+    const name = prompt("New file", "untitled.py")?.trim();
+    if (!name) return;
+    if (this.models.has(name)) return this.show(name);
+    if (name.startsWith("/") || name.split("/").some((p) => !p || p === "." || p === "..")) {
+      this.say("error", "that path will not work");
+      return;
+    }
+    this.setFile(name, "");
+    this.show(name);
+    void this.runtime?.then((rt) => rt.write(name, ""));
+    this.editor?.focus();
+  }
+
   private renderFiles(): void {
     this.el.files.replaceChildren(
       ...[...this.models.keys()].sort().map((path) => {
@@ -249,12 +273,23 @@ export class App {
     addEventListener("resize", () => fit.fit());
     this.term = { write: (s) => term.write(s), fit: () => fit.fit() };
     this.shell = await Shell.open(rt, { columns: term.cols, rows: term.rows }, (t) => term.write(t));
+
+    // The prompt, the echo and the line editing are all the page's job here —
+    // bash provides none of them. See `console.ts`.
+    const shell = this.shell;
+    this.console = new Console({ write: (d) => term.write(d) }, shell, () =>
+      void this.afterCommand(),
+    );
+    term.onData((data) => this.console?.handle(data));
+    term.onResize(({ cols, rows }) => shell.resize(cols, rows));
+    this.console.start();
     return this.shell;
   }
 
   // ------------------------------------------------------------------- run
 
   private wire(): void {
+    this.el.add.onclick = () => this.addFile();
     this.el.run.onclick = () => void this.run();
     this.el.share.onclick = () => void this.share();
     addEventListener("keydown", (e) => {
@@ -283,9 +318,13 @@ export class App {
       for (const [path, model] of this.models) await rt.write(path, model.getValue());
 
       this.say("running", "running…");
-      this.term?.write(`\x1b[2m$ ${program} ${this.active}\x1b[0m\r\n`);
-      const { exitCode } = await sh.run(`${program} ${JSON.stringify(this.active)}`);
-      if (exitCode !== 0) this.term?.write(`\x1b[31mexited ${exitCode}\x1b[0m\r\n`);
+      const command = `${program} ${JSON.stringify(this.active)}`;
+      // Shown the way a typed one would be, because that is what it is: the
+      // button is a shortcut for typing, not a second way to execute.
+      this.console?.announce(command);
+      const { exitCode } = await sh.run(command);
+      if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
+      this.console?.resume();
 
       this.say("saving", "saving…");
       await this.publish(rt);
@@ -300,6 +339,22 @@ export class App {
         this.missed = false;
         void this.refresh();
       }
+    }
+  }
+
+  /**
+   * Sync after anything the shell did, typed or clicked.
+   *
+   * Skipped while Run is mid-flight: that path publishes once at the end, and
+   * doing it here as well would send the same diff twice and nudge everyone
+   * else for the second one.
+   */
+  private async afterCommand(): Promise<void> {
+    if (this.busy || !this.runtime) return;
+    try {
+      await this.publish(await this.runtime);
+    } catch (e) {
+      this.say("error", (e as Error).message);
     }
   }
 
