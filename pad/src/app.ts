@@ -7,6 +7,7 @@
  */
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 
+import { Peers } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
 import { Store, type Pad } from "./store";
@@ -36,6 +37,9 @@ export class App {
   private term: { write: (s: string) => void; fit: () => void } | null = null;
   private known: Known = new Map();
   private prefetched = false;
+  private peers: Peers | null = null;
+  private busy = false;
+  private missed = false;
 
   constructor(
     private readonly name: string,
@@ -47,6 +51,7 @@ export class App {
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       status: HTMLElement;
+      presence: HTMLElement;
       title: HTMLElement;
     },
   ) {}
@@ -78,8 +83,64 @@ export class App {
 
     this.renderFiles();
     this.wire();
+    this.joinPeers();
     this.say("", pad.exists ? "" : "new folder — nothing saved yet");
     this.editor?.focus();
+  }
+
+  // ----------------------------------------------------------------- peers
+
+  private joinPeers(): void {
+    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+    this.peers = new Peers(url, this.name, {
+      onMoved: () => void this.refresh(),
+      onPresence: (others) => {
+        this.el.presence.textContent = others === 0 ? "" : `${others + 1} here`;
+      },
+    });
+    this.peers.connect();
+  }
+
+  /**
+   * Somebody else changed the folder. Re-read it rather than trusting the
+   * broadcast, which carries only the fact that something moved.
+   *
+   * Deferred while a command is running: the sandbox filesystem is mid-flight
+   * then, and writing someone else's version of a file underneath a running
+   * script is a way to produce output that matches no version of anything.
+   */
+  private async refresh(): Promise<void> {
+    if (this.busy) {
+      this.missed = true;
+      return;
+    }
+    let pad: Pad;
+    try {
+      pad = await this.store.read(this.name);
+    } catch {
+      return;
+    }
+    const rt = this.runtime ? await this.runtime : null;
+    const incoming = knownFrom(pad.files);
+
+    for (const [path, content] of incoming) {
+      if (this.known.get(path) === content) continue;
+      this.setFile(path, content);
+      // The sandbox too, or the next run uses the version this browser had
+      // before the change arrived.
+      if (rt) await rt.write(path, content);
+    }
+    for (const path of this.known.keys()) {
+      if (incoming.has(path)) continue;
+      this.models.get(path)?.dispose();
+      this.models.delete(path);
+    }
+    this.known = incoming;
+    if (!this.models.has(this.active)) {
+      const first = [...this.models.keys()].sort()[0];
+      if (first) this.show(first);
+    }
+    this.renderFiles();
   }
 
   // ---------------------------------------------------------------- editor
@@ -96,6 +157,9 @@ export class App {
       },
     };
     this.monaco = monaco;
+    // Exposed so the browser checks can drive the editor the way a person
+    // would. Monaco's own API, not a hook invented for testing.
+    (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
     this.editor = monaco.editor.create(this.el.editor, {
       automaticLayout: true,
       minimap: { enabled: false },
@@ -206,6 +270,7 @@ export class App {
     if (!program || this.el.run.disabled) return;
 
     this.el.run.disabled = true;
+    this.busy = true;
     try {
       this.say("loading", this.runtime ? "" : "fetching python, first time only…");
       const rt = await this.ensureRuntime();
@@ -228,7 +293,13 @@ export class App {
     } catch (e) {
       this.say("error", (e as Error).message);
     } finally {
+      this.busy = false;
       this.el.run.disabled = interpreterFor(this.active) === null;
+      // A change that arrived mid-run was put off rather than dropped.
+      if (this.missed) {
+        this.missed = false;
+        void this.refresh();
+      }
     }
   }
 
@@ -236,7 +307,7 @@ export class App {
   private async publish(rt: Runtime): Promise<void> {
     const { changes, next } = await diff(rt, this.known);
     if (changes.length === 0) return;
-    await this.store.write(this.name, changes);
+    const seq = await this.store.write(this.name, changes);
     // Only once the server has it: a failed write must not leave the page
     // believing it is in sync, or the change is never retried.
     this.known = next;
@@ -249,6 +320,9 @@ export class App {
       }
     }
     this.renderFiles();
+    // Only after the server has it, so nobody is told to read a version that
+    // does not exist yet.
+    this.peers?.moved(seq);
   }
 
   private async share(): Promise<void> {
