@@ -47,6 +47,7 @@ one shape for its whole life.
 | `web` | The session client — Vite, TypeScript, xterm.js |
 | `pad` | The browser tier — same stack, plus a WASIX runtime |
 | `scripts/` | End-to-end tests and the pre-commit gate |
+| `docs/` | Design notes, and [what is still open](docs/open-points.md) |
 
 ## Sharing a folder
 
