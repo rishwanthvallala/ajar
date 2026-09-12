@@ -277,20 +277,81 @@ try {
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.type(`# ${TYPED}\nprint('hi')\n`);
 
-  await third.waitForFunction(
-    (text) => window.monaco?.editor?.getModels?.().some((m) => m.getValue().includes(text)),
-    TYPED,
-    { timeout: 30_000 },
-  );
-  ok("an edit reaches the other browser without anybody pressing Run");
+  try {
+    await third.waitForFunction(
+      (text) => window.monaco?.editor?.getModels?.().some((m) => m.getValue().includes(text)),
+      TYPED,
+      { timeout: 20_000 },
+    );
+    ok("an edit reaches the other browser without anybody pressing Run");
+  } catch {
+    for (const [who, tab] of [["first", page], ["third", third]]) {
+      const d = await tab.evaluate(() => ({
+        active: window.__pad?.active(),
+        docs: window.__pad?.docs(),
+        streams: window.__pad?.streams(),
+        text: (window.__pad?.text(window.__pad?.active()) ?? "").slice(0, 30),
+        counts: window.__pad?.counts(),
+      }));
+      results.push(`note: ${who} ${JSON.stringify(d)}`);
+    }
+    fail("an edit did not reach the other browser");
+  }
 
-  // And it has to have reached the server too, or a reload loses it.
+  // And it has to have reached the server too, or a reload loses it. Saving is
+  // debounced, so this waits for the page to say it happened rather than
+  // racing it.
+  await page.waitForFunction(
+    () => document.getElementById("status")?.textContent === "saved",
+    { timeout: 20_000 },
+  );
   const savedPad = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is(
     Object.values(savedPad.files).some((f) => f.content.includes(TYPED)),
     true,
     "and the edit was saved, so a reload keeps it",
   );
+  // ---- two people in one file at once ----
+  //
+  // The case file-level last-write-wins cannot survive: both type, both save,
+  // and one of them loses everything they wrote. With a CRDT underneath both
+  // sets of characters have to be there afterwards.
+  await third.evaluate(() => {
+    const m = window.monaco.editor.getModels().find((x) => x.getValue().includes("edited-and-never-run"));
+    if (m) window.monaco.editor.setModelMarkers(m, "x", []);
+  });
+
+  await page.click(".monaco-editor .view-lines");
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("from-the-first-browser\n");
+
+  await third.click(".monaco-editor .view-lines");
+  await third.keyboard.press("ControlOrMeta+End");
+  await third.keyboard.type("from-the-second-browser\n");
+
+  // Both texts, in both browsers.
+  for (const [who, tab] of [["first", page], ["second", third]]) {
+    await tab
+      .waitForFunction(
+        () =>
+          window.monaco.editor
+            .getModels()
+            .some(
+              (m) =>
+                m.getValue().includes("from-the-first-browser") &&
+                m.getValue().includes("from-the-second-browser"),
+            ),
+        { timeout: 30_000 },
+      )
+      .then(() => ok(`the ${who} browser has both people's typing`))
+      .catch(async () => {
+        const seen = await tab.evaluate(() =>
+          window.monaco.editor.getModels().map((m) => m.getValue().slice(0, 60)),
+        );
+        fail(`the ${who} browser lost somebody's typing — models: ${JSON.stringify(seen)}`);
+      });
+  }
+
   await third.close();
 
   // ---- typing into the shell, which is the thing it is for ----

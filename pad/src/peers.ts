@@ -29,6 +29,30 @@
 const HEADER_LEN = 9;
 const CH_CONTROL = 0x01;
 const CH_FS = 0x03;
+const CH_DOC = 0x05;
+
+/** First byte of a doc payload. */
+export const DOC_UPDATE = 0x01;
+export const DOC_AWARENESS = 0x02;
+/** A newcomer's state vector: "this is what I have, send me the rest." */
+export const DOC_WANT = 0x03;
+
+/**
+ * Which stream a file's updates travel on.
+ *
+ * Derived from the path so every browser agrees without being told. A hash
+ * rather than a counter: peers arrive in any order and there is nobody to hand
+ * out numbers.
+ */
+export function streamFor(path: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < path.length; i++) {
+    h ^= path.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  // Zero is the channel's own JSON stream, so it can never be a document.
+  return (h >>> 0) || 1;
+}
 
 interface Frame {
   channel: number;
@@ -62,7 +86,9 @@ export interface PeerEvents {
   /** Somebody changed the folder. The sequence they reached, if they said. */
   onMoved: (seq: number) => void;
   /** How many other browsers are on this link, this one not counted. */
-  onPresence: (others: number) => void;
+  onPresence: (others: number, id: number | null) => void;
+  /** A document update, awareness change, or request for state. */
+  onDoc: (stream: number, kind: number, bytes: Uint8Array) => void;
 }
 
 export class Peers {
@@ -72,12 +98,29 @@ export class Peers {
   private others = new Set<number>();
   private closed = false;
   private attempt = 0;
+  /** Doc frames in and out, for the browser checks. */
+  readonly counts = { docOut: 0, docIn: 0, dropped: 0 };
+  private arrived: (() => void) | null = null;
+  /**
+   * Resolves once the relay has said who else is here.
+   *
+   * Anything that behaves differently when alone has to wait for this, or it
+   * decides in the moment before the socket has answered — when the room
+   * always looks empty.
+   */
+  readonly ready: Promise<void>;
 
   constructor(
     private readonly url: string,
     private readonly session: string,
     private readonly events: PeerEvents,
-  ) {}
+  ) {
+    this.ready = new Promise<void>((resolve) => {
+      this.arrived = resolve;
+      // A relay that never answers must not hold the page up forever.
+      setTimeout(resolve, 2000);
+    });
+  }
 
   connect(): void {
     const ws = new WebSocket(this.url);
@@ -116,7 +159,7 @@ export class Peers {
       // socket that earned it.
       this.id = null;
       this.others.clear();
-      this.events.onPresence(0);
+      this.events.onPresence(0, null);
       if (this.closed) return;
       const wait = Math.min(250 * 2 ** this.attempt, 8000);
       this.attempt += 1;
@@ -139,21 +182,31 @@ export class Peers {
         this.others = new Set(
           welcome.participants.map((p) => p.id).filter((id) => id !== this.id),
         );
-        this.events.onPresence(this.others.size);
-        for (const queued of this.pending.splice(0)) this.send(queued.channel, queued.payload);
+        this.events.onPresence(this.others.size, this.id);
+        this.arrived?.();
+        for (const q of this.pending.splice(0)) this.send(q.channel, q.payload, q.streamId);
       } else if (msg.t === "joined") {
         this.others.add((msg as { participant: { id: number } }).participant.id);
-        this.events.onPresence(this.others.size);
+        this.events.onPresence(this.others.size, this.id);
       } else if (msg.t === "left") {
         this.others.delete((msg as { participant_id: number }).participant_id);
-        this.events.onPresence(this.others.size);
+        this.events.onPresence(this.others.size, this.id);
       }
       return;
     }
     if (f.channel === CH_FS) {
       const msg = parse(f.payload) as { t: string; seq?: number };
       if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0);
+      return;
     }
+    if (f.channel === CH_DOC && f.payload.length > 0) {
+      this.counts.docIn += 1;
+      this.events.onDoc(f.streamId, f.payload[0]!, f.payload.subarray(1));
+    }
+  }
+
+  get alone(): boolean {
+    return this.others.size === 0;
   }
 
   /** Say that the folder moved. Silent when nobody else is here. */
@@ -162,12 +215,26 @@ export class Peers {
     this.send(CH_FS, json({ t: "moved", seq }));
   }
 
-  private send(channel: number, payload: Uint8Array): void {
+  /**
+   * A document update. Sent even when alone, unlike `moved` — a peer that
+   * arrives a moment later asks for state, and answering needs the history
+   * these updates carry.
+   */
+  doc(stream: number, kind: number, bytes: Uint8Array): void {
+    this.counts.docOut += 1;
+    const payload = new Uint8Array(bytes.length + 1);
+    payload[0] = kind;
+    payload.set(bytes, 1);
+    this.send(CH_DOC, payload, stream);
+  }
+
+  private send(channel: number, payload: Uint8Array, streamId = 0): void {
     if (this.id === null || this.ws?.readyState !== WebSocket.OPEN) {
-      this.pending.push({ channel, streamId: 0, target: 0, payload });
+      this.counts.dropped += 1;
+      this.pending.push({ channel, streamId, target: 0, payload });
       return;
     }
-    this.ws.send(encode({ channel, streamId: 0, target: this.id, payload }));
+    this.ws.send(encode({ channel, streamId, target: this.id, payload }));
   }
 
   close(): void {
