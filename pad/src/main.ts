@@ -6,6 +6,7 @@
  * flow: no dialog, no template picker, nothing between arriving and typing.
  */
 import { App } from "./app";
+import { mirrorPackages } from "./runtime";
 import { mintName, Store } from "./store";
 import "./style.css";
 
@@ -29,4 +30,7 @@ if (!path) {
   history.replaceState(null, "", `/${name}${location.search}`);
 }
 
-void new App(name, new Store(), el).start();
+// Registered before the app so the mirror is in place by the time anything
+// asks for a package. Awaited, but never fatal: without it the packages come
+// from Wasmer's CDN uncompressed, which is slower rather than broken.
+void mirrorPackages().then(() => new App(name, new Store(), el).start());

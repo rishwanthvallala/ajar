@@ -76,7 +76,43 @@ function sdk() {
   return loading;
 }
 
-/** Start fetching the runtime without waiting for it. */
+/**
+ * Serve the pinned packages from this origin.
+ *
+ * Registered before anything asks for a package. The SDK has no registry
+ * override and its browser build cannot decode in-memory WEBC —
+ * `packages.load(bytes)` fails with `FeatureNotEnabled { "authoring" }` — so
+ * rewriting the request in a service worker is the available interception
+ * point, and the only one that also covers the workers the SDK downloads in.
+ *
+ * Failure here is not fatal: without the worker the packages come from
+ * Wasmer's CDN, uncompressed and slower, which is worse but not broken.
+ */
+export async function mirrorPackages(): Promise<boolean> {
+  if (!("serviceWorker" in navigator)) return false;
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    // A worker that is registered but not yet controlling this page would let
+    // the first — and largest — download slip past it.
+    if (!navigator.serviceWorker.controller && reg.active) {
+      await new Promise<void>((resolve) => {
+        navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), {
+          once: true,
+        });
+        setTimeout(resolve, 2000);
+      });
+    }
+    return navigator.serviceWorker.controller !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start fetching the runtime without waiting for it.
+ *
+ */
 export function prefetch(): void {
   void sdk();
 }
@@ -103,10 +139,10 @@ export class Runtime {
     const { Wasmer } = await sdk();
     const wasmer = new Wasmer();
 
-    // Loaded as an object rather than named by string, because more than one
-    // installed package exports a command called `bash` — the python package
-    // ships one too — and a bare name is refused as ambiguous. A `CommandRef`
-    // says which package we meant.
+    // By registry name, with the service worker quietly serving our mirror.
+    // Loaded as an object rather than a string because more than one installed
+    // package exports a command called `bash` — the python package ships one
+    // too — and a bare name is refused as ambiguous.
     const shellPkg = await wasmer.packages.load(PACKAGES.shell);
     const bash = shellPkg.command("bash");
 
