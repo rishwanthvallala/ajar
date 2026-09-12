@@ -35,7 +35,7 @@
  * validation error")`. The browser is the target, so this is not a problem to
  * solve — but it does mean the checks have to drive a real browser.
  */
-import type { Sandbox, Wasmer as WasmerClass } from "@wasmer/sdk";
+import type { CommandRef, Sandbox, Wasmer as WasmerClass } from "@wasmer/sdk";
 
 declare const __SDK_URL__: string;
 
@@ -44,8 +44,14 @@ declare const __SDK_URL__: string;
  *
  * Which versions are available is part of the product rather than an
  * implementation detail — a folder that ran last week has to run this week.
+ *
+ * Every one of these is a version the registry actually publishes. An invented
+ * one fails at sandbox construction with a registry error, which is a long way
+ * from the line that guessed it.
  */
 export const PACKAGES = {
+  shell: "sharrattj/bash@1.0.18",
+  coreutils: "sharrattj/coreutils@1.0.16",
   python: "python/python@3.13.20",
 } as const;
 
@@ -87,16 +93,29 @@ export interface Entry {
 }
 
 export class Runtime {
-  private constructor(private readonly box: Sandbox) {}
+  private constructor(
+    private readonly box: Sandbox,
+    private readonly bash: CommandRef,
+  ) {}
 
   /** `files` keys are root-relative JS paths: `"main.py"`, not `"/app/main.py"`. */
   static async start(files: Record<string, string> = {}): Promise<Runtime> {
     const { Wasmer } = await sdk();
-    const box = await new Wasmer().sandboxes.create({
-      packages: [PACKAGES.python],
+    const wasmer = new Wasmer();
+
+    // Loaded as an object rather than named by string, because more than one
+    // installed package exports a command called `bash` — the python package
+    // ships one too — and a bare name is refused as ambiguous. A `CommandRef`
+    // says which package we meant.
+    const shellPkg = await wasmer.packages.load(PACKAGES.shell);
+    const bash = shellPkg.command("bash");
+
+    const box = await wasmer.sandboxes.create({
+      packages: [shellPkg, PACKAGES.coreutils, PACKAGES.python],
+      shell: bash,
       files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),
     });
-    return new Runtime(box);
+    return new Runtime(box, bash);
   }
 
   /**
@@ -139,6 +158,22 @@ export class Runtime {
       }
     }
     return out;
+  }
+
+  /**
+   * A long-lived interactive shell with a terminal attached.
+   *
+   * One of these per session, not one per command — the whole point of Run
+   * typing into a shell rather than executing on its own is that there is a
+   * single environment, and a fresh process per command would be several.
+   */
+  spawnShell(columns: number, rows: number) {
+    return this.box.command(this.bash, ["-i"]).spawn({
+      terminal: { columns, rows },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "pipe",
+    });
   }
 
   close(): Promise<void> {

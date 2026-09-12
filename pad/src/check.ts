@@ -5,6 +5,7 @@
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
 import { interpreterFor, Runtime } from "./runtime";
+import { Shell } from "./shell";
 
 const results: string[] = [];
 const el = document.getElementById("log")!;
@@ -60,6 +61,45 @@ async function main() {
   const warm = performance.now();
   await rt.run("python", ["-c", "pass"]);
   ok(`a warm run costs ${Math.round(performance.now() - warm)}ms`);
+
+  // ---- the shell, which the Run design depends on ----
+  let printed = "";
+  const sh = await Shell.open(rt, { columns: 80, rows: 24 }, (t) => {
+    printed += t;
+  });
+
+  // Recorded rather than asserted: whether bash sees a tty decides whether a
+  // prompt or an echo can ever be relied on, and the answer here is no.
+  const tty = await sh.run("test -t 0 && echo TTY || echo NOTTY");
+  report(`note: stdin is a ${printed.includes("TTY") && !printed.includes("NOTTY") ? "tty" : "pipe"} to bash`);
+  is(tty.exitCode, 0, "a command reports its exit status back");
+
+  printed = "";
+  const ran2 = await sh.run("python -c 'print(21*2)'");
+  is(printed.includes("42"), true, "python runs inside the session shell");
+  is(ran2.exitCode, 0, "a successful command reports 0");
+  is(printed.includes("\u0001"), false, "the sentinel never reaches the terminal");
+
+  const bad = await sh.run("python -c 'raise SystemExit(7)'");
+  is(bad.exitCode, 7, "a failing command reports its real status");
+
+  printed = "";
+  await sh.run("python -c \"open('from-shell.txt','w').write('via bash')\"");
+  try {
+    is(await rt.read("from-shell.txt"), "via bash", "the page sees what the shell wrote");
+  } catch (e) {
+    fail(`the page could not read what the shell wrote: ${(e as Error).message}`);
+  }
+
+  // Sequential commands keep their own output and their own status.
+  printed = "";
+  await sh.run("echo first");
+  const second = await sh.run("echo second");
+  is(printed.includes("first") && printed.includes("second"), true, "commands run in sequence");
+  is(second.exitCode, 0, "and each reports separately");
+  is(sh.busy, false, "the shell reports itself idle once a command has finished");
+
+  await sh.close();
 
   await rt.close();
   report("DONE");
