@@ -16,6 +16,7 @@ const el = {
   run: document.getElementById("run") as HTMLButtonElement,
   share: document.getElementById("share") as HTMLButtonElement,
   status: document.getElementById("status")!,
+  presence: document.getElementById("presence")!,
   title: document.getElementById("title")!,
 };
 

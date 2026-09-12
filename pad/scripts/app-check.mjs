@@ -62,6 +62,38 @@ const server = createServer(async (req, res) => {
     res.end(await readFile(join(ROOT, "index.html")));
   }
 });
+// WebSocket upgrades go to the relay untouched. Without this the page is on
+// one origin and the peer connection on another, which is not how it is
+// deployed and would hide exactly the bugs this check is for.
+server.on("upgrade", (req, socket, head) => {
+  // A browser closing its tab resets this socket. Unhandled, that error is
+  // thrown at the top level and takes the whole run down with it, turning
+  // every real failure into an unreadable stack.
+  socket.on("error", () => socket.destroy());
+  const up = httpRequest({
+    host: "127.0.0.1",
+    port: RELAY_PORT,
+    path: req.url,
+    method: req.method,
+    headers: req.headers,
+  });
+  up.on("upgrade", (res, upSocket, upHead) => {
+    upSocket.on("error", () => upSocket.destroy());
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\n` +
+        Object.entries(res.headers)
+          .map(([k, v]) => `${k}: ${v}\r\n`)
+          .join("") +
+        `\r\n`,
+    );
+    if (upHead?.length) socket.write(upHead);
+    upSocket.pipe(socket).pipe(upSocket);
+  });
+  up.on("error", () => socket.destroy());
+  if (head?.length) up.write(head);
+  up.end();
+});
+
 await new Promise((r) => server.listen(PORT, r));
 
 const results = [];
@@ -124,7 +156,44 @@ try {
     { timeout: 20_000 },
   );
   ok("opening the link again finds the work, generated files and all");
+
+  // ---- two browsers on one link ----
+  await second.waitForFunction(
+    () => document.getElementById("presence")?.textContent?.includes("2 here"),
+    { timeout: 20_000 },
+  );
+  ok("each browser is told how many others are here");
+
+  // The second browser writes a file only it could have produced. Checking for
+  // out.csv here would prove nothing — the first page made one itself a moment
+  // ago, so the check would pass with the relay unplugged.
+  await second.evaluate(() => {
+    const w = window;
+    const model = w.monaco?.editor?.getModels?.()[0];
+    model?.setValue("open('only-from-the-second.txt','w').write('hi')\nprint('done')\n");
+  });
+  await second.click("#run");
+  await second.waitForFunction(
+    () => document.getElementById("status")?.textContent === "done",
+    { timeout: 180_000 },
+  );
+
+  // A nudge crossed the relay and the first page re-read the folder.
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll("#files .file")].some(
+        (b) => b.textContent === "only-from-the-second.txt",
+      ),
+    { timeout: 30_000 },
+  );
+  ok("a change made in one browser reaches the other");
+
   await second.close();
+  await page.waitForFunction(
+    () => !document.getElementById("presence")?.textContent?.includes("2 here"),
+    { timeout: 20_000 },
+  );
+  ok("and leaving is noticed too");
 } catch (e) {
   fail(`${e.message.split("\n")[0]}`);
 }
