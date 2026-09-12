@@ -14,7 +14,6 @@ const el = {
   files: document.getElementById("files")!,
   editor: document.getElementById("editor")!,
   terminal: document.getElementById("terminal")!,
-  add: document.getElementById("add") as HTMLButtonElement,
   run: document.getElementById("run") as HTMLButtonElement,
   share: document.getElementById("share") as HTMLButtonElement,
   status: document.getElementById("status")!,

@@ -282,12 +282,27 @@ try {
 
   // ---- making a file from the page ----
   page.once("dialog", (d) => d.accept("notes.py"));
-  await page.click("#add");
+  await page.click('#files button[aria-label="New file"]');
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.py"),
     { timeout: 15_000 },
   );
   ok("you can make a new file");
+
+  // Folders come from the paths under them, so one made in the shell has to
+  // show up as a folder rather than as a file with a slash in its name.
+  await page.click("#terminal");
+  await page.keyboard.type("mkdir -p data && echo 1,2 > data/rows.csv\n");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("#files .row.dir")].some((r) => r.textContent?.includes("data")),
+    { timeout: 30_000 },
+  );
+  ok("a folder made in the shell appears as a folder");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("#files .row.file")].some((r) => r.textContent?.includes("rows.csv")),
+    { timeout: 15_000 },
+  );
+  ok("and the file inside it is nested under it");
 
   // ---- the mirror ----
   //
@@ -335,6 +350,19 @@ try {
   } catch {}
 }
 
+{
+  const dom = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#files .row").length,
+    bar: document.querySelectorAll("#files .tree-bar button").length,
+    filesHTML: (document.getElementById("files")?.innerHTML ?? "").length,
+    editors: document.querySelectorAll(".monaco-editor").length,
+    editorBox: document.getElementById("editor")?.getBoundingClientRect().height,
+    filesBox: document.getElementById("files")?.getBoundingClientRect(),
+  }));
+  results.push(`note: dom ${JSON.stringify(dom)}`);
+}
+// One look at the finished page, so the layout is reviewed rather than assumed.
+await page.screenshot({ path: new URL("../shot.png", import.meta.url).pathname });
 await browser.close();
 if (!LIVE) {
   server.close();

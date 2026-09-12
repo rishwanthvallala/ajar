@@ -8,6 +8,7 @@
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import { Console } from "./console";
+import { FileTree } from "./files";
 import { Peers } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
@@ -36,7 +37,10 @@ export class App {
   private runtime: Promise<Runtime> | null = null;
   private shell: Shell | null = null;
   private console: Console | null = null;
+  private tree: FileTree | null = null;
   private term: { write: (s: string) => void; fit: () => void } | null = null;
+  private cols = 80;
+  private rows = 24;
   private known: Known = new Map();
   private prefetched = false;
   private peers: Peers | null = null;
@@ -50,7 +54,6 @@ export class App {
       files: HTMLElement;
       editor: HTMLElement;
       terminal: HTMLElement;
-      add: HTMLButtonElement;
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       status: HTMLElement;
@@ -86,6 +89,7 @@ export class App {
 
     this.renderFiles();
     this.wire();
+    await this.openTerminal();
     this.joinPeers();
     this.say("", pad.exists ? "" : "new folder — nothing saved yet");
     this.editor?.focus();
@@ -202,31 +206,56 @@ export class App {
    * see it immediately — someone who makes `notes.py` and types `python
    * notes.py` should not have to press Run first to bring it into existence.
    */
-  private addFile(): void {
-    const name = prompt("New file", "untitled.py")?.trim();
+  private addFile(inDirectory = ""): void {
+    const name = this.askFor("New file", "untitled.py", inDirectory);
     if (!name) return;
     if (this.models.has(name)) return this.show(name);
-    if (name.startsWith("/") || name.split("/").some((p) => !p || p === "." || p === "..")) {
-      this.say("error", "that path will not work");
-      return;
-    }
     this.setFile(name, "");
     this.show(name);
+    // Into the sandbox too, so `python notes.py` works without pressing Run
+    // first to bring the file into existence.
     void this.runtime?.then((rt) => rt.write(name, ""));
     this.editor?.focus();
   }
 
-  private renderFiles(): void {
-    this.el.files.replaceChildren(
-      ...[...this.models.keys()].sort().map((path) => {
-        const b = document.createElement("button");
-        b.className = "file" + (path === this.active ? " on" : "");
-        b.textContent = path;
-        b.onclick = () => this.show(path);
-        return b;
-      }),
-    );
+  /**
+   * Make a directory.
+   *
+   * It exists in the sandbox immediately, but cannot be *stored* until
+   * something is in it — the folder is derived from its contents, and an empty
+   * one has none. The tree shows it meanwhile so the click is not silent.
+   */
+  private addFolder(inDirectory = ""): void {
+    const name = this.askFor("New folder", "data", inDirectory);
+    if (!name) return;
+    this.tree?.addPendingFolder(name);
+    void this.runtime?.then((rt) => rt.write(`${name}/.keep`, "").catch(() => {}));
+    this.renderFiles();
+    this.say("", "empty folders are not saved until something is in them");
   }
+
+  /** One prompt, one set of rules, so both buttons refuse the same paths. */
+  private askFor(title: string, placeholder: string, inDirectory: string): string | null {
+    const raw = prompt(title, inDirectory ? `${inDirectory}/${placeholder}` : placeholder);
+    const name = raw?.trim().replace(/^\/+|\/+$/g, "") ?? "";
+    if (!name) return null;
+    if (name.split("/").some((p) => !p || p === "." || p === "..")) {
+      this.say("error", "that path will not work");
+      return null;
+    }
+    return name;
+  }
+
+
+  private renderFiles(): void {
+    this.tree ??= new FileTree(this.el.files, {
+      onOpen: (path) => this.show(path),
+      onNewFile: (dir) => this.addFile(dir),
+      onNewFolder: (dir) => this.addFolder(dir),
+    });
+    this.tree.render([...this.models.keys()], this.active);
+  }
+
 
   // --------------------------------------------------------------- runtime
 
@@ -254,8 +283,19 @@ export class App {
     return this.runtime;
   }
 
-  private async ensureShell(rt: Runtime): Promise<Shell> {
-    if (this.shell) return this.shell;
+  /**
+   * Put the terminal on screen before anything can run in it.
+   *
+   * The prompt, the typing and the line editing are all the page's, so none of
+   * them need the runtime. Waiting for it would leave an empty black rectangle
+   * until somebody pressed Run — and the first command someone types is how
+   * they find out the thing is a shell at all.
+   *
+   * The 16 MB still arrives lazily. A command typed before it is ready waits,
+   * and says so.
+   */
+  private async openTerminal(): Promise<void> {
+    if (this.term) return;
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
     await import("@xterm/xterm/css/xterm.css");
@@ -272,24 +312,35 @@ export class App {
     fit.fit();
     addEventListener("resize", () => fit.fit());
     this.term = { write: (s) => term.write(s), fit: () => fit.fit() };
-    this.shell = await Shell.open(rt, { columns: term.cols, rows: term.rows }, (t) => term.write(t));
+    this.cols = term.cols;
+    this.rows = term.rows;
 
-    // The prompt, the echo and the line editing are all the page's job here —
-    // bash provides none of them. See `console.ts`.
-    const shell = this.shell;
-    this.console = new Console({ write: (d) => term.write(d) }, shell, () =>
+    // The console owns the prompt, the echo and the line editing — bash
+    // provides none of them. It asks for a shell only when a line is entered.
+    this.console = new Console({ write: (d) => term.write(d) }, () => this.ensureShell(), () =>
       void this.afterCommand(),
     );
     term.onData((data) => this.console?.handle(data));
-    term.onResize(({ cols, rows }) => shell.resize(cols, rows));
+    term.onResize(({ cols, rows }) => {
+      this.cols = cols;
+      this.rows = rows;
+      void this.shell?.resize(cols, rows);
+    });
     this.console.start();
+  }
+
+  private async ensureShell(): Promise<Shell> {
+    if (this.shell) return this.shell;
+    const rt = await this.ensureRuntime();
+    this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) =>
+      this.term?.write(t),
+    );
     return this.shell;
   }
 
   // ------------------------------------------------------------------- run
 
   private wire(): void {
-    this.el.add.onclick = () => this.addFile();
     this.el.run.onclick = () => void this.run();
     this.el.share.onclick = () => void this.share();
     addEventListener("keydown", (e) => {
@@ -309,7 +360,8 @@ export class App {
     try {
       this.say("loading", this.runtime ? "" : "fetching python, first time only…");
       const rt = await this.ensureRuntime();
-      const sh = await this.ensureShell(rt);
+      const sh = await this.ensureShell();
+      this.console?.attach(sh);
 
       // Flush every model before running. The editor holds the text; the
       // sandbox holds the file. They are not the same thing, and running

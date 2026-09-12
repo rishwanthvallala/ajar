@@ -21,6 +21,7 @@ export interface Screen {
 }
 
 export class Console {
+  private shell: Shell | null = null;
   private line = "";
   /** Where the cursor sits within `line`, so arrow keys mean something. */
   private at = 0;
@@ -30,10 +31,26 @@ export class Console {
 
   constructor(
     private readonly screen: Screen,
-    private readonly shell: Shell,
+    /**
+     * Asked for only when a line is entered — the terminal is usable before
+     * the 60 MB runtime exists, and most of the time it arrives during the
+     * typing of the first command.
+     */
+    private readonly shellFor: () => Promise<Shell>,
     /** Called after any command the person typed, so the folder can be synced. */
     private readonly onFinished: () => void,
   ) {}
+
+  /**
+   * Hand over a shell that already exists.
+   *
+   * Without this the console asks for one on its first line and announces that
+   * it is starting the runtime — even when Run already did, which reads as a
+   * 60 MB download about to happen twice.
+   */
+  attach(shell: Shell): void {
+    this.shell ??= shell;
+  }
 
   /** Draw the first prompt. Nothing is on screen until this. */
   start(): void {
@@ -44,7 +61,7 @@ export class Console {
   handle(data: string): void {
     // While something is running the only useful key is the one that stops it.
     if (this.running) {
-      if (data === "\x03") void this.shell.type("\x03");
+      if (data === "\x03") void this.shell?.type("\x03");
       return;
     }
     for (const ch of data) this.key(ch);
@@ -129,6 +146,10 @@ export class Console {
 
     this.running = true;
     try {
+      if (!this.shell) {
+        this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
+        this.shell = await this.shellFor();
+      }
       const { exitCode } = await this.shell.run(command);
       if (exitCode !== 0) this.screen.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
     } catch (e) {

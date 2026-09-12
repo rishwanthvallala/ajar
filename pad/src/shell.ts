@@ -37,6 +37,8 @@ export interface Finished {
 }
 
 export class Shell {
+  /** Discards output. Set while the shell is being configured. */
+  silent = false;
   private buffer = "";
   private waiting: ((f: Finished) => void) | null = null;
   private readonly decoder = new TextDecoder();
@@ -54,6 +56,21 @@ export class Shell {
     const proc = await rt.spawnShell(size.columns, size.rows);
     const shell = new Shell(proc, onOutput);
     void shell.drain();
+    // Turn the terminal's own echo off, and wait until it is actually off.
+    //
+    // The pty echoes what is written to it, so without this every command
+    // appears twice — once where the page drew it, once where the terminal
+    // repeated it — and the `printf` carrying the exit status lands on screen
+    // too. Probing the shell directly suggested there was no echo at all; a
+    // screenshot of the running page showed there plainly was. The screenshot
+    // was right, which is the argument for taking one.
+    //
+    // Awaited rather than fired off, because until it lands the shell is still
+    // echoing — and the thing it would echo is the first command somebody
+    // runs. `silent` swallows the setup's own echo along the way.
+    shell.silent = true;
+    await shell.run("stty -echo 2>/dev/null");
+    shell.silent = false;
     return shell;
   }
 
@@ -72,7 +89,7 @@ export class Shell {
       // Everything before the marker is real output; the marker itself is
       // bookkeeping and never reaches the terminal.
       const before = this.buffer.slice(0, found.index);
-      if (before) this.onOutput(before);
+      if (before && !this.silent) this.onOutput(before);
       this.buffer = this.buffer.slice(found.index + found[0].length);
       const done = this.waiting;
       this.waiting = null;
@@ -83,7 +100,7 @@ export class Shell {
     const held = this.buffer.lastIndexOf(MARK);
     const flushable = held === -1 ? this.buffer : this.buffer.slice(0, held);
     if (flushable) {
-      this.onOutput(flushable);
+      if (!this.silent) this.onOutput(flushable);
       this.buffer = this.buffer.slice(flushable.length);
     }
   }
