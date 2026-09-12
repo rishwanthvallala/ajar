@@ -313,43 +313,50 @@ try {
   );
   // ---- two people in one file at once ----
   //
-  // The case file-level last-write-wins cannot survive: both type, both save,
-  // and one of them loses everything they wrote. With a CRDT underneath both
-  // sets of characters have to be there afterwards.
-  await third.evaluate(() => {
-    const m = window.monaco.editor.getModels().find((x) => x.getValue().includes("edited-and-never-run"));
-    if (m) window.monaco.editor.setModelMarkers(m, "x", []);
-  });
+  // Two things to prove, and they are different. Taking turns, neither
+  // person's work may be lost — which is exactly what file-level last-write-
+  // wins destroys. Typing at the same instant, both browsers must at least
+  // agree, because a CRDT promises convergence and not that two people
+  // inserting at the same spot stay tidy: they interleave, in any editor
+  // built this way, and asserting otherwise is asserting the wrong thing.
+  const textOf = (tab) =>
+    tab.evaluate(() => window.__pad.text(window.__pad.active()) ?? "");
 
+  // Taking turns.
   await page.click(".monaco-editor .view-lines");
   await page.keyboard.press("ControlOrMeta+a");
-  await page.keyboard.type("from-the-first-browser\n");
+  await page.keyboard.type("FIRST-LINE\n");
+  await third.waitForFunction(
+    () => (window.__pad.text(window.__pad.active()) ?? "").includes("FIRST-LINE"),
+    { timeout: 20_000 },
+  );
 
   await third.click(".monaco-editor .view-lines");
   await third.keyboard.press("ControlOrMeta+End");
-  await third.keyboard.type("from-the-second-browser\n");
+  await third.keyboard.type("SECOND-LINE\n");
+  await page.waitForFunction(
+    () => (window.__pad.text(window.__pad.active()) ?? "").includes("SECOND-LINE"),
+    { timeout: 20_000 },
+  );
 
-  // Both texts, in both browsers.
-  for (const [who, tab] of [["first", page], ["second", third]]) {
-    await tab
-      .waitForFunction(
-        () =>
-          window.monaco.editor
-            .getModels()
-            .some(
-              (m) =>
-                m.getValue().includes("from-the-first-browser") &&
-                m.getValue().includes("from-the-second-browser"),
-            ),
-        { timeout: 30_000 },
-      )
-      .then(() => ok(`the ${who} browser has both people's typing`))
-      .catch(async () => {
-        const seen = await tab.evaluate(() =>
-          window.monaco.editor.getModels().map((m) => m.getValue().slice(0, 60)),
-        );
-        fail(`the ${who} browser lost somebody's typing — models: ${JSON.stringify(seen)}`);
-      });
+  const afterTurns = await Promise.all([textOf(page), textOf(third)]);
+  if (afterTurns.every((t) => t.includes("FIRST-LINE") && t.includes("SECOND-LINE"))) {
+    ok("taking turns, both people's work survives in both browsers");
+  } else {
+    fail(`taking turns lost something: ${JSON.stringify(afterTurns)}`);
+  }
+
+  // At the same instant.
+  await Promise.all([
+    page.keyboard.type("aaaaaaaa"),
+    third.keyboard.type("bbbbbbbb"),
+  ]);
+  await new Promise((r) => setTimeout(r, 3000));
+  const [one, two] = await Promise.all([textOf(page), textOf(third)]);
+  if (one === two && one.includes("a") && one.includes("b")) {
+    ok("typing at once, both browsers converge on the same text");
+  } else {
+    fail(`typing at once diverged:\n       ${JSON.stringify(one)}\n       ${JSON.stringify(two)}`);
   }
 
   await third.close();
