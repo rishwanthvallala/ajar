@@ -107,7 +107,7 @@ code.rishwanth.dev {
 	encode zstd gzip
 
 	log {
-		output file /var/log/caddy/pad.log {
+		output file /var/log/caddy/code.log {
 			roll_size 10MiB
 			roll_keep 5
 		}

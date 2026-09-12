@@ -114,38 +114,19 @@ mkdir -p /var/log/caddy
 chown -R caddy:caddy /var/log/caddy
 BOOTSTRAP
 
-    # scp cannot write to /etc as an unprivileged user, so land in /tmp and
-    # move it across with the privilege we actually have.
-    scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
-    ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service"
-    ssh "$HOST" "$SUDO systemctl daemon-reload && $SUDO systemctl enable ajar-relay"
+    ssh "$HOST" "$SUDO systemctl enable ajar-relay" 2>/dev/null || true
     say "bootstrapped — point $DOMAIN at this host's IP before the first request"
 fi
-
-# --------------------------------------------------------------- web config
-#
-# Every deploy, not only a bootstrap. A header, a route or a policy is as much
-# a part of what is being shipped as the binary is, and a config that only
-# moves on the rare path is one that drifts from the repository silently.
-
-say "updating caddy"
-# Only the bare domain is rewritten, anchored, so a name that already carries a
-# prefix — code.rishwanth.dev — is left alone rather than becoming
-# code.<newdomain>.
-sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
-    | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
-# Validated before it is loaded: a reload with a broken file leaves the old
-# config running, which looks like the deploy did nothing at all.
-if ! ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >/dev/null 2>&1; then
-    echo "  the Caddyfile is not valid; nothing was reloaded" >&2
-    ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >&2 || true
-    exit 1
-fi
-ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
 
 # --------------------------------------------------------------- deploy
 
 say "shipping to $HOST"
+# The unit every time, not only on a bootstrap. It carries the flags the binary
+# is invoked with, so a release that needs a new one starts against the old
+# arguments and fails — which is how this deploy took the relay down: a binary
+# that wanted --pad-dir met a unit that had never heard of it.
+scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
+ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service && $SUDO systemctl daemon-reload"
 # To a temporary name first, then moved into place: a half-copied binary that
 # systemd tries to exec is a worse outage than a few seconds of downtime.
 scp -q "$BIN" "$HOST:/tmp/ajar-relay.new"
@@ -167,6 +148,37 @@ chown -R ajar:ajar /srv/ajar
 chmod -R a+rX /srv/ajar/pad
 systemctl restart ajar-relay
 SWAP
+
+# --------------------------------------------------------------- web config
+#
+# Every deploy, not only a bootstrap: a header, a route or a policy is as much
+# a part of what is shipped as the binary, and a config that moves only on the
+# rare path drifts from the repository silently.
+#
+# *After* the files, deliberately. Reloading a config that points at a
+# directory which does not exist yet gets you a certificate and a 404 — the
+# site answers, so nothing looks broken, and the deploy has already stopped.
+
+say "updating caddy"
+# Only the bare domain is rewritten, anchored, so a name that already carries a
+# prefix — code.rishwanth.dev — is left alone rather than becoming
+# code.<newdomain>.
+sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
+    | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
+# Validated before it is loaded: a reload with a broken file leaves the old
+# config running, which looks like the deploy did nothing at all.
+#
+# `validate` opens the log files named in the config, and running it as root
+# creates any that are missing owned by root — which the caddy user then cannot
+# write, so the very next reload fails on a file the validation step made. The
+# chown afterwards is not tidying; it is repairing what validating did.
+if ! ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >/dev/null 2>&1; then
+    echo "  the Caddyfile is not valid; nothing was reloaded" >&2
+    ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >&2 || true
+    exit 1
+fi
+ssh "$HOST" "$SUDO chown -R caddy:caddy /var/log/caddy"
+ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
 
 # ---------------------------------------------------------------- check
 
