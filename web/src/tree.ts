@@ -52,6 +52,8 @@ export class FileTree {
   private spacer: HTMLDivElement;
   private surface: HTMLDivElement;
   private rowPx = 22;
+  private readonly events = new AbortController();
+  private readonly observer: ResizeObserver;
 
   constructor(
     private host: HTMLElement,
@@ -69,14 +71,18 @@ export class FileTree {
     this.host.appendChild(this.viewport);
 
     this.rowPx = rowHeight(this.host);
-    this.viewport.addEventListener("scroll", () => this.paint(), { passive: true });
+    this.viewport.addEventListener("scroll", () => this.paint(), { passive: true, signal: this.events.signal });
     // Zoom and font-size changes both land here. Re-reading the row height is
     // cheap and keeps the scroll maths matching what is actually rendered.
     window.addEventListener("resize", () => {
       this.rowPx = rowHeight(this.host);
       this.rebuild();
-    });
+    }, { signal: this.events.signal });
+    this.observer = new ResizeObserver(() => this.paint());
+    this.observer.observe(this.viewport);
   }
+
+  dispose() { this.events.abort(); this.observer.disconnect(); }
 
   private seeded = false;
 
@@ -174,6 +180,7 @@ export class FileTree {
   }
 
   private paint() {
+    const focusedPath = this.surface.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : null;
     const scrollTop = this.viewport.scrollTop;
     const height = this.viewport.clientHeight || 400;
     const first = Math.max(0, Math.floor(scrollTop / this.rowPx) - OVERSCAN);
@@ -187,7 +194,12 @@ export class FileTree {
 
     for (let i = first; i < last; i++) {
       const { node, expanded } = this.rows[i];
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      row.type = "button";
+      row.dataset.path = node.path;
+      row.setAttribute("aria-label", node.path);
+      if (node.dir) row.setAttribute("aria-expanded", String(expanded));
+      else if (node.path === this.active) row.setAttribute("aria-current", "true");
       row.className = "tree-row";
       if (node.path === this.active) row.classList.add("active");
       // Indent in em so it tracks the row's own font size.
@@ -215,6 +227,7 @@ export class FileTree {
       };
 
       this.surface.appendChild(row);
+      if (node.path === focusedPath) row.focus({ preventScroll: true });
     }
   }
 }

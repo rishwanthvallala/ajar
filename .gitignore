@@ -2,6 +2,7 @@
 /dist
 node_modules/
 web/dist/
+web/artifacts/
 .DS_Store
 *.log
 
@@ -16,3 +17,5 @@ web/dist/
 .env.*
 !.env.example
 ./ajar-pads/
+/openspec
+/.agents
