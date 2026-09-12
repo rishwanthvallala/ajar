@@ -69,6 +69,11 @@ main {
   min-height: 0;
   display: grid;
   grid-template-columns: clamp(9rem, 16vw, 15rem) minmax(0, 1fr);
+  /* The row has to be named. Left implicit it is `auto`, which sizes to the
+     tallest child and lets the sidebar and the editor grow past the viewport
+     instead of scrolling inside themselves — the whole column then sits above
+     the fold and the panel looks empty. */
+  grid-template-rows: minmax(0, 1fr);
 }
 .files {
   border-right: 1px solid var(--rule);
@@ -114,3 +119,69 @@ main {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------------------------------------------------------------- icons */
+
+button svg { width: 13px; height: 13px; vertical-align: -2px; }
+button.primary { display: inline-flex; align-items: center; gap: 0.35rem; }
+#share { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+/* ------------------------------------------------------------ file tree */
+
+/* The sidebar is a column: a fixed strip of actions, then a scrolling tree.
+   `minmax(0, 1fr)` on the tree so it scrolls rather than pushing the bar off. */
+.files {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+}
+.tree-bar {
+  display: flex;
+  gap: 2px;
+  padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--rule);
+}
+.tree { overflow: auto; padding: 0.25rem 0.2rem 0.5rem; }
+
+button.icon {
+  border: none;
+  background: none;
+  padding: 0.25rem;
+  border-radius: 3px;
+  color: var(--muted);
+  line-height: 0;
+}
+button.icon:hover { background: var(--bg); color: var(--ink); }
+button.icon svg { width: 15px; height: 15px; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  padding: 0.2rem 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row:hover { background: var(--bg); color: var(--ink); }
+.row.on { background: var(--bg); color: var(--ink); font-weight: 600; }
+.row .ico, .row .chev { flex: none; line-height: 0; opacity: 0.75; }
+.row .ico svg { width: 13px; height: 13px; }
+/* The chevron is always present, rotated when open, so a file and a folder at
+   the same depth line up rather than shifting by its width. */
+.row .chev { width: 11px; }
+.row .chev svg { width: 11px; height: 11px; transition: transform 120ms; }
+.row.dir.open .chev svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .row .chev svg { transition: none; }
+}
+.row.dir { color: var(--ink); }
