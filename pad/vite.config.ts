@@ -51,5 +51,16 @@ const vendorSdk: Plugin = {
 export default defineConfig({
   plugins: [isolation, vendorSdk],
   define: { __SDK_URL__: JSON.stringify(SDK_URL) },
-  build: { sourcemap: false, target: "es2022" },
+  build: {
+    sourcemap: false,
+    target: "es2022",
+    rollupOptions: {
+      input: {
+        // The app, and the page the browser checks run in. Two entries rather
+        // than one, so a check never ships in the bundle a visitor downloads.
+        index: new URL("./index.html", import.meta.url).pathname,
+        check: new URL("./check.html", import.meta.url).pathname,
+      },
+    },
+  },
 });

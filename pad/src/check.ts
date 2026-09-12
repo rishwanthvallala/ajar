@@ -6,6 +6,8 @@
  */
 import { interpreterFor, Runtime } from "./runtime";
 import { Shell } from "./shell";
+import { mintName, Store, StoreError } from "./store";
+import { diff, ignored, knownFrom } from "./sync";
 
 const results: string[] = [];
 const el = document.getElementById("log")!;
@@ -98,6 +100,80 @@ async function main() {
   is(printed.includes("first") && printed.includes("second"), true, "commands run in sequence");
   is(second.exitCode, 0, "and each reports separately");
   is(sh.busy, false, "the shell reports itself idle once a command has finished");
+
+  // ---- the diff, which decides what anyone else ever sees ----
+  let known = knownFrom({});
+  const first = await diff(rt, known);
+  is(
+    first.changes.some((c) => c.path === "from-shell.txt"),
+    true,
+    "a file the shell made shows up as a change",
+  );
+  known = first.next;
+
+  const quiet = await diff(rt, known);
+  is(quiet.changes.length, 0, "running the diff again finds nothing to send");
+
+  await sh.run("python -c \"open('note.txt','w').write('hello')\"");
+  const added = await diff(rt, known);
+  is(
+    added.changes.filter((c) => c.path === "note.txt").length,
+    1,
+    "a new file is one change",
+  );
+  known = added.next;
+
+  // The case size alone cannot catch, and the reason this reads every file.
+  await sh.run("python -c \"open('note.txt','w').write('HELLO')\"");
+  const rewritten = await diff(rt, known);
+  is(
+    rewritten.changes.find((c) => c.path === "note.txt")?.content,
+    "HELLO",
+    "a same-length rewrite is still detected",
+  );
+  known = rewritten.next;
+
+  await sh.run("rm note.txt");
+  const removed = await diff(rt, known);
+  is(
+    removed.changes.find((c) => c.path === "note.txt")?.content,
+    null,
+    "a deleted file is sent as a removal",
+  );
+  known = removed.next;
+
+  // Tool droppings stay out of the shared folder.
+  await rt.write("__pycache__/x.pyc", "bytecode");
+  const noise = await diff(rt, known);
+  is(noise.changes.length, 0, "generated files are not published");
+  is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
+
+  // ---- names ----
+  is(/^[a-z]+-[a-z]+-\d{4}$/.test(mintName()), true, "a minted name fits the server's rule");
+  is(mintName() !== mintName(), true, "two minted names differ");
+
+  // ---- the store, over real http ----
+  const store = new Store();
+  const name = mintName();
+  const fresh = await store.read(name);
+  is(fresh.exists, false, "a name nobody holds reads as free rather than 404");
+
+  const seq1 = await store.write(name, [{ path: "main.py", content: "print(1)" }]);
+  is(seq1, 1, "the first write is sequence 1");
+  const loaded = await store.read(name);
+  is(loaded.files["main.py"]?.content, "print(1)", "what was written comes back");
+  is(loaded.exists, true, "and the pad now exists");
+
+  const seq2 = await store.write(name, [{ path: "main.py", content: null }]);
+  is(seq2, 2, "the sequence advances on every accepted write");
+  is(Object.keys((await store.read(name)).files).length, 0, "a null content deletes");
+
+  try {
+    await store.write("api", [{ path: "x", content: "y" }]);
+    fail("a reserved name was accepted");
+  } catch (e) {
+    is(e instanceof StoreError && e.status === 400, true, "a reserved name is refused");
+  }
 
   await sh.close();
 

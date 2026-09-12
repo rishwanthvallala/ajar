@@ -1,0 +1,109 @@
+/* One window: what is in the folder, what you are editing, what it printed. */
+:root {
+  --bg: #ffffff;
+  --panel: #f5f8f9;
+  --ink: #1b2226;
+  --muted: #5f7078;
+  --rule: #dde5e8;
+  --accent: #1a5a76;
+  --bad: #9b3c22;
+  --term: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1417;
+    --panel: #151c20;
+    --ink: #d8e2e6;
+    --muted: #8698a1;
+    --rule: #26343a;
+    --accent: #6fb6d6;
+    --bad: #e08e72;
+    --term: #12181c;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  flex: none;
+}
+.grow { flex: 1; }
+.name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+.status { color: var(--muted); font-size: 12px; }
+.status[data-status="error"] { color: var(--bad); }
+
+button {
+  font: inherit;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Sidebar and panes. `minmax(0, …)` on both axes so a long filename or a wide
+   line of output scrolls inside its own pane instead of stretching the grid. */
+main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: clamp(9rem, 16vw, 15rem) minmax(0, 1fr);
+}
+.files {
+  border-right: 1px solid var(--rule);
+  background: var(--panel);
+  overflow: auto;
+  padding: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.file {
+  text-align: left;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  padding: 0.25rem 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file:hover { background: var(--bg); }
+.file.on { color: var(--ink); background: var(--bg); font-weight: 600; }
+
+.panes {
+  display: grid;
+  grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  min-width: 0;
+}
+.editor { min-height: 0; }
+.terminal {
+  min-height: 0;
+  border-top: 1px solid var(--rule);
+  background: var(--term);
+  padding: 0.35rem 0.5rem;
+  overflow: hidden;
+}
