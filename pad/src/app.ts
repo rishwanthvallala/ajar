@@ -91,6 +91,7 @@ export class App {
       text: (p: string) => this.docs.get(p)?.contents() ?? this.models.get(p)?.getValue(),
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
+      shellBusy: () => this.console?.busy ?? false,
     };
   }
 
@@ -553,6 +554,10 @@ export class App {
   }
 
   private async ensureShell(): Promise<Shell> {
+    // A shell that has exited cannot be reused. Interrupting a command takes
+    // bash down with it in this runtime, so this is the ordinary path after
+    // any ctrl-c, not an error case.
+    if (this.shell && !this.shell.alive) this.shell = null;
     if (this.shell) return this.shell;
     const rt = await this.ensureRuntime();
     this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) =>

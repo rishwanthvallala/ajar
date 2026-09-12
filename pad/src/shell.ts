@@ -46,6 +46,8 @@ export interface Finished {
 export class Shell {
   /** Discards output. Set while the shell is being configured. */
   silent = false;
+  /** False once bash has exited; this shell can serve nothing more. */
+  alive = true;
   /**
    * Bytes we wrote that the terminal may hand straight back.
    *
@@ -73,18 +75,19 @@ export class Shell {
     const proc = await rt.spawnShell(size.columns, size.rows);
     const shell = new Shell(proc, onOutput);
     void shell.drain();
-    // Turn the terminal's own echo off, and wait until it is actually off.
+    void shell.watchForExit();
+    // Echo off for the shell — and only for the shell.
     //
-    // The pty echoes what is written to it, so without this every command
-    // appears twice — once where the page drew it, once where the terminal
-    // repeated it — and the `printf` carrying the exit status lands on screen
-    // too. Probing the shell directly suggested there was no echo at all; a
-    // screenshot of the running page showed there plainly was. The screenshot
-    // was right, which is the argument for taking one.
+    // This looked unreliable for a long time: some commands came back echoed
+    // and others did not. They were two different things. bash saves and
+    // restores the terminal around a foreground job, so what *the shell*
+    // reads is not echoed, while what a *running program* reads is. Which is
+    // exactly the division wanted: the command this page writes stays off the
+    // screen, and anything typed into `cat` appears because the terminal put
+    // it there.
     //
-    // Awaited rather than fired off, because until it lands the shell is still
-    // echoing — and the thing it would echo is the first command somebody
-    // runs. `silent` swallows the setup's own echo along the way.
+    // Awaited rather than fired off: until it lands the shell still echoes,
+    // and the thing it would echo is the first command somebody runs.
     shell.silent = true;
     await shell.run("stty -echo 2>/dev/null");
 
@@ -119,6 +122,26 @@ export class Shell {
     }
   }
 
+  /**
+   * Notice when bash exits.
+   *
+   * `wait()` and not the end of the output stream: interrupting a command
+   * takes the shell down with it here, and the stream stays open afterwards,
+   * so a shell that could serve nothing more still looked healthy and every
+   * command sent to it hung forever.
+   */
+  private async watchForExit(): Promise<void> {
+    try {
+      await this.proc.wait({ check: false });
+    } catch {
+      // Exiting badly is still exiting.
+    }
+    this.alive = false;
+    const waiting = this.waiting;
+    this.waiting = null;
+    waiting?.({ exitCode: 130 });
+  }
+
   private absorb(text: string): void {
     this.buffer += text;
     this.dropEcho();
@@ -130,14 +153,23 @@ export class Shell {
       const before = this.buffer.slice(0, found.index);
       if (before && !this.silent) this.onOutput(before);
       this.buffer = this.buffer.slice(found.index + found[0].length);
+      // The command is over, so anything still expected as an echo is not
+      // coming — holding the tail past this point would swallow real output.
+      this.echoed = "";
       const done = this.waiting;
       this.waiting = null;
       done?.({ exitCode: Number(found[1]) });
     }
-    // A partial marker at the end is held back rather than shown, or the
-    // terminal briefly renders a control character before it is completed.
-    const held = this.buffer.lastIndexOf(MARK);
-    const flushable = held === -1 ? this.buffer : this.buffer.slice(0, held);
+    // Only a partial marker is held back, which would otherwise render as a
+    // control character for an instant.
+    //
+    // Not the echo. Holding the tail until an expected echo arrived seemed
+    // tidier and was much worse: the echo often never comes — bash silences
+    // its own input — so everything after it was held forever and a running
+    // `cat` printed nothing at all. A split echo showing for one frame is a
+    // far smaller price than swallowing output.
+    const marker = this.buffer.lastIndexOf(MARK);
+    const flushable = marker === -1 ? this.buffer : this.buffer.slice(0, marker);
     if (flushable) {
       if (!this.silent) this.onOutput(flushable);
       this.buffer = this.buffer.slice(flushable.length);
@@ -159,11 +191,20 @@ export class Shell {
    */
   private dropEcho(): void {
     if (!this.echoed || !this.buffer) return;
-    if (this.echoed.startsWith(this.buffer)) return;
-    if (this.buffer.startsWith(this.echoed)) {
-      this.buffer = this.buffer.slice(this.echoed.length);
+    // Anywhere, not only at the front. The previous command can leave a
+    // trailing newline in the buffer, and requiring position zero meant the
+    // echo was missed and every command appeared twice from then on.
+    const at = this.buffer.indexOf(this.echoed);
+    if (at !== -1) {
+      // The line ending the terminal chose goes with it, whatever it was.
+      let end = at + this.echoed.length;
+      while (this.buffer[end] === "\r" || this.buffer[end] === "\n") end += 1;
+      this.buffer = this.buffer.slice(0, at) + this.buffer.slice(end);
+      this.echoed = "";
     }
-    this.echoed = "";
+    // Not found yet: it may still be arriving a chunk at a time. `absorb`
+    // holds back the tail until this resolves, and the sentinel clears it
+    // either way, so nothing is held for longer than one command.
   }
 
   /**
@@ -173,12 +214,29 @@ export class Shell {
    * shell would return their sentinels in an order nothing can attribute.
    */
   run(command: string): Promise<Finished> {
+    if (!this.alive) return Promise.reject(new Error("the shell has exited"));
     if (this.waiting) return Promise.reject(new Error("a command is already running"));
     return new Promise<Finished>((resolve, reject) => {
       this.waiting = resolve;
-      const sent = `${command}\nprintf '\\001%s\\001' "$?"\n`;
-      this.echoed = sent;
-      this.proc.stdin!.write(sent).catch((e) => {
+      // One line, joined with `;` rather than a newline.
+      //
+      // Sent as a second line, the sentinel is sitting in the terminal's input
+      // buffer when the command starts — so anything that reads stdin eats it.
+      // `cat` with no arguments consumed it, printed it as data, and then
+      // waited forever for more, with nothing left to mark the command
+      // finished. On one line bash parses both before running either, and the
+      // command's stdin is the terminal, where it belongs.
+      //
+      // A trailing `&` is the exception: `cmd &; printf` is a syntax error,
+      // while `cmd & printf` is not.
+      const trimmed = command.trimEnd();
+      const joiner = trimmed.endsWith("&") ? " " : "; ";
+      const line = `${trimmed}${joiner}printf '\\001%s\\001' "$?"`;
+      // Without the newline. The terminal echoes CRLF where this writes LF, so
+      // including it meant the two strings never matched and every command
+      // after the first foreground job appeared twice.
+      this.echoed = line;
+      this.proc.stdin!.write(`${line}\n`).catch((e) => {
         this.waiting = null;
         reject(e);
       });
@@ -193,6 +251,11 @@ export class Shell {
    */
   type(data: string): Promise<void> {
     return this.proc.stdin!.write(data);
+  }
+
+  /** Close the guest's stdin, which is EOF to whatever is reading it. */
+  closeStdin(): Promise<void> {
+    return this.proc.stdin!.close();
   }
 
   get busy(): boolean {
