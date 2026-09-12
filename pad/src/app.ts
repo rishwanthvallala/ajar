@@ -13,7 +13,7 @@ import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
-import { Store, type Pad } from "./store";
+import { Store, StoreError, type Pad } from "./store";
 import { diff, type Known, knownFrom } from "./sync";
 
 const STARTER = `# Paste over this, or start typing.
@@ -137,9 +137,17 @@ export class App {
       onMoved: () => void this.refresh(),
       onPresence: (others, id) => {
         this.el.presence.textContent = others === 0 ? "" : `${others + 1} here`;
-        if (id) {
-          this.me = id;
-          this.whoami = `guest ${id}`;
+        if (id === null) return;
+        this.me = id;
+        this.whoami = `guest ${id}`;
+        // Every open document asks for state again.
+        //
+        // A dropped socket loses whatever updates were in flight, and nothing
+        // would ever notice: both sides carry on believing they are in step
+        // while their text quietly differs. On the first connect there are no
+        // documents yet and this does nothing.
+        for (const [path, doc] of this.docs) {
+          this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector());
         }
       },
       onDoc: (stream, kind, bytes) => this.onDoc(stream, kind, bytes),
@@ -257,6 +265,27 @@ export class App {
     // Nobody answered, so nobody else has it open and the stored copy is safe.
     if (doc.length === 0) doc.seed(stored);
     return doc;
+  }
+
+  /**
+   * Forget a file's document.
+   *
+   * A disposed model is not enough: the document outlives it, keeps its Yjs
+   * state and awareness, holds a stylesheet for other people's cursors, and —
+   * worst — stays subscribed to its stream, so a later update for a path this
+   * browser no longer has can still be applied to a document nothing displays.
+   */
+  private closeDoc(path: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) return;
+    if (this.active === path) {
+      this.unbind?.();
+      this.unbind = null;
+    }
+    this.docs.delete(path);
+    this.byStream.delete(streamFor(path));
+    this.awaiting.delete(path);
+    doc.destroy();
   }
 
   private onDoc(stream: number, kind: number, bytes: Uint8Array): void {
@@ -458,10 +487,19 @@ export class App {
       this.peers?.moved(seq);
       this.say("", "saved");
     } catch (e) {
-      // Put them back: an unsaved change that nothing will retry is the one
-      // failure this product cannot afford.
+      const why = e as StoreError;
+      // Some failures will never succeed however often they are tried: a pad
+      // past its size cap, or a name that has expired. Retrying those is a
+      // request every half second for as long as the tab is open, and it still
+      // never saves. Say so once and stop.
+      if (why.gone || why.tooBig) {
+        this.say("error", `${why.message} — this is not being saved`);
+        return;
+      }
+      // Anything else is worth another go: an unsaved change that nothing
+      // retries is the one failure this product cannot afford.
       for (const p of paths) this.dirty.add(p);
-      this.say("error", (e as Error).message);
+      this.say("error", why.message);
       this.saveSoon();
     }
   }
@@ -649,6 +687,7 @@ export class App {
     this.known = next;
     for (const change of changes) {
       if (change.content === null) {
+        this.closeDoc(change.path);
         this.models.get(change.path)?.dispose();
         this.models.delete(change.path);
       } else {

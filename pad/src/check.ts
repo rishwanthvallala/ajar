@@ -5,6 +5,7 @@
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
 import { interpreterFor, Runtime } from "./runtime";
+import { cssString } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
 import { diff, ignored, knownFrom } from "./sync";
@@ -100,6 +101,41 @@ async function main() {
   is(printed.includes("first") && printed.includes("second"), true, "commands run in sequence");
   is(second.exitCode, 0, "and each reports separately");
   is(sh.busy, false, "the shell reports itself idle once a command has finished");
+
+  // ---- a name cannot escape the stylesheet it is written into ----
+  //
+  // Cursor labels put a participant's chosen name inside a CSS string, and in
+  // ajar that name is whatever somebody typed on joining. Stripping double
+  // quotes — what this used to do — stops a name breaking *out* of the string,
+  // and does nothing about a trailing backslash, which escapes the closing
+  // quote so the string runs on and eats whatever rule comes next. A real
+  // stylesheet always has a next rule: the labels are written one per person.
+  {
+    const sheet = document.createElement("style");
+    document.head.append(sheet);
+
+    // The label, then a rule that must survive it.
+    const survives = (escaped: string) => {
+      sheet.textContent =
+        `.a::after { content: "${escaped}"; }\n` + `.sentinel { color: rgb(1, 2, 3); }`;
+      return [...(sheet.sheet?.cssRules ?? [])].some((r) => r.cssText.includes("sentinel"));
+    };
+    const naive = (t: string) => t.replace(/"/g, "");
+    const trailingSlash = "someone\\";
+
+    is(survives(cssString(trailingSlash)), true, "a name ending in a backslash cannot eat the next rule");
+    is(survives(cssString('quote" and brace }')), true, "quotes and braces in a name are harmless");
+    is(survives(cssString("line\nbreak")), true, "a newline in a name does not end the rule");
+    is(survives(cssString("plain")), true, "and an ordinary name is fine");
+
+    // The check has to be able to fail. This is the exact escaping it
+    // replaced, and it must not survive — otherwise the assertions above pass
+    // for free and `cssString` could be gutted without anyone noticing.
+    is(survives(naive(trailingSlash)), false, "the escaping this replaced would have eaten it");
+
+    sheet.remove();
+    is(cssString("plain name"), "plain name", "an ordinary name is left alone");
+  }
 
   // ---- the text-processing tools ----
   //

@@ -31,6 +31,9 @@ const CH_CONTROL = 0x01;
 const CH_FS = 0x03;
 const CH_DOC = 0x05;
 
+/** How many frames may wait for a connection before the oldest are dropped. */
+const MAX_PENDING = 512;
+
 /** First byte of a doc payload. */
 export const DOC_UPDATE = 0x01;
 export const DOC_AWARENESS = 0x02;
@@ -94,6 +97,15 @@ export interface PeerEvents {
 export class Peers {
   private ws: WebSocket | null = null;
   private id: number | null = null;
+  /**
+   * Frames waiting for a connection.
+   *
+   * Bounded, because every keystroke in an open file is a document update: a
+   * disconnection somebody keeps typing through would grow this without limit.
+   * Dropping the oldest is safe *because* a reconnect makes every open
+   * document ask for state again — the text converges from the state exchange,
+   * not from this queue.
+   */
   private pending: Frame[] = [];
   private others = new Set<number>();
   private closed = false;
@@ -232,6 +244,7 @@ export class Peers {
     if (this.id === null || this.ws?.readyState !== WebSocket.OPEN) {
       this.counts.dropped += 1;
       this.pending.push({ channel, streamId, target: 0, payload });
+      if (this.pending.length > MAX_PENDING) this.pending.splice(0, this.pending.length - MAX_PENDING);
       return;
     }
     this.ws.send(encode({ channel, streamId, target: this.id, payload }));
