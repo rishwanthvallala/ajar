@@ -79,6 +79,9 @@ export default defineConfig({
         // than one, so a check never ships in the bundle a visitor downloads.
         index: new URL("./index.html", import.meta.url).pathname,
         check: new URL("./check.html", import.meta.url).pathname,
+        // The package probe. Also kept out of the visitor's bundle: it exists
+        // to install packages we have not decided to ship.
+        probe: new URL("./probe.html", import.meta.url).pathname,
       },
     },
   },

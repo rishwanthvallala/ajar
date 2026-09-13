@@ -80,6 +80,56 @@ Affordable only under the 500-file cap; if that cap rises this breaks first.
 **`find` exits 1** after doing its work, unable to restore its working
 directory. The output is correct; only `find … && …` is affected.
 
+## Probing a package before shipping it
+
+`pad/src/packages/catalogue.ts` lists candidate packages and what each has to
+do to earn its megabytes; `npm run probe --workspace=ajar-pad` installs each in
+a real browser and runs its checks (`--all` for the heavy ones, `--only <name>`
+for one, `PROBE_VERBOSE=1` for the detail). Adding a binary is one entry there.
+
+Each check declares the capability it proves, so a partial pass names what is
+broken rather than counting: `broken: sort, tail -n, stat`. A package that
+half-works is worse than one that is absent, because it fails later and
+somewhere else.
+
+Three rules, each learned by getting it wrong:
+
+**Install the candidate alongside the full shipped set, never alone.** A
+reduced sandbox changes behaviour in ways indistinguishable from a broken
+package — without python the working directory is wrong and every relative
+path resolves against `/`; with a partial set a file written by python is
+invisible to `cat`. Both looked exactly like a package failing, and one was
+reported as a production bug before the control disproved it.
+
+**One line per check.** The shell detects a command's end with a sentinel
+appended to the same line, so an embedded newline splits the command from its
+sentinel and reads as a hang. A heredoc test killed the shell and made nine
+working bash features look broken.
+
+**Never pipe through an unverified tool.** Piping through the shipped `sort`,
+which is broken, made `find`, `tar` and `xargs` all look broken too.
+
+The `__shipped__` entry is a control, not a candidate: it installs exactly what
+the product installs. When it passes and a candidate fails, the candidate is at
+fault; when it fails, the harness is. It caught all three mistakes above.
+
+### What the probe found
+
+`sharrattj/coreutils` is uutils **0.0.7** as a multi-call binary, and the gaps
+are live: `sort` prints its usage instead of sorting, `tail -n` and `tail -1`
+are unrecognised, and `split`, `sha256sum`, `md5sum`, `stat` and `du` fail.
+`ls | sort` does not work today.
+
+Verified working and not yet shipped, about 8.7 MB for the five: `jq` (1.6 MB),
+`gzip` (0.6), `tar` (0.7, no `-C`), `sqlite3` (3.4, no SQL from stdin),
+`quickjs` (2.4). Heavier and working: `node`/`npm` (73.7 MB), `php` (81.7),
+`clang` (104.3).
+
+Registry presence is **not** installability: every `kilyanni/*` package returns
+full metadata from the GraphQL API and then fails `packages.load` with "not
+found". Their coreutils is GNU 9.11 at half the size of ours and would be worth
+having if that ever changes, so the entries stay.
+
 ## The shell, and detecting when a command ends
 
 One shell per session. A sentinel is appended to the command **on the same

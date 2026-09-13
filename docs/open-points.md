@@ -10,7 +10,28 @@ not what would be nice.
 
 ## Waiting on a decision
 
-Nothing here at the moment.
+### Command substitution kills the shell
+
+`x=$(echo hi)` exits 130 — SIGINT — and takes bash with it. The next command
+starts in a fresh shell at the folder root, so the working directory and every
+variable are gone. Confirmed on code.rishwanth.dev, not just locally.
+
+`$(date)`, `$(ls)`, `$(cat f)` are ordinary things to type, so this is a live
+defect rather than a limitation. It is the same shape as the documented
+ctrl-c behaviour — an interrupt bash does not survive — and probably the same
+cause. The probe asserts it (`sharrattj/bash`, "command substitution"), ordered
+last because everything after it in one shell reports "the shell has exited".
+
+### `sort` is broken in the shipped coreutils
+
+`printf 'b\na\n' | sort` prints the multi-call binary's usage instead of
+sorting. `tail -n 1`, `tail -1`, `split`, `sha256sum`, `md5sum`, `stat` and
+`du` fail too — `sharrattj/coreutils` is uutils 0.0.7, not GNU. `ls | sort` is
+something people type.
+
+Fixing it needs a different coreutils. `kilyanni/coreutils` is GNU 9.11 at half
+the size, and cannot currently be installed — see
+[dev/pad.md](dev/pad.md#probing-a-package-before-shipping-it).
 
 ---
 

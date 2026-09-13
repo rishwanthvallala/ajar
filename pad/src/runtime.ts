@@ -74,7 +74,7 @@ export function interpreterFor(path: string): string | null {
 
 let loading: Promise<{ Wasmer: typeof WasmerClass }> | null = null;
 
-function sdk() {
+export function sdk() {
   // `@vite-ignore` keeps the bundler out of this path so the browser resolves
   // it against the vendored copy, where the SDK's own relative imports line up.
   loading ??= import(/* @vite-ignore */ `${__SDK_URL__}/dist/index.js`) as Promise<{
@@ -141,8 +141,17 @@ export class Runtime {
     private readonly bash: CommandRef,
   ) {}
 
-  /** `files` keys are root-relative JS paths: `"main.py"`, not `"/app/main.py"`. */
-  static async start(files: Record<string, string> = {}): Promise<Runtime> {
+  /**
+   * `files` keys are root-relative JS paths: `"main.py"`, not `"/app/main.py"`.
+   *
+   * `install` overrides the shipped package set. Only the package probe passes
+   * it — the product always wants the pinned list, and a caller that could
+   * choose silently would be a way for the two to drift.
+   */
+  static async start(
+    files: Record<string, string> = {},
+    install?: { shell?: string; packages?: string[] },
+  ): Promise<Runtime> {
     const { Wasmer } = await sdk();
     const wasmer = new Wasmer();
 
@@ -150,17 +159,19 @@ export class Runtime {
     // Loaded as an object rather than a string because more than one installed
     // package exports a command called `bash` — the python package ships one
     // too — and a bare name is refused as ambiguous.
-    const shellPkg = await wasmer.packages.load(PACKAGES.shell);
+    const shellPkg = await wasmer.packages.load(install?.shell ?? PACKAGES.shell);
     const bash = shellPkg.command("bash");
 
     const box = await wasmer.sandboxes.create({
       packages: [
         shellPkg,
-        PACKAGES.coreutils,
-        PACKAGES.python,
-        PACKAGES.grep,
-        PACKAGES.sed,
-        PACKAGES.find,
+        ...(install?.packages ?? [
+          PACKAGES.coreutils,
+          PACKAGES.python,
+          PACKAGES.grep,
+          PACKAGES.sed,
+          PACKAGES.find,
+        ]),
       ],
       shell: bash,
       files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),

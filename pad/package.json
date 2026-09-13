@@ -6,7 +6,8 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "check": "npm run build && node scripts/browser-check.mjs && node scripts/app-check.mjs"
+    "check": "npm run build && node scripts/browser-check.mjs && node scripts/app-check.mjs",
+    "probe": "npm run build && node scripts/probe-packages.mjs"
   },
   "dependencies": {
     "@wasmer/sdk": "0.11.0",
