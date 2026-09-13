@@ -10,6 +10,7 @@ import { Workspace } from "./workspace";
 import type { DocSession } from "./editing";
 import type { Sealer } from "./sealed";
 import { codeFontPx } from "./scale";
+import { mountReactFoundation } from "./app/react-root";
 import {
   Channel,
   Control,
@@ -32,6 +33,8 @@ import {
   textEncoder,
   untag,
 } from "./proto";
+
+mountReactFoundation();
 
 const app = document.getElementById("app")!;
 

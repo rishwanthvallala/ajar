@@ -158,8 +158,8 @@ Every phase begins by reading this file and inspecting the current implementatio
 
 | ID | Work | Depends on | Primary files | Status |
 | --- | --- | --- | --- | --- |
-| UI-00 | Record the baseline and compatibility constraints | None | Documentation and focused baseline checks | Not started |
-| UI-01 | npm workspace and React foundation | UI-00 | Root manifests/config, app build config, CI/build scripts | Not started |
+| UI-00 | Record the baseline and compatibility constraints | None | Documentation and focused baseline checks | Complete |
+| UI-01 | npm workspace and React foundation | UI-00 | Root manifests/config, app build config, CI/build scripts | Complete |
 | UI-02 | Shared styling and basic components | UI-01 | `packages/ui` tokens/components, component gallery | Not started |
 | UI-03 | React workspace and adapter contracts | UI-02 | `packages/ui/workspace`, `hosts`, `contracts.ts` | Not started |
 | UI-04 | Migrate Ajar's session and preview | UI-03 | `web/src/session`, workspace route, preview, Ajar tests | Not started |
@@ -245,7 +245,7 @@ Compare bundle/loading measurements with UI-00. Monaco must still load on demand
 
 ## 7. Development commands and verification targets
 
-These are **commands to implement in UI-01**, not commands already available today:
+These commands were implemented in UI-01:
 
 ```sh
 # Repository root, Node 24
@@ -265,7 +265,7 @@ Planned preview URLs:
 - Pad: `http://127.0.0.1:5175/?preview=workspace`
 - Shared component gallery: `http://127.0.0.1:5173/?preview=components`
 
-Until UI-01 is complete, use [the current Ajar preview instructions](workspace-preview.md). Existing Pad browser scripts need a built relay and runtime assets; fixtures cannot substitute for those integration checks.
+Use [the current Ajar preview instructions](workspace-preview.md). Existing Pad browser scripts need a built relay and runtime assets; fixtures cannot substitute for those integration checks.
 
 ### Required test layers
 
@@ -317,7 +317,7 @@ Replace `UI-XX` with the desired phase. On another machine, substitute the repos
 
 ## 9. Handoff records
 
-All migration phases are currently **Not started**. The earlier Ajar layout work is complete, but does not count as implementing these React phases.
+UI-00 and UI-01 are complete; the shared-component and screen migration phases remain **Not started**. The earlier Ajar layout work is complete, but does not count as implementing those later React phases.
 
 When completing a phase, append one record using this format and update its table row:
 
@@ -335,6 +335,54 @@ Checks not run and why:
 Known issues / dependencies:
 Next phase and exact starting point:
 ```
+
+Phase: UI-00
+
+Status: Complete
+
+Owner/chat label: Codex UI-00 baseline
+
+Date: 13 September 2026
+
+Branch or commit, if one exists: `feature/ui-improvements` at starting commit `7d202a8`; no commit created
+
+Implemented behavior: Recorded the current application behavior, resolved dependency versions, build output sizes, exact development/test commands, selector/package-layout assumptions, Wasmer/worker/service-worker requirements, real-integration prerequisites, and pre-existing failures. Captured local Ajar and Pad baseline screenshots without changing application behavior.
+
+Files changed: `docs/unified-ui-baseline.md`, `docs/unified-ui-plan.md`
+
+Shared interfaces or versions established: No shared interface added. Baseline versions are recorded in `docs/unified-ui-baseline.md`; React selection remains UI-01 work.
+
+Commands and results: Ajar `npm run build` passed; Pad `tsc --noEmit` and `npm run build` passed; Ajar `test:layout` passed against development and production-preview servers; `node scripts/review-repros.cjs` reproduced all eight expected existing defects. Exact environment and results are in the baseline report.
+
+Checks not run and why: Real Ajar host/relay, Rust/Clippy/sandbox, Pad runtime/app browser suites, Docker, and production deployment were unavailable because the Rust toolchain/relay binary/package mirror/Docker daemon or authorization were absent. Deployment was outside scope.
+
+Known issues / dependencies: The 12 September project review remains authoritative. Pad development also reproduced the known Windows Vite `EBUSY` watcher failure; its missing `/api` and `/ws` proxies remain R22.
+
+Next phase and exact starting point: UI-01 should start from [the UI-00 baseline](unified-ui-baseline.md), create the root npm workspace/lockfile and React entry points, then update CI/Docker/deploy/check paths and Wasmer package resolution without changing product behavior.
+
+Phase: UI-01
+
+Status: Complete
+
+Owner/chat label: Codex UI-01 React foundation
+
+Date: 13 September 2026
+
+Branch or commit, if one exists: `feature/ui-improvements`; no commit created
+
+Implemented behavior: Added a root npm workspace and lockfile for `packages/*`, `web`, and `pad`; added private source-consumed package `@ajar/ui`; mounted one isolated Strict Mode React root in each existing application without transferring legacy DOM ownership; added root development, typecheck, build, and self-managed UI test commands; updated CI, Docker frontend, deploy, review, and smoke dependency resolution; added Pad development `/api` and `/ws` proxies on port 5175; and made generated Pad vendor/package trees unwatched so the Windows development server starts reliably.
+
+Files changed: Root `package.json`/`package-lock.json`; `packages/ui`; app manifests, TypeScript/Vite configs, HTML, and React bridge entries; `scripts/test-ui.cjs`, dependency-sensitive review/smoke scripts, and the main check gate; Docker, CI, deploy, README, Pad README, preview documentation, and this plan. Removed the two app-local lockfiles.
+
+Shared interfaces or versions established: React and React DOM 19.3.0 with matching 19.3.0 types; `@vitejs/plugin-react` 6.1.1 for Ajar/Vite 8 and 5.2.0 for Pad/Vite 7; private `@ajar/ui` 0.0.0 with React/React DOM peer dependencies and a source export. Existing Vite, TypeScript, Monaco, xterm, and Wasmer versions remain product-specific. `npm ls react react-dom` resolves one deduplicated React pair.
+
+Commands and results: A clean root `npm ci --no-audit --no-fund` passed after deleting all existing dependency directories; `npm run typecheck` passed for the shared package and both apps; `npm run test:ui` passed both production builds, the full Ajar layout/production-preview suite, and a browser assertion that the shared React component renders once in Ajar and Pad; `npm run dev:ajar` and `npm run dev:pad` both reached ready state on ports 5173 and 5175; Pad development returned the required COOP/COEP headers; `node scripts/review-repros.cjs` still reproduced the same eight baseline defects; `git diff --check` passed.
+
+Checks not run and why: Rust, real Ajar host/relay, Pad WASIX/runtime and two-browser suites, Docker build/start, shell syntax validation, and deployment remain unavailable for the UI-00 environment reasons. Docker/CI/deploy files were updated to root install/build paths but could only be inspected statically. No deployment was attempted.
+
+Known issues / dependencies: The existing review defects remain open. React raises each initial application JavaScript chunk by roughly 220 kB uncompressed (Ajar 586.48 kB and Pad 241.48 kB versus UI-00's 366.78 kB and 19.28 kB); this is the expected foundation cost and must remain visible in UI-07 comparisons. Current built totals are 3.90 MiB for Ajar and 8.26 MiB for Pad without mirrored runtime packages. Pad still requires a real relay for useful development data even though proxying is now correct.
+
+Next phase and exact starting point: UI-02 should replace the hidden `UiFoundation` bridge with shared tokens and visible Button, IconButton, Field, Badge, StatusMessage, EmptyState, LoadingState, and panel-header components, then add Ajar's development-only component gallery. Keep both application roots isolated from their legacy-owned subtrees until the later screen migrations.
 
 ## 10. Reference material
 

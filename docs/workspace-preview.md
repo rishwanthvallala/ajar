@@ -7,9 +7,8 @@ The workspace now has a development preview. It uses the same layout, file tree,
 Use Node.js 24 LTS. From the project folder:
 
 ```sh
-cd web
 npm ci
-npm run dev
+npm run dev:ajar
 ```
 
 Open **http://localhost:5173/?preview=workspace**. If the server prints a different port, use that port in the URL. Keep the terminal running; press Ctrl+C to stop it. Saving a UI source file updates the browser automatically.
@@ -17,8 +16,8 @@ Open **http://localhost:5173/?preview=workspace**. If the server prints a differ
 On this Windows machine, the system Node version is older than the project supports. The already-installed newer runtime can start the preview directly in PowerShell:
 
 ```powershell
-cd D:\ajar\ajar\web
-& "C:\Users\tanuj\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
+cd D:\ajar\ajar
+& "C:\Users\tanuj\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" "D:\Nodejs\node_modules\npm\bin\npm-cli.js" run dev:ajar
 ```
 
 That machine-specific command assumes dependencies have already been installed, as they have in this workspace.
@@ -38,24 +37,32 @@ The preview is available only with the development server. `npm run preview` ser
 
 ## Run the checks
 
-With the development server still running, open another terminal in `web`:
+The root UI command builds both applications and manages its own development and
+production-preview servers:
 
 ```sh
-npm run test:layout
-npm run build
+npm run test:ui
 ```
+
+To run only the Ajar layout script against an already-running development server, use
+`npm run test:layout --workspace=ajar-web`.
 
 The browser checks use Playwright, included as a development dependency. On Windows they use installed Microsoft Edge. On other systems, install Playwright's Chromium once with `npx playwright install chromium`. Set `AJAR_BROWSER_CHANNEL=chrome` to use an installed Chrome instead. The optional `AJAR_PREVIEW_URL` environment variable changes the default test server address, `http://127.0.0.1:5173`.
 
 To keep screenshots, set `AJAR_SCREENSHOTS` to an output directory before running the checks. For example, in PowerShell:
 
 ```powershell
-$env:AJAR_SCREENSHOTS = "$PWD\artifacts\workspace-layout"
-npm run test:layout
+$env:AJAR_SCREENSHOTS = "$PWD\web\artifacts\workspace-layout"
+npm run test:layout --workspace=ajar-web
 ```
 
 The checks cover desktop and phone layouts, keyboard/pointer resizing, file drawer focus, stored preferences, lazy editor loading, closing files during loading, simulated connection callbacks, and preview isolation. The zoom check models a 1440x900 display at 200% zoom as a 720x450 CSS viewport at double pixel density. Also use your browser's actual zoom control for a manual visual check.
 
 Real host execution, encryption, collaboration between browsers, and reconnection need a running host and relay. The layout preview and simulated connection checks do not establish that those backend flows work end to end.
 
-To also check the production preview gate, run `npm run preview -- --port 5174` in a third terminal and set `AJAR_PRODUCTION_URL=http://127.0.0.1:5174` before running the layout checks. See [the validation record](workspace-layout-validation.md) for completed checks and their limits.
+To also check the production preview gate manually, run
+`npm run preview --workspace=ajar-web -- --port 5174` in a third terminal and set
+`AJAR_PRODUCTION_URL=http://127.0.0.1:5174` before running the layout checks. The root
+`npm run test:ui` command does this automatically. See
+[the validation record](workspace-layout-validation.md) for completed checks and their
+limits.
