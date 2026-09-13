@@ -11,8 +11,7 @@
     "skipLibCheck": true,
     "types": ["vite/client"],
     "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx"
+    "noEmit": true
   },
   "include": ["src"]
 }

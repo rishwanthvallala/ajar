@@ -19,6 +19,9 @@ npm run typecheck
 echo "── frontend builds ────────────────────────────────────"
 npm run build
 
+echo "── ui: layout and boot ───────────────────────────────"
+node scripts/test-ui.cjs
+
 echo "── build for the smoke tests ─────────────────────────"
 cargo build --quiet
 

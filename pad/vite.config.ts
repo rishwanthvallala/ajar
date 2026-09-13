@@ -2,7 +2,6 @@ import { cp } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
 
 /**
  * Cross-origin isolation.
@@ -53,7 +52,7 @@ const vendorSdk: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), isolation, vendorSdk],
+  plugins: [isolation, vendorSdk],
   server: {
     port: 5175,
     strictPort: true,
