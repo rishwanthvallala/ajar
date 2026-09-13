@@ -16,7 +16,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { chromium } from "playwright";
@@ -139,4 +139,25 @@ console.log(
 );
 
 await writeFile(new URL("manifest.json", OUT), JSON.stringify(manifest, null, 2));
+
+// Anything here that the manifest no longer names is a package we used to
+// pin. Nothing requests it, so it is dead weight on the origin — 40 MB of it
+// after the bash upgrade, because this used to only ever add files.
+const keep = new Set(
+  Object.values(manifest).flatMap((local) => {
+    const file = local.replace("/packages/", "");
+    return [file, `${file}.zst`, `${file}.gz`];
+  }),
+);
+keep.add("manifest.json");
+let freed = 0;
+for (const name of await readdir(OUT)) {
+  if (keep.has(name)) continue;
+  const path = new URL(name, OUT);
+  freed += (await stat(path)).size;
+  await rm(path);
+  console.log(`  dropped ${name}, no longer pinned`);
+}
+if (freed) console.log(`  ${(freed / 1048576).toFixed(1)} MB of superseded packages removed`);
+
 console.log(`  ${Object.keys(manifest).length} packages, ${(total / 1048576).toFixed(1)} MB mirrored`);

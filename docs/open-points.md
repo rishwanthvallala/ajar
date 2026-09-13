@@ -10,16 +10,28 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### `sort` is broken in the shipped coreutils
+### Tools that half-work
 
-`printf 'b\na\n' | sort` prints the multi-call binary's usage instead of
-sorting. `tail -n 1`, `tail -1`, `split`, `sha256sum`, `md5sum`, `stat` and
-`du` fail too — `sharrattj/coreutils` is uutils 0.0.7, not GNU. `ls | sort` is
-something people type.
+Found by `npm run probe --workspace=ajar-pad`, which installs each package and
+exercises its capabilities. None is fatal; all are the kind of thing that fails
+later and somewhere else.
 
-Fixing it needs a different coreutils. `kilyanni/coreutils` is GNU 9.11 at half
-the size, and cannot currently be installed — see
-[dev/pad.md](dev/pad.md#probing-a-package-before-shipping-it).
+| | |
+|---|---|
+| `find` | `-exec` and `-size` fail |
+| `tar` | `-C` fails; create, list and extract work |
+| `sqlite3` | Cannot read SQL from stdin; everything else works |
+| `node` | `process.argv` is wrong |
+| `clang` | Compiles and runs, but fails on a program using `printf` |
+| `git` | `init` works, a commit reports success and `git log` shows nothing |
+| `lua` | Does not run at all — exit 45, no output |
+| coreutils | `split`, `stat`, `du`, `sha256sum`, `md5sum` are not compiled in |
+
+Two shapes here. `find`, `tar`, `sqlite` and `node` are single flags failing in
+otherwise working tools, so each needs its own diagnosis. `lua` and `git` fail
+at something basic, which makes a different build worth trying first — that
+move fixed bash and did nothing for coreutils, so it is worth trying and not
+worth assuming.
 
 ---
 

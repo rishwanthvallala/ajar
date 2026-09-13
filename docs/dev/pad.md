@@ -32,10 +32,31 @@ including `python`, so guessing namespaces is the only way to find anything.
 An earlier version of this document concluded these tools were unavailable,
 which was a wrong conclusion from a broken search.
 
-`awk` is not published anywhere — `gawk`, `mawk`, `goawk`, `busybox` and a
-dozen other guesses all return nothing — so `pad/src/tools/awk.py` stands in
-for it, checked against real awk on thirty programs. It refuses what it does
-not understand rather than quietly doing something else.
+Three commands come from python instead of a package, aliased in `shell.ts`:
+
+| | Why |
+|---|---|
+| `awk` | Not published anywhere — `gawk`, `mawk`, `goawk`, `busybox` and a dozen other guesses all return nothing |
+| `sort` | Advertised by the shipped coreutils and **not compiled into it** |
+| `tail` | The same |
+
+`sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
+answers `file: function/utility not found`, and so does `sort sort file` — the
+name is simply not among the functions built in, along with `tail`, `split`,
+`stat` and `du`. `wasmer/coreutils@1.0.25` is the identical build, so the
+newer-package move that fixed bash does nothing here, and `kilyanni/coreutils`
+(GNU 9.11) cannot be installed.
+
+Each shim is checked against the real tool before being trusted — awk on
+thirty programs, sort on fifteen cases, tail on twelve — and each refuses what
+it does not implement rather than quietly ignoring it. A `sort` that silently
+drops `-k` is worse than one that says it cannot.
+
+The cost is one python start per invocation: **214 ms against 39 ms** for a
+native command, measured in the sandbox. Worth paying for a command that
+otherwise does not exist; not worth paying for one that works, which is why
+`split`, `stat`, `du`, `sha256sum` and `md5sum` are still missing rather than
+shimmed.
 
 ## Things about this runtime that are not obvious
 

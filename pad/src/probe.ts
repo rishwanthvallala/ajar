@@ -147,7 +147,7 @@ async function one(sh: Shell, check: Check, printed: () => string): Promise<Chec
   try {
     const ran = await within(check.run, check.timeoutMs ?? 90_000, sh.run(check.run));
     const got = norm(printed());
-    base.got = got.slice(0, 400);
+    base.got = got.slice(0, 2000);
     base.exit = ran.exitCode;
     if (check.want !== undefined) {
       base.want = check.want;

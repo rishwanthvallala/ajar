@@ -27,10 +27,28 @@
 // TypeScript lexer objects to its escape sequences, and every `\` has to be
 // doubled by hand forever after.
 import AWK_PY from "./tools/awk.py?raw";
+import SORT_PY from "./tools/sort.py?raw";
+import TAIL_PY from "./tools/tail.py?raw";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
-export const TOOLS = ".ajar/awk.py";
+/**
+ * Commands python stands in for, and why each one is here.
+ *
+ * `awk` has no port at all. `sort` and `tail` do — they are advertised by the
+ * shipped coreutils and are not actually compiled into it, so `sort file`
+ * answers "file: function/utility not found". Both are things people type
+ * constantly, and `ls | sort` failing is not something to leave standing.
+ *
+ * Each costs a python start, measured at 214ms against 39ms for a native
+ * command. That is worth paying for a command that otherwise does not exist,
+ * and not worth paying for one that works.
+ */
+export const TOOLS = {
+  awk: ".ajar/awk.py",
+  sort: ".ajar/sort.py",
+  tail: ".ajar/tail.py",
+} as const;
 
 const MARK = "";
 /** Matches the sentinel and captures the exit status. */
@@ -107,9 +125,12 @@ export class Shell {
     // `expand_aliases` because this shell is not interactive in bash's sense.
     //
     // Absolute path: an alias is expanded wherever the user has cd'd to.
-    await rt.write(TOOLS, AWK_PY);
+    const sources = { awk: AWK_PY, sort: SORT_PY, tail: TAIL_PY };
     await shell.run("shopt -s expand_aliases");
-    await shell.run(`alias awk='python /workspace/${TOOLS}'`);
+    for (const name of Object.keys(TOOLS) as (keyof typeof TOOLS)[]) {
+      await rt.write(TOOLS[name], sources[name]);
+      await shell.run(`alias ${name}='python /workspace/${TOOLS[name]}'`);
+    }
 
     shell.silent = false;
     return shell;
