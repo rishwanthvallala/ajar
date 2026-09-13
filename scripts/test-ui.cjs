@@ -97,7 +97,35 @@ async function checkBoots() {
   }
 }
 
+/**
+ * Both halves of this suite drive a real browser, and the layout half spawns
+ * its own. Deciding here — before any server starts — is the only place a
+ * missing browser can be reported as one clear message rather than a stack
+ * trace from whichever half happened to run first.
+ */
+async function browserAvailable() {
+  const { chromium } = webRequire("playwright");
+  try {
+    const browser = await chromium.launch({
+      channel: process.platform === "win32" ? "msedge" : undefined,
+      headless: true,
+    });
+    await browser.close();
+    return true;
+  } catch (error) {
+    // In CI a missing browser is a broken gate, never something to step past.
+    if (process.env.CI) throw error;
+    console.log(
+      "Skipping the UI suite: no browser installed.\n" +
+        "  Install one with: npx playwright install chromium --workspace web\n" +
+        `  ${error.message.split("\n")[0]}`,
+    );
+    return false;
+  }
+}
+
 async function main() {
+  if (!(await browserAvailable())) return;
   const viteBin = (workspaceRequire) =>
     path.join(path.dirname(workspaceRequire.resolve("vite/package.json")), "bin", "vite.js");
   const webVite = viteBin(webRequire);
