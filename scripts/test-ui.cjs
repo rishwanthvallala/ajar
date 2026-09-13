@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const net = require("node:net");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { createRequire } = require("node:module");
@@ -25,6 +26,25 @@ function start(cwd, vite, args) {
   child.recentLog = log;
   servers.push(child);
   return child;
+}
+
+/**
+ * A strict port that is already taken is a setup problem, and it has to be
+ * reported as one. Without this the suite races: a foreign server answers the
+ * probe immediately, `ready` returns happy, and the checks run against
+ * somebody else's process while ours dies quietly in the background.
+ */
+function portFree(port) {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", (error) =>
+      error.code === "EADDRINUSE"
+        ? reject(new Error(`Port ${port} is already in use — stop whatever holds it and rerun.`))
+        : reject(error),
+    );
+    probe.once("listening", () => probe.close(() => resolve()));
+    probe.listen(port, "127.0.0.1");
+  });
 }
 
 async function ready(url, child) {
@@ -66,7 +86,11 @@ async function checkBoots() {
   });
   try {
     const context = await browser.newContext();
+    // Both pages are watched. Watching only one and reporting on both is how
+    // this check came to claim more than it tested.
+    const ajarErrors = [];
     const ajar = await context.newPage();
+    ajar.on("pageerror", (error) => ajarErrors.push(`pageerror: ${error.message}`));
     await ajar.goto("http://127.0.0.1:5174/");
     await ajar.locator(".landing").waitFor({ state: "attached" });
 
@@ -90,6 +114,7 @@ async function checkBoots() {
         `${error.message}\nPad status: ${status ?? "missing"}\n${padErrors.join("\n")}`,
       );
     });
+    assert.deepEqual(ajarErrors, []);
     assert.deepEqual(padErrors.filter((line) => line.startsWith("pageerror:")), []);
     console.log("Ajar and Pad both boot with no page errors.");
   } finally {
@@ -126,6 +151,7 @@ async function browserAvailable() {
 
 async function main() {
   if (!(await browserAvailable())) return;
+  for (const port of [5173, 5174, 5175]) await portFree(port);
   const viteBin = (workspaceRequire) =>
     path.join(path.dirname(workspaceRequire.resolve("vite/package.json")), "bin", "vite.js");
   const webVite = viteBin(webRequire);
