@@ -81,14 +81,20 @@ projects in the WSL filesystem.
 
 ## Running it from source
 
-Three terminals.
+Install the frontend workspace once from the repository root with Node 24:
+
+```sh
+npm ci
+```
+
+Then use three terminals.
 
 ```sh
 # 1. the relay
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787
 
-# 2. the web client
-cd web && VITE_RELAY=ws://127.0.0.1:8787/ws npm run dev
+# 2. the web client, from the repository root
+VITE_RELAY=ws://127.0.0.1:8787/ws npm run dev:ajar
 
 # 3. share a folder
 cargo run -p ajar -- ~/some/project --relay http://127.0.0.1:8787
@@ -107,7 +113,8 @@ development, open the same path on the Vite server instead:
 | | |
 |---|---|
 | `cargo test` | 158 tests: frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions |
-| `npx tsc --noEmit` | web client typecheck |
+| `npm run typecheck` | shared UI, Ajar, and Pad typechecks |
+| `npm run build` | shared UI plus both production browser builds |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | ignore rules, reads, path-traversal refusal, patches, and an install-sized burst |
 | `scripts/smoke-editing.mjs` | two people editing one file while the terminal rewrites it |
@@ -124,7 +131,7 @@ The browser tier is checked separately, because each run downloads the wasm
 packages and drives a real Chromium:
 
 ```sh
-cd pad && npm run check
+npm run check --workspace=ajar-pad
 ```
 
 | | |

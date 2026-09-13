@@ -14,10 +14,13 @@ domain, entirely different architecture.
 
 ## Running it
 
+From the repository root, using Node 24:
+
 ```sh
-npm install
-node scripts/fetch-packages.mjs   # mirrors ~73 MB of wasm; needed once
-npm run dev
+npm ci
+npm run build:pad
+node pad/scripts/fetch-packages.mjs   # mirrors ~73 MB of wasm; needed once
+npm run dev:pad
 ```
 
 The relay supplies `/api/pad/*` and `/ws`, so run one alongside:
@@ -27,7 +30,7 @@ cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 ```
 
 ```sh
-npm run check    # typecheck, build, then both browser suites
+npm run check --workspace=ajar-pad    # typecheck, build, then both browser suites
 ```
 
 Both suites drive headless Chromium, and they have to. The Python package fails

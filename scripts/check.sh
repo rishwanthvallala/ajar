@@ -13,8 +13,11 @@ cargo clippy --all-targets -- -D warnings
 echo "── cargo test ────────────────────────────────────────"
 cargo test --quiet
 
-echo "── tsc ───────────────────────────────────────────────"
-(cd web && npx tsc --noEmit)
+echo "── frontend typecheck ─────────────────────────────────"
+npm run typecheck
+
+echo "── frontend builds ────────────────────────────────────"
+npm run build
 
 echo "── build for the smoke tests ─────────────────────────"
 cargo build --quiet

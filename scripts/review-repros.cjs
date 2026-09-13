@@ -6,8 +6,9 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const assert = require('node:assert/strict');
 globalThis.crypto ??= require('node:crypto').webcrypto;
-const ts = require('../pad/node_modules/typescript');
 const root = path.resolve(__dirname, '..');
+const padRequire = createRequire(path.join(root, 'pad/package.json'));
+const ts = padRequire('typescript');
 const cache = new Map();
 function load(file) {
   file = path.resolve(root, file);
@@ -35,7 +36,7 @@ const { FileTree } = load('pad/src/files.ts');
 const { DocSession } = load('pad/src/editing.ts');
 const { streamFor, DOC_UPDATE } = load('pad/src/peers.ts');
 const { Sealer } = load('web/src/sealed.ts');
-const Y = require('../pad/node_modules/yjs');
+const Y = padRequire('yjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function runtime(files) {
   return {

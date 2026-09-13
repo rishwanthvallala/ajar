@@ -1,4 +1,4 @@
-import type * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+import type * as monaco from "monaco-editor";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 

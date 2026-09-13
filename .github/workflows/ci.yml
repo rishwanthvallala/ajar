@@ -22,9 +22,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci --no-audit --no-fund
-        working-directory: web
       # fmt, clippy -D warnings, cargo test, tsc, and every smoke suite.
       - run: ./scripts/check.sh
 
