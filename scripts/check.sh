@@ -30,8 +30,17 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-echo "── ui: layout and boot ───────────────────────────────"
-node scripts/test-ui.cjs
+# Skipping is deliberate and opt-in, never something a missing dependency
+# decides. Whatever is skipped is named in the summary, so "all green" keeps
+# meaning every check ran.
+skipped=""
+if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+  echo "── ui: layout and boot ─── skipped (AJAR_SKIP_UI=1) ──"
+  skipped="the UI suite"
+else
+  echo "── ui: layout and boot ───────────────────────────────"
+  node scripts/test-ui.cjs
+fi
 
 echo "── build for the smoke tests ─────────────────────────"
 cargo build --quiet
@@ -64,4 +73,8 @@ echo "── acceptance ──────────────────�
 node scripts/acceptance.mjs
 
 echo
-echo "all green"
+if [ -n "$skipped" ]; then
+  echo "all green except $skipped — skipped on purpose, so this is not a full gate"
+else
+  echo "all green"
+fi
