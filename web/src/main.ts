@@ -2,10 +2,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "./style.css";
+import "./workspace.css";
 
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
-import type { Viewer } from "./viewer";
+import { Workspace } from "./workspace";
 import type { DocSession } from "./editing";
 import type { Sealer } from "./sealed";
 import { codeFontPx } from "./scale";
@@ -32,6 +33,7 @@ import {
   untag,
 } from "./proto";
 
+
 const app = document.getElementById("app")!;
 
 /** `/j/quiet-ember-4417` → `quiet-ember-4417` */
@@ -41,7 +43,9 @@ function sessionFromPath(): string | null {
 }
 
 const session = sessionFromPath();
-if (!session) {
+if (import.meta.env.DEV && new URLSearchParams(location.search).get("preview") === "workspace") {
+  void import("./workspace-preview").then(({ renderPreview }) => renderPreview(app));
+} else if (!session) {
   renderLanding();
 } else {
   renderJoin(session);
@@ -181,47 +185,7 @@ interface TerminalTab {
 }
 
 function renderSession(session: string, name: string, sealer: Sealer | null) {
-  app.innerHTML = `
-    <div class="shell">
-      <header>
-        <button class="side-toggle" id="side-toggle" title="Show or hide the file tree" aria-label="Toggle file tree">☰</button>
-        <span class="dot" id="dot"></span>
-        <strong id="workspace">${session}</strong>
-        <span class="status" id="status">connecting</span>
-        <span class="badge" id="locked" hidden>locked</span>
-        <span class="badge" id="readonly" hidden>read-only</span>
-        <span class="spacer"></span>
-        <span class="people" id="people"></span>
-      </header>
-      <div class="away" id="away" hidden></div>
-      <div class="body">
-        <aside id="sidebar">
-          <div class="side-head"><span id="filecount">…</span></div>
-          <div id="tree"></div>
-        </aside>
-        <div class="main">
-          <section class="viewer" id="viewer-pane" hidden>
-            <div class="viewer-head">
-              <span id="viewer-title"></span>
-              <button class="close-file" id="close-file" title="Close file">×</button>
-            </div>
-            <div class="viewer-body" id="viewer"></div>
-          </section>
-          <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal"
-               aria-label="Resize the file view" tabindex="0" hidden></div>
-          <section class="terminals">
-            <nav class="tabs" id="tabs">
-              <button class="new" id="new-terminal" title="New terminal">+</button>
-              <span class="tabs-spacer"></span>
-              <button class="split" id="split" title="Split — two terminals side by side">◫</button>
-            </nav>
-            <div class="terms" id="terms">
-              <div class="empty" id="empty">No terminals yet — press <kbd>+</kbd> to open one.</div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>`;
+  const workspace = new Workspace(app, session);
 
   const statusEl = document.getElementById("status")!;
   const dotEl = document.getElementById("dot")!;
@@ -231,11 +195,6 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   const emptyEl = document.getElementById("empty")!;
   const newBtn = document.getElementById("new-terminal") as HTMLButtonElement;
   const splitBtn = document.getElementById("split") as HTMLButtonElement;
-
-  const bodyEl = document.querySelector(".body") as HTMLElement;
-  const mainEl = document.querySelector(".main") as HTMLElement;
-  const splitterEl = document.getElementById("splitter") as HTMLElement;
-  const sideToggle = document.getElementById("side-toggle") as HTMLButtonElement;
 
   const awayEl = document.getElementById("away")!;
   const lockedEl = document.getElementById("locked") as HTMLElement;
@@ -250,22 +209,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
    */
   let offlineFiles: Map<string, string> | null = null;
   const fileCountEl = document.getElementById("filecount")!;
-  const viewerPane = document.getElementById("viewer-pane") as HTMLElement;
-
-  // Monaco is several megabytes. A session where nobody opens a file — or a
-  // visitor who never leaves the landing page — should not pay for it, so it
-  // arrives on first use.
-  let viewer: Viewer | null = null;
-  async function ensureViewer(): Promise<Viewer> {
-    if (!viewer) {
-      const { Viewer } = await import("./viewer");
-      viewer = new Viewer(
-        document.getElementById("viewer")!,
-        document.getElementById("viewer-title")!,
-      );
-    }
-    return viewer;
-  }
+  let selection = 0;
+  let disposed = false;
+  let focusSelectedFile = false;
 
   /** The file currently open for editing, if any. */
   let editing: DocSession | null = null;
@@ -290,19 +236,20 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   }
 
   const tree = new FileTree(document.getElementById("tree")!, async (path) => {
-    viewerPane.hidden = false;
-    splitterEl.hidden = false;
+    const version = ++selection;
+    focusSelectedFile = workspace.fileSelected();
     tree.setActive(path);
     closeDocument();
     // Load the editor before asking for content, so the reply can never
     // arrive before there is somewhere to put it.
-    const v = await ensureViewer();
-    v.opening(path);
+    const v = await workspace.editor.open(path);
+    if (!v || version !== selection || disposed) return;
     // With the host away, the saved copy is all there is — and it is
     // read-only, because nothing can be written back to a host that is gone.
     const offline = offlineFiles?.get(path);
     if (offline !== undefined) {
       v.show(path, offline, false, true);
+      if (focusSelectedFile) workspace.editor.focus();
       requestAnimationFrame(() => {
         v.layout();
         layout();
@@ -320,9 +267,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   });
 
   (document.getElementById("close-file") as HTMLButtonElement).onclick = () => {
+    ++selection;
     closeDocument();
-    viewerPane.hidden = true;
-    splitterEl.hidden = true;
+    workspace.editor.close();
+    workspace.editor.focus();
     tree.setActive(null);
     requestAnimationFrame(layout);
   };
@@ -342,6 +290,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The pane a tab click lands in. */
   let focused = 0;
   const active = () => panes[focused] ?? null;
+  const colorScheme = matchMedia("(prefers-color-scheme: dark)");
+  const updateTerminalTheme = () => {
+    for (const tab of tabs.values()) tab.term.options.theme = terminalTheme();
+  };
+  colorScheme.addEventListener("change", updateTerminalTheme);
 
   const conn = new Connection({
     session,
@@ -369,6 +322,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   }
 
   function onFrame(f: Frame) {
+    if (disposed) return;
     if (f.channel === Channel.Control) {
       const msg = parseJson<Control>(f);
       switch (msg.t) {
@@ -404,7 +358,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           lockedEl.hidden = !msg.locked;
           break;
         case "closed":
-          closeDocument();
+          dispose();
           conn.close();
           app.innerHTML = `
             <div class="centered">
@@ -413,6 +367,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             </div>`;
           break;
         case "error":
+          dispose();
           app.innerHTML = `
             <div class="centered">
               <h1>Can't join</h1>
@@ -455,6 +410,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       } else if (msg.t === "roster") {
         people = msg.people;
         document.getElementById("workspace")!.textContent = msg.workspace;
+        document.getElementById("workspace")!.title = msg.workspace;
         drawPeople();
         drawTabs();
       }
@@ -468,7 +424,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         else if (msg.t === "error") {
           // Not editable — binary, or too large. Show it read-only and say
           // why rather than silently doing nothing.
-          viewer?.problem(msg.path, msg.message);
+          if (workspace.editor.path !== msg.path) return;
+          workspace.editor.viewer?.problem(msg.path, msg.message);
           conn.send(jsonFrame(Channel.Fs, TARGET_ALL, { t: "read", path: msg.path } satisfies Fs));
         }
         return;
@@ -509,11 +466,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           fileCountEl.textContent = `${tree.count} files`;
           break;
         case "content":
-          if (msg.binary) viewer?.problem(msg.path, "binary file");
-          else viewer?.show(msg.path, msg.text, msg.truncated);
+          if (msg.binary) workspace.editor.viewer?.problem(msg.path, "binary file");
+          else workspace.editor.viewer?.show(msg.path, msg.text, msg.truncated);
+          if (focusSelectedFile && workspace.editor.path === msg.path) { workspace.editor.focus(); focusSelectedFile = false; }
           break;
         case "read_error":
-          viewer?.problem(msg.path, msg.message);
+          workspace.editor.viewer?.problem(msg.path, msg.message);
           break;
       }
     }
@@ -601,7 +559,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         b.appendChild(w);
       }
       b.onclick = () => select(ptyId);
-      tabsEl.insertBefore(b, newBtn);
+      b.setAttribute("aria-pressed", String(pane === focused));
+      tabsEl.appendChild(b);
     }
   }
 
@@ -618,6 +577,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
 
   /** Show whatever the panes point at, and size it to the space it got. */
   function layout() {
+    if (disposed) return;
     for (const [id, tab] of tabs) {
       const pane = panes.indexOf(id);
       tab.el.classList.toggle("shown", pane >= 0);
@@ -628,10 +588,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     // Fitting has to wait for the browser to apply the new widths, or every
     // terminal measures itself against the layout it had a moment ago.
     requestAnimationFrame(() => {
+      if (disposed) return;
       for (const id of panes) {
         if (id !== null) tabs.get(id)?.fit.fit();
       }
-      viewer?.layout();
+      workspace.editor.viewer?.layout();
     });
   }
 
@@ -648,6 +609,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     }
     termsEl.classList.toggle("split", panes.length > 1);
     splitBtn.classList.toggle("on", panes.length > 1);
+    splitBtn.setAttribute("aria-pressed", String(panes.length > 1));
     layout();
     reportPresence();
   }
@@ -662,9 +624,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
    * full state arrives immediately after and lands via applyUpdate.
    */
   async function startEditing(docId: number, path: string) {
-    const v = await ensureViewer();
-    if (v.current !== path) return; // navigated away while we were loading
+    const v = workspace.editor.viewer;
+    const version = selection;
+    if (!v || v.current !== path || disposed) return;
     const { DocSession } = await import("./editing");
+    if (version !== selection || v.current !== path || disposed) return;
 
     const doc = new DocSession(docId, path, { id: me, name }, (kind, bytes) => {
       conn.send(
@@ -691,6 +655,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (!handles) return;
     detach = doc.bind(handles.editor, handles.model);
     v.setReadOnly(false);
+    if (focusSelectedFile) { workspace.editor.focus(); focusSelectedFile = false; }
   }
 
   /** The stored copy arrives sealed; the key is the one from the link. */
@@ -741,85 +706,28 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     conn.send(jsonFrame(Channel.Pty, TARGET_ALL, { t: "open", cols, rows } satisfies Pty));
   };
 
-  // ---- the file tree is a toggle, never a disappearance ---------------
-  //
-  // It used to be hidden outright below 720px, which is what a laptop at
-  // 200% zoom is — the tree vanished with no way to bring it back.
-  const NARROW = window.matchMedia("(max-width: 40rem)");
-  function applySidebar(hidden: boolean) {
-    bodyEl.classList.toggle("no-sidebar", hidden);
-    sideToggle.setAttribute("aria-expanded", String(!hidden));
-    requestAnimationFrame(layout);
-  }
-  const stored = localStorage.getItem("ajar.sidebar");
-  applySidebar(stored === null ? NARROW.matches : stored === "hidden");
-  sideToggle.onclick = () => {
-    const hidden = !bodyEl.classList.contains("no-sidebar");
-    localStorage.setItem("ajar.sidebar", hidden ? "hidden" : "shown");
-    applySidebar(hidden);
-  };
-  // Only follow the window while the reader has expressed no preference.
-  NARROW.addEventListener("change", (e) => {
-    if (localStorage.getItem("ajar.sidebar") === null) applySidebar(e.matches);
-  });
-
-  // ---- and the split between file and terminals is theirs to set -------
-  const MIN_FRACTION = 0.15;
-  const MAX_FRACTION = 0.85;
-
-  function setSplit(fraction: number) {
-    const clamped = Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction));
-    mainEl.style.setProperty("--split", `${(clamped * 100).toFixed(1)}%`);
-    localStorage.setItem("ajar.split", String(clamped));
-    layout();
-  }
-  const savedSplit = Number(localStorage.getItem("ajar.split"));
-  if (savedSplit > 0) setSplit(savedSplit);
-
-  splitterEl.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    splitterEl.setPointerCapture(e.pointerId);
-    splitterEl.classList.add("dragging");
-
-    const move = (ev: PointerEvent) => {
-      const box = mainEl.getBoundingClientRect();
-      if (box.height > 0) setSplit((ev.clientY - box.top) / box.height);
-    };
-    const done = () => {
-      splitterEl.classList.remove("dragging");
-      splitterEl.removeEventListener("pointermove", move);
-      splitterEl.removeEventListener("pointerup", done);
-      splitterEl.removeEventListener("pointercancel", done);
-    };
-    splitterEl.addEventListener("pointermove", move);
-    splitterEl.addEventListener("pointerup", done);
-    splitterEl.addEventListener("pointercancel", done);
-  });
-
-  // Draggable things should be operable without a pointer.
-  splitterEl.addEventListener("keydown", (e) => {
-    const step = e.shiftKey ? 0.1 : 0.02;
-    if (e.key === "ArrowUp") setSplit(currentSplit() - step);
-    else if (e.key === "ArrowDown") setSplit(currentSplit() + step);
-    else return;
-    e.preventDefault();
-  });
-
-  function currentSplit(): number {
-    const declared = getComputedStyle(mainEl).getPropertyValue("--split").trim();
-    return parseFloat(declared) / 100 || 0.45;
-  }
-
-  splitBtn.onclick = toggleSplit;
-  window.addEventListener("resize", () => {
-    // Zoom lands here too, and it changes what a rem resolves to — so the
-    // terminals need a new font size, not just a refit.
+  workspace.onLayout = () => {
     const px = codeFontPx();
     for (const tab of tabs.values()) {
       if (tab.term.options.fontSize !== px) tab.term.options.fontSize = px;
     }
     layout();
-  });
+  };
+  splitBtn.onclick = toggleSplit;
+  function dispose() {
+    if (disposed) return;
+    ++selection;
+    closeDocument();
+    disposed = true;
+    tree.dispose();
+    workspace.dispose();
+    colorScheme.removeEventListener("change", updateTerminalTheme);
+    for (const tab of tabs.values()) tab.term.dispose();
+    tabs.clear();
+    window.removeEventListener("pagehide", dispose);
+  }
+  window.addEventListener("pagehide", dispose, { once: true });
+
 }
 
 /** A rough size for a brand-new terminal before its element is measured. */

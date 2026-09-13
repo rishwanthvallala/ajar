@@ -64,8 +64,11 @@ else
     BIN="target/container/release/ajar-relay"
 fi
 
+say "installing the frontend workspace"
+npm ci --silent --no-audit --no-fund
+
 say "building the web client"
-(cd web && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
+npm run build:ajar --silent >/dev/null
 
 say "building the pad"
 # The mirrored wasm packages are 70 MB of binaries, so they are not in git.
@@ -74,10 +77,10 @@ say "building the pad"
 # connect-src doing the only complaining.
 if [ ! -f pad/public/packages/manifest.json ]; then
     echo "  pad/public/packages is empty — run:" >&2
-    echo "      (cd pad && npx vite build && node scripts/fetch-packages.mjs)" >&2
+    echo "      npm run build:pad && node pad/scripts/fetch-packages.mjs" >&2
     exit 1
 fi
-(cd pad && npm ci --silent --no-audit --no-fund && npx vite build >/dev/null)
+npm run build:pad --silent >/dev/null
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"

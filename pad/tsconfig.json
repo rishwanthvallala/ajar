@@ -11,15 +11,7 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["vite/client", "node"],
-    // Monaco publishes `"./*": "./*"`, which the bundler resolver follows for
-    // code but not for types — vite builds this import happily while tsc
-    // reports it missing. Naming the declaration file directly settles it.
-    "paths": {
-      "monaco-editor/esm/vs/editor/editor.api": [
-        "./node_modules/monaco-editor/esm/vs/editor/editor.api.d.ts"
-      ]
-    }
+    "types": ["vite/client", "node"]
   },
   "include": ["src", "vite.config.ts"]
 }

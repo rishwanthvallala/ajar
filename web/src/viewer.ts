@@ -94,6 +94,7 @@ function theme(): string {
 export class Viewer {
   private editor: monaco.editor.IStandaloneCodeEditor | null = null;
   private path: string | null = null;
+  private readonly events = new AbortController();
 
   constructor(
     private host: HTMLElement,
@@ -101,7 +102,7 @@ export class Viewer {
   ) {
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       monaco.editor.setTheme(theme());
-    });
+    }, { signal: this.events.signal });
   }
 
   /** The file whose content we're waiting for or showing. */
@@ -113,6 +114,7 @@ export class Viewer {
     this.path = path;
     this.titleEl.textContent = path;
     this.titleEl.classList.remove("problem");
+    this.titleEl.title = path;
   }
 
   /** The live editor and model, once something has been opened. */
@@ -162,6 +164,21 @@ export class Viewer {
   }
 
   layout() {
+    this.editor?.updateOptions({ fontSize: codeFontPx() });
     this.editor?.layout();
+  }
+
+  clear() {
+    this.path = null;
+    const model = this.editor?.getModel();
+    this.editor?.setModel(null);
+    model?.dispose();
+  }
+
+  dispose() {
+    this.clear();
+    this.events.abort();
+    this.editor?.dispose();
+    this.editor = null;
   }
 }

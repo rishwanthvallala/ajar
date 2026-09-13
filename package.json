@@ -1,0 +1,21 @@
+{
+  "name": "ajar-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "web",
+    "pad"
+  ],
+  "scripts": {
+    "dev:ajar": "npm run dev --workspace=ajar-web -- --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:pad": "npm run dev --workspace=ajar-pad -- --host 127.0.0.1 --port 5175 --strictPort",
+    "typecheck": "npm run typecheck --workspace=ajar-web && npm run typecheck --workspace=ajar-pad",
+    "build:ajar": "npm run build --workspace=ajar-web",
+    "build:pad": "npm run build --workspace=ajar-pad",
+    "build": "npm run build --workspace=ajar-web && npm run build --workspace=ajar-pad",
+    "test:ui": "npm run build && node scripts/test-ui.cjs"
+  }
+}

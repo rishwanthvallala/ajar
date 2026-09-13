@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:layout": "node ../scripts/check-workspace-layout.cjs",
     "smoke": "node ../scripts/smoke.mjs"
   },
   "dependencies": {
@@ -17,6 +19,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }

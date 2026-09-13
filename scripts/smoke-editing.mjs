@@ -11,7 +11,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as Y from "../web/node_modules/yjs/dist/yjs.mjs";
+import { createRequire } from "node:module";
+
+const webRequire = createRequire(new URL("../web/package.json", import.meta.url));
+const Y = webRequire("yjs");
 import {
   CH_DOC,
   DOC_AWARENESS,

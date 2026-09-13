@@ -4,10 +4,12 @@
 
 FROM node:24-alpine AS web
 WORKDIR /w
-COPY web/package.json web/package-lock.json ./
+COPY package.json package-lock.json ./
+COPY web/package.json web/package.json
+COPY pad/package.json pad/package.json
 RUN npm ci --no-audit --no-fund
-COPY web/ ./
-RUN npx vite build
+COPY web/ web/
+RUN npm run build:ajar
 
 FROM rust:1-alpine AS build
 RUN apk add --no-cache musl-dev
@@ -22,7 +24,7 @@ FROM alpine:3
 RUN apk add --no-cache ca-certificates \
     && adduser -D -H -u 10001 ajar
 COPY --from=build /src/target/release/ajar-relay /usr/local/bin/ajar-relay
-COPY --from=web /w/dist /srv/web
+COPY --from=web /w/web/dist /srv/web
 USER ajar
 EXPOSE 8787
 ENV RUST_LOG=ajar_relay=info

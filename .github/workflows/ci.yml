@@ -22,10 +22,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci --no-audit --no-fund
+      # The UI suite drives a real browser. Without this it would skip, and
+      # a check that skips in the one place it has to run is not a check.
+      - run: npx playwright install --with-deps chromium
         working-directory: web
-      # fmt, clippy -D warnings, cargo test, tsc, and every smoke suite.
+      # fmt, clippy -D warnings, cargo test, tsc, the UI suite, every smoke suite.
       - run: ./scripts/check.sh
 
       # Landlock is a kernel feature, so this is the one check that genuinely

@@ -1,0 +1,96 @@
+.shell {
+  --sidebar-width: 15rem;
+  --editor-height: 60%;
+  --tree-row: 1.875rem;
+  height: 100%; height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-width: 0; min-height: 0;
+  background: var(--surface);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.8125rem;
+}
+.shell [hidden] { display: none !important; }
+.shell .preview-bar { grid-row: 1; }
+.shell .workspace-head { grid-row: 2; }
+.shell .away { grid-row: 3; }
+.shell .body { grid-row: 4; }
+.shell .terminal-head { grid-row: 1; }
+.shell .tabs { grid-row: 2; }
+.shell .terms { grid-row: 3; }
+.shell button { font: inherit; }
+.shell button:focus-visible, .shell [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.shell .workspace-head {
+  min-width: 0; padding: 0.65rem 1rem; gap: 0.65rem;
+  display: flex; flex-wrap: wrap; align-items: center;
+  border-bottom: 1px solid var(--rule); background: var(--surface);
+}
+.shell #workspace { min-width: 0; max-width: min(28rem, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; }
+.shell .connection-status { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.shell .status { overflow-wrap: anywhere; letter-spacing: 0; font-size: 0.75rem; }
+.shell .people { margin-left: auto; max-width: 100%; flex-wrap: nowrap; overflow: auto; justify-content: flex-start; padding: 2px; }
+.shell .person { flex: none; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; padding: 0.25rem 0.6rem; }
+.shell .badge { font-size: 0.6875rem; }
+.shell .away { min-width: 0; max-height: 5rem; overflow: auto; overflow-wrap: anywhere; }
+.shell .body { position: relative; display: grid; grid-template-columns: var(--sidebar-width) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
+.shell.no-sidebar .body, .shell.narrow .body { grid-template-columns: minmax(0, 1fr); }
+.shell #sidebar { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--surface); border: 0; }
+.shell .side-head { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); color: var(--ink-2); font-size: 0.75rem; text-transform: none; letter-spacing: 0; }
+.shell #filecount { margin-left: auto; font-size: 0.6875rem; color: var(--muted); }
+.shell .tree-row { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 0 0.75rem; height: var(--tree-row); font-size: 0.8125rem; font-weight: 400; color: var(--ink-2); }
+.shell .tree-row:hover { background: var(--surface-2); }
+.shell .tree-row.active { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); box-shadow: inset 2px 0 var(--accent); }
+.shell .main { display: grid; grid-template-rows: minmax(0, var(--editor-height)) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
+.shell .viewer { grid-row: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border: 0; }
+.shell .viewer-head, .shell .terminal-head { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.4rem 0.875rem; border-bottom: 1px solid var(--rule); min-width: 0; background: var(--surface); }
+.shell .region-label { font-size: 0.75rem; font-weight: 600; color: var(--ink-2); flex: none; }
+.shell .viewer-head .region-label { flex: none; }
+.shell #viewer-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell #viewer-title.problem { color: var(--warn); }
+.shell .editor-content { position: relative; min-width: 0; min-height: 0; }
+.shell .viewer-body { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.shell .editor-empty { display: flex; flex-direction: column; gap: 0.625rem; align-items: center; justify-content: center; text-align: center; height: 100%; overflow: auto; padding: 1rem; color: var(--muted); }
+.shell .editor-empty strong { font-size: 1rem; font-weight: 500; color: var(--ink-2); }
+.shell .editor-empty p { margin: 0; line-height: 1.5; font-size: 0.8125rem; }
+.shell .empty-symbol { font: 1.75rem var(--mono); color: var(--muted); opacity: 0.6; margin-bottom: 0.25rem; }
+.shell .splitter, .shell .sidebar-splitter { position: relative; background: var(--surface-2); border: 0; touch-action: none; }
+.shell .splitter { grid-row: 2; height: 8px; cursor: row-resize; }
+.shell .sidebar-splitter { width: 8px; cursor: col-resize; }
+.shell .splitter::after, .shell .sidebar-splitter::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border-radius: 2px; background: var(--muted); opacity: 0.45; }
+.shell .splitter::after { width: 2rem; height: 2px; }
+.shell .sidebar-splitter::after { width: 2px; height: 2rem; }
+.shell .splitter:hover, .shell .sidebar-splitter:hover, .shell .dragging { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.shell .splitter:focus-visible, .shell .sidebar-splitter:focus-visible { outline-offset: -2px; }
+.shell .terminals { grid-row: 3; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.shell .terminal-actions { margin-left: auto; display: flex; flex: none; gap: 0.4rem; }
+.shell .side-toggle, .shell .quiet-button, .shell .close-file, .shell .new, .shell .split, .shell #drawer-close {
+  flex: none; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); padding: 0.35rem 0.65rem; font-size: 0.75rem; line-height: 1.4; cursor: pointer;
+}
+.shell .close-file { border-color: transparent; }
+.shell .side-toggle[aria-expanded="true"], .shell .split[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.shell .new:hover:not(:disabled), .shell .quiet-button:hover, .shell .close-file:hover { border-color: var(--accent); color: var(--accent); }
+.shell .tabs { display: flex; gap: 0.25rem; min-width: 0; padding: 0.3rem 0.75rem; overflow-x: auto; border-bottom: 1px solid var(--rule); background: var(--surface); }
+.shell .tabs:empty { display: none; }
+.shell .tab { flex: none; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; padding: 0.25rem 0.65rem; font-size: 0.75rem; }
+.shell .tab.active { color: var(--accent); border-color: var(--rule); background: var(--surface-2); }
+.shell .watchers { font-size: 0.6875rem; }
+.shell .terms { min-height: 0; min-width: 0; }
+.shell .term { min-height: 0; padding: 0.5rem 0.75rem; }
+.shell .empty { width: 100%; min-height: 0; overflow: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; text-align: center; font-size: 0.75rem; }
+.shell .empty strong { font-weight: 500; color: var(--ink-2); }
+.shell .drawer-backdrop { position: absolute; inset: 0; z-index: 5; background: #0005; }
+.shell.narrow #sidebar { position: absolute; left: 0; top: 0; bottom: 0; width: min(20rem, calc(100% - 2.5rem)); z-index: 6; box-shadow: 8px 0 24px #0002; }
+.shell.narrow .workspace-head { padding: 0.5rem 0.75rem; gap: 0.4rem; }
+.shell.narrow .people { max-width: 100%; }
+.shell.narrow #workspace { max-width: calc(100% - 5rem); }
+.shell.narrow .viewer-head, .shell.narrow .terminal-head { padding: 0.35rem 0.6rem; gap: 0.5rem; }
+.shell.narrow .terms.split { flex-direction: column; }
+.shell.narrow .terms.split .term.shown + .term.shown { border-left: 0; border-top: 1px solid var(--rule); }
+.shell .preview-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.4rem 0.85rem; background: var(--surface-2); color: var(--ink-2); border-bottom: 1px solid var(--rule); font-size: 0.75rem; }
+.shell .preview-bar select { font: inherit; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 4px; padding: 0.2rem 0.4rem; }
+.shell .preview-bar span { color: var(--muted); }
+@media (max-height: 32rem) {
+  .shell .editor-empty { justify-content: flex-start; padding: 0.5rem; gap: 0.25rem; }
+  .shell .empty-symbol { display: none; }
+  .shell .editor-empty strong { font-size: 0.875rem; }
+}

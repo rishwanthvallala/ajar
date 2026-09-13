@@ -5,7 +5,7 @@
  * because the first thing anyone does here is paste — and the runtime is a
  * 60 MB download that would otherwise be in the way of that.
  */
-import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
+import type * as Monaco from "monaco-editor";
 
 import { Console } from "./console";
 import { DocSession } from "./editing";

@@ -1,4 +1,6 @@
 import { cp } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 /**
@@ -37,19 +39,36 @@ const isolation: Plugin = {
  * every relative path true. The cost is one unbundled dependency.
  */
 const SDK_URL = "/vendor/wasmer";
+const sdkEntry = createRequire(import.meta.url).resolve("@wasmer/sdk");
+const sdkRoot = new URL("../", pathToFileURL(sdkEntry));
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",
   async buildStart() {
-    const from = new URL("./node_modules/@wasmer/sdk/", import.meta.url);
     const to = new URL("./public/vendor/wasmer/", import.meta.url);
     for (const dir of ["dist", "pkg"]) {
-      await cp(new URL(dir, from), new URL(dir, to), { recursive: true });
+      await cp(new URL(`${dir}/`, sdkRoot), new URL(`${dir}/`, to), { recursive: true });
     }
   },
 };
 
 export default defineConfig({
   plugins: [isolation, vendorSdk],
+  server: {
+    port: 5175,
+    strictPort: true,
+    watch: {
+      // Generated binary/vendor trees are copied as a unit. Watching them is
+      // wasted work and triggers Windows EBUSY errors on SDK source maps.
+      ignored: ["**/public/vendor/**", "**/public/packages/**"],
+    },
+    proxy: {
+      "/api": "http://127.0.0.1:8787",
+      "/ws": {
+        target: "ws://127.0.0.1:8787",
+        ws: true,
+      },
+    },
+  },
   define: { __SDK_URL__: JSON.stringify(SDK_URL) },
   build: {
     sourcemap: false,
