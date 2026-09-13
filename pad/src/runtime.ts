@@ -50,7 +50,13 @@ declare const __SDK_URL__: string;
  * from the line that guessed it.
  */
 export const PACKAGES = {
-  shell: "sharrattj/bash@1.0.18",
+  // bash 1.0.25, not sharrattj's 1.0.18. The older build takes SIGINT on
+  // `$(...)` and dies — exit 130 — so command substitution killed the session
+  // shell and the next command started fresh at the folder root with no
+  // variables. Backticks were unaffected, which is why it went unnoticed.
+  // The same upgrade fixes shell functions, which used to define fine and hang
+  // when called. Both are asserted in the package probe.
+  shell: "wasmer/bash@1.0.25",
   coreutils: "sharrattj/coreutils@1.0.16",
   python: "python/python@3.13.20",
   // The text-processing three. They live under `wasmer/`, not `sharrattj/`,

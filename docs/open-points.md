@@ -10,18 +10,6 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Command substitution kills the shell
-
-`x=$(echo hi)` exits 130 — SIGINT — and takes bash with it. The next command
-starts in a fresh shell at the folder root, so the working directory and every
-variable are gone. Confirmed on code.rishwanth.dev, not just locally.
-
-`$(date)`, `$(ls)`, `$(cat f)` are ordinary things to type, so this is a live
-defect rather than a limitation. It is the same shape as the documented
-ctrl-c behaviour — an interrupt bash does not survive — and probably the same
-cause. The probe asserts it (`sharrattj/bash`, "command substitution"), ordered
-last because everything after it in one shell reports "the shell has exited".
-
 ### `sort` is broken in the shipped coreutils
 
 `printf 'b\na\n' | sort` prints the multi-call binary's usage instead of

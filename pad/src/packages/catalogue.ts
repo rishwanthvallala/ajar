@@ -81,7 +81,55 @@ export const CANDIDATES: Candidate[] = [
 
   // ---- the shell ---------------------------------------------------------
   {
+    // Kept after being replaced, because it is the evidence. This build takes
+    // SIGINT on `$(...)` and dies, and hangs on a called function; 1.0.25 does
+    // neither. Both defects are asserted below, so the difference stays
+    // demonstrable rather than becoming a line in a commit message.
     name: "sharrattj/bash",
+    gives: "bash 1.0.18 — the build we replaced, and why",
+    isShell: true,
+    checks: [
+      { covers: "echo", run: "echo hello", want: "hello" },
+      { covers: "arithmetic", run: "x=5; echo $((x * 3))", want: "15" },
+      { covers: "for loop", run: "for i in 1 2 3; do printf '%s' $i; done", want: "123" },
+      { covers: "while read", run: "printf 'a\\nb\\n' | while read l; do echo \"[$l]\"; done", want: "[a]\n[b]" },
+      { covers: "if/then", run: "if [ 1 -lt 2 ]; then echo yes; else echo no; fi", want: "yes" },
+      { covers: "case", run: "case abc in a*) echo matched;; *) echo no;; esac", want: "matched" },
+      { covers: "pipes", run: "echo abc | cat | cat", want: "abc" },
+      { covers: "redirect out", run: "echo hi > f.txt && cat f.txt", want: "hi" },
+      { covers: "redirect append", run: "echo a > g.txt; echo b >> g.txt; cat g.txt", want: "a\nb" },
+      { covers: "stderr redirect", run: "ls /nope 2>/dev/null; echo survived", want: "survived" },
+      { covers: "here-string", run: "cat <<< 'line'", want: "line" },
+      { covers: "globs", run: "touch a1.q a2.q; for f in *.q; do printf '%s ' $f; done", want: "a1.q a2.q" },
+      { covers: "exit status", run: "false; echo $?", want: "1" },
+      { covers: "&& and ||", run: "true && echo t; false || echo f", want: "t\nf" },
+      { covers: "parameter expansion", run: "v=abcdef; echo ${v:2:3}", want: "cde" },
+      { covers: "default value", run: "unset u; echo ${u:-fallback}", want: "fallback" },
+      { covers: "arrays", run: "a=(x y z); echo ${a[1]} ${#a[@]}", want: "y 3" },
+      { covers: "subshell", run: "(cd /tmp && pwd)", want: "/tmp" },
+      { covers: "local variables", run: "v=outer; ( v=inner ); echo $v", want: "outer" },
+      // Documented: a bash function defines fine and hangs when called. Kept
+      // as a check so the day it stops hanging is visible, with a short
+      // deadline so it costs seconds rather than a minute and a half.
+      // Live defect, confirmed on code.rishwanth.dev: `x=$(echo hi)` exits 130
+      // and takes the shell with it, so the next command starts in a fresh
+      // shell at the folder root. Ordered last because everything after it in
+      // one shell reports "the shell has exited" and would be blamed on bash.
+      { covers: "cmdsub: backticks", run: "echo \"[`echo inner`]\"", want: "[inner]" },
+      { covers: "cmdsub: $() bare", run: "echo $(echo inner)", want: "inner" },
+      { covers: "cmdsub: $() quoted", run: "echo \"[$(echo inner)]\"", want: "[inner]" },
+      { covers: "cmdsub: assignment", run: "x=$(echo hi); echo got-$x", want: "got-hi" },
+      { covers: "cmdsub: no output", run: "echo a$(true)b", want: "ab" },
+      { covers: "shell survives cmdsub", run: "echo alive", want: "alive" },
+      // Not optional any more. These hang on 1.0.18 and work on 1.0.25, which
+      // is the whole reason the pin moved — a short deadline so the old build
+      // fails in seconds rather than ninety.
+      { covers: "functions", run: "f() { echo fn; }; f", want: "fn", timeoutMs: 20_000 },
+    ],
+  },
+
+  {
+    name: "wasmer/bash",
     gives: "bash, sh",
     shipped: true,
     isShell: true,
@@ -112,10 +160,16 @@ export const CANDIDATES: Candidate[] = [
       // and takes the shell with it, so the next command starts in a fresh
       // shell at the folder root. Ordered last because everything after it in
       // one shell reports "the shell has exited" and would be blamed on bash.
-      { covers: "command substitution", run: "echo \"[$(echo inner)]\"", want: "[inner]" },
-      { covers: "functions (known to hang)", run: "f() { echo fn; }; f", want: "fn",
-        timeoutMs: 15_000, optional: true,
-        why: "bash functions hang under WASIX; alias is the workaround" },
+      { covers: "cmdsub: backticks", run: "echo \"[`echo inner`]\"", want: "[inner]" },
+      { covers: "cmdsub: $() bare", run: "echo $(echo inner)", want: "inner" },
+      { covers: "cmdsub: $() quoted", run: "echo \"[$(echo inner)]\"", want: "[inner]" },
+      { covers: "cmdsub: assignment", run: "x=$(echo hi); echo got-$x", want: "got-hi" },
+      { covers: "cmdsub: no output", run: "echo a$(true)b", want: "ab" },
+      { covers: "shell survives cmdsub", run: "echo alive", want: "alive" },
+      // Not optional any more. These hang on 1.0.18 and work on 1.0.25, which
+      // is the whole reason the pin moved — a short deadline so the old build
+      // fails in seconds rather than ninety.
+      { covers: "functions", run: "f() { echo fn; }; f", want: "fn", timeoutMs: 20_000 },
     ],
   },
 

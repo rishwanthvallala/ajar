@@ -21,7 +21,7 @@ Pinned, mirrored, and served from this origin. A folder that ran last week has
 to run this week, and a registry nobody here controls cannot promise that.
 
 ```
-sharrattj/bash@1.0.18        wasmer/grep@3.12.0
+wasmer/bash@1.0.25           wasmer/grep@3.12.0
 sharrattj/coreutils@1.0.16   wasmer/sed@4.9.0
 python/python@3.13.20        wasmer/find@4.10.0
 ```
@@ -56,9 +56,16 @@ nothing thrown**. It is vendored verbatim — see `vendor-wasmer-sdk` in
 alongside it replaces the pty with pipes, and the shell stops behaving like a
 terminal.
 
-**Bash functions define fine and hang when called.** So does a script on
-`PATH`. An alias works, being textual substitution with nothing to fork, which
-is why `awk` is one.
+**Bash functions used to define fine and hang when called** — and that was a
+property of `sharrattj/bash@1.0.18`, not of WASIX, which this document
+previously got wrong. `wasmer/bash@1.0.25` runs them. The same upgrade fixed
+`$(...)`, which took SIGINT and killed the shell on the old build while
+backticks worked, so it went unnoticed for a long time.
+
+`awk` remains an alias. It was made one to dodge the hang, and an alias is
+still the simpler thing — textual substitution with nothing to fork.
+
+A script on `PATH` still does not work.
 
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,
