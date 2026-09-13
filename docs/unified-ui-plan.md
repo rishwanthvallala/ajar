@@ -1,9 +1,32 @@
 # Unified UI plan: Ajar and Pad
 
 Created: 12 September 2026  
-Status: Ready to start; framework migration has not begun.  
-Working repository: `D:\ajar\ajar`  
-Recommended first work: **UI-00, followed by UI-01**.
+Status: **On hold from UI-02 onward — section 1 no longer reflects what shipped.**  
+Recommended first work: settle the question in "What changed, and what it costs" below.
+
+## What changed, and what it costs
+
+UI-01 landed the workspace rewrite — the shared layout, the editor pane, the
+file tree, the splitters, the drawer — as ordinary TypeScript. The React
+scaffold it also carried was removed before merge, along with `@ajar/ui`.
+
+The reason was measured, not stylistic. The scaffold rendered a placeholder
+into a hidden div, and it took Pad's entry chunk — the one that blocks first
+paint — from 18 KB to 235 KB, with total JS up 217 KB and the dependency count
+up from 145 to 202. Pad exists to be as immediate as opening rustpad.io and
+pasting; a thirteenfold entry chunk buying nothing visible is the wrong trade
+to make in advance.
+
+This is not a decision that React is wrong for this codebase. It is a decision
+not to pay for it before it does something. The bar for bringing it back is a
+single change that replaces a real screen and shows the cost is worth it —
+measured the same way, on the entry chunk.
+
+Everything below from section 1 onward was written assuming React and a shared
+`@ajar/ui`. **It has not been revised.** Read it as the case for that
+direction, not as instructions to follow. Whoever picks up UI-02 should rewrite
+this section first, either restating the React plan against that bar or
+replanning the phases in plain TypeScript.
 
 ## 1. The decision
 

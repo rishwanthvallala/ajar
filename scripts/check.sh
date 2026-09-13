@@ -19,6 +19,17 @@ npm run typecheck
 echo "── frontend builds ────────────────────────────────────"
 npm run build
 
+# Deleting a workspace and forgetting the Dockerfile is a build that only
+# breaks at release time. This is the cheap half of `docker build`.
+echo "── dockerfile: every COPY source exists ──────────────"
+missing=$(awk '/^COPY / && $2 !~ /^--from=/ { for (i = 2; i < NF; i++) print $i }' Dockerfile \
+  | while read -r src; do [ -e "$src" ] || echo "  $src"; done)
+if [ -n "$missing" ]; then
+  echo "Dockerfile copies paths that do not exist:" >&2
+  echo "$missing" >&2
+  exit 1
+fi
+
 echo "── ui: layout and boot ───────────────────────────────"
 node scripts/test-ui.cjs
 
