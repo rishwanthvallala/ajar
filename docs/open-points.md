@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 12 September 2026, after the live verification of `eb3c869`.*
+*Kept as of 14 September 2026, after PR #2 merged and deployed.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -9,35 +9,6 @@ not what would be nice.
 ---
 
 ## Waiting on a decision
-
-### The link is printed before it works
-
-The agent prints its share link roughly 400 ms before the relay will accept
-anyone at it. Measured against production: joining at +3 ms is refused with
-`no_such_session`, at +416 ms it succeeds.
-
-`banner()` runs at [`crates/ajar/src/main.rs:322`](../crates/ajar/src/main.rs),
-before the relay connection exists, and prints a hardcoded `open` — while
-`ui::State` initialises to `Status::Connecting`
-([`ui.rs:115`](../crates/ajar/src/ui.rs)). The banner's own doc comment says it
-reads from the same `State` the panel draws, "because two renderings of one set
-of facts is how they end up disagreeing," and then it disagrees.
-
-Invisible to a human copying a link. Not invisible to anything scripted.
-
-Local smoke tests cannot catch this: against `127.0.0.1` the gap is about a
-millisecond, so the race is never lost. It only appears over a real network,
-which is why it survived to production.
-
-Two fixes, and the choice is a UX call:
-
-- **Print the banner once connected.** Honest, but delays startup by the
-  connect time, and needs a fallback for a relay that never answers — a case
-  the code deliberately handles today by warning rather than hanging.
-- **Print immediately, showing `connecting`.** No delay, but the banner is
-  printed once and never updated, so it would read `connecting` forever.
-
-Neither is obviously right, which is why it is still here.
 
 ### Two stale SSH rules on the live instance
 

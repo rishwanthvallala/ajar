@@ -318,10 +318,6 @@ async fn run() -> Result<()> {
         link.clone(),
         warnings.clone(),
     );
-    if !ui.is_panel() {
-        banner(&state, &caps);
-    }
-
     // Held for its lifetime: dropping the watcher stops the notifications,
     // silently, and the tree would just quietly stop updating.
     let (_watcher, mut fs_events) = workspace::watch::spawn(workspace.filter())?;
@@ -361,6 +357,14 @@ async fn run() -> Result<()> {
 
     let mut online = false;
     let mut warned_offline = false;
+    // The banner is held until the relay answers. Printed any earlier it
+    // announces a link that is refused for the next few hundred milliseconds —
+    // invisible over loopback, where the gap is about a millisecond, and
+    // reliably wrong over a real network.
+    let mut banner_shown = false;
+    // But a relay that never answers must not leave the terminal blank, so the
+    // banner goes out regardless after this, saying whatever is actually true.
+    let banner_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     // Drives deferred rebuilds: without it, a burst that ends during the
     // cooldown would leave the tree stale until something else changed.
     let mut resync_tick = tokio::time::interval(Duration::from_millis(250));
@@ -370,6 +374,10 @@ async fn run() -> Result<()> {
 
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(banner_deadline), if !banner_shown && !host.ui.is_panel() => {
+                banner(&host.state, &caps);
+                banner_shown = true;
+            }
             event = events.recv() => {
                 let Some(event) = event else { break };
                 match event {
@@ -377,6 +385,16 @@ async fn run() -> Result<()> {
                         online = true;
                         warned_offline = false;
                         host.state.status = Status::Online;
+                        if !host.ui.is_panel() {
+                            if !banner_shown {
+                                banner(&host.state, &caps);
+                                banner_shown = true;
+                            } else if !resumed {
+                                // The deadline below already printed a banner
+                                // saying the link did not work yet. It does now.
+                                host.log("the relay answered — the link works now");
+                            }
+                        }
                         if resumed {
                             host.log("reconnected — guests kept their session");
                             // Guests missed whatever we produced while we were
@@ -397,8 +415,14 @@ async fn run() -> Result<()> {
                                 "cannot reach the relay ({why}) — the link will not work until this clears"
                             ));
                         }
+                        // "reconnecting" would be a claim we had ever been
+                        // connected. On the first attempt we have not.
+                        host.state.status = if online {
+                            Status::Reconnecting
+                        } else {
+                            Status::Connecting
+                        };
                         online = false;
-                        host.state.status = Status::Reconnecting;
                     }
                     RelayEvent::Refused(why) => {
                         eprintln!("\n  relay refused the session: {why}\n");
@@ -1191,7 +1215,12 @@ fn banner(state: &ui::State, caps: &limits::Limits) {
     if !state.warnings.is_empty() {
         println!();
     }
-    println!("  \u{25cf}  open  {}  ({})", state.folder, state.path);
+    println!(
+        "  \u{25cf}  {}  {}  ({})",
+        state.status.label(),
+        state.folder,
+        state.path
+    );
     println!("     {} files shared", state.files);
     println!("     {}", state.sandbox);
     println!("     {}", caps.summary());

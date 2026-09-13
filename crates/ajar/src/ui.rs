@@ -36,7 +36,7 @@ pub enum Status {
 }
 
 impl Status {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Status::Connecting => "connecting",
             Status::Online => "open",
