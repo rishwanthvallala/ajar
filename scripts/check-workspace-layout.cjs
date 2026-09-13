@@ -1,4 +1,4 @@
-// Start the web dev server first. See docs/workspace-preview.md.
+// Start the web dev server first. See docs/dev/testing.md.
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');

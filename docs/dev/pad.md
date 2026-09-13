@@ -1,0 +1,168 @@
+# The browser tier
+
+`pad/`. A real bash, python and coreutils compiled to WebAssembly, running in
+the visitor's tab. Nothing executes on the server.
+
+Every finding below cost real time and none of it is documented upstream.
+
+## Running it
+
+```sh
+npm ci
+node pad/scripts/fetch-packages.mjs   # mirrors ~73 MB of wasm; needed once
+npm run dev:pad
+cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
+npm run check --workspace=ajar-pad
+```
+
+## The binary set
+
+Pinned, mirrored, and served from this origin. A folder that ran last week has
+to run this week, and a registry nobody here controls cannot promise that.
+
+```
+sharrattj/bash@1.0.18        wasmer/grep@3.12.0
+sharrattj/coreutils@1.0.16   wasmer/sed@4.9.0
+python/python@3.13.20        wasmer/find@4.10.0
+```
+
+Note the two namespaces. `sharrattj/grep` does not exist and `wasmer/grep`
+does; **the registry's search endpoint returns nothing for any query**,
+including `python`, so guessing namespaces is the only way to find anything.
+An earlier version of this document concluded these tools were unavailable,
+which was a wrong conclusion from a broken search.
+
+`awk` is not published anywhere — `gawk`, `mawk`, `goawk`, `busybox` and a
+dozen other guesses all return nothing — so `pad/src/tools/awk.py` stands in
+for it, checked against real awk on thirty programs. It refuses what it does
+not understand rather than quietly doing something else.
+
+## Things about this runtime that are not obvious
+
+**The JavaScript filesystem and the process filesystem are different
+namespaces.** The JS root *is* the process's working directory: a file written
+to `/out.csv` from the page is `out.csv` to the program. A path that looks
+absolute to a process — `/app/main.py` — lands at `/workspace/app/main.py`
+instead, so Python reports `[Errno 44]` for a file `readDir` can plainly see.
+Every path in this application is root-relative in the JS view.
+
+**The SDK cannot be bundled.** It resolves its worker with `new URL(…,
+import.meta.url)`, and that worker statically imports two siblings. A bundler
+flattens the layout, the siblings 404, and **every command hangs forever with
+nothing thrown**. It is vendored verbatim — see `vendor-wasmer-sdk` in
+`pad/vite.config.ts`.
+
+**`spawnShell` must pass only `terminal`.** Naming stdin/stdout/stderr
+alongside it replaces the pty with pipes, and the shell stops behaving like a
+terminal.
+
+**Bash functions define fine and hang when called.** So does a script on
+`PATH`. An alias works, being textual substitution with nothing to fork, which
+is why `awk` is one.
+
+**bash prints no prompt and echoes nothing of its own input**, even with a real
+pty attached — but it *does* restore the terminal around each foreground job,
+so what a running program reads is echoed by the terminal. That division is
+why the page draws the prompt and echoes while composing a line, never during
+a command, and strips the echo of what it sent.
+
+**ctrl-c ends the shell, not merely the command.** The output stream stays
+open afterwards, so a shell that can serve nothing more still looks healthy
+and every later command hangs against it. The console tears it down
+deliberately and starts a fresh one.
+
+**ctrl-d does nothing** — there is no canonical mode, so there is no EOF.
+
+**`FileStat` carries `kind` and `size` and nothing else** — no modification
+time, no hash — so the sync diff must read every file to know what changed.
+Affordable only under the 500-file cap; if that cap rises this breaks first.
+
+**`find` exits 1** after doing its work, unable to restore its working
+directory. The output is correct; only `find … && …` is affected.
+
+## The shell, and detecting when a command ends
+
+One shell per session. A sentinel is appended to the command **on the same
+line**:
+
+```ts
+const trimmed = command.trimEnd();
+const joiner = trimmed.endsWith("&") ? " " : "; ";
+const line = `${trimmed}${joiner}printf '\001%s\001' "$?"`;
+```
+
+As a *second* line it gets eaten by anything reading stdin — which is how
+`cat` with no arguments appeared to hang. `dropEcho()` searches for the echo
+anywhere rather than at position 0, and `watchForExit()` uses `proc.wait()`
+because the output stream stays open after bash dies.
+
+## How a change travels
+
+**Text in an open file** is a CRDT, straight between browsers on the doc
+channel. The stream id is a hash of the path, so every browser agrees which
+stream a file is on without being told.
+
+**Everything else** goes through the store: a peer broadcasts only that
+something *moved*, and everyone re-reads.
+
+### Seeding a document is the subtle part
+
+Three attempts, and the first two are instructive:
+
+- **Seeding every browser from the store** duplicates text. A CRDT identifies
+  each character by who inserted it, so two browsers inserting the same string
+  are two insertions and the merge keeps both.
+- **Seeding under a fixed client id** is worse. Identical text dedupes, but
+  *different* text produces conflicting operations under the same ids, which
+  Yjs discards as already known. Two documents then exchange updates while
+  silently ignoring each other — 73 frames sent, 72 received, no text moving.
+- **Correct:** a newcomer asks the room and takes what it is given, seeding
+  only when nobody answers. Which requires the relay to have said who is here
+  first.
+
+## The download
+
+Wasmer's CDN sends `.webc` with no content encoding at all: 73 MB raw for the
+eight packages the runtime actually fetches. From this origin, pre-compressed
+with zstd, the same set is about 16 MB, and an immutable cache header makes
+any later visit free.
+
+It has to be a service worker. The SDK has no registry override, its browser
+build cannot decode in-memory WEBC (`packages.load(bytes)` fails with
+`FeatureNotEnabled { "authoring" }`), and patching `fetch` would not reach the
+downloads because the SDK does them inside workers with their own globals.
+
+The URL list is **observed, not derived**: `pad/scripts/fetch-packages.mjs`
+runs the app once and records what it asks for. Asking the registry for each
+package's download URL returned, for coreutils, a `.tar.gz` the runtime never
+requests, and said nothing about two dependencies the packages pull in on
+their own — three of eight URLs were wrong or missing.
+
+Two traps:
+
+**A service worker's response keeps the original request URL**, so a network
+log attributes every mirrored download to `cdn.wasmer.io` and reads like total
+failure while the mirror works perfectly. The check asserts on the worker's
+own counters instead.
+
+**The worker must strip `Content-Encoding` and `Content-Length`.** `fetch` has
+already decompressed the body, but those headers still describe the compressed
+form, and the SDK — which decodes HTTP itself, inside wasm — tries to
+decompress bytes that are already plain, failing with `zstd content-encoding
+is not supported on wasm32`.
+
+Caddy also needs `precompressed zstd gzip` for `.webc`: its `encode` directive
+decides from Content-Type and does not know that extension.
+
+## What it does not do
+
+- **Empty folders do not persist.** Directories are derived from the paths
+  under them, so one with nothing in it has nothing to imply it.
+- **No accounts, no locks, no encryption.** Deliberate — the trade for a clean
+  shareable URL. See [security.md](security.md#what-the-pad-does-not-have).
+- **No network from the sandbox.** A browser cannot open a TCP socket, so
+  there is no `pip install` and no `git clone`, permanently.
+- **A process that never exits never syncs.** The folder is published at
+  command exit, which is a real transaction boundary — it either ran or it did
+  not, and a half-written file is never shared. Fine for paste-run-look; wrong
+  for a dev server.

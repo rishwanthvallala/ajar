@@ -56,7 +56,7 @@ missed this" look identical a month later.
 
 **No accounts, no locks, no vanity names.** Everything is open to whoever has
 the link, and a folder untouched for a week is deleted. The design in
-[`personal-tier.md`](personal-tier.md) — a week-long lease without an account, a
+[`personal-tier.md`](history/personal-tier.md) — a week-long lease without an account, a
 permanent claim with one, per-account limits and some IP-based ceiling on
 anonymous locks — is designed and unbuilt. A name is never reused after
 expiry, so a link in a tutorial can never later resolve to a stranger's files.
@@ -92,7 +92,7 @@ what removes that from the critical path.
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of
-[`wasm-in-the-browser.md`](wasm-in-the-browser.md), and it is still open. It is
+[`wasm-in-the-browser.md`](history/wasm-in-the-browser.md), and it is still open. It is
 a hole in the loop that already works, it serves the users who are already
 here, and it costs a fraction of a new tier.
 

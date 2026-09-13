@@ -6,7 +6,7 @@ files on the server, compute in a WASM container in the client.*
 
 **It was built. It is live at [code.rishwanth.dev](https://code.rishwanth.dev),
 and this note's conclusion was right for the wrong reason** — see the postscript
-at the end. [`pad/README.md`](../pad/README.md) describes what exists;
+at the end. [`docs/dev/pad.md`](../dev/pad.md) describes what exists;
 [`personal-tier.md`](personal-tier.md) is the design that came out of this.
 
 ---

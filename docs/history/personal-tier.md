@@ -5,7 +5,7 @@ the record of why it is shaped this way.*
 
 **It exists now, at [code.rishwanth.dev](https://code.rishwanth.dev).** For what
 it actually does, how to run it, and the dozen things about the runtime that
-only building it revealed, see [`pad/README.md`](../pad/README.md). The last
+only building it revealed, see [`docs/dev/pad.md`](../dev/pad.md). The last
 section here lists where the plan below turned out to be wrong.
 
 ---

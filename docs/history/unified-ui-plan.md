@@ -75,7 +75,7 @@ The existing workspace improvements are a starting point to preserve, not a comp
 
 The client dependency versions differ: Ajar uses Vite 8, TypeScript 7, Monaco 0.56, and xterm 6; Pad uses Vite 7, TypeScript 5, Monaco 0.55, and xterm 5. Pad pins the Wasmer SDK to 0.11.0. Verify compatibility before consolidating a version. Sharing React does not require upgrading the execution runtime.
 
-The previous layout build and browser checks passed. A real host/relay and complete Pad execution were not verified on this Windows setup. Read [the validation record](workspace-layout-validation.md) and [the project review](review-2026-09-12.md) before making claims about end-to-end readiness. The review reproduction script confirms known defects; its successful exit is not evidence those defects have been fixed.
+The previous layout build and browser checks passed. A real host/relay and complete Pad execution were not verified on this Windows setup. Read the validation record and the project review before making claims about end-to-end readiness. The review reproduction script confirms known defects; its successful exit is not evidence those defects have been fixed.
 
 Existing changes may still be uncommitted. Every chat must inspect the current tree and preserve unrelated changes. Also, this checkout currently ignores `/openspec` and `/.agents` in Git: do not rely on those directories alone for context shared through commits or another checkout. Keep the durable handoff in this document and ordinary project documentation.
 
@@ -288,7 +288,7 @@ Planned preview URLs:
 - Pad: `http://127.0.0.1:5175/?preview=workspace`
 - Shared component gallery: `http://127.0.0.1:5173/?preview=components`
 
-Use [the current Ajar preview instructions](workspace-preview.md). Existing Pad browser scripts need a built relay and runtime assets; fixtures cannot substitute for those integration checks.
+Use the current Ajar preview instructions. Existing Pad browser scripts need a built relay and runtime assets; fixtures cannot substitute for those integration checks.
 
 ### Required test layers
 
@@ -381,7 +381,7 @@ Checks not run and why: Real Ajar host/relay, Rust/Clippy/sandbox, Pad runtime/a
 
 Known issues / dependencies: The 12 September project review remains authoritative. Pad development also reproduced the known Windows Vite `EBUSY` watcher failure; its missing `/api` and `/ws` proxies remain R22.
 
-Next phase and exact starting point: UI-01 should start from [the UI-00 baseline](unified-ui-baseline.md), create the root npm workspace/lockfile and React entry points, then update CI/Docker/deploy/check paths and Wasmer package resolution without changing product behavior.
+Next phase and exact starting point: UI-01 should start from the UI-00 baseline, create the root npm workspace/lockfile and React entry points, then update CI/Docker/deploy/check paths and Wasmer package resolution without changing product behavior.
 
 Phase: UI-01
 
@@ -409,10 +409,10 @@ Next phase and exact starting point: UI-02 should replace the hidden `UiFoundati
 
 ## 10. Reference material
 
-- [Project design](design.md): what Ajar and Pad do and how their services fit together.
-- [Project review](review-2026-09-12.md): known defects and limits of previous verification.
-- [Current workspace preview](workspace-preview.md): how to run and inspect the existing Ajar UI.
-- [Current workspace validation](workspace-layout-validation.md): behavior to preserve during migration.
+- Project design: what Ajar and Pad do and how their services fit together.
+- Project review: known defects and limits of previous verification.
+- Current workspace preview: how to run and inspect the existing Ajar UI.
+- Current workspace validation: behavior to preserve during migration.
 - [React with Vite](https://react.dev/learn/build-a-react-app-from-scratch): supported browser-app setup and its trade-offs.
 - [React external stores](https://react.dev/reference/react/useSyncExternalStore): connecting existing services to React snapshots.
 - [React Strict Mode](https://react.dev/reference/react/StrictMode): development checks for resource cleanup.
