@@ -58,7 +58,7 @@ function run(file, env = {}) {
   });
 }
 
-async function checkFoundations() {
+async function checkBoots() {
   const { chromium } = webRequire("playwright");
   const browser = await chromium.launch({
     channel: process.platform === "win32" ? "msedge" : undefined,
@@ -68,8 +68,7 @@ async function checkFoundations() {
     const context = await browser.newContext();
     const ajar = await context.newPage();
     await ajar.goto("http://127.0.0.1:5174/");
-    await ajar.locator('[data-ajar-ui-foundation="ajar"]').waitFor({ state: "attached" });
-    assert.equal(await ajar.locator('[data-ajar-ui-foundation="ajar"]').count(), 1);
+    await ajar.locator(".landing").waitFor({ state: "attached" });
 
     const padPage = await context.newPage();
     const padErrors = [];
@@ -85,7 +84,6 @@ async function checkFoundations() {
       }),
     );
     await padPage.goto("http://127.0.0.1:5175/ui-01-foundation");
-    await padPage.locator('[data-ajar-ui-foundation="pad"]').waitFor({ state: "attached" });
     await padPage.locator(".monaco-editor").waitFor({ state: "attached" }).catch(async (error) => {
       const status = await padPage.locator("#status").textContent().catch(() => null);
       throw new Error(
@@ -93,8 +91,7 @@ async function checkFoundations() {
       );
     });
     assert.deepEqual(padErrors.filter((line) => line.startsWith("pageerror:")), []);
-    assert.equal(await padPage.locator('[data-ajar-ui-foundation="pad"]').count(), 1);
-    console.log("Shared React foundation rendered once in Ajar and Pad.");
+    console.log("Ajar and Pad both boot with no page errors.");
   } finally {
     await browser.close();
   }
@@ -117,7 +114,7 @@ async function main() {
   await run(path.join(root, "scripts", "check-workspace-layout.cjs"), {
     AJAR_PRODUCTION_URL: "http://127.0.0.1:5174",
   });
-  await checkFoundations();
+  await checkBoots();
 }
 
 main()

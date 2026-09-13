@@ -8,10 +8,8 @@
 import { App } from "./app";
 import { mirrorPackages } from "./runtime";
 import { mintName, Store } from "./store";
-import { mountReactFoundation } from "./app/react-root";
 import "./style.css";
 
-mountReactFoundation();
 
 const el = {
   files: document.getElementById("files")!,
