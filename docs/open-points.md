@@ -10,23 +10,42 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Three inbound SSH rules, now that SSM exists
+Nothing here at the moment.
 
-Port 22 is open to `49.205.207.206/32`, `49.37.152.176/32` and
-`49.205.200.226/32` — one presumably current, the other two left over from
-addresses that have moved on. Read from the live security group on 14
-September, not from memory.
+---
 
-Session Manager is set up and working. The instance carries the
-`ajar-relay-ssm` instance profile, the agent reports Online, and
-`aws ssm start-session --target i-0ffebdae47c7b633d` lands a shell as
-`ssm-user` without touching port 22.
+## How to reach the server
 
-What stops 22 closing today is [`deploy/deploy.sh`](../deploy/deploy.sh), which
-drives `ssh` and `scp` directly. An SSH-over-SSM `ProxyCommand` would let it
-keep working unchanged with nothing inbound at all. That is the remaining
-piece, and it wants a verified deploy through it before any rule is removed —
-closing 22 first would mean discovering the gap during an outage.
+There is no inbound SSH. Port 22 was closed on 14 September; the security
+group allows 80 and 443 only.
+
+```sh
+ssh ajar-relay                                        # ssh, scp and rsync, tunnelled
+aws ssm start-session --target i-0ffebdae47c7b633d     # a shell as ssm-user
+```
+
+`~/.ssh/config` points `ajar-relay` at the instance id with an SSM
+`ProxyCommand`, so `deploy/deploy.sh` runs unchanged — a full deploy was
+verified through the tunnel before the port was closed. `SSH_CONNECTION` on the
+far side reads `127.0.0.1`, because the connection is handed to sshd by the
+agent rather than arriving from outside.
+
+**If SSM ever fails**, this is reversible from the AWS API without any access to
+the instance — which is what made closing the port a small decision rather than
+a large one:
+
+```sh
+aws ec2 authorize-security-group-ingress --group-id sg-00195dc456fe6c099 \
+  --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=<your ip>/32}]' \
+  --profile personal --region ap-south-1
+```
+
+The `ajar-relay-direct` host in `~/.ssh/config` still points at the address, so
+it works again the moment a rule exists. The thing that must not be lost is the
+AWS credential itself — `~/.aws/credentials`, profile `personal`.
+
+A deeper break-glass exists and is not set up: `t4g` is Nitro, so EC2 Serial
+Console works, but it needs a password on an OS user.
 
 ---
 
