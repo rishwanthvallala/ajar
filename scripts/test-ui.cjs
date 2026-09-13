@@ -128,7 +128,7 @@ async function checkBoots() {
  * missing browser can be reported as one clear message rather than a stack
  * trace from whichever half happened to run first.
  */
-async function browserAvailable() {
+async function requireBrowser() {
   const { chromium } = webRequire("playwright");
   try {
     const browser = await chromium.launch({
@@ -136,21 +136,21 @@ async function browserAvailable() {
       headless: true,
     });
     await browser.close();
-    return true;
   } catch (error) {
-    // In CI a missing browser is a broken gate, never something to step past.
-    if (process.env.CI) throw error;
-    console.log(
-      "Skipping the UI suite: no browser installed.\n" +
-        "  Install one with: npx playwright install chromium --workspace web\n" +
-        `  ${error.message.split("\n")[0]}`,
+    // Fatal, everywhere. A gate that quietly downgrades itself on the machine
+    // where someone is about to commit is worse than one that is simply absent,
+    // because it still reports success. Skipping is check.sh's to offer, and it
+    // stops saying "all green" when it does.
+    throw new Error(
+      `${error.message.split("\n")[0]}\n` +
+        "  Install the browser with: npm exec --workspace web -- playwright install chromium\n" +
+        "  Or skip this suite deliberately with: AJAR_SKIP_UI=1 ./scripts/check.sh",
     );
-    return false;
   }
 }
 
 async function main() {
-  if (!(await browserAvailable())) return;
+  await requireBrowser();
   for (const port of [5173, 5174, 5175]) await portFree(port);
   const viteBin = (workspaceRequire) =>
     path.join(path.dirname(workspaceRequire.resolve("vite/package.json")), "bin", "vite.js");
