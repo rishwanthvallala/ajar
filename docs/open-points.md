@@ -10,22 +10,23 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Two stale SSH rules on the live instance
+### Three inbound SSH rules, now that SSM exists
 
-Last observed granting port 22: `49.205.207.206/32` and `49.37.152.176/32`.
-Both are old residential addresses that have almost certainly moved on.
+Port 22 is open to `49.205.207.206/32`, `49.37.152.176/32` and
+`49.205.200.226/32` — one presumably current, the other two left over from
+addresses that have moved on. Read from the live security group on 14
+September, not from memory.
 
-**Not re-verified in this session** — no AWS credentials were configured in the
-shell, so the rules above are from the earlier check, not from today.
+Session Manager is set up and working. The instance carries the
+`ajar-relay-ssm` instance profile, the agent reports Online, and
+`aws ssm start-session --target i-0ffebdae47c7b633d` lands a shell as
+`ssm-user` without touching port 22.
 
-The alternative offered was SSM Session Manager, which removes the need for any
-inbound SSH rule at all. Still undecided.
-
-### `cli-admin_accessKeys.csv`
-
-Still sits in the repository root: 99 bytes, dated 26 August. It is gitignored
-(`.gitignore:11`, `*accessKeys*.csv`) so it has never been committed, but a
-plaintext access key on disk is worth deleting once it is genuinely unused.
+What stops 22 closing today is [`deploy/deploy.sh`](../deploy/deploy.sh), which
+drives `ssh` and `scp` directly. An SSH-over-SSM `ProxyCommand` would let it
+keep working unchanged with nothing inbound at all. That is the remaining
+piece, and it wants a verified deploy through it before any rule is removed —
+closing 22 first would mean discovering the gap during an outage.
 
 ---
 
