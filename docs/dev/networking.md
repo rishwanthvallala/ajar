@@ -156,11 +156,12 @@ the pad's whole "send someone the link" premise.
 
 ## Order to do it in
 
-1. **`mode: "http"` plus a preview origin.** The whole chain is proven: a guest
-   listens, `onListen` reports, `expose` routes, an iframe renders it. What is
-   left is product work — a second origin in the deploy, and somewhere in the
-   UI to put the frame. Note that whatever people run must not be
-   `http.server`.
+1. ~~**`mode: "http"` plus a preview origin.**~~ **Built.** A Preview button
+   appears when something in the folder starts listening and swaps the editor
+   for the running server. `scripts/preview-check.mjs` drives it end to end.
+   The origin is compiled in as `VITE_PREVIEW_ORIGIN`; an empty value disables
+   previews and is what a deploy without that subdomain should do. Whatever
+   people run must not be `python3 -m http.server`.
 2. **The import map for WISP.** One specifier, and `pip install` follows.
 3. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
@@ -181,3 +182,40 @@ which is not what anyone means by ngrok.
 
 Every correction came from reading the SDK's own type definitions and running
 the thing. None came from reasoning about what ought to be possible.
+
+## The preview, as built
+
+Three origins now, and each boundary is load-bearing:
+
+| | |
+|---|---|
+| `ajar.rishwanth.dev` | the relay and the session client |
+| `code.rishwanth.dev` | the pad — cross-origin isolated for SharedArrayBuffer |
+| `preview.rishwanth.dev` | whatever a visitor is running |
+
+The third exists because the sandbox's HTTP responses are **somebody else's
+code**. Served from the pad's origin they could script it, read its storage and
+reach its service worker. On their own origin they can do none of that, and the
+SDK refuses to route anywhere else.
+
+The Caddy block serves exactly two files, both from the vendored SDK the pad
+already ships so they can never be a different version from the client talking
+to them. Nothing is stored and nothing is proxied: with no pad open, that origin
+answers 404.
+
+`preview.rishwanth.dev` needs an A record to `13.207.222.42`. DNS for the zone
+is on NS1, not Route 53, so that record has to be added by hand — and until it
+exists the deploy sets `VITE_PREVIEW_ORIGIN` to an origin that does not
+resolve, so the button appears and expose fails. Set `AJAR_PREVIEW_ORIGIN=`
+empty to deploy without previews.
+
+### Two things this found that were not the subject
+
+**`python3 -m http.server` crashes the runtime**, so the one server everybody
+reaches for first is the one that does not work. A plain accept loop is fine.
+
+**A pad's stored files are empty in the sandbox until touched** — `ls` shows
+the name, `head` shows nothing. Pre-existing, reproduced with networking off,
+and recorded in [../open-points.md](../open-points.md). It matters more than the
+preview does: it means opening a shared link and running a file you did not
+edit silently does nothing.

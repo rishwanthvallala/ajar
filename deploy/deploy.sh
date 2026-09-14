@@ -80,7 +80,11 @@ if [ ! -f pad/public/packages/manifest.json ]; then
     echo "      npm run build:pad && node pad/scripts/fetch-packages.mjs" >&2
     exit 1
 fi
-npm run build:pad --silent >/dev/null
+# The preview origin is compiled in: the pad has to know which origin may
+# serve what a visitor runs, and an empty value disables previews entirely,
+# which is the right behaviour for a deploy without that subdomain.
+VITE_PREVIEW_ORIGIN="${AJAR_PREVIEW_ORIGIN:-https://preview.rishwanth.dev}" \
+    npm run build:pad --silent >/dev/null
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"

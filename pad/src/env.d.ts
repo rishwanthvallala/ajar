@@ -21,3 +21,10 @@ declare module "y-protocols/awareness" {
   export function encodeAwarenessUpdate(a: Awareness, changed: number[]): Uint8Array;
   export function removeAwarenessStates(a: Awareness, clients: number[], origin: unknown): void;
 }
+
+interface ImportMetaEnv {
+  readonly VITE_PREVIEW_ORIGIN?: string;
+}
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
