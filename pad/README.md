@@ -33,6 +33,9 @@ npm run check --workspace=ajar-pad
 | `src/sync.ts` | What a command changed, and what never gets published |
 | `src/files.ts` | The file tree, with folders derived from paths |
 | `src/app.ts` | Everything wired together |
-| `src/tools/awk.py` | An awk, because no awk is published for this runtime |
+| `src/tools/awk.py` | An awk, because none is published for this runtime |
+| `src/tools/sort.py`, `tail.py` | Advertised by the shipped coreutils and not compiled into it |
+| `src/tools/box.py` | Twenty-two more, dispatched on the first argument |
+| `src/tools/edit.py` | A terminal editor, aliased as `nano` — curses cannot start here |
 | `public/sw.js` | Serves the wasm packages from this origin instead of Wasmer's CDN |
 | [`../crates/ajar-relay/src/pad.rs`](../crates/ajar-relay/src/pad.rs) | The durable store, on the server |

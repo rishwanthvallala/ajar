@@ -13,32 +13,26 @@ not what would be nice.
 ### Tools that do not fully work
 
 From `npm run probe --workspace=ajar-pad`, which installs each package and
-exercises its capabilities. 268 of 287 pass.
+exercises its capabilities.
 
 | | |
 |---|---|
-| `find -exec` | Produces nothing and exits 1, in all three forms. It cannot spawn |
-| `lua` | Does not start — even `lua -v` exits 45. The only published build |
-| coreutils | `split`, `stat`, `du`, `sha256sum`, `md5sum` are not compiled in |
+| `find -exec` | Produces nothing and exits 1 in all three forms — it cannot spawn |
+| `lua` | Does not start; even `lua -v` exits 45. The only published build |
 
-`sort` and `tail` were in this table until they became python shims. The same
-could be done for these five; each costs a python start (214 ms against 39 ms
-native), and none is typed often enough to have earned it yet.
+That is the whole list. `sort`, `tail`, `split`, `stat`, `du`, `sha256sum` and
+`md5sum` were on it until they became python shims, along with twenty more
+commands that had no port at all. `find -exec` could be shimmed the same way —
+python can spawn, which is what makes `xargs` work — and has not been.
 
-**`git` works, but every paging command needs `--no-pager` or `GIT_PAGER=cat`.**
-`git log` alone spawns a pager that does not exist and exits 79 with no
-output — which looks exactly like a commit that did not happen, and was
-reported that way here before being diagnosed. If git is ever shipped, that
-variable has to be set in `shell.ts`.
+**`git` works and needs `--no-pager`.** `git log` alone spawns a pager that
+does not exist and exits 79 with no output, which is indistinguishable from a
+commit that never happened and was reported that way here before being
+diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 
-**Six things were reported broken here and were not.** `tar -C` extracts and
-then exits 2 like `find` does; `sqlite` reads stdin and prints an interactive
-banner; `node -e` puts the first argument at `argv[1]` because there is no
-script path; `clang` was compiling `printf("0")` because the shell's own
-`printf` had eaten the `%d`; `find -size -1k` correctly matches nothing because
-GNU rounds sizes up to whole blocks. Every one was an expectation written from
-assumption rather than from the tool's documented behaviour — which is the rule
-at the top of the catalogue, and the reason it is written there.
+**Not shipped, working, and each a first-load decision of its own:** `node`,
+`npm` and `pnpm` at 73.7 MB, `php` at 81.7, `git` at 85.1, `clang` at 104.3 —
+against a mirror that is currently 80 MB.
 
 ---
 

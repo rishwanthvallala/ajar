@@ -33,9 +33,26 @@ The browser tier is checked separately, because each run downloads the wasm
 packages and drives a real Chromium:
 
 ```sh
-npm run check --workspace=ajar-pad
+npm run check --workspace=ajar-pad                              # the pieces, then the product
 PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs
+npm run probe --workspace=ajar-pad                              # what a package can actually do
 ```
+
+`app-check.mjs` drives the product the way a person would, including the
+terminal editor: it opens a file in `nano`, types, writes with ctrl-o, leaves
+with ctrl-x and reads the file back. The three assertions that matter are the
+exit conditions — the edit reached disk, the terminal was restored rather than
+left in the alternate buffer, and the same shell still runs commands.
+
+That last one was wrong first time. "The shell survived" was a *negative*
+assertion on screen text, and an earlier check in the same run interrupts `cat`
+on purpose — so the previous test's deliberate restart was reported as this
+one's failure. Proving the shell works by running a command in it is the only
+version that means anything.
+
+`probe-packages.mjs` is documented in [pad.md](pad.md#probing-a-package-before-shipping-it):
+it installs each candidate package in a real browser and exercises it, which is
+the only way to know whether something in the registry is worth its megabytes.
 
 Both drive headless Chromium and have to: the python package fails wasm
 validation under Node, and cross-origin isolation — which the runtime needs

@@ -17,70 +17,83 @@ npm run check --workspace=ajar-pad
 
 ## The binary set
 
-Pinned, mirrored, and served from this origin. A folder that ran last week has
-to run this week, and a registry nobody here controls cannot promise that.
+Pinned, mirrored, and served from this origin — **80 MB raw, 18.6 MB
+compressed**. A folder that ran last week has to run this week, and a registry
+nobody here controls cannot promise that.
 
 ```
-wasmer/bash@1.0.25           wasmer/grep@3.12.0
-sharrattj/coreutils@1.0.16   wasmer/sed@4.9.0
-python/python@3.13.20        wasmer/find@4.10.0
+wasmer/bash@1.0.25           wasmer/grep@3.12.0      syrusakbary/jq@0.1.0
+sharrattj/coreutils@1.0.16   wasmer/sed@4.9.0        wasmer/gzip@1.14.0
+python/python@3.13.20        wasmer/find@4.10.0      wasmer/tar@1.35.0
+                                                     sqlite/sqlite@0.2.2
+                                                     saghul/quickjs@0.0.3
 ```
 
-Note the two namespaces. `sharrattj/grep` does not exist and `wasmer/grep`
-does; **the registry's search endpoint returns nothing for any query**,
-including `python`, so guessing namespaces is the only way to find anything.
-An earlier version of this document concluded these tools were unavailable,
-which was a wrong conclusion from a broken search.
+Note the namespaces. `sharrattj/grep` does not exist and `wasmer/grep` does;
+the registry's search endpoint returns nothing for any query, including
+`python`. An earlier version of this document concluded several of these tools
+were unavailable, which was a wrong conclusion from a broken search — see
+[what else the registry has](#what-else-the-registry-has) for how that was
+eventually done properly.
 
-Three commands come from python instead of a package, aliased in `shell.ts`:
+`wasmer/bash` rather than `sharrattj/bash`: the older build takes SIGINT on
+`$(...)` and dies with exit 130, so command substitution killed the session
+shell. Backticks were unaffected, which is why it survived so long. The same
+upgrade fixed shell functions, which this document used to call a WASIX
+limitation and which was only ever that build.
+
+## Commands that come from python
+
+Twenty-six of them, aliased in `shell.ts`:
 
 | | Why |
 |---|---|
 | `awk`, `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `xz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
 | `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `sha1sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
 | `hexdump`, `cal`, `rev` | Published in `syrusakbary/util-linux`, where only `cal` runs |
+| `nano` / `edit` | Neither nano nor vim can be installed, and curses cannot start |
 
-`awk`, `sort` and `tail` are a file each. The other eleven live in
-`src/tools/box.py` and dispatch on their first argument — the same multi-call
-shape as the coreutils binary, and unlike that one everything listed is
-actually present. One file rather than eleven because the shell writes and
-aliases these before the first prompt, and eleven writes would be eleven round
-trips. All fourteen aliases are set in a single `run` for the same reason.
+`awk`, `sort` and `tail` are a file each, being large. The other twenty-two
+live in `src/tools/box.py` and dispatch on their first argument — the same
+multi-call shape as the coreutils binary, and unlike that one everything listed
+is present. One file rather than twenty-two because the shell writes and
+aliases these before the first prompt; all twenty-seven aliases go out in a
+single `run` for the same reason. A warm command costs **142 ms**.
 
-`xargs` deserves a note: it needs to launch other programs, and `find -exec`
-cannot. That turned out to be find's limitation rather than the runtime's —
-python's `os.system`, `subprocess.run` and `os.popen` all work here, though
-`os.fork` does not.
+`sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
+answers `file: function/utility not found`, and so does `sort sort file` — the
+name is simply not among the functions built in. `wasmer/coreutils@1.0.25` is
+the identical build, so the newer-package move that fixed bash does nothing
+here, and `kilyanni/coreutils` (GNU 9.11) cannot be installed.
 
-`watch` is deliberately absent. It only ends when interrupted, and ctrl-c here
-ends the shell rather than the command — a `watch` would trap whoever ran it.
+Each shim is checked against the real tool before being trusted — awk on thirty
+programs, sort on fifteen cases, tail on twelve, the boxed set on twenty-two —
+and then again inside the runtime. Each refuses what it does not implement
+rather than ignoring it: a `sort` that silently drops `-k` is worse than one
+that says it cannot.
 
-`patch` applies context-matched hunks with no fuzz: a hunk whose context does
+The cost is one python start per invocation: **214 ms against 39 ms** for a
+native command. Worth paying for a command that otherwise does not exist, and
+not worth paying for one that works — which is why nothing already in coreutils
+is shimmed.
+
+### Four worth knowing individually
+
+`xargs` needs to launch other programs, and `find -exec` cannot. That is find's
+limitation rather than the runtime's: python's `os.system`, `subprocess.run`
+and `os.popen` all work here, though `os.fork` does not.
+
+`patch` applies context-matched hunks with no fuzz. A hunk whose context does
 not match is refused rather than guessed at, because patch guessing wrong is
 how a file silently becomes something nobody wrote.
 
 `du` reports **apparent** size, which GNU calls `--apparent-size` and not its
 default. Real `du` counts allocated blocks and this filesystem has none to
-count; a number invented to look like a real one would be worse than the one
-that is true.
+count; a number invented to look like a real one would be worse than the true
+one.
 
-`sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
-answers `file: function/utility not found`, and so does `sort sort file` — the
-name is simply not among the functions built in, along with `tail`, `split`,
-`stat` and `du`. `wasmer/coreutils@1.0.25` is the identical build, so the
-newer-package move that fixed bash does nothing here, and `kilyanni/coreutils`
-(GNU 9.11) cannot be installed.
-
-Each shim is checked against the real tool before being trusted — awk on
-thirty programs, sort on fifteen cases, tail on twelve — and each refuses what
-it does not implement rather than quietly ignoring it. A `sort` that silently
-drops `-k` is worse than one that says it cannot.
-
-The cost is one python start per invocation: **214 ms against 39 ms** for a
-native command, measured in the sandbox. Worth paying for a command that
-otherwise does not exist; not worth paying for one that works, which is why
-`split`, `stat`, `du`, `sha256sum` and `md5sum` are still missing rather than
-shimmed.
+`watch` is deliberately absent. It ends only when interrupted, and ctrl-c here
+ends the shell rather than the command, so it would trap whoever ran it.
 
 ## What else the registry has
 
@@ -215,20 +228,38 @@ fault; when it fails, the harness is. It caught all three mistakes above.
 
 ### What the probe found
 
-`sharrattj/coreutils` is uutils **0.0.7** as a multi-call binary, and the gaps
-are live: `sort` prints its usage instead of sorting, `tail -n` and `tail -1`
-are unrecognised, and `split`, `sha256sum`, `md5sum`, `stat` and `du` fail.
-`ls | sort` does not work today.
+**Most of what it first reported as broken was the tests, not the tools.**
+`tar -C` extracts and then exits 2 the way `find` does, and chaining with `&&`
+hid a successful extraction behind the status. `sqlite` reads stdin and prints
+an interactive banner, which `-batch` suppresses. `node -e` puts the first
+argument at `argv[1]` because there is no script path. `clang` was compiling
+`printf("0")`, because the shell's own `printf` had eaten the `%d` meant for
+the C source. `find -size -1k` matches nothing because GNU rounds sizes up to
+whole blocks. Six of the eight first reported were mine.
 
-Verified working and not yet shipped, about 8.7 MB for the five: `jq` (1.6 MB),
-`gzip` (0.6), `tar` (0.7, no `-C`), `sqlite3` (3.4, no SQL from stdin),
-`quickjs` (2.4). Heavier and working: `node`/`npm` (73.7 MB), `php` (81.7),
-`clang` (104.3).
+What the probe found that was real, and is now fixed: `$(...)` killed the
+shell, shell functions hung, and `sort`, `tail`, `split`, `stat`, `du`,
+`sha256sum` and `md5sum` were absent. The first two were a bash build; the rest
+are python shims.
 
-Registry presence is **not** installability: every `kilyanni/*` package returns
-full metadata from the GraphQL API and then fails `packages.load` with "not
-found". Their coreutils is GNU 9.11 at half the size of ours and would be worth
-having if that ever changes, so the entries stay.
+Still real and unfixed:
+
+| | |
+|---|---|
+| `find -exec` | Produces nothing and exits 1 in all three forms — it cannot spawn |
+| `lua` | Does not start; even `lua -v` exits 45. The only published build |
+
+**`git` works, and needs `--no-pager`.** `git log` alone spawns a pager that
+does not exist and exits 79 with no output — indistinguishable from a commit
+that never happened, and reported that way here before being diagnosed. If git
+is ever shipped, `shell.ts` has to set `GIT_PAGER=cat`.
+
+Registry presence is **not** installability. Every `kilyanni/*` and `liftm/*`
+package returns full metadata from the GraphQL API and then fails
+`packages.load` with "not found" — two namespaces, so it is a property of the
+registry rather than one bad publisher. `kilyanni/coreutils` is GNU 9.11 at
+half the size of ours and would remove seven shims if that ever changes, so the
+entries stay.
 
 ## The shell, and detecting when a command ends
 
@@ -316,3 +347,6 @@ decides from Content-Type and does not know that extension.
   command exit, which is a real transaction boundary — it either ran or it did
   not, and a half-written file is never shared. Fine for paste-run-look; wrong
   for a dev server.
+- **No `make`, `ssh`, `vim`, `less` or `curl`.** The network ones are
+  impossible rather than unbuilt. `make` is possible now that spawning works
+  and is simply not written. `nano` exists; `vim` does not.

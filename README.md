@@ -13,7 +13,7 @@ end-to-end with a key the relay never sees.
 **[code.rishwanth.dev](https://code.rishwanth.dev)** shares *a folder*. No
 agent, no machine lent: the compute runs in each visitor's own tab as
 WebAssembly, and the server holds the files. Open a URL, paste, press Run,
-send the link.
+send the link. A real bash with about 140 commands, including an editor.
 
 > **A sandbox is not a virtual machine.** A guest runs real commands on a real
 > machine with your toolchain, your network and whatever the shared folder can

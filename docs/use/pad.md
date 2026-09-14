@@ -16,24 +16,43 @@ if nobody took it.
 
 ## What you can do
 
-Make files and folders, edit them, and run shell commands:
+Make files and folders, edit them, and run shell commands. There are about
+140, and these are the ones people reach for:
 
 ```sh
-ls  cat  wc  head  tail  sort  uniq  cut  tr  sed  grep  awk  find
-cp  mv  rm  mkdir  touch  echo  printf  seq  tee  du  df  stat
-python  bash
+ls cat cp mv rm mkdir touch head tail wc sort uniq cut tr tee seq echo printf
+grep sed awk find diff patch cmp xargs tree stat du split which rev
+tar gzip gunzip zip unzip bzip2 xz         archives
+sha256sum md5sum sha1sum hexdump xxd       checksums and bytes
+python3 pip qjs sqlite3 jq                 scripting and data
+nano                                       an editor in the terminal
 ```
 
-Pipes, globs, redirection and loops all work, because it is a real bash.
+Pipes, globs, redirection, loops and command substitution all work, because it
+is a real bash.
 
 ```sh
-python transform.py < input.csv > out.csv
-grep -c ERROR *.log
-for f in *.txt; do wc -l "$f"; done
+python3 transform.py < input.csv > out.csv
+grep -c ERROR *.log | sort -n
+for f in *.txt; do echo "$f: $(wc -l < "$f")"; done
+diff old.txt new.txt > changes.patch
+zip -r backup.zip .
 ```
 
 Whatever a command writes appears in the folder, for you and for everyone else
 with the link.
+
+### Editing in the terminal
+
+`nano file.txt` opens an editor in the terminal, with nano's keys — `^O` to
+save, `^X` to leave, `^K` to cut a line, `^W` to search.
+
+It is not nano: no syntax highlighting, no undo, no multiple files at once. The
+editor in the main window is better for real work; this is for when your hands
+are already in the terminal.
+
+**Ctrl-C does not reach it**, or any running command — it stops the shell
+instead. `^X` is the way out.
 
 ## Working together
 
@@ -47,13 +66,15 @@ everyone once it finishes.
 ## The things it cannot do
 
 **It runs on your computer, not a server.** Your browser downloads the tools
-the first time — about 16 MB — and runs everything locally. That means it is
+the first time — about 19 MB — and runs everything locally. That means it is
 private, and it means there is no machine to reach.
 
 **No internet from inside.** No `pip install`, no `git clone`, no `curl`.
 Whatever is in the list above is what you get.
 
 **No `git`, `make`, or compilers.** It is for scripts and text, not builds.
+
+**No `ssh`, `vim` or `less`.** `nano` is there; the other two are not.
 
 **Empty folders disappear on reload.** A folder needs something in it to
 survive.
