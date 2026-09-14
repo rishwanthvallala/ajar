@@ -64,6 +64,10 @@ export const TOOLS = {
  * advertised by coreutils and not compiled into it.
  */
 export const BOXED = [
+  // Shadows the shipped findutils binary deliberately: that one cannot spawn,
+  // so `-exec` silently produces nothing, and it exits 1 even on success
+  // because it cannot restore its working directory under WASIX.
+  "find",
   "diff",
   "patch",
   "cmp",

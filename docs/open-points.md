@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 14 September 2026, after PR #2 merged and deployed.*
+*Kept as of 15 September 2026, after the sandbox seeding fix and the `find` shim.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -17,13 +17,26 @@ exercises its capabilities.
 
 | | |
 |---|---|
-| `find -exec` | Produces nothing and exits 1 in all three forms — it cannot spawn |
 | `lua` | Does not start; even `lua -v` exits 45. The only published build |
 
-That is the whole list. `sort`, `tail`, `split`, `stat`, `du`, `sha256sum` and
-`md5sum` were on it until they became python shims, along with twenty more
-commands that had no port at all. `find -exec` could be shimmed the same way —
-python can spawn, which is what makes `xargs` work — and has not been.
+That is the whole list, and it is now one line long. `sort`, `tail`, `split`,
+`stat`, `du`, `sha256sum` and `md5sum` were on it until they became python
+shims, along with twenty more commands that had no port at all.
+
+**`find` is a shim as of 15 September**, which closed the last entry above. The
+shipped findutils binary had two faults it could not be talked out of: `-exec`
+produced nothing because it cannot spawn, and every run exited 1 having done
+the work and then failed to restore its working directory. Both were invisible
+until something was chained onto a search, at which point a correct result
+looked like a failed one. It supports `-name`, `-iname`, `-path`, `-type`,
+`-size` (with GNU's round-up), `-empty`, `-maxdepth`, `-mindepth`, `-print`,
+`-print0`, `-delete`, `-exec` with both `;` and `+`, and `!` / `-o` / `-a` with
+parentheses.
+
+One limit is worth knowing: **`-exec` can only run real binaries.** Every tool
+in `box.py` is a shell alias, and a spawned process does not inherit those, so
+`find . -exec tree {} \;` cannot work however much it looks like it should. It
+says so rather than failing as a traceback.
 
 **`git` works and needs `--no-pager`.** `git log` alone spawns a pager that
 does not exist and exits 79 with no output, which is indistinguishable from a
@@ -33,6 +46,31 @@ diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 **Not shipped, working, and each a first-load decision of its own:** `node`,
 `npm` and `pnpm` at 73.7 MB, `php` at 81.7, `git` at 85.1, `clang` at 104.3 —
 against a mirror that is currently 80 MB.
+
+### 66 MB of wasm cache is still in the git history
+
+`pad/.wasmer/` was committed by accident with the first runtime commit — three
+`.bin` blobs, one of them 59 MB, which is over GitHub's 50 MB warning
+threshold. Nothing reads them: the packages the app serves are mirrored into
+`public/packages/` by `scripts/fetch-packages.mjs`, which is ignored and
+regenerated on demand.
+
+They are untracked and ignored as of 15 September, so the tracked tree went
+from 66 MB to 1.5 MB and no future commit carries them. **The history still
+does**, so a fresh clone still pulls them. Removing that needs a rewrite
+(`git filter-repo`) and a force-push, which rewrites every commit id and has to
+be coordinated with anyone holding a clone — a decision rather than a chore,
+and deliberately not taken here.
+
+### The preview cannot be checked against live
+
+`scripts/preview-check.mjs` ignores `PAD_ORIGIN` and always serves the local
+`dist/`, so pointing it at production quietly checks the local build instead.
+It now refuses to run against a bundle built for a different preview origin
+rather than failing as a bare CSP violation, but the gap is real: nothing
+verifies the preview on `code.rishwanth.dev` end to end. `app-check.mjs` takes
+`PAD_ORIGIN` and does run against live; this one would need the host origin to
+be reachable from the browser it drives.
 
 ---
 
@@ -87,9 +125,6 @@ expiry, so a link in a tutorial can never later resolve to a stranger's files.
 paths under them, so one with nothing inside has nothing to imply it. The tab
 that made it keeps it visible until something lands there; nobody else ever
 sees it.
-
-**`find` exits 1** after doing its work, unable to restore its working
-directory under WASIX. Output is correct, so only `find … && …` is affected.
 
 **A process that never exits never syncs.** The folder is published at command
 exit, which is a real transaction boundary — it either ran or it did not, and a
@@ -148,8 +183,8 @@ Of the seven real bugs fixed or found in the last two rounds, none came from
 using the product and all came from reading it or measuring it. The audit found
 six; the live verification found the seventh, which no local test could see.
 
-The recurring hazard is checks that pass for the wrong reason — nine so far in
-this project. The pattern is consistent: whenever the thing under test can
+The recurring hazard is checks that pass for the wrong reason — fifteen so far
+in this project, and one that failed for the wrong reason. The pattern is consistent: whenever the thing under test can
 produce the passing evidence by accident, the check proves nothing. Reverting
 the fix and watching the check fail is the only habit that has reliably caught
 them.

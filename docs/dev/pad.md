@@ -52,13 +52,24 @@ Twenty-six of them, aliased in `shell.ts`:
 | `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `sha1sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
 | `hexdump`, `cal`, `rev` | Published in `syrusakbary/util-linux`, where only `cal` runs |
 | `nano` / `edit` | Neither nano nor vim can be installed, and curses cannot start |
+| `find` | Published and working, but it cannot spawn, so `-exec` produces nothing — and it exits 1 even on success, unable to restore its cwd |
 
-`awk`, `sort` and `tail` are a file each, being large. The other twenty-two
+`awk`, `sort` and `tail` are a file each, being large. The other twenty-three
 live in `src/tools/box.py` and dispatch on their first argument — the same
 multi-call shape as the coreutils binary, and unlike that one everything listed
-is present. One file rather than twenty-two because the shell writes and
-aliases these before the first prompt; all twenty-seven aliases go out in a
+is present. One file rather than twenty-three because the shell writes and
+aliases these before the first prompt; all twenty-eight aliases go out in a
 single `run` for the same reason. A warm command costs **142 ms**.
+
+`find` is the one entry in that table that shadows a *working* binary, and it
+earns the exception twice over. `-exec` needs to spawn, which the binary cannot
+do and python can — the same capability that makes `xargs` work here. And the
+shipped one exits 1 after doing its work, having failed to restore its working
+directory under WASIX, so `find … && …` never ran the second half. Both faults
+are silent: a correct search that looks like a failed one. The shim's own
+`-exec` inherits the limit that spawning implies — it reaches real binaries
+only, never the aliases in this file, and says so rather than ending in a
+traceback.
 
 `sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
 answers `file: function/utility not found`, and so does `sort sort file` — the
@@ -67,7 +78,7 @@ the identical build, so the newer-package move that fixed bash does nothing
 here, and `kilyanni/coreutils` (GNU 9.11) cannot be installed.
 
 Each shim is checked against the real tool before being trusted — awk on thirty
-programs, sort on fifteen cases, tail on twelve, the boxed set on twenty-two —
+programs, sort on fifteen cases, tail on twelve, the boxed set on twenty-three —
 and then again inside the runtime. Each refuses what it does not implement
 rather than ignoring it: a `sort` that silently drops `-k` is worse than one
 that says it cannot.

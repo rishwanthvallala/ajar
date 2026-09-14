@@ -13,6 +13,7 @@ silently drops -u is worse than one that says it cannot.
 
 import hashlib
 import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -636,6 +637,268 @@ def cmd_which(argv):
     return status
 
 
+# ------------------------------------------------------------------- find
+# The shipped findutils `find` works, with two faults it cannot be talked out
+# of: `-exec` produces nothing and exits 1 because the binary cannot spawn, and
+# every run exits 1 anyway, having done the work and then failed to restore its
+# working directory under WASIX. Both are invisible until you chain something
+# onto it, at which point a correct search looks like a failed one.
+#
+# python can spawn — that is what makes `xargs` work here — so find becomes a
+# shim like the rest. The expression grammar is the part worth being careful
+# about: `-o` binds looser than `-a`, `!` binds tightest, and an expression
+# with no action gets an implicit `-print`, which is the whole reason
+# `find . -name x` prints anything at all.
+def cmd_find(argv):
+    import fnmatch
+
+    paths, i = [], 0
+    while i < len(argv) and argv[i] not in ("!", "(") and not argv[i].startswith("-"):
+        paths.append(argv[i])
+        i += 1
+    paths = paths or ["."]
+    rest = argv[i:]
+
+    mindepth, maxdepth = 0, None
+    # -exec ... + batches its matches and runs once at the end, so the command
+    # and the names it collected have to outlive the walk.
+    batched = []
+
+    def parse(tokens):
+        """expr := term ('-o' term)* ; term := factor+ ; factor := '!' factor | '(' expr ')' | test"""
+        pos = 0
+
+        def peek():
+            return tokens[pos] if pos < len(tokens) else None
+
+        def expr():
+            nonlocal pos
+            node = term()
+            while peek() in ("-o", "-or"):
+                pos += 1
+                right = term()
+                node = ("or", node, right)
+            return node
+
+        def term():
+            nonlocal pos
+            node = None
+            while True:
+                t = peek()
+                if t is None or t in ("-o", "-or", ")"):
+                    break
+                if t in ("-a", "-and"):
+                    pos += 1
+                    continue
+                f = factor()
+                node = f if node is None else ("and", node, f)
+            return node if node is not None else ("true",)
+
+        def factor():
+            nonlocal pos
+            t = peek()
+            if t in ("!", "-not"):
+                pos += 1
+                return ("not", factor())
+            if t == "(":
+                pos += 1
+                node = expr()
+                if peek() != ")":
+                    die("find", "expected ')'")
+                pos += 1
+                return node
+            return test()
+
+        def arg(name):
+            # The option itself is already consumed, so the argument is sitting
+            # at `pos` — advancing first would step over it.
+            nonlocal pos
+            if pos >= len(tokens):
+                die("find", f"missing argument to '{name}'")
+            value = tokens[pos]
+            pos += 1
+            return value
+
+        def test():
+            nonlocal pos, mindepth, maxdepth
+            t = tokens[pos]
+            pos += 1
+            if t in ("-name", "-iname", "-path", "-ipath", "-wholename"):
+                return (t[1:], arg(t))
+            if t == "-type":
+                return ("type", arg(t))
+            if t == "-size":
+                return ("size", arg(t))
+            if t == "-empty":
+                return ("empty",)
+            if t == "-print":
+                return ("print", "\n")
+            if t == "-print0":
+                return ("print", "\0")
+            if t == "-delete":
+                return ("delete",)
+            if t in ("-maxdepth", "-mindepth"):
+                n = int(arg(t))
+                if t == "-maxdepth":
+                    maxdepth = n
+                else:
+                    mindepth = n
+                return ("true",)
+            if t == "-exec":
+                cmd = []
+                while pos < len(tokens) and tokens[pos] not in (";", "+"):
+                    cmd.append(tokens[pos])
+                    pos += 1
+                if pos >= len(tokens):
+                    die("find", "-exec needs a terminating ';' or '+'")
+                end = tokens[pos]
+                pos += 1
+                if end == "+":
+                    batched.append([cmd, []])
+                    return ("execplus", len(batched) - 1)
+                return ("exec", cmd)
+            die("find", f"unsupported expression '{t}'")
+
+        node = expr()
+        if pos != len(tokens):
+            die("find", f"unexpected '{tokens[pos]}'")
+        return node
+
+    tree = parse(rest)
+
+    def has_action(node):
+        if node[0] in ("print", "delete", "exec", "execplus"):
+            return True
+        if node[0] in ("and", "or"):
+            return has_action(node[1]) or has_action(node[2])
+        if node[0] == "not":
+            return has_action(node[1])
+        return False
+
+    printing = not has_action(tree)
+    status = 0
+
+    def spawn(line):
+        """Run one -exec command, and say something useful when it is not there.
+
+        The commands reachable here are real binaries only. Every tool this file
+        provides is a shell alias, and a spawned process does not inherit those
+        — so `-exec tree {} \\;` cannot work however much it looks like it
+        should. Without this it surfaced as a python traceback.
+        """
+        nonlocal status
+        try:
+            return subprocess.run(line).returncode
+        except FileNotFoundError:
+            sys.stderr.write(
+                f"find: '{line[0]}': No such file or directory\n"
+                f"find: -exec runs real programs, and cannot see shell aliases\n"
+            )
+            status = 1
+            return 1
+
+    def size_matches(spec, nbytes):
+        units = {"b": 512, "c": 1, "w": 2, "k": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+        sign = ""
+        if spec and spec[0] in "+-":
+            sign, spec = spec[0], spec[1:]
+        unit = "b"
+        if spec and spec[-1] in units:
+            unit, spec = spec[-1], spec[:-1]
+        want = int(spec)
+        # GNU rounds up to the next whole unit, so a 3-byte file is 1k — which
+        # is why `-size -1k` finds nothing rather than everything small.
+        size = -(-nbytes // units[unit])
+        return size > want if sign == "+" else size < want if sign == "-" else size == want
+
+    def evaluate(node, path, st):
+        nonlocal status
+        kind = node[0]
+        if kind == "true":
+            return True
+        if kind == "and":
+            return evaluate(node[1], path, st) and evaluate(node[2], path, st)
+        if kind == "or":
+            return evaluate(node[1], path, st) or evaluate(node[2], path, st)
+        if kind == "not":
+            return not evaluate(node[1], path, st)
+        if kind in ("name", "iname"):
+            base = os.path.basename(path)
+            return fnmatch.fnmatch(base.lower(), node[1].lower()) if kind == "iname" else fnmatch.fnmatchcase(base, node[1])
+        if kind in ("path", "ipath", "wholename"):
+            return fnmatch.fnmatch(path.lower(), node[1].lower()) if kind == "ipath" else fnmatch.fnmatchcase(path, node[1])
+        if kind == "type":
+            want = node[1]
+            if want == "f":
+                return stat.S_ISREG(st.st_mode)
+            if want == "d":
+                return stat.S_ISDIR(st.st_mode)
+            if want == "l":
+                return stat.S_ISLNK(st.st_mode)
+            die("find", f"unsupported -type '{want}'")
+        if kind == "size":
+            return stat.S_ISREG(st.st_mode) and size_matches(node[1], st.st_size)
+        if kind == "empty":
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    return not os.listdir(path)
+                except OSError:
+                    return False
+            return st.st_size == 0
+        if kind == "print":
+            sys.stdout.write(path + node[1])
+            return True
+        if kind == "delete":
+            try:
+                os.rmdir(path) if stat.S_ISDIR(st.st_mode) else os.remove(path)
+            except OSError as e:
+                sys.stderr.write(f"find: cannot delete '{path}': {e.strerror}\n")
+                status = 1
+                return False
+            return True
+        if kind == "exec":
+            line = [path if a == "{}" else a.replace("{}", path) for a in node[1]]
+            return spawn(line) == 0
+        if kind == "execplus":
+            batched[node[1]][1].append(path)
+            return True
+        return False
+
+    def walk(root, depth):
+        nonlocal status
+        try:
+            st = os.lstat(root)
+        except OSError as e:
+            sys.stderr.write(f"find: '{root}': {e.strerror}\n")
+            status = 1
+            return
+        if depth >= mindepth and (maxdepth is None or depth <= maxdepth):
+            matched = evaluate(tree, root, st)
+            if printing and matched:
+                sys.stdout.write(root + "\n")
+        if stat.S_ISDIR(st.st_mode) and (maxdepth is None or depth < maxdepth):
+            try:
+                names = sorted(os.listdir(root))
+            except OSError as e:
+                sys.stderr.write(f"find: '{root}': {e.strerror}\n")
+                status = 1
+                return
+            for name in names:
+                walk(os.path.join(root, name), depth + 1)
+
+    for p in paths:
+        walk(p, 0)
+
+    for cmd, names in batched:
+        if not names:
+            continue
+        line = [a for a in cmd if a != "{}"] + names
+        if spawn(line) != 0:
+            status = 1
+
+    return status
+
+
 COMMANDS = {
     "diff": cmd_diff,
     "tree": cmd_tree,
@@ -643,6 +906,7 @@ COMMANDS = {
     "stat": cmd_stat,
     "split": cmd_split,
     "xargs": cmd_xargs,
+    "find": cmd_find,
     "zip": cmd_zip,
     "unzip": cmd_unzip,
     "sha256sum": lambda a: cmd_sum(a, "sha256"),

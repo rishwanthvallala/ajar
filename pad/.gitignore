@@ -9,3 +9,16 @@ public/packages/
 # and they change on every run, so committing them is pure churn.
 shot.png
 failed.png
+
+# The wasmer SDK's own package cache, written when anything runs the SDK
+# outside a browser. 66 MB of it was committed by accident with the first
+# runtime commit, including a 59 MB blob that is over GitHub's warning
+# threshold. Nothing reads it — the packages the app actually serves are
+# mirrored into public/packages/ by scripts/fetch-packages.mjs, which is
+# ignored above and regenerated on demand.
+.wasmer/
+
+# Left behind by running the shims directly while checking them against the
+# real tools. They are also filtered out of a pad's own sync, in sync.ts.
+__pycache__/
+*.pyc

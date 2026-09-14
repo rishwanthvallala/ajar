@@ -101,7 +101,7 @@ lied — see below.
 
 ## Checks that passed for the wrong reason
 
-At least nine, and they are the most transferable lesson in this repository.
+Fifteen so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -121,6 +121,7 @@ passing evidence by accident.**
 | "22 commands work on live" | Every marker appeared in the echoed command line too, so a command that never ran still "passed" — the tell was `44 of 19` |
 | "the shell survived the editor" | A *negative* assertion on shared scrollback, and an earlier check interrupts `cat` on purpose — it reported the previous test's work as this one's failure |
 | The preview's server | Seeded through the store, where a pad's files are present but empty in the sandbox, so the server exited instantly and the button never appeared |
+| Three revert tests of the seeding fix | The revert failed the typecheck, so `vite` never ran and `dist/` still held the build made from the *fixed* source — the check measured the fix it was meant to be deprived of |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service

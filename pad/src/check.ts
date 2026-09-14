@@ -212,13 +212,38 @@ async function main() {
     else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
   }
 
-  // find does the work and then fails to change back to where it started,
-  // which is a WASIX quirk rather than ours. Recorded so the exit code is not
-  // mistaken later for a broken search.
+  // find is ours now. The shipped binary did the work and then exited 1,
+  // unable to restore its working directory under WASIX, and `-exec` produced
+  // nothing at all because it cannot spawn — both invisible until something is
+  // chained onto a search, at which point a correct result looks like a failed
+  // one. The exit code is asserted here precisely because it used to be wrong.
   printed = "";
   const found = await sh.run("find . -name 'poem*'");
   is(printed.trim(), "./poem.txt", "find locates the file");
-  report(`note: find exits ${found.exitCode} — it cannot restore its cwd under wasix`);
+  is(found.exitCode, 0, "find exits 0 when it succeeds");
+
+  printed = "";
+  await sh.run("find . -name 'poem*' -exec wc -l {} \\;");
+  is(printed.trim().split(/\s+/)[0], "4", "find -exec runs the command");
+
+  printed = "";
+  await sh.run("find . -name 'poem*' -exec cat {} +");
+  is(printed.includes("alpha"), true, "find -exec ... + batches its matches");
+
+  printed = "";
+  await sh.run("find . -type f -name 'poem*' -o -name 'nothing*'");
+  is(printed.trim(), "./poem.txt", "find understands -o");
+
+  // The example in docs/use/pad.md, run verbatim. A user doc that promises a
+  // command should be a check, not a hope.
+  printed = "";
+  await sh.run("find . -name '*.py' -exec wc -l {} +");
+  is(printed.includes("transform.py"), true, "the -exec example from the user docs works");
+
+  printed = "";
+  const chained = await sh.run("find . -name 'poem*' && echo CHAINED");
+  is(printed.includes("CHAINED"), true, "a search can be chained onto");
+  is(chained.exitCode, 0, "and the chain succeeds");
 
   // ---- the diff, which decides what anyone else ever sees ----
   let known = knownFrom({});

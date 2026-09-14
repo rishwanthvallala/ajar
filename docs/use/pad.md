@@ -24,7 +24,7 @@ ls cat cp mv rm mkdir touch head tail wc sort uniq cut tr tee seq echo printf
 grep sed awk find diff patch cmp xargs tree stat du split which rev
 tar gzip gunzip zip unzip bzip2 xz         archives
 sha256sum md5sum sha1sum hexdump xxd       checksums and bytes
-python3 pip qjs sqlite3 jq                 scripting and data
+python3 qjs sqlite3 jq                     scripting and data
 nano                                       an editor in the terminal
 ```
 
@@ -36,6 +36,7 @@ python3 transform.py < input.csv > out.csv
 grep -c ERROR *.log | sort -n
 for f in *.txt; do echo "$f: $(wc -l < "$f")"; done
 diff old.txt new.txt > changes.patch
+find . -name '*.py' -exec wc -l {} +
 zip -r backup.zip .
 ```
 

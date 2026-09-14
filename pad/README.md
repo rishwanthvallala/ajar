@@ -36,7 +36,7 @@ npm run check --workspace=ajar-pad
 | `src/app.ts` | Everything wired together |
 | `src/tools/awk.py` | An awk, because none is published for this runtime |
 | `src/tools/sort.py`, `tail.py` | Advertised by the shipped coreutils and not compiled into it |
-| `src/tools/box.py` | Twenty-two more, dispatched on the first argument |
+| `src/tools/box.py` | Twenty-three more, dispatched on the first argument — including `find`, which shadows the shipped one |
 | `src/tools/edit.py` | A terminal editor, aliased as `nano` — curses cannot start here |
 | `src/net-probe.ts` | Whether a process in the sandbox can serve HTTP. See [`docs/dev/networking.md`](../docs/dev/networking.md) |
 | `scripts/ingress-check.mjs` | Drives that, with the second origin it requires |
