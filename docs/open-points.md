@@ -10,21 +10,6 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### A pad's stored files are empty in the sandbox until touched
-
-Open a pad that already has `serve.py` in it and run `python3 serve.py`
-straight away: `ls` lists the file and `head` prints nothing. The runtime is
-started eagerly at boot from the editor's models, and the pad's stored content
-is not in them yet, so the sandbox is seeded with the name and no body.
-
-Invisible in the ordinary flow — type, press Run, and the current file is
-synced first. It bites when somebody opens a link and runs a file they did not
-themselves edit, which is exactly what sharing a pad is for. The failure is
-silent: the command exits without output.
-
-Found while building the preview check, and reproduced with the network policy
-off, so it predates that work.
-
 ### Tools that do not fully work
 
 From `npm run probe --workspace=ajar-pad`, which installs each package and

@@ -301,6 +301,33 @@ Three attempts, and the first two are instructive:
   only when nobody answers. Which requires the relay to have said who is here
   first.
 
+### Seeding the sandbox is a separate problem, with the same shape
+
+The document seeding above is about the *room*. Seeding the **sandbox** is
+about one browser, and it got the order wrong for a while.
+
+The runtime is created inside the first content change any model reports, and
+`ensureRuntime` takes its snapshot synchronously at that instant — so the
+snapshot lands *during* the editor binding, when the model being bound can
+still be empty. Seeding from the models alone therefore gave the sandbox every
+filename and no contents. Opening a shared link and running a file you had not
+yourself edited did nothing at all, and said nothing about why.
+
+`pad/src/seed.ts` puts the three sources in the order each becomes true:
+
+1. **The store**, as the base layer — the only source already correct when the
+   runtime starts.
+2. **The model**, where it has something, so unsaved edits run.
+3. **The document**, where there is one, since it is what fills the model.
+
+An empty model is taken only for a path the store has never heard of, which is
+the one case where empty is the truth rather than a file that has not loaded.
+
+It lives in its own module because the moment it runs is a race, and a race is
+untestable from the outside: three separate attempts to catch the bug through
+a driven browser all passed against the broken code. As a pure function it is
+ordinary, and `src/check.ts` asserts it directly.
+
 ## The download
 
 Wasmer's CDN sends `.webc` with no content encoding at all: 73 MB raw for the

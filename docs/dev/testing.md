@@ -131,6 +131,26 @@ worker answers with `new Response(error.message, { status: 502 })`. Reporting
 it.** Do this every time. It has caught worthless checks repeatedly, including
 several written specifically to prove a fix worked.
 
+The habit has a failure mode of its own, and it cost a session. `npm run
+build` is `tsc --noEmit && vite build`, so a revert that leaves a parameter
+unused fails the typecheck, **never reaches vite, and leaves `dist/` holding
+the build made from the fixed source**. The check then runs against the fix it
+was supposed to be deprived of and passes. Three consecutive revert tests were
+read as "the check does not discriminate" when part of what they measured was
+a stale bundle, and each was answered by rewriting the check — reasoning at
+length from evidence that was partly an artefact of the build. Discarding the
+build output to `/dev/null` is what hid it. **Never discard the build output
+in a revert test; assert the build exited 0 before believing anything the
+check says.**
+
+A race is also the wrong thing to hang a regression check on. The sandbox seed
+is taken synchronously inside the first content change a model reports, which
+is the editor binding — so whether the bug lands depends on timing a driver
+does not reproduce. The answer was to lift the decision into `pad/src/seed.ts`,
+a pure function over the three sources, and assert it directly in `check.ts`.
+It now fails on exactly three of its five cases when reverted. Prefer moving
+the logic somewhere deterministic over trying to recreate the race.
+
 A second habit worth keeping: when a check and a screenshot disagree, believe
 the screenshot. A grid overflow left the sidebar 936px tall at y=−215 —
 invisible on screen, perfectly correct in the DOM. Two separate bugs were

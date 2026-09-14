@@ -31,6 +31,7 @@ npm run check --workspace=ajar-pad
 | `src/peers.ts` | The relay connection: presence, nudges, document updates |
 | `src/store.ts` | The durable folder over HTTP |
 | `src/sync.ts` | What a command changed, and what never gets published |
+| `src/seed.ts` | What the sandbox starts with — store, model, document, in that order |
 | `src/files.ts` | The file tree, with folders derived from paths |
 | `src/app.ts` | Everything wired together |
 | `src/tools/awk.py` | An awk, because none is published for this runtime |

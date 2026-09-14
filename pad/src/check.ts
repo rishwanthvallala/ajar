@@ -8,6 +8,7 @@ import { interpreterFor, Runtime } from "./runtime";
 import { cssString } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
+import { seedFiles } from "./seed";
 import { diff, ignored, knownFrom } from "./sync";
 
 const results: string[] = [];
@@ -25,6 +26,53 @@ const is = (actual: unknown, expected: unknown, m: string) =>
 async function main() {
   is(globalThis.crossOriginIsolated, true, "the document is cross-origin isolated");
   is(typeof SharedArrayBuffer !== "undefined", true, "SharedArrayBuffer is available");
+
+  // What the sandbox is seeded with. These run before the runtime because a
+  // wrong answer here is invisible afterwards: the sandbox comes up with every
+  // filename present and the wrong contents inside, which reads as a working
+  // pad that quietly does nothing.
+  //
+  // Three attempts to catch this through the browser all passed against the
+  // broken code — the snapshot is taken during the editor binding, and the race
+  // did not land the same way under a driver. See docs/dev/testing.md.
+  {
+    const model = (text: string) => ({ getValue: () => text });
+    const doc = (text: string) => ({ contents: () => text });
+
+    // The bug. The store has the file, the model has not been filled yet.
+    is(
+      seedFiles(new Map([["a.py", "print(1)\n"]]), new Map([["a.py", model("")]]), new Map())["a.py"],
+      "print(1)\n",
+      "a file whose model has not loaded yet is seeded from the store",
+    );
+    // And the reason the store cannot simply win outright.
+    is(
+      seedFiles(new Map([["a.py", "old\n"]]), new Map([["a.py", model("edited\n")]]), new Map())["a.py"],
+      "edited\n",
+      "an unsaved edit beats the stored copy",
+    );
+    // A document, once there is one, is ahead of the model it fills.
+    is(
+      seedFiles(
+        new Map([["a.py", "old\n"]]),
+        new Map([["a.py", model("")]]),
+        new Map([["a.py", doc("from the room\n")]]),
+      )["a.py"],
+      "from the room\n",
+      "a document beats both the model and the store",
+    );
+    // Empty is the truth only for a file the store has never heard of.
+    is(
+      seedFiles(new Map(), new Map([["new.txt", model("")]]), new Map())["new.txt"],
+      "",
+      "a brand new empty file is still created in the sandbox",
+    );
+    is(
+      Object.keys(seedFiles(new Map([["only-stored.txt", "x\n"]]), new Map(), new Map())).join(),
+      "only-stored.txt",
+      "a stored file nobody has opened is seeded too",
+    );
+  }
 
   const started = performance.now();
   const rt = await Runtime.start({

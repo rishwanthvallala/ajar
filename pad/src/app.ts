@@ -16,6 +16,7 @@ import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell } from "./shell";
 import { Store, StoreError, type Pad } from "./store";
+import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
 
 const STARTER = `# Paste over this, or start typing.
@@ -555,8 +556,7 @@ export class App {
 
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
-      const files: Record<string, string> = {};
-      for (const [path, model] of this.models) files[path] = model.getValue();
+      const files = seedFiles(this.known, this.models, this.docs);
       const rt = await Runtime.start(files, PREVIEW_ORIGIN ? { network: { mode: "http" } } : undefined);
       // Without a network policy the sandbox cannot listen at all, so this is
       // what makes a dev server started in the folder possible. It grants no
