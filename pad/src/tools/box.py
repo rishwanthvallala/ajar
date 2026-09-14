@@ -401,6 +401,241 @@ def cmd_unzip(argv):
     return 0
 
 
+
+
+# ---------------------------------------------------------------- patch
+def cmd_patch(argv):
+    """Apply a unified diff.
+
+    Context matching only, with no fuzz: a hunk whose context does not match
+    is refused rather than guessed at. `patch` guessing wrong is how a file
+    silently becomes something nobody wrote.
+    """
+    strip, target, reverse, dry = 1, None, False, False
+    patch_file = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-p"):
+            strip = int(a[2:] or argv[(i := i + 1)])
+        elif a in ("-i", "--input"):
+            i += 1
+            patch_file = argv[i]
+        elif a in ("-R", "--reverse"):
+            reverse = True
+        elif a == "--dry-run":
+            dry = True
+        elif a.startswith("-") and a != "-":
+            die("patch", f"unsupported option '{a}'. Supported: -pN -i FILE -R --dry-run")
+        else:
+            target = a
+        i += 1
+
+    text = read_text(patch_file, "patch") if patch_file else sys.stdin.read()
+    lines = text.splitlines()
+
+    # Split into per-file sections, then per-hunk within each.
+    sections, current = [], None
+    for line in lines:
+        if line.startswith("--- "):
+            current = {"old": line[4:].split("\t")[0], "new": None, "hunks": []}
+            sections.append(current)
+        elif line.startswith("+++ ") and current:
+            current["new"] = line[4:].split("\t")[0]
+        elif line.startswith("@@") and current:
+            current["hunks"].append({"header": line, "body": []})
+        elif current and current["hunks"]:
+            current["hunks"][-1]["body"].append(line)
+
+    if not sections:
+        die("patch", "no unified diff found on input")
+
+    def strip_path(path):
+        parts = path.split("/")
+        return "/".join(parts[strip:]) if strip < len(parts) else parts[-1]
+
+    applied = 0
+    for section in sections:
+        name = target or strip_path(section["new"] or section["old"])
+        original = read_text(name, "patch").splitlines(keepends=True)
+        result = list(original)
+        offset = 0
+        for hunk in section["hunks"]:
+            head = hunk["header"].split("@@")[1].strip()
+            old_part = head.split(" ")[0]
+            start = int(old_part[1:].split(",")[0]) - 1
+            want, produce = [], []
+            for line in hunk["body"]:
+                tag, rest = (line[0], line[1:]) if line else (" ", "")
+                if reverse:
+                    tag = {"+": "-", "-": "+"}.get(tag, tag)
+                if tag in (" ", "-"):
+                    want.append(rest + "\n")
+                if tag in (" ", "+"):
+                    produce.append(rest + "\n")
+            at = start + offset
+            if result[at : at + len(want)] != want:
+                die("patch", f"hunk failed to apply at {name}:{start + 1}", code=1)
+            result[at : at + len(want)] = produce
+            offset += len(produce) - len(want)
+            applied += 1
+        if not dry:
+            with open(name, "w", errors="surrogateescape") as f:
+                f.writelines(result)
+        print(f"patching file {name}")
+    return 0
+
+
+# ---------------------------------------------------------------- cmp
+def cmp_files(argv):
+    silent, files = False, []
+    for a in argv:
+        if a in ("-s", "--silent", "--quiet"):
+            silent = True
+        elif a.startswith("-") and a != "-":
+            die("cmp", f"unsupported option '{a}'. Supported: -s")
+        else:
+            files.append(a)
+    if len(files) != 2:
+        die("cmp", "needs exactly two files")
+    left, right = (read_text(f, "cmp") for f in files)
+    if left == right:
+        return 0
+    if not silent:
+        for index, (a, b) in enumerate(zip(left, right), start=1):
+            if a != b:
+                line = left.count("\n", 0, index - 1) + 1
+                print(f"{files[0]} {files[1]} differ: char {index}, line {line}")
+                return 1
+        shorter = files[0] if len(left) < len(right) else files[1]
+        sys.stderr.write(f"cmp: EOF on {shorter}\n")
+    return 1
+
+
+# ------------------------------------------------------------ hexdump / xxd
+def cmd_hexdump(argv):
+    canonical, files = False, []
+    for a in argv:
+        if a in ("-C", "-c"):
+            canonical = True
+        elif a.startswith("-") and a != "-":
+            die("hexdump", f"unsupported option '{a}'. Supported: -C")
+        else:
+            files.append(a)
+    data = sys.stdin.buffer.read() if not files else open(files[0], "rb").read()
+    for offset in range(0, len(data), 16):
+        chunk = data[offset : offset + 16]
+        hexes = " ".join(f"{b:02x}" for b in chunk)
+        left, right = hexes[:23], hexes[24:]
+        if canonical:
+            text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+            print(f"{offset:08x}  {left:<23}  {right:<23}  |{text}|")
+        else:
+            print(f"{offset:07x} {hexes}")
+    print(f"{len(data):08x}" if canonical else f"{len(data):07x}")
+    return 0
+
+
+def cmd_xxd(argv):
+    files = [a for a in argv if not a.startswith("-")]
+    data = sys.stdin.buffer.read() if not files else open(files[0], "rb").read()
+    for offset in range(0, len(data), 16):
+        chunk = data[offset : offset + 16]
+        pairs = " ".join(chunk[i : i + 2].hex() for i in range(0, len(chunk), 2))
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        # 39 columns of hex, then two spaces, then the text — measured
+        # against real xxd rather than guessed.
+        print(f"{offset:08x}: {pairs:<39}  {text}")
+    return 0
+
+
+# ---------------------------------------------------- bzip2 / xz, via stdlib
+def compressor(argv, tool, module, suffix):
+    decompress, keep, to_stdout, files = tool.startswith(("bun", "un")), False, False, []
+    for a in argv:
+        if a.startswith("-") and a != "-":
+            for flag in a[1:]:
+                if flag == "d":
+                    decompress = True
+                elif flag == "k":
+                    keep = True
+                elif flag == "c":
+                    to_stdout = True
+                else:
+                    die(tool, f"unsupported option '-{flag}'. Supported: -d -k -c")
+        else:
+            files.append(a)
+
+    if not files:
+        raw = sys.stdin.buffer.read()
+        sys.stdout.buffer.write(module.decompress(raw) if decompress else module.compress(raw))
+        return 0
+
+    for name in files:
+        try:
+            with open(name, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            die(tool, f"{name}: {e.strerror}", code=1)
+        if decompress:
+            out_name = name[: -len(suffix)] if name.endswith(suffix) else name + ".out"
+            body = module.decompress(raw)
+        else:
+            out_name = name + suffix
+            body = module.compress(raw)
+        if to_stdout:
+            sys.stdout.buffer.write(body)
+            continue
+        with open(out_name, "wb") as f:
+            f.write(body)
+        if not keep:
+            os.remove(name)
+    return 0
+
+
+# ---------------------------------------------------------------- cal / rev
+def cmd_cal(argv):
+    import calendar
+    import datetime
+
+    numbers = [int(a) for a in argv if a.isdigit()]
+    today = datetime.date.today()
+    # Unix `cal` starts the week on Sunday; python's default is Monday.
+    weeks = calendar.TextCalendar(calendar.SUNDAY)
+    if len(numbers) == 2:
+        month, year = numbers[0], numbers[1]
+    elif len(numbers) == 1:
+        print(weeks.formatyear(numbers[0]), end="")
+        return 0
+    else:
+        month, year = today.month, today.year
+    # Real cal ends with a blank line; python's formatmonth does not.
+    print(weeks.formatmonth(year, month).rstrip("\n") + "\n\n", end="")
+    return 0
+
+
+def cmd_rev(argv):
+    files = [a for a in argv if not a.startswith("-")]
+    text = sys.stdin.read() if not files else "".join(read_text(f, "rev") for f in files)
+    for line in text.splitlines():
+        print(line[::-1])
+    return 0
+
+
+# ---------------------------------------------------------------- which
+def cmd_which(argv):
+    import shutil
+
+    status = 0
+    for name in [a for a in argv if not a.startswith("-")]:
+        found = shutil.which(name)
+        if found:
+            print(found)
+        else:
+            status = 1
+    return status
+
+
 COMMANDS = {
     "diff": cmd_diff,
     "tree": cmd_tree,
@@ -413,6 +648,17 @@ COMMANDS = {
     "sha256sum": lambda a: cmd_sum(a, "sha256"),
     "md5sum": lambda a: cmd_sum(a, "md5"),
     "sha1sum": lambda a: cmd_sum(a, "sha1"),
+    "patch": cmd_patch,
+    "cmp": cmp_files,
+    "hexdump": cmd_hexdump,
+    "xxd": cmd_xxd,
+    "cal": cmd_cal,
+    "rev": cmd_rev,
+    "which": cmd_which,
+    "bzip2": lambda a: compressor(a, "bzip2", __import__("bz2"), ".bz2"),
+    "bunzip2": lambda a: compressor(a, "bunzip2", __import__("bz2"), ".bz2"),
+    "xz": lambda a: compressor(a, "xz", __import__("lzma"), ".xz"),
+    "unxz": lambda a: compressor(a, "unxz", __import__("lzma"), ".xz"),
 }
 
 if __name__ == "__main__":

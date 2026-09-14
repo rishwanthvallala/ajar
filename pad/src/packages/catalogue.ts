@@ -111,6 +111,16 @@ export const CANDIDATES: Candidate[] = [
       { covers: "xargs -I", run: "printf 'a\\n' | xargs -I{} echo got-{}", want: "got-a" },
       { covers: "zip and unzip round trip", run: "mkdir -p zp && echo zipped > zp/f.txt; zip -r out.zip zp >/dev/null; mkdir -p ex; unzip -d ex out.zip >/dev/null; cat ex/zp/f.txt", want: "zipped" },
       { covers: "unzip -l", run: "mkdir -p zl && echo x > zl/g.txt; zip -r l.zip zl >/dev/null; unzip -l l.zip | grep -c 'zl/g.txt'", want: "1" },
+      { covers: "patch applies a diff", run: "printf 'a\\nb\\n' > pf.txt; printf 'a\\nZ\\n' > pw.txt; diff -u pf.txt pw.txt > p.diff; patch -p0 pf.txt < p.diff >/dev/null; cat pf.txt", want: "a\nZ" },
+      { covers: "patch refuses a hunk that does not match", run: "printf 'a\\nb\\n' > q1.txt; printf 'a\\nZ\\n' > q2.txt; diff -u q1.txt q2.txt > q.diff; printf 'x\\ny\\n' > bad.txt; patch -p0 bad.txt < q.diff 2>&1 | grep -c 'hunk failed'", want: "1" },
+      { covers: "cmp", run: "printf 'x\\n' > m1; printf 'x\\n' > m2; cmp m1 m2; echo rc=$?", want: "rc=0" },
+      { covers: "hexdump -C", run: "printf 'A' | hexdump -C | head -n 1", match: "41" },
+      { covers: "xxd", run: "printf 'A' | xxd | head -n 1", match: "^00000000: 41" },
+      { covers: "rev", run: "echo abc | rev", want: "cba" },
+      { covers: "cal", run: "cal 1 2020 | head -n 1 | tr -s ' '", want: " January 2020" },
+      { covers: "which", run: "which python3", match: "python" },
+      { covers: "bzip2 round trip", run: "echo squeeze > bz.txt && bzip2 bz.txt && bunzip2 bz.txt.bz2 && cat bz.txt", want: "squeeze" },
+      { covers: "xz round trip", run: "echo xzme > xz.txt && xz xz.txt && unxz xz.txt.xz && cat xz.txt", want: "xzme" },
       // The five added later. These pass as candidates too; here they prove
       // they are in the set a visitor actually gets, not merely installable.
       { covers: "jq is present", run: "echo '{\"a\":1}' | jq -r .a", want: "1" },

@@ -36,8 +36,9 @@ Three commands come from python instead of a package, aliased in `shell.ts`:
 
 | | Why |
 |---|---|
-| `awk`, `diff`, `zip`, `unzip`, `tree`, `xargs` | No port published anywhere |
-| `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
+| `awk`, `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `xz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
+| `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `sha1sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
+| `hexdump`, `cal`, `rev` | Published in `syrusakbary/util-linux`, where only `cal` runs |
 
 `awk`, `sort` and `tail` are a file each. The other eleven live in
 `src/tools/box.py` and dispatch on their first argument — the same multi-call
@@ -50,6 +51,13 @@ trips. All fourteen aliases are set in a single `run` for the same reason.
 cannot. That turned out to be find's limitation rather than the runtime's —
 python's `os.system`, `subprocess.run` and `os.popen` all work here, though
 `os.fork` does not.
+
+`watch` is deliberately absent. It only ends when interrupted, and ctrl-c here
+ends the shell rather than the command — a `watch` would trap whoever ran it.
+
+`patch` applies context-matched hunks with no fuzz: a hunk whose context does
+not match is refused rather than guessed at, because patch guessing wrong is
+how a file silently becomes something nobody wrote.
 
 `du` reports **apparent** size, which GNU calls `--apparent-size` and not its
 default. Real `du` counts allocated blocks and this filesystem has none to
