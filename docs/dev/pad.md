@@ -58,6 +58,43 @@ otherwise does not exist; not worth paying for one that works, which is why
 `split`, `stat`, `du`, `sha256sum` and `md5sum` are still missing rather than
 shimmed.
 
+## What else the registry has
+
+Enumerating every package that ships a command found **550 of them, with 491
+distinct command names**. An earlier search probed 420 name guesses across six
+namespaces and concluded most of these did not exist — guessing is not
+searching, and the enumeration took one query.
+
+There is no server-side popularity sort. `Package.totalDownloads` exists but is
+partial: only 189 of the 550 report any, and `python/python` reports zero,
+which cannot be true. `likersCount` is sparser and more honest — python 36,
+spidermonkey 28, sqlite 26, rustpython 22. Together they give a usable
+shortlist; neither alone does.
+
+Everything on that shortlist was probed. **None of it is worth shipping:**
+
+| | |
+|---|---|
+| `rg` (ripgrep), `fd` | Listed by the API, `packages.load` cannot fetch them |
+| `bzip2` | Installs, then exits 11 on every invocation |
+| `util-linux` | `cal` works; `rev` and `hexdump` exit 1 |
+| `ruby` | `ruby -e` works; a script file exits 1 |
+| `rustpython` | Works, but cannot replace CPython — see below |
+
+**`rustpython` is 22.3 MB against CPython's 58.9 and is not a saving.**
+Installed without CPython, `pwd` still answers `/workspace` while every
+relative path fails and `open()` raises `PermissionError` — the exact signature
+of a sandbox missing CPython. The filesystem comes from the CPython package
+rather than from the runtime. Alongside CPython it passes everything, where it
+is redundant.
+
+That is also why the probe catalogue has a `without` field: a candidate
+proposed as a replacement, installed next to the thing it would replace, proves
+nothing.
+
+Two namespaces now list packages the SDK cannot fetch — `kilyanni/*` and
+`liftm/*`. Registry presence is no guide to installability.
+
 ## Things about this runtime that are not obvious
 
 **The JavaScript filesystem and the process filesystem are different

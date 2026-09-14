@@ -61,6 +61,12 @@ export interface Candidate {
   isShell?: boolean;
   /** Extra packages to install alongside, by registry name. */
   with?: string[];
+  /**
+   * Shipped packages to leave out. Only for a candidate proposed as a
+   * *replacement*: installed next to the thing it would replace, it proves
+   * nothing about whether it could stand in for it.
+   */
+  without?: string[];
   checks: Check[];
 }
 
@@ -519,6 +525,104 @@ export const CANDIDATES: Candidate[] = [
       { covers: "compiles and runs", run: "printf '#include <stdio.h>\\nint main(){puts(\"hi\");return 0;}' > m.c && clang m.c -o m 2>/dev/null && ./m", want: "hi" },
       { covers: "arithmetic program", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > n.c && clang n.c -o n 2>/dev/null && ./n", want: "42" },
       { covers: "exit status passes through", run: "printf 'int main(){return 3;}' > e.c && clang e.c -o e 2>/dev/null && ./e; echo $?", want: "3" },
+    ],
+  },
+
+  // ---- found by enumerating the registry rather than guessing names -------
+  //
+  // An earlier search probed 420 name guesses across six namespaces and
+  // concluded these did not exist. Enumerating every package that ships a
+  // command — 550 of them — found all of these. Guessing is not searching.
+  {
+    // Listed by the API with full metadata, and `packages.load` cannot fetch
+    // it — the same as every kilyanni package. Two namespaces now behave this
+    // way, so registry presence remains no guide to installability.
+    name: "liftm/rg",
+    gives: "ripgrep — listed by the API, not installable",
+    checks: [
+      { covers: "basic match", run: "mkdir -p rg1 && printf 'alpha\\nbeta\\n' > rg1/f.txt; rg beta rg1/f.txt", want: "beta" },
+      { covers: "recursive by default", run: "mkdir -p rg2/sub && echo needle > rg2/sub/deep.txt; rg needle rg2", match: "needle" },
+      { covers: "-i insensitive", run: "mkdir -p rg3 && echo Foo > rg3/f; rg -i foo rg3/f", want: "Foo" },
+      { covers: "-c count", run: "mkdir -p rg4 && printf 'a1\\nb2\\n' > rg4/f; rg -c '[0-9]' rg4/f", want: "2" },
+      { covers: "-n line numbers", run: "mkdir -p rg5 && printf 'a\\nb\\n' > rg5/f; rg -n b rg5/f", want: "2:b" },
+      { covers: "-l files with matches", run: "mkdir -p rg6 && echo hay > rg6/f.txt; rg -l hay rg6", match: "f\\.txt" },
+      { covers: "-w word boundary", run: "mkdir -p rg7 && printf 'cat\\ncatalog\\n' > rg7/f; rg -w cat rg7/f", want: "cat" },
+      { covers: "reads stdin", run: "printf 'x\\ny\\n' | rg y", want: "y" },
+      { covers: "exit 1 on no match", run: "printf 'a\\n' | rg zzz; echo $?", want: "1" },
+    ],
+  },
+  {
+    name: "liftm/fd",
+    gives: "fd — listed by the API, not installable",
+    checks: [
+      { covers: "finds by name", run: "mkdir -p fd1 && touch fd1/target.txt; fd target fd1", match: "target\\.txt" },
+      { covers: "-e extension", run: "mkdir -p fd2 && touch fd2/a.txt fd2/b.log; fd -e txt . fd2", match: "a\\.txt" },
+      { covers: "-t f files only", run: "mkdir -p fd3/sub && touch fd3/file; fd -t f . fd3", match: "file" },
+      { covers: "exit 1 on no match", run: "mkdir -p fd4 && touch fd4/x; fd nothingmatches fd4; echo $?", want: "1" },
+    ],
+  },
+  {
+    // `cal` works; `rev` and `hexdump` exit 1. Half a megabyte for a calendar
+    // is not a trade worth making.
+    name: "syrusakbary/util-linux",
+    gives: "cal works, rev and hexdump do not",
+    checks: [
+      { covers: "rev", run: "echo abc | rev", want: "cba" },
+      { covers: "hexdump -C", run: "printf 'A' | hexdump -C", match: "41" },
+      { covers: "cal", run: "cal 1 2020", match: "January 2020" },
+    ],
+  },
+  {
+    // Installs and then exits 11 on every invocation.
+    name: "jackbm633/bzip2",
+    gives: "bzip2 — installs, does not run",
+    checks: [
+      { covers: "compress", run: "echo squeeze > bz.txt && bzip2 bz.txt && ls bz.txt.bz2", want: "bz.txt.bz2" },
+      { covers: "round trip", run: "echo keepme > bz2.txt && bzip2 bz2.txt && bzip2 -d bz2.txt.bz2 && cat bz2.txt", want: "keepme" },
+    ],
+  },
+  {
+    // Probed without CPython, because the question is whether it can replace
+    // it — 22.3 MB against 58.9 would take the mirror from 80 MB to 43. Next
+    // to CPython it would pass on CPython's working directory and prove
+    // nothing, which is the same trap that made a reduced sandbox look like a
+    // broken package earlier.
+    // Not a replacement, despite 22.3 MB against CPython's 58.9. Installed
+    // without CPython, `pwd` still says /workspace but every relative path
+    // fails and `open()` raises PermissionError — the exact signature of a
+    // sandbox missing CPython. The filesystem comes from the CPython package,
+    // not from the runtime, and rustpython does not bring one.
+    //
+    // It passes everything when installed alongside CPython, where it is
+    // redundant. That is why `without` exists: next to the thing it would
+    // replace, a replacement proves nothing.
+    name: "rustpython/rustpython",
+    gives: "a second python — cannot replace CPython, see below",
+    without: ["python/python"],
+    checks: [
+      { covers: "provides a working directory", run: "pwd", want: "/workspace" },
+      { covers: "relative paths resolve", run: "echo hi > rel.txt; cat rel.txt", want: "hi" },
+      { covers: "seeded file readable", run: "cat seed.txt", want: "seeded" },
+      { covers: "re", run: "rustpython -c \"import re;print(re.sub(r'a+','X','aaab'))\"", want: "Xb" },
+      { covers: "csv", run: "printf 'a,b\\n1,2\\n' > d2.csv && rustpython -c \"import csv;print(list(csv.reader(open('d2.csv')))[1][1])\"", want: "2" },
+      { covers: "datetime", run: "rustpython -c \"import datetime;print(datetime.date(2020,1,2).isoformat())\"", want: "2020-01-02" },
+      { covers: "collections", run: "rustpython -c \"from collections import Counter;print(Counter('aab')['a'])\"", want: "2" },
+      { covers: "expression", run: "rustpython -c 'print(1+1)'", want: "2" },
+      { covers: "json", run: "rustpython -c \"import json;print(json.dumps({'a':1}))\"", want: '{"a": 1}' },
+      { covers: "file io", run: "rustpython -c \"open('rp.txt','w').write('rp')\"; cat rp.txt", want: "rp" },
+      { covers: "runs a script", run: "echo \"print('scripted')\" > rp.py && rustpython rp.py", want: "scripted" },
+    ],
+  },
+  {
+    // `ruby -e` works; a script file exits 1. The most-downloaded real tool
+    // in the registry, and it cannot run a .rb file.
+    name: "katei/ruby",
+    gives: "ruby — -e works, script files do not",
+    heavy: true,
+    checks: [
+      { covers: "expression", run: "ruby -e 'puts 1+1'", want: "2" },
+      { covers: "string methods", run: "ruby -e 'puts \"ab\".upcase'", want: "AB" },
+      { covers: "runs a script", run: "echo 'puts 9' > r.rb && ruby r.rb", want: "9" },
     ],
   },
 

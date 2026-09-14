@@ -95,7 +95,8 @@ async function probe(c: Candidate): Promise<Result> {
       PACKAGES.sqlite,
       PACKAGES.quickjs,
     ];
-    const packages = shipped.filter((pkg) => pkg !== c.name);
+    const drop = new Set<string>([c.name, ...(c.without ?? [])]);
+    const packages = shipped.filter((pkg) => ![...drop].some((d) => pkg.startsWith(d)));
     if (!c.isShell && !packages.includes(c.name)) packages.push(c.name);
     for (const extra of c.with ?? []) packages.push(extra);
 
