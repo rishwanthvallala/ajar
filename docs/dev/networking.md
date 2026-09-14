@@ -1,0 +1,158 @@
+# Networking in the pad
+
+*An investigation, not a feature. Nothing here is built; everything here was
+measured. Written so the next attempt starts where this one stopped.*
+
+The pad's sandbox has no network. That is usually explained as "a browser
+cannot open a TCP socket", which is true and is not the reason. The reason is
+narrower and more fixable, and it took three wrong answers to find.
+
+## What is actually true
+
+The runtime **supports** TCP egress and HTTP ingress. `SandboxOptions.network`
+takes a `NetworkPolicy`, and we pass nothing, which the SDK reads as
+`disabled`. Everything below was run against the shipped package set.
+
+| | `disabled` (today) | `mode: "http"` | `mode: "wisp"` |
+|---|---|---|---|
+| `socket()` | succeeds | succeeds | — |
+| `bind()` + `listen()` | `ENOTSUP` | **works** | — |
+| `connect()` | `ENOTSUP` | `ENOTSUP` | — |
+| DNS | `Name does not resolve` | `Name does not resolve` | — |
+| loads at all | yes | yes | **no** |
+
+`mode: "wisp"` fails before the sandbox exists:
+
+```
+Failed to resolve module specifier "@mercuryworkshop/wisp-js/client"
+```
+
+`wisp-network.js` ships in the SDK and imports its WISP client by bare
+specifier, which assumes a bundler. We vendor the SDK verbatim because
+**bundling it breaks everything** — its worker resolves siblings by relative
+URL, and flattening the tree makes every command hang with nothing thrown. So
+the one thing standing between the pad and `pip install` is a module specifier.
+
+Two ways through, neither large. An **import map** in the page, which is
+precisely what they exist for and changes nothing about the SDK. Or
+**vendor-and-rewrite**, copying the package alongside and rewriting that one
+import — the same surgery `vendor-wasmer-sdk` already performs, cheaper to
+reason about and more fragile across upgrades.
+
+## What TLS and pip look like, since they decide whether egress is worth it
+
+All present, all verified in the sandbox:
+
+```
+ssl.OPENSSL_VERSION          OpenSSL 3.6.3
+ssl.create_default_context() verify_mode 2 (CERT_REQUIRED)
+/etc/ssl/certs/              a 472 KB bundle is on disk
+pip --version                pip 26.2.1
+```
+
+So `pip install` is blocked by the socket and nothing else. That matters for
+sizing the prize: the network unlock is mostly a **python** unlock. `ssh` needs
+an ssh binary nobody has published, `git clone` needs git at 85 MB, and
+`npm install` needs node at 74 MB. Network is necessary and nowhere near
+sufficient for those.
+
+## Ingress: three steps of four
+
+With `network: { mode: "http" }`:
+
+1. A guest process **listens** — `python3 -m http.server 8000` binds and
+   accepts.
+2. `ports.onListen()` **reports the port** — saw `8000`.
+3. `ports.expose(8000, { serviceWorker })` **returns a route** —
+   `http://host-origin/`.
+4. Loading that route returns **502** from the service worker, with a wasm
+   fault in the SDK worker. This is where it stops.
+
+### The second origin, and the header nobody documents
+
+`expose()` needs a **standalone HTTP host on its own origin**, serving
+`/.wasmer/host.html` (a document importing `service-worker-host.js`) and
+`/wasmer-service-worker.js`. Cross-origin on purpose: a pad's own HTTP
+responses must not be able to script the pad.
+
+That host must send **`Cross-Origin-Embedder-Policy: require-corp`** on its own
+documents. The pad page is COEP `require-corp`, so an embedded document without
+it is blocked, and the failure surfaces as `the Wasmer HTTP host did not become
+ready` — which reads like the host being slow rather than the frame being
+refused. Adding the header turned that into a working route immediately.
+
+Deploying this means a second subdomain with those two files and those headers.
+
+### Two things that produced misleading failures
+
+`ports.wait()` **cannot be used in `http` mode.** It probes by opening one real
+TCP connection, which needs egress, and fails with
+`port probing requires sandbox networking`. Use `onListen()` and `expose()`'s
+own `timeoutMs`.
+
+**Backgrounding the server with `&` kills it.** `sh -c "server &"` exits
+immediately and takes the job with it; a request then arrives for a listener
+that is gone and the sandbox faults with `table index is out of bounds`. Hold
+the command as a live promise instead.
+
+## What `expose()` is not
+
+It is **not** ngrok, and cannot be made into it. It returns a `BrowserServer`
+whose API is `createIframe()` — a service-worker route inside *your own*
+browser. Nobody else can open that URL. It is exactly right for "let me see the
+dev server I just started", which is also the hole ajar has had since the
+beginning, and useless for "share this with someone".
+
+A genuinely public URL needs a **reverse tunnel**: the pad opens an outbound
+connection to a server the user runs, and that server holds a public port and
+forwards inbound requests back down it. That is how ngrok works, and it is
+buildable once egress exists — a few hundred lines on each side. It is gated
+behind the WISP fix, like everything else.
+
+## Whose network it is
+
+Three arrangements, differing only in what `requestUrl` returns:
+
+| | Egress from | Abuse lands on |
+|---|---|---|
+| We run an open WISP server | our IP | us, anonymously |
+| We run an allowlisted HTTP proxy | our IP | bounded to a list we choose |
+| **The user runs the endpoint** | **their machine** | **them, by name** |
+
+The third is the only one that scales without accounts, and it is cheap for the
+user: browsers treat `localhost` as a secure context, so an HTTPS pad can talk
+to `ws://127.0.0.1:6001` with no certificate, no domain and no open firewall
+port. One local command.
+
+Two consequences follow and neither is a bug. **The endpoint URL is a
+credential** — pads are plaintext and readable by anyone with the link, so it
+must live in the tab and never in a file. And **a pad with a tunnel cannot be
+shared**, because the second visitor would egress through the first person's
+network. Network mode is therefore per-tab and per-session, which cuts against
+the pad's whole "send someone the link" premise.
+
+## Order to do it in
+
+1. **`mode: "http"` plus a preview origin.** Listening already works. This is
+   the smallest real feature and it closes ajar's preview-URL gap too. Blocked
+   on the 502.
+2. **The import map for WISP.** One specifier, and `pip install` follows.
+3. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
+   often will not be, because most of the time "let me see my server" means
+   your own browser.
+
+## How wrong I was, in order
+
+Worth recording because each wrong answer sounded complete.
+
+**"A browser cannot open a TCP socket, so this is impossible."** True about
+browsers, wrong about the runtime, which ships a WISP client for exactly this.
+
+**"It is a flag we never pass."** Also wrong: passing it reveals an
+unresolvable import.
+
+**"`ports.expose()` gives you a URL."** It does, and the URL is browser-local,
+which is not what anyone means by ngrok.
+
+Every correction came from reading the SDK's own type definitions and running
+the thing. None came from reasoning about what ought to be possible.

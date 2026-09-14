@@ -18,6 +18,7 @@ are touching.
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [operations.md](operations.md) | Deploying, reaching the server, cutting a release |
+| [networking.md](networking.md) | Whether the pad can have a network. Measured, not built |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |
 

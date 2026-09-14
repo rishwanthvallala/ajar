@@ -111,6 +111,18 @@ what removes that from the critical path.
 
 ## Designed, not started
 
+### A network for the pad
+
+The sandbox has no network, and the reason is not the one usually given.
+The runtime supports TCP egress and HTTP ingress; we pass no policy, so the
+SDK reads `disabled`. Listening already works with one option. Egress is
+blocked by a single unresolvable module specifier. `pip install` is behind
+that and nothing else — TLS, the CA bundle and pip itself are all present.
+
+Measured in full in [dev/networking.md](dev/networking.md), including the
+undocumented COEP header the preview origin needs and the three wrong answers
+it took to get there.
+
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of
