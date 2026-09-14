@@ -82,6 +82,7 @@ export default defineConfig({
         // The package probe. Also kept out of the visitor's bundle: it exists
         // to install packages we have not decided to ship.
         probe: new URL("./probe.html", import.meta.url).pathname,
+        net: new URL("./net.html", import.meta.url).pathname,
       },
     },
   },

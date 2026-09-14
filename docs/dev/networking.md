@@ -65,8 +65,31 @@ With `network: { mode: "http" }`:
 2. `ports.onListen()` **reports the port** — saw `8000`.
 3. `ports.expose(8000, { serviceWorker })` **returns a route** —
    `http://host-origin/`.
-4. Loading that route returns **502** from the service worker, with a wasm
-   fault in the SDK worker. This is where it stops.
+4. The route **serves** — an iframe pointed at it renders a response generated
+   by a process inside the sandbox.
+
+The 502 that used to sit at step 4 was two separate faults, and the diagnosis
+was in a place nobody looked: the service worker answers a failure with
+`new Response(error.message, { status: 502 })`, so **the body is the error**.
+Reporting the status and stopping cost a session.
+
+**`python3 -m http.server` crashes the runtime.** A request arriving at it
+faults the worker with `RuntimeError: table index is out of bounds`, and the
+route then times out after five minutes. A hand-rolled accept-and-reply loop in
+the same sandbox serves fine. This matters because `http.server` is the first
+thing anyone reaches for, and the failure looks like the route being broken
+rather than the server being unusable.
+
+**A malformed response is refused, correctly.** The second error,
+`guest HTTP request failed: invalid internal data`, was a `Content-Length: 11`
+on a ten-byte body — mine, not the SDK's. Worth knowing that the check exists
+and what it says when it fires.
+
+**The route only lives while something holds it.** `activeRoute` is module
+state in the service worker, and an idle worker is killed. Opening the URL in a
+separate tab finds no route and falls through to the origin server, which looks
+like a 404 from the wrong place. The iframe is the intended consumer for
+exactly this reason, which is why the API hands you `createIframe()`.
 
 ### The second origin, and the header nobody documents
 
@@ -133,9 +156,11 @@ the pad's whole "send someone the link" premise.
 
 ## Order to do it in
 
-1. **`mode: "http"` plus a preview origin.** Listening already works. This is
-   the smallest real feature and it closes ajar's preview-URL gap too. Blocked
-   on the 502.
+1. **`mode: "http"` plus a preview origin.** The whole chain is proven: a guest
+   listens, `onListen` reports, `expose` routes, an iframe renders it. What is
+   left is product work — a second origin in the deploy, and somewhere in the
+   UI to put the frame. Note that whatever people run must not be
+   `http.server`.
 2. **The import map for WISP.** One specifier, and `pip install` follows.
 3. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
