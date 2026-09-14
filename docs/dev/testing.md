@@ -81,6 +81,24 @@ no special behaviour in a production build, so it cannot ship by accident.
 Layout preferences in the preview are kept separate from real-session ones, so
 experimenting here does not rearrange anybody's actual workspace.
 
+## The pad's own harnesses
+
+Three, none of them in `check.sh` — each drives a real browser and moves real
+bytes, and the gate is already the slowest thing in the repository.
+
+```sh
+npm run check --workspace=ajar-pad          # the pieces, then the product
+npm run probe --workspace=ajar-pad          # what a package can actually do
+node pad/scripts/ingress-check.mjs          # a process in the sandbox serving HTTP
+VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build
+node pad/scripts/preview-check.mjs          # the Preview button, end to end
+```
+
+`preview-check.mjs` is the one worth reading if you touch the preview: it
+writes a server, runs it, waits for the button, presses it, reads the iframe
+and presses it again. Three of its steps only exist because earlier versions
+lied — see below.
+
 ## Checks that passed for the wrong reason
 
 At least nine, and they are the most transferable lesson in this repository.
@@ -100,6 +118,14 @@ passing evidence by accident.**
 | CSS injection | It counted stylesheet rules, which cannot see a trailing backslash eating the next rule |
 | Concurrent editing | It asserted contiguity a CRDT never promises |
 | The link race | It measured a *delay* before joining, so it passed with and without the fix |
+| "22 commands work on live" | Every marker appeared in the echoed command line too, so a command that never ran still "passed" — the tell was `44 of 19` |
+| "the shell survived the editor" | A *negative* assertion on shared scrollback, and an earlier check interrupts `cat` on purpose — it reported the previous test's work as this one's failure |
+| The preview's server | Seeded through the store, where a pad's files are present but empty in the sandbox, so the server exited instantly and the button never appeared |
+
+A fourth habit, from the same week: **read the failure, not the status.** A
+502 from the sandbox's HTTP route carries the error in its body — the service
+worker answers with `new Response(error.message, { status: 502 })`. Reporting
+"502" and stopping cost a session.
 
 **The habit that catches them: revert the fix, watch the check fail, restore
 it.** Do this every time. It has caught worthless checks repeatedly, including

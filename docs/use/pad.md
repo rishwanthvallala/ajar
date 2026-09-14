@@ -42,6 +42,24 @@ zip -r backup.zip .
 Whatever a command writes appears in the folder, for you and for everyone else
 with the link.
 
+### Running a server
+
+Start something that listens and a **Preview** button appears in the header.
+Press it and the editor is replaced by whatever your server is serving; press
+it again to go back.
+
+```sh
+python3 serve.py          # anything that listens on a port
+```
+
+Only you can see it. The address is not a public link — it works in your
+browser and nowhere else, so it is for looking at what you just started, not
+for showing somebody.
+
+One thing that will bite: **`python3 -m http.server` does not work here.** It
+crashes the runtime when a request arrives. Write a small server with `socket`
+instead, or use anything that is not that module.
+
 ### Editing in the terminal
 
 `nano file.txt` opens an editor in the terminal, with nano's keys — `^O` to
@@ -70,7 +88,8 @@ the first time — about 19 MB — and runs everything locally. That means it is
 private, and it means there is no machine to reach.
 
 **No internet from inside.** No `pip install`, no `git clone`, no `curl`.
-Whatever is in the list above is what you get.
+Whatever is in the list above is what you get. A server you start can be
+previewed by you, but it is not reachable from anywhere else.
 
 **No `git`, `make`, or compilers.** It is for scripts and text, not builds.
 

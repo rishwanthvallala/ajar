@@ -36,6 +36,37 @@ gzip`.
 **`{ : < /dev/tty; }` in `run.sh`** killed the script silently on dash. `:` is
 a POSIX special built-in, so a redirect error exits the shell.
 
+## The three origins
+
+| | Serves |
+|---|---|
+| `ajar.rishwanth.dev` | The relay, the session client, `/install.sh`, `/ws` |
+| `code.rishwanth.dev` | The pad. Cross-origin isolated, which WASIX threads require |
+| `preview.rishwanth.dev` | Whatever somebody is running inside their folder |
+
+The separation is forced rather than chosen. Cross-origin isolation is a
+property of a whole document, so the pad cannot live on a path under the
+session client. And the preview origin exists because the sandbox's HTTP
+responses are **somebody else's code** — served from the pad's origin they
+could script it, read its storage and reach its service worker.
+
+The preview origin serves exactly two files, both taken from the vendored SDK
+the pad already ships so they can never be a different version from the client
+talking to them, and 404 for everything else. Nothing is stored there and
+nothing is proxied.
+
+**`preview.rishwanth.dev` needs an A record to `13.207.222.42`.** DNS for the
+zone is on NS1, not Route 53, so it is added by hand. Until it exists, deploy
+with `AJAR_PREVIEW_ORIGIN=` empty:
+
+```sh
+AJAR_PREVIEW_ORIGIN= ./deploy/deploy.sh ajar-relay
+```
+
+An empty value compiles the pad with previews disabled, and the button never
+appears. A value pointing at an origin that does not resolve is worse than
+none: the button appears and pressing it fails.
+
 ## Reaching the server
 
 **There is no inbound SSH.** Port 22 was closed on 14 September 2026; the
