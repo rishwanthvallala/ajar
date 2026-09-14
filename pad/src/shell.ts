@@ -29,6 +29,7 @@
 import AWK_PY from "./tools/awk.py?raw";
 import SORT_PY from "./tools/sort.py?raw";
 import TAIL_PY from "./tools/tail.py?raw";
+import BOX_PY from "./tools/box.py?raw";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
@@ -49,6 +50,33 @@ export const TOOLS = {
   sort: ".ajar/sort.py",
   tail: ".ajar/tail.py",
 } as const;
+
+/**
+ * The rest, dispatched out of one file on its first argument.
+ *
+ * Separate files would be eleven writes and eleven aliases before the first
+ * prompt; this is one of each. The shape is the same multi-call trick the
+ * shipped coreutils uses — and unlike that one, everything listed here is
+ * actually present.
+ *
+ * `diff`, `zip`, `unzip`, `tree` and `xargs` have no port at all. The rest are
+ * advertised by coreutils and not compiled into it.
+ */
+export const BOXED = [
+  "diff",
+  "tree",
+  "du",
+  "stat",
+  "split",
+  "xargs",
+  "zip",
+  "unzip",
+  "sha256sum",
+  "sha1sum",
+  "md5sum",
+] as const;
+
+export const BOX = ".ajar/box.py";
 
 const MARK = "";
 /** Matches the sentinel and captures the exit status. */
@@ -129,8 +157,19 @@ export class Shell {
     await shell.run("shopt -s expand_aliases");
     for (const name of Object.keys(TOOLS) as (keyof typeof TOOLS)[]) {
       await rt.write(TOOLS[name], sources[name]);
-      await shell.run(`alias ${name}='python /workspace/${TOOLS[name]}'`);
     }
+    await rt.write(BOX, BOX_PY);
+
+    // One `run` for every alias rather than one each: each is a round trip
+    // through the pty, and fourteen of them is a visible pause before the
+    // first prompt.
+    const aliases = [
+      ...Object.keys(TOOLS).map(
+        (name) => `alias ${name}='python /workspace/${TOOLS[name as keyof typeof TOOLS]}'`,
+      ),
+      ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
+    ];
+    await shell.run(aliases.join("; "));
 
     shell.silent = false;
     return shell;

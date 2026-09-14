@@ -424,13 +424,24 @@ mod tests {
         pub struct Dir(PathBuf);
         impl Dir {
             pub fn new() -> Self {
+                // A counter, not just the clock. Tests are threads in one
+                // process, so the pid is the same for all of them, and two
+                // starting inside one clock tick got the same directory —
+                // whichever finished first deleted the other's files on the
+                // way out, and the loser failed with "No such file or
+                // directory" somewhere unrelated.
+                //
+                // The same shape as the bug in `save` below, in the helper
+                // that was never looked at while fixing it.
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 let p = std::env::temp_dir().join(format!(
-                    "ajar-pad-test-{}-{:?}",
+                    "ajar-pad-test-{}-{:?}-{}",
                     std::process::id(),
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
-                        .as_nanos()
+                        .as_nanos(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 ));
                 std::fs::create_dir_all(&p).unwrap();
                 Self(p)
@@ -444,6 +455,25 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
+    }
+
+    #[test]
+    fn two_temp_directories_are_never_the_same_one() {
+        // The clock alone was not enough. Tests are threads in one process, so
+        // the pid never differs, and two `Dir::new()` calls inside one tick
+        // produced one directory with two owners — the first to finish deleted
+        // it, and the second failed somewhere that looked unrelated.
+        //
+        // Threads rather than a loop, because a loop advances the clock enough
+        // to hide it: the collision needs genuine concurrency to appear.
+        let paths: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..32)
+                .map(|_| scope.spawn(|| tempdir::Dir::new().path().to_path_buf()))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let unique: std::collections::HashSet<_> = paths.iter().collect();
+        assert_eq!(unique.len(), paths.len(), "two temp directories collided");
     }
 
     #[test]

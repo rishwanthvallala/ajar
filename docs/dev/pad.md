@@ -36,9 +36,25 @@ Three commands come from python instead of a package, aliased in `shell.ts`:
 
 | | Why |
 |---|---|
-| `awk` | Not published anywhere — `gawk`, `mawk`, `goawk`, `busybox` and a dozen other guesses all return nothing |
-| `sort` | Advertised by the shipped coreutils and **not compiled into it** |
-| `tail` | The same |
+| `awk`, `diff`, `zip`, `unzip`, `tree`, `xargs` | No port published anywhere |
+| `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
+
+`awk`, `sort` and `tail` are a file each. The other eleven live in
+`src/tools/box.py` and dispatch on their first argument — the same multi-call
+shape as the coreutils binary, and unlike that one everything listed is
+actually present. One file rather than eleven because the shell writes and
+aliases these before the first prompt, and eleven writes would be eleven round
+trips. All fourteen aliases are set in a single `run` for the same reason.
+
+`xargs` deserves a note: it needs to launch other programs, and `find -exec`
+cannot. That turned out to be find's limitation rather than the runtime's —
+python's `os.system`, `subprocess.run` and `os.popen` all work here, though
+`os.fork` does not.
+
+`du` reports **apparent** size, which GNU calls `--apparent-size` and not its
+default. Real `du` counts allocated blocks and this filesystem has none to
+count; a number invented to look like a real one would be worse than the one
+that is true.
 
 `sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
 answers `file: function/utility not found`, and so does `sort sort file` — the

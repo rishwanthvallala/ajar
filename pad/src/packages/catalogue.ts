@@ -95,6 +95,22 @@ export const CANDIDATES: Candidate[] = [
       { covers: "tail a file (shim)", run: "printf '1\\n2\\n' > tf.txt; tail -n 1 tf.txt", want: "2" },
       { covers: "ls | sort, the thing that was broken", run: "mkdir -p q && touch q/b q/a; ls q | sort", want: "a\nb" },
       { covers: "awk still works", run: "printf '1 2\\n' | awk '{print $2}'", want: "2" },
+      // The eleven from box.py. Checked against the real tools before being
+      // trusted; here they prove the aliases reached the shell.
+      { covers: "diff", run: "printf 'a\\nb\\n' > L; printf 'a\\nx\\n' > R; diff -u L R | grep '^+x'", want: "+x" },
+      { covers: "diff on identical files", run: "printf 'a\\n' > E1; printf 'a\\n' > E2; diff E1 E2; echo rc=$?", want: "rc=0" },
+      { covers: "diff exit 1 when differing", run: "printf 'a\\n' > D1; printf 'b\\n' > D2; diff D1 D2 >/dev/null; echo rc=$?", want: "rc=1" },
+      { covers: "tree", run: "mkdir -p tr/sub && touch tr/one tr/sub/two; tree tr | tail -n 1", want: "1 directory, 2 files" },
+      { covers: "sha256sum", run: "printf '' | sha256sum | cut -c1-8", want: "e3b0c442" },
+      { covers: "md5sum", run: "printf '' | md5sum | cut -c1-8", want: "d41d8cd9" },
+      { covers: "sha256sum -c", run: "echo body > sc.txt; sha256sum sc.txt > sc.sum; sha256sum -c sc.sum", want: "sc.txt: OK" },
+      { covers: "du -s", run: "mkdir -p du1 && printf '12345' > du1/f; du -s du1 | cut -f1", want: "1" },
+      { covers: "stat -c %s", run: "printf 'abcde' > st.txt; stat -c %s st.txt", want: "5" },
+      { covers: "split -l", run: "printf '1\\n2\\n3\\n4\\n' > sp.txt; split -l 2 sp.txt; cat xaa", want: "1\n2" },
+      { covers: "xargs -n1", run: "printf 'a\\nb\\n' | xargs -n1 echo n", want: "n a\nn b" },
+      { covers: "xargs -I", run: "printf 'a\\n' | xargs -I{} echo got-{}", want: "got-a" },
+      { covers: "zip and unzip round trip", run: "mkdir -p zp && echo zipped > zp/f.txt; zip -r out.zip zp >/dev/null; mkdir -p ex; unzip -d ex out.zip >/dev/null; cat ex/zp/f.txt", want: "zipped" },
+      { covers: "unzip -l", run: "mkdir -p zl && echo x > zl/g.txt; zip -r l.zip zl >/dev/null; unzip -l l.zip | grep -c 'zl/g.txt'", want: "1" },
       // The five added later. These pass as candidates too; here they prove
       // they are in the set a visitor actually gets, not merely installable.
       { covers: "jq is present", run: "echo '{\"a\":1}' | jq -r .a", want: "1" },
