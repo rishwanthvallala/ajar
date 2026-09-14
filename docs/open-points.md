@@ -10,28 +10,35 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Tools that half-work
+### Tools that do not fully work
 
-Found by `npm run probe --workspace=ajar-pad`, which installs each package and
-exercises its capabilities. None is fatal; all are the kind of thing that fails
-later and somewhere else.
+From `npm run probe --workspace=ajar-pad`, which installs each package and
+exercises its capabilities. 268 of 287 pass.
 
 | | |
 |---|---|
-| `find` | `-exec` and `-size` fail |
-| `tar` | `-C` fails; create, list and extract work |
-| `sqlite3` | Cannot read SQL from stdin; everything else works |
-| `node` | `process.argv` is wrong |
-| `clang` | Compiles and runs, but fails on a program using `printf` |
-| `git` | `init` works, a commit reports success and `git log` shows nothing |
-| `lua` | Does not run at all — exit 45, no output |
+| `find -exec` | Produces nothing and exits 1, in all three forms. It cannot spawn |
+| `lua` | Does not start — even `lua -v` exits 45. The only published build |
 | coreutils | `split`, `stat`, `du`, `sha256sum`, `md5sum` are not compiled in |
 
-Two shapes here. `find`, `tar`, `sqlite` and `node` are single flags failing in
-otherwise working tools, so each needs its own diagnosis. `lua` and `git` fail
-at something basic, which makes a different build worth trying first — that
-move fixed bash and did nothing for coreutils, so it is worth trying and not
-worth assuming.
+`sort` and `tail` were in this table until they became python shims. The same
+could be done for these five; each costs a python start (214 ms against 39 ms
+native), and none is typed often enough to have earned it yet.
+
+**`git` works, but every paging command needs `--no-pager` or `GIT_PAGER=cat`.**
+`git log` alone spawns a pager that does not exist and exits 79 with no
+output — which looks exactly like a commit that did not happen, and was
+reported that way here before being diagnosed. If git is ever shipped, that
+variable has to be set in `shell.ts`.
+
+**Six things were reported broken here and were not.** `tar -C` extracts and
+then exits 2 like `find` does; `sqlite` reads stdin and prints an interactive
+banner; `node -e` puts the first argument at `argv[1]` because there is no
+script path; `clang` was compiling `printf("0")` because the shell's own
+`printf` had eaten the `%d`; `find -size -1k` correctly matches nothing because
+GNU rounds sizes up to whole blocks. Every one was an expectation written from
+assumption rather than from the tool's documented behaviour — which is the rule
+at the top of the catalogue, and the reason it is written there.
 
 ---
 

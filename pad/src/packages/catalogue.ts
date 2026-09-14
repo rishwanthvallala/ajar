@@ -360,7 +360,11 @@ export const CANDIDATES: Candidate[] = [
       { covers: "-maxdepth", run: "mkdir -p fd/x/y && touch fd/top fd/x/y/deep; find fd -maxdepth 1 -type f", want: "fd/top" },
       { covers: "-path", run: "mkdir -p fe/keep && touch fe/keep/f; find fe -path '*keep*' -type f", want: "fe/keep/f" },
       { covers: "-exec", run: "mkdir -p ff && echo body > ff/one.txt; find ff -name '*.txt' -exec cat {} \\;", want: "body" },
-      { covers: "-size", run: "mkdir -p fg && printf 'abc' > fg/small; find fg -type f -size -1k", want: "fg/small" },
+      // `-size -1k` matching a 3-byte file is what the first version of this
+      // expected, and GNU does not do that either: sizes round up to whole
+      // blocks, so a 3-byte file is 1k and `-1k` means "rounds to zero".
+      { covers: "-size in bytes", run: "mkdir -p fg && printf 'abc' > fg/small; find fg -type f -size +0c", want: "fg/small" },
+      { covers: "-size rounds up like GNU", run: "mkdir -p fh2 && printf 'abc' > fh2/s; find fh2 -type f -size -1k; echo none", want: "none" },
       { covers: "-empty", run: "mkdir -p fh && touch fh/blank; find fh -type f -empty", want: "fh/blank" },
     ],
   },
@@ -390,7 +394,11 @@ export const CANDIDATES: Candidate[] = [
       { covers: "create", run: "mkdir -p ta && echo one > ta/f.txt && tar cf a.tar ta && echo made", want: "made" },
       { covers: "list", run: "mkdir -p tb && echo x > tb/g.txt && tar cf b.tar tb && tar tf b.tar", match: "g\\.txt" },
       { covers: "extract", run: "mkdir -p tc && echo two > tc/h.txt && tar cf c.tar tc && rm -rf tc && tar xf c.tar && cat tc/h.txt", want: "two" },
-      { covers: "-C directory", run: "mkdir -p td out && echo z > td/i.txt && tar cf d.tar td && tar xf d.tar -C out && cat out/td/i.txt", want: "z" },
+      // `-C` extracts correctly and then exits 2, the same way `find` exits 1
+      // after doing its work — neither can restore its working directory under
+      // WASIX. Chaining with && hid a successful extraction behind the status,
+      // so this reads the file rather than trusting the exit code.
+      { covers: "-C directory", run: "mkdir -p td out && echo z > td/i.txt && tar cf d.tar td; tar xf d.tar -C out; cat out/td/i.txt", want: "z" },
       { covers: "round trip preserves content", run: "mkdir -p te && printf 'line1\\nline2\\n' > te/j.txt && tar cf e.tar te && rm -rf te && tar xf e.tar && wc -l < te/j.txt | tr -d ' '", want: "2" },
     ],
   },
@@ -416,7 +424,7 @@ export const CANDIDATES: Candidate[] = [
       { covers: "join", run: "sqlite3 :memory: 'create table a(i);create table b(i);insert into a values(1);insert into b values(1);select count(*) from a join b using(i)'", want: "1" },
       { covers: "order by", run: "sqlite3 :memory: \"select v from (select 'b' v union select 'a') order by v\"", want: "a\nb" },
       { covers: ".mode csv", run: "sqlite3 -csv :memory: \"select 'a','b'\"", want: "a,b" },
-      { covers: "reads a sql file", run: "echo 'select 42;' > q.sql; sqlite3 :memory: < q.sql", want: "42" },
+      { covers: "reads a sql file", run: "echo 'select 42;' > q.sql; sqlite3 -batch :memory: < q.sql", want: "42" },
     ],
   },
   {
@@ -469,7 +477,8 @@ export const CANDIDATES: Candidate[] = [
       { covers: "JSON", run: "node -e 'console.log(JSON.stringify({a:1}))'", want: '{"a":1}' },
       { covers: "fs write and read", run: "node -e \"require('fs').writeFileSync('n.txt','nodewrote')\" && cat n.txt", want: "nodewrote" },
       { covers: "path module", run: "node -e \"console.log(require('path').basename('/a/b.js'))\"", want: "b.js" },
-      { covers: "process.argv", run: "node -e 'console.log(process.argv[2])' hi", want: "hi" },
+      { covers: "process.argv with -e", run: "node -e 'console.log(process.argv[1])' hi", want: "hi" },
+      { covers: "process.argv with a file", run: "echo 'console.log(process.argv[2])' > a.js && node a.js hi", want: "hi" },
       { covers: "exit status", run: "node -e 'process.exit(4)'; echo $?", want: "4" },
       { covers: "runs a file", run: "echo 'console.log(\"filed\")' > n.js && node n.js", want: "filed" },
       { covers: "npm version", run: "npm --version", match: "^[0-9]+\\." },
@@ -496,7 +505,7 @@ export const CANDIDATES: Candidate[] = [
     checks: [
       { covers: "version", run: "clang --version | head -1", match: "clang" },
       { covers: "compiles and runs", run: "printf '#include <stdio.h>\\nint main(){puts(\"hi\");return 0;}' > m.c && clang m.c -o m 2>/dev/null && ./m", want: "hi" },
-      { covers: "arithmetic program", run: "printf '#include <stdio.h>\\nint main(){printf(\"%d\",6*7);return 0;}' > n.c && clang n.c -o n 2>/dev/null && ./n", want: "42" },
+      { covers: "arithmetic program", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > n.c && clang n.c -o n 2>/dev/null && ./n", want: "42" },
       { covers: "exit status passes through", run: "printf 'int main(){return 3;}' > e.c && clang e.c -o e 2>/dev/null && ./e; echo $?", want: "3" },
     ],
   },
@@ -522,13 +531,21 @@ export const CANDIDATES: Candidate[] = [
     checks: [
       { covers: "version", run: "git --version", match: "^git version" },
       { covers: "init", run: "mkdir -p r && cd r && git init -q . && echo ok", want: "ok" },
-      { covers: "commit then log", run: "mkdir -p s && cd s && git init -q . && git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x && git log --oneline | wc -l | tr -d ' '", want: "1" },
+      // `git log` alone exits 79 with no output: git launches a pager when
+      // stdout is a terminal, and there is no pager here to launch. Every
+      // paging command needs --no-pager or GIT_PAGER=cat. Worth knowing before
+      // shipping git, because the failure looks like a lost commit.
+      { covers: "commit then log (needs --no-pager)", run: "mkdir -p s && cd s && git init -q . && git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x && git --no-pager log --oneline | wc -l | tr -d ' '", want: "1" },
+      { covers: "log without --no-pager still fails", run: "mkdir -p s2 && cd s2 && git init -q .; git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x; git log >/dev/null 2>&1; echo rc=$?", want: "rc=79" },
       { covers: "add and status", run: "mkdir -p t2 && cd t2 && git init -q . && echo f > f.txt && git add f.txt && git status --porcelain", match: "A\\s+f\\.txt" },
     ],
   },
   {
+    // Does not start at all: even `lua -v` exits 45 with no output, and this
+    // is the only lua published. Kept so the day a working build appears is
+    // one run away.
     name: "syrusakbary/lua",
-    gives: "lua",
+    gives: "lua — the only published build, and it does not run",
     checks: [
       { covers: "eval", run: "lua -e 'print(1+1)'", want: "2" },
       { covers: "string methods", run: "lua -e 'print((\"x\"):rep(3))'", want: "xxx" },
