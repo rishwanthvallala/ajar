@@ -143,6 +143,16 @@ build output to `/dev/null` is what hid it. **Never discard the build output
 in a revert test; assert the build exited 0 before believing anything the
 check says.**
 
+The same day, the inverse: a check that *failed* for the wrong reason.
+`preview-check.mjs` drives `dist/`, and the preview origin is compiled into the
+build — so running it straight after a deploy drove a production bundle, which
+refuses to be framed by `127.0.0.1` exactly as it should. The console said
+`frame-ancestors`, which reads as a broken preview rather than the wrong
+bundle. It also ignores `PAD_ORIGIN` and always serves locally, so asking it to
+check live silently checked the local build instead. It now verifies the bundle
+it is about to drive knows the origin it is about to serve, and says to rebuild
+if not.
+
 A race is also the wrong thing to hang a regression check on. The sandbox seed
 is taken synchronously inside the first content change a model reports, which
 is the editor binding — so whether the bug lands depends on timing a driver

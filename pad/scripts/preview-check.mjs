@@ -19,6 +19,32 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 const ROOT = new URL("../dist/", import.meta.url).pathname;
 const VENDOR = join(ROOT, "vendor/wasmer/dist");
 const PORT = 5250, HOST_PORT = 5251, RELAY_PORT = 8844;
+// The build has the preview origin compiled into it, so a dist built for
+// somewhere else fails here as a bare CSP violation in the console — the
+// production build refuses to be framed by 127.0.0.1, and correctly so. That
+// reads as a broken preview rather than the wrong bundle, and cost a round of
+// chasing after a deploy left a production dist on disk. Checked up front.
+{
+  const { readdir } = await import("node:fs/promises");
+  const assets = join(ROOT, "assets");
+  const names = await readdir(assets).catch(() => []);
+  let found = false;
+  for (const f of names.filter((f) => f.endsWith(".js"))) {
+    if ((await readFile(join(assets, f), "utf8")).includes(`127.0.0.1:${HOST_PORT}`)) {
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    console.error(
+      `\n  the build in dist/ is not the one this check drives.\n` +
+      `  it has to know the preview origin, which is compiled in:\n\n` +
+      `      VITE_PREVIEW_ORIGIN=http://127.0.0.1:${HOST_PORT} npx vite build\n`,
+    );
+    process.exit(2);
+  }
+}
+
 const TYPES = {
   ".html": "text/html", ".css": "text/css", ".json": "application/json",
   ".map": "application/json", ".wasm": "application/wasm", ".webc": "application/webc",
