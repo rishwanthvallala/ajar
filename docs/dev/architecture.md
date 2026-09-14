@@ -85,6 +85,27 @@ the authority on session state. Peers have no such authority, so each peer
 stamps its own participant id on every frame and the relay broadcasts to
 everyone else.
 
+## Three origins, and why none of them can merge
+
+| | |
+|---|---|
+| `ajar.rishwanth.dev` | The relay and the session client |
+| `code.rishwanth.dev` | The pad |
+| `preview.rishwanth.dev` | What somebody is running in their folder |
+
+The pad cannot be a path under the session client: WASIX threads need
+`SharedArrayBuffer`, which needs cross-origin isolation, which is a property of
+a whole document — put it on the session client's origin and everything that
+client loads has to opt in or vanish silently.
+
+The preview cannot be a path under the pad: what it serves is **somebody
+else's code**, and from the pad's origin it could script the page, read its
+storage and reach its service worker. The SDK refuses to route anywhere but a
+separate origin, which is the right refusal.
+
+Both separations are forced by the platform rather than chosen, and both are
+load-bearing. See [operations.md](operations.md#the-three-origins).
+
 ## How a change travels
 
 Both products separate *text in an open file* from *everything else*, and the

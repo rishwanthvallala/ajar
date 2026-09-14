@@ -17,6 +17,8 @@ const el = {
   terminal: document.getElementById("terminal")!,
   run: document.getElementById("run") as HTMLButtonElement,
   share: document.getElementById("share") as HTMLButtonElement,
+  preview: document.getElementById("preview") as HTMLButtonElement,
+  previewPane: document.getElementById("preview-pane")!,
   status: document.getElementById("status")!,
   presence: document.getElementById("presence")!,
   title: document.getElementById("title")!,

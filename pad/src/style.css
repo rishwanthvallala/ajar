@@ -185,3 +185,18 @@ button.icon svg { width: 15px; height: 15px; }
   .row .chev svg { transition: none; }
 }
 .row.dir { color: var(--ink); }
+
+/* The preview pane sits where the editor is and takes the same box, so
+   switching between them never moves anything else. */
+.preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--surface, #fff);
+}
+.preview iframe {
+  flex: 1;
+  border: 0;
+  width: 100%;
+  height: 100%;
+}

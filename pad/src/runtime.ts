@@ -35,7 +35,7 @@
  * validation error")`. The browser is the target, so this is not a problem to
  * solve — but it does mean the checks have to drive a real browser.
  */
-import type { CommandRef, Sandbox, Wasmer as WasmerClass } from "@wasmer/sdk";
+import type { CommandRef, Sandbox, SandboxOptions, Wasmer as WasmerClass } from "@wasmer/sdk";
 
 declare const __SDK_URL__: string;
 
@@ -166,7 +166,7 @@ export class Runtime {
    */
   static async start(
     files: Record<string, string> = {},
-    install?: { shell?: string; packages?: string[] },
+    install?: { shell?: string; packages?: string[]; network?: SandboxOptions["network"] },
   ): Promise<Runtime> {
     const { Wasmer } = await sdk();
     const wasmer = new Wasmer();
@@ -195,6 +195,9 @@ export class Runtime {
         ]),
       ],
       shell: bash,
+      // Omitted by default, which the SDK reads as `disabled` — that is why a
+      // socket in the sandbox answers ENOTSUP. See docs/dev/networking.md.
+      ...(install?.network ? { network: install.network } : {}),
       files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),
     });
     return new Runtime(box, bash);
@@ -207,6 +210,11 @@ export class Runtime {
   async run(program: string, args: string[]): Promise<Ran> {
     const out = await this.box.command(program, args).run({ check: false });
     return { exitCode: out.exitCode, stdout: out.stdout.text(), stderr: out.stderr.text() };
+  }
+
+  /** The raw sandbox, for the port and network surfaces the product does not use yet. */
+  sandbox(): Sandbox {
+    return this.box;
   }
 
   read(path: string): Promise<string> {

@@ -7,6 +7,8 @@
  */
 import type * as Monaco from "monaco-editor";
 
+import type { BrowserServer } from "@wasmer/sdk";
+
 import { Console } from "./console";
 import { DocSession } from "./editing";
 import { FileTree } from "./files";
@@ -30,6 +32,16 @@ print(f"wrote {len(rows)} rows to out.csv")
 
 type Status = "" | "loading" | "running" | "saving" | "error";
 
+/**
+ * The origin that serves the sandbox's HTTP responses.
+ *
+ * A *different* origin, which the SDK requires and which is the right answer
+ * anyway: a page served by whatever someone is running in their folder must
+ * not be able to script the pad. Empty disables previews entirely, which is
+ * what a build without the second origin should do.
+ */
+const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
+
 export class App {
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private monaco: typeof Monaco | null = null;
@@ -40,6 +52,9 @@ export class App {
   private console: Console | null = null;
   private tree: FileTree | null = null;
   private term: { write: (s: string) => void; fit: () => void } | null = null;
+  /** The port something in the folder is listening on, if any. */
+  private listening: number | null = null;
+  private served: BrowserServer | null = null;
   private cols = 80;
   private rows = 24;
   private known: Known = new Map();
@@ -76,6 +91,8 @@ export class App {
       terminal: HTMLElement;
       run: HTMLButtonElement;
       share: HTMLButtonElement;
+      preview: HTMLButtonElement;
+      previewPane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
       title: HTMLElement;
@@ -540,9 +557,57 @@ export class App {
     this.runtime ??= (async () => {
       const files: Record<string, string> = {};
       for (const [path, model] of this.models) files[path] = model.getValue();
-      return Runtime.start(files);
+      const rt = await Runtime.start(files, PREVIEW_ORIGIN ? { network: { mode: "http" } } : undefined);
+      // Without a network policy the sandbox cannot listen at all, so this is
+      // what makes a dev server started in the folder possible. It grants no
+      // egress: `connect` is still refused. See docs/dev/networking.md.
+      if (PREVIEW_ORIGIN) this.watchForServers(rt);
+      return rt;
     })();
     return this.runtime;
+  }
+
+  /**
+   * Offer a preview when something in the folder starts listening.
+   *
+   * The button appears rather than the preview opening itself: a server
+   * starting is not a request to be shown it, and a page that rearranges
+   * itself under someone mid-command is worse than one that waits to be asked.
+   */
+  private watchForServers(rt: Runtime): void {
+    rt.sandbox().ports.onListen((port) => {
+      this.listening = port;
+      this.el.preview.hidden = false;
+      this.el.preview.title = `Open the server on port ${port}`;
+    });
+  }
+
+  /** Swap the editor for the running server, and back. */
+  private async togglePreview(): Promise<void> {
+    if (!this.el.previewPane.hidden) {
+      this.el.previewPane.hidden = true;
+      this.el.editor.hidden = false;
+      this.el.preview.classList.remove("on");
+      return;
+    }
+    const port = this.listening;
+    if (port === null) return;
+    try {
+      const rt = await this.ensureRuntime();
+      this.served ??= await rt
+        .sandbox()
+        .ports.expose(port, { serviceWorker: PREVIEW_ORIGIN, timeoutMs: 30_000 });
+      const frame = this.served.createIframe();
+      this.el.previewPane.replaceChildren(frame);
+      this.el.previewPane.hidden = false;
+      this.el.editor.hidden = true;
+      this.el.preview.classList.add("on");
+    } catch (e) {
+      // The terminal is where everything else says what went wrong, and a
+      // preview that fails silently is indistinguishable from one that is
+      // slow.
+      this.term?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
+    }
   }
 
   /**
@@ -609,6 +674,7 @@ export class App {
   private wire(): void {
     this.el.run.onclick = () => void this.run();
     this.el.share.onclick = () => void this.share();
+    this.el.preview.onclick = () => void this.togglePreview();
     addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();

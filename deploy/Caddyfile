@@ -71,7 +71,7 @@ code.rishwanth.dev {
 		# The registry and CDN are named because packages are still fetched
 		# from Wasmer at runtime. Self-hosting them, which is the plan,
 		# removes both from this line.
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https://registry.wasmer.io https://cdn.wasmer.io; frame-ancestors 'none'; base-uri 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https://registry.wasmer.io https://cdn.wasmer.io; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'"
 	}
 
 	# The wasm packages are content-addressed by the registry and the vendored
@@ -116,6 +116,79 @@ code.rishwanth.dev {
 
 	log {
 		output file /var/log/caddy/code.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
+
+# Where a server running inside somebody's folder is served from.
+#
+# A third origin, and it has to be one. The sandbox's HTTP responses are
+# whatever a visitor decided to run; served from code.rishwanth.dev they could
+# script the pad, read its storage and reach its service worker. On their own
+# origin they can do none of that, and the SDK refuses to route anywhere else.
+#
+# Only two files live here. The page at /.wasmer/host.html registers the
+# worker and hands a MessagePort back to the pad; the worker answers requests
+# by asking the pad's sandbox over that port. Nothing is stored and nothing is
+# proxied — with no pad open, this origin serves a 404 and nothing else.
+preview.rishwanth.dev {
+	header {
+		# The pad is cross-origin isolated, so a document embedded in it
+		# must carry this or the browser refuses the frame — and the SDK
+		# reports only "the Wasmer HTTP host did not become ready", which
+		# reads like slowness rather than a blocked load. This header is
+		# the difference between working and that message.
+		Cross-Origin-Embedder-Policy "require-corp"
+		Cross-Origin-Resource-Policy "cross-origin"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+
+		# Framed by the pad and by nothing else. Whatever the sandbox
+		# serves gets `sandbox` besides, so a page someone runs in their
+		# folder cannot navigate the top window or run plugins.
+		Content-Security-Policy "default-src 'self'; frame-ancestors https://code.rishwanth.dev; base-uri 'none'"
+	}
+
+	# The control document. Inline rather than a file, because it is one line
+	# and a file would be a third thing to keep in step with the SDK.
+	handle /.wasmer/host.html {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><meta charset="utf-8"><script type="module" src="/wasmer-host.js"></script>` 200
+	}
+
+	# Both taken from the vendored SDK the pad already ships, so they can
+	# never be a different version from the client talking to them.
+	handle /wasmer-host.js {
+		header Content-Type "text/javascript; charset=utf-8"
+		root * /srv/ajar/pad/vendor/wasmer/dist
+		rewrite * /service-worker-host.js
+		file_server
+	}
+	handle /wasmer-service-worker.js {
+		header Content-Type "text/javascript; charset=utf-8"
+		# Without this the worker may only control its own directory, and
+		# it needs the root to answer for whatever the guest serves.
+		header Service-Worker-Allowed "/"
+		root * /srv/ajar/pad/vendor/wasmer/dist
+		rewrite * /service-worker.js
+		file_server
+	}
+
+	# Everything else. A request here means a route that no longer exists —
+	# the worker holds it in memory and is killed when idle — so say so
+	# rather than serving anything.
+	handle {
+		respond "no preview is running" 404
+	}
+
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/preview.log {
 			roll_size 10MiB
 			roll_keep 5
 		}
