@@ -89,6 +89,13 @@ export const CANDIDATES: Candidate[] = [
       { covers: "tail a file (shim)", run: "printf '1\\n2\\n' > tf.txt; tail -n 1 tf.txt", want: "2" },
       { covers: "ls | sort, the thing that was broken", run: "mkdir -p q && touch q/b q/a; ls q | sort", want: "a\nb" },
       { covers: "awk still works", run: "printf '1 2\\n' | awk '{print $2}'", want: "2" },
+      // The five added later. These pass as candidates too; here they prove
+      // they are in the set a visitor actually gets, not merely installable.
+      { covers: "jq is present", run: "echo '{\"a\":1}' | jq -r .a", want: "1" },
+      { covers: "gzip is present", run: "echo g > gz.txt && gzip gz.txt && gunzip gz.txt.gz && cat gz.txt", want: "g" },
+      { covers: "tar is present", run: "mkdir -p tp && echo t > tp/f && tar cf tp.tar tp && tar tf tp.tar", match: "tp/f" },
+      { covers: "sqlite3 is present", run: "sqlite3 -batch :memory: 'select 6*7'", want: "42" },
+      { covers: "qjs is present", run: "qjs -e 'console.log(1+1)'", want: "2" },
     ],
   },
 
@@ -373,6 +380,7 @@ export const CANDIDATES: Candidate[] = [
   {
     name: "syrusakbary/jq",
     gives: "jq",
+    shipped: true,
     checks: [
       { covers: "field access", run: "echo '{\"a\":1}' | jq -r .a", want: "1" },
       { covers: "nested field", run: "echo '{\"x\":{\"y\":\"z\"}}' | jq -r .x.y", want: "z" },
@@ -390,6 +398,7 @@ export const CANDIDATES: Candidate[] = [
   {
     name: "wasmer/tar",
     gives: "tar",
+    shipped: true,
     checks: [
       { covers: "create", run: "mkdir -p ta && echo one > ta/f.txt && tar cf a.tar ta && echo made", want: "made" },
       { covers: "list", run: "mkdir -p tb && echo x > tb/g.txt && tar cf b.tar tb && tar tf b.tar", match: "g\\.txt" },
@@ -405,6 +414,7 @@ export const CANDIDATES: Candidate[] = [
   {
     name: "wasmer/gzip",
     gives: "gzip, gunzip",
+    shipped: true,
     checks: [
       { covers: "compress", run: "echo compressme > z.txt && gzip z.txt && ls z.txt.gz", want: "z.txt.gz" },
       { covers: "decompress", run: "echo roundtrip > r.txt && gzip r.txt && gunzip r.txt.gz && cat r.txt", want: "roundtrip" },
@@ -416,6 +426,7 @@ export const CANDIDATES: Candidate[] = [
   {
     name: "sqlite/sqlite",
     gives: "sqlite3",
+    shipped: true,
     checks: [
       { covers: "expression", run: "sqlite3 :memory: 'select 1+1'", want: "2" },
       { covers: "create and select", run: "sqlite3 t.db 'create table x(a);insert into x values(7);select a from x'", want: "7" },
@@ -430,6 +441,7 @@ export const CANDIDATES: Candidate[] = [
   {
     name: "saghul/quickjs",
     gives: "qjs — JavaScript without node's 74 MB",
+    shipped: true,
     checks: [
       { covers: "eval", run: "qjs -e 'console.log(1+1)'", want: "2" },
       { covers: "JSON", run: "qjs -e 'console.log(JSON.stringify({a:1}))'", want: '{"a":1}' },

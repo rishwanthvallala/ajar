@@ -89,6 +89,11 @@ async function probe(c: Candidate): Promise<Result> {
       PACKAGES.grep,
       PACKAGES.sed,
       PACKAGES.find,
+      PACKAGES.jq,
+      PACKAGES.gzip,
+      PACKAGES.tar,
+      PACKAGES.sqlite,
+      PACKAGES.quickjs,
     ];
     const packages = shipped.filter((pkg) => pkg !== c.name);
     if (!c.isShell && !packages.includes(c.name)) packages.push(c.name);

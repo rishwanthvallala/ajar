@@ -66,6 +66,16 @@ export const PACKAGES = {
   grep: "wasmer/grep@3.12.0",
   sed: "wasmer/sed@4.9.0",
   find: "wasmer/find@4.10.0",
+  // Five more, 8.7 MB raw between them against a 71 MB baseline. Each was
+  // installed and exercised against its documented behaviour before being
+  // added — see the probe catalogue. The heavy ones that also work (node at
+  // 74 MB, php at 82, git at 85, clang at 104) are each a first-load decision
+  // of their own and are deliberately not here.
+  jq: "syrusakbary/jq@0.1.0",
+  gzip: "wasmer/gzip@1.14.0",
+  tar: "wasmer/tar@1.35.0",
+  sqlite: "sqlite/sqlite@0.2.2",
+  quickjs: "saghul/quickjs@0.0.3",
 } as const;
 
 /** Extension to the command that runs it. Anything absent is not runnable. */
@@ -177,6 +187,11 @@ export class Runtime {
           PACKAGES.grep,
           PACKAGES.sed,
           PACKAGES.find,
+          PACKAGES.jq,
+          PACKAGES.gzip,
+          PACKAGES.tar,
+          PACKAGES.sqlite,
+          PACKAGES.quickjs,
         ]),
       ],
       shell: bash,
