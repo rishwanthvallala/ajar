@@ -450,6 +450,66 @@ try {
   );
   ok("and the file inside it is nested under it");
 
+  // ---- the editor ----
+  //
+  // A full-screen program was supposed to be impossible here — `console.ts`
+  // says so, and curses cannot initialise for want of a terminfo database.
+  // What is actually true is narrower: raw mode, single-byte reads, cursor
+  // escapes and a real terminal size all work, so an editor written straight
+  // against ANSI works too.
+  //
+  // The last three are the ones that matter. An editor that leaves the
+  // terminal in the alternate buffer, or takes the shell with it on the way
+  // out, is worse than having no editor.
+  await page.keyboard.type("printf 'first\\nsecond\\n' > note.txt\n");
+  await page.waitForTimeout(6000);
+  await page.keyboard.type("nano note.txt\n");
+  await page.waitForTimeout(10_000);
+  const editor = await page.evaluate(() => document.querySelector(".xterm-screen")?.innerText ?? "");
+  is(
+    editor.includes("note.txt") && (editor.includes("^O Save") || editor.includes("^X Exit")),
+    true,
+    "the editor opens on a file, with its key bar",
+  );
+  is(editor.includes("first") && editor.includes("second"), true, "and shows what is in it");
+
+  await page.keyboard.press("End");
+  await page.waitForTimeout(800);
+  await page.keyboard.type("-EDITED");
+  await page.waitForTimeout(1500);
+  is(
+    (await page.evaluate(() => document.querySelector(".xterm-screen")?.innerText ?? "")).includes("first-EDITED"),
+    true,
+    "typing reaches it and the screen redraws",
+  );
+
+  await page.keyboard.press("Control+o");
+  await page.waitForTimeout(3000);
+  is(
+    /Wrote \d+ line/.test(await page.evaluate(() => document.querySelector(".xterm-screen")?.innerText ?? "")),
+    true,
+    "ctrl-o writes the file",
+  );
+
+  await page.keyboard.press("Control+x");
+  await page.waitForTimeout(4000);
+  await page.keyboard.type("cat note.txt\n");
+  await page.waitForTimeout(8000);
+  const back = await page.evaluate(() => document.querySelector(".xterm-screen")?.innerText ?? "");
+  is(back.includes("first-EDITED"), true, "the edit is on disk after leaving");
+  is(back.includes("^O Save"), false, "the terminal was restored rather than left in it");
+
+  // Proven by the shell doing something, not by the absence of a string. An
+  // earlier check here interrupts `cat` on purpose, so "shell restarted" is
+  // still on screen from that — a negative assertion on shared scrollback
+  // reports the previous test's work as this one's failure.
+  await page.keyboard.type("echo after-editor\n");
+  await page.waitForFunction(
+    () => (document.getElementById("terminal")?.textContent ?? "").includes("after-editor"),
+    { timeout: 20_000 },
+  );
+  ok("the same shell still runs commands afterwards");
+
   // ---- the mirror ----
   //
   // The service worker's own counters, not the network log. A worker response

@@ -30,6 +30,7 @@ import AWK_PY from "./tools/awk.py?raw";
 import SORT_PY from "./tools/sort.py?raw";
 import TAIL_PY from "./tools/tail.py?raw";
 import BOX_PY from "./tools/box.py?raw";
+import EDIT_PY from "./tools/edit.py?raw";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
@@ -88,6 +89,17 @@ export const BOXED = [
 ] as const;
 
 export const BOX = ".ajar/box.py";
+
+/**
+ * The editor, aliased as `nano` and `edit`.
+ *
+ * `nano` because that is what people type, and neither nano nor vim can be
+ * installed — both exist only inside packages the SDK cannot fetch. It is not
+ * nano: no syntax highlighting, no undo, no multiple buffers. The keys match
+ * so the muscle memory does.
+ */
+export const EDIT = ".ajar/edit.py";
+export const EDITORS = ["nano", "edit"] as const;
 
 const MARK = "";
 /** Matches the sentinel and captures the exit status. */
@@ -170,6 +182,7 @@ export class Shell {
       await rt.write(TOOLS[name], sources[name]);
     }
     await rt.write(BOX, BOX_PY);
+    await rt.write(EDIT, EDIT_PY);
 
     // One `run` for every alias rather than one each: each is a round trip
     // through the pty, and fourteen of them is a visible pause before the
@@ -179,6 +192,7 @@ export class Shell {
         (name) => `alias ${name}='python /workspace/${TOOLS[name as keyof typeof TOOLS]}'`,
       ),
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
+      ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
     ];
     await shell.run(aliases.join("; "));
 

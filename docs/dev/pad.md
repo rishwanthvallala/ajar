@@ -149,6 +149,17 @@ still the simpler thing — textual substitution with nothing to fork.
 
 A script on `PATH` still does not work.
 
+**A full-screen program does work, despite what this used to imply.** `curses`
+imports and `initscr()` fails — there is no terminfo database — but everything
+underneath it is present: `os.get_terminal_size()` reports the real size,
+`tty.setraw()` works, `sys.stdin.read(1)` returns one byte unbuffered, and
+cursor escapes reach the terminal. `src/tools/edit.py` is an editor written
+straight against ANSI on that basis, aliased as `nano` and `edit`.
+
+It binds nothing to ctrl-c, and cannot: the page intercepts ctrl-c and tears
+the shell down before a program sees it. ctrl-x is the way out, which is nano's
+key anyway.
+
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,
 so what a running program reads is echoed by the terminal. That division is
