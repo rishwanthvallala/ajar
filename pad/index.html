@@ -4,6 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pad</title>
+      <!--
+      The SDK's WISP transport imports its client by bare specifier, which
+      assumes a bundler; we vendor the SDK unbundled because bundling it breaks
+      its workers. The import runs in this document, so a map here resolves it.
+      Inert unless a sandbox is started with a wisp network policy.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@mercuryworkshop/wisp-js/client": "/vendor/wisp/src/entrypoints/client.mjs"
+        }
+      }
+    </script>
   </head>
   <body>
     <header>

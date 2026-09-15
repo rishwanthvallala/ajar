@@ -127,11 +127,22 @@ what removes that from the critical path.
 
 ### A network for the pad
 
-The sandbox has no network, and the reason is not the one usually given.
-The runtime supports TCP egress and HTTP ingress; we pass no policy, so the
-SDK reads `disabled`. Listening already works with one option. Egress is
-blocked by a single unresolvable module specifier. `pip install` is behind
-that and nothing else — TLS, the CA bundle and pip itself are all present.
+The runtime supports TCP egress and HTTP ingress. Listening already works and
+is what the Preview button runs on. **The module blockers are gone as of 15
+September** — there were two, not one, and a sandbox now starts with
+`mode: "wisp"` in about 2.9 s, which nothing here had ever done.
+
+What remains is not code. Egress needs a **WISP endpoint to point at**, and
+that is a decision about whose machine carries somebody else's traffic: run one
+ourselves and our IP is the exit for anything anyone does in a pad; point at a
+public one and their operator sees it instead. The risk table in
+[dev/networking.md](dev/networking.md) is the place that argument is laid out,
+and it is unresolved.
+
+Nothing past "the transport loads" has been measured — the syscall rows in that
+document's table are deliberately blank rather than guessed. `pip install` sits
+behind an endpoint and nothing else: TLS, the CA bundle and pip itself are all
+present and verified.
 
 Measured in full in [dev/networking.md](dev/networking.md), including the
 undocumented COEP header the preview origin needs and the three wrong answers

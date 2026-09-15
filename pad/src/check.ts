@@ -74,6 +74,36 @@ async function main() {
     );
   }
 
+  // Whether the WISP transport can be loaded and used at all. It has been
+  // recorded as the one thing between this sandbox and outbound TCP:
+  // `wisp-network.js` imports its client by bare specifier, and until the
+  // import map in index.html there was nothing to resolve it — the runtime
+  // failed before a sandbox existed.
+  //
+  // Asserted by starting a sandbox rather than by importing the module here.
+  // An `import()` written in this file is resolved by vite at build time, so it
+  // passes with the import map deleted and proves nothing about the page; the
+  // SDK's own dynamic import is the one that has to work. Removing either the
+  // map or the compat substitution fails the check below, each with its own
+  // unresolved specifier.
+  //
+  // It asserts the transport loads, not that traffic flows. Egress also needs a
+  // WISP server to point at, which is a decision about whose machine carries
+  // somebody's traffic, not a missing import. See docs/dev/networking.md.
+  // And whether a sandbox will start with that transport actually selected.
+  // This is the measurement the networking doc was missing: before the import
+  // map it failed before a sandbox existed, so nothing behind it had ever been
+  // tried. Started with the shell and nothing else — the subject is the
+  // transport, not the tools — and with no server to point at, because the WISP
+  // connection is opened lazily on first egress rather than at startup.
+  try {
+    const wispStarted = performance.now();
+    await Runtime.start({}, { packages: [], network: { mode: "wisp" } });
+    ok(`a sandbox starts with the WISP transport selected (${Math.round(performance.now() - wispStarted)}ms)`);
+  } catch (e) {
+    fail(`a sandbox would not start in wisp mode — ${(e as Error).message}`);
+  }
+
   const started = performance.now();
   const rt = await Runtime.start({
     "transform.py": "print(open('data.txt').read().strip().upper())\n",

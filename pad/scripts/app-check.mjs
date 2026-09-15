@@ -8,6 +8,7 @@
 //   npx vite build && node scripts/app-check.mjs
 
 import { createServer, request as httpRequest } from "node:http";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +24,19 @@ const RELAY_PORT = 8842;
 // as one script rather than two: a check that only ever runs locally cannot
 // catch a service worker that registers over http and not https, or a relay
 // that behaves differently behind a proxy.
+// The import map is an inline script, and the policy below has no
+// 'unsafe-inline' — so it needs a hash, and a hash pinned by hand rots the
+// moment anyone edits the map: the map is blocked, WISP stops resolving, and
+// nothing else changes, so it fails silently and much later. Computed from the
+// page here, and asserted against the deployed policy further down.
+const IMPORTMAP_SHA = createHash("sha256")
+  .update(
+    /<script type="importmap">(.*?)<\/script>/s.exec(
+      await readFile(new URL("../index.html", import.meta.url), "utf8"),
+    )[1],
+  )
+  .digest("base64");
+
 const LIVE = process.env.PAD_ORIGIN ?? null;
 
 const TYPES = {
@@ -58,7 +72,7 @@ const server = createServer(async (req, res) => {
       // evaluates a string as JavaScript, and without this the runtime fails
       // inside the worker where the error is easy to mistake for a hang.
       // Measured, not assumed — the tighter policy was tried first.
-      "script-src 'self' 'unsafe-eval' blob:",
+      `script-src 'self' 'unsafe-eval' blob: 'sha256-${IMPORTMAP_SHA}'`,
       "worker-src 'self' blob:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
@@ -449,6 +463,16 @@ try {
     { timeout: 15_000 },
   );
   ok("and the file inside it is nested under it");
+
+  // The deployed policy has to carry the same hash as the page, or the import
+  // map is blocked in production only — where nobody would see it until WISP
+  // was switched on and did not work.
+  {
+    const caddy = await readFile(new URL("../../deploy/Caddyfile", import.meta.url), "utf8");
+    caddy.includes(`'sha256-${IMPORTMAP_SHA}'`)
+      ? ok("the deployed CSP allows the import map this page actually ships")
+      : fail(`deploy/Caddyfile does not carry 'sha256-${IMPORTMAP_SHA}' — the import map will be blocked in production`);
+  }
 
   // ---- the editor ----
   //

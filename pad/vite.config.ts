@@ -41,6 +41,27 @@ const isolation: Plugin = {
 const SDK_URL = "/vendor/wasmer";
 const sdkEntry = createRequire(import.meta.url).resolve("@wasmer/sdk");
 const sdkRoot = new URL("../", pathToFileURL(sdkEntry));
+// The SDK's WISP transport is the one file in it that assumes a bundler:
+// `wisp-network.js` opens with a bare `import … from
+// "@mercuryworkshop/wisp-js/client"`, and nothing resolves that in a browser.
+// It is the only thing standing between this sandbox and outbound TCP.
+//
+// The import happens in the main document — `index.js` does
+// `await import("./wisp-network.js")` — so an import map in the page is enough,
+// and an import map is exactly what this situation is for. Workers would not
+// have been: they do not get the document's map.
+//
+// Vendored the same way and for the same reason as the SDK: the package's own
+// `src/` layout is copied whole, so its internal relative imports stay true.
+// Resolved through an exported entry, because the package does not export its
+// own package.json, and then cut back to the package root by name rather than
+// by counting `../` — `createRequire` resolves with the `require` condition and
+// lands in `dist/`, which is one level deeper than the ESM entry it advertises.
+const WISP_PKG = "@mercuryworkshop/wisp-js";
+const wispEntry = createRequire(import.meta.url).resolve(`${WISP_PKG}/client`);
+const wispRoot = pathToFileURL(
+  `${wispEntry.slice(0, wispEntry.lastIndexOf(WISP_PKG) + WISP_PKG.length)}/`,
+);
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",
   async buildStart() {
@@ -48,6 +69,14 @@ const vendorSdk: Plugin = {
     for (const dir of ["dist", "pkg"]) {
       await cp(new URL(`${dir}/`, sdkRoot), new URL(`${dir}/`, to), { recursive: true });
     }
+    const wispTo = new URL("./public/vendor/wisp/src/", import.meta.url);
+    await cp(new URL("src/", wispRoot), wispTo, { recursive: true });
+    // The substitution the package expects a bundler to make, and says so in
+    // the file itself: compat.mjs pulls in `ws`, `crypto`, `node:net` and
+    // friends, none of which resolve in a browser, and compat_browser.mjs maps
+    // the same names onto the standard APIs. Without this the module resolves
+    // and the sandbox then dies on `Failed to resolve module specifier "ws"`.
+    await cp(new URL("compat_browser.mjs", wispTo), new URL("compat.mjs", wispTo));
   },
 };
 

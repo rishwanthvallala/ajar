@@ -10,18 +10,24 @@ narrower and more fixable, and it took three wrong answers to find.
 ## What is actually true
 
 The runtime **supports** TCP egress and HTTP ingress. `SandboxOptions.network`
-takes a `NetworkPolicy`, and we pass nothing, which the SDK reads as
-`disabled`. Everything below was run against the shipped package set.
+takes a `NetworkPolicy`. Production passes `mode: "http"`, which is what makes
+the Preview button possible; it grants no egress.
 
-| | `disabled` (today) | `mode: "http"` | `mode: "wisp"` |
+| | `disabled` | `mode: "http"` (production) | `mode: "wisp"` |
 |---|---|---|---|
-| `socket()` | succeeds | succeeds | — |
-| `bind()` + `listen()` | `ENOTSUP` | **works** | — |
-| `connect()` | `ENOTSUP` | `ENOTSUP` | — |
-| DNS | `Name does not resolve` | `Name does not resolve` | — |
-| loads at all | yes | yes | **no** |
+| loads at all | yes | yes | **yes, since 15 September** |
+| `socket()` | succeeds | succeeds | not measured |
+| `bind()` + `listen()` | `ENOTSUP` | **works** | not measured |
+| `connect()` | `ENOTSUP` | `ENOTSUP` | not measured |
+| DNS | `Name does not resolve` | `Name does not resolve` | not measured |
 
-`mode: "wisp"` fails before the sandbox exists:
+The `wisp` column says only what has actually been run. A sandbox starts with
+that transport selected, and that is the whole of it — the syscall rows would
+need a sandbox with python in it and an endpoint to answer, and neither has
+been done. They are left blank rather than guessed at, because a plausible
+guess in this table is indistinguishable from a measurement later.
+
+`mode: "wisp"` used to fail before the sandbox existed:
 
 ```
 Failed to resolve module specifier "@mercuryworkshop/wisp-js/client"
@@ -30,14 +36,32 @@ Failed to resolve module specifier "@mercuryworkshop/wisp-js/client"
 `wisp-network.js` ships in the SDK and imports its WISP client by bare
 specifier, which assumes a bundler. We vendor the SDK verbatim because
 **bundling it breaks everything** — its worker resolves siblings by relative
-URL, and flattening the tree makes every command hang with nothing thrown. So
-the one thing standing between the pad and `pip install` is a module specifier.
+URL, and flattening the tree makes every command hang with nothing thrown.
 
-Two ways through, neither large. An **import map** in the page, which is
-precisely what they exist for and changes nothing about the SDK. Or
-**vendor-and-rewrite**, copying the package alongside and rewriting that one
-import — the same surgery `vendor-wasmer-sdk` already performs, cheaper to
-reason about and more fragile across upgrades.
+**This is fixed as of 15 September, and it was two specifiers rather than
+one.** A sandbox now starts with `mode: "wisp"` in about 2.9 s, which nothing
+in this repository had ever done.
+
+1. **An import map** in the page resolves `@mercuryworkshop/wisp-js/client`.
+   The SDK's import runs in the main document — `index.js` does
+   `await import("./wisp-network.js")` — so a map in the page reaches it.
+   A worker would not have been reachable this way, since workers do not
+   inherit the document's map.
+2. **The browser compat substitution**, which only appeared once the first was
+   out of the way. `wisp-js` has a `compat.mjs` importing `ws`, `crypto`,
+   `node:net` and `node:dgram`, and a `compat_browser.mjs` mapping the same
+   names onto standard APIs; the file's own first line says it "gets replaced
+   with ./compat_browser.mjs when being bundled for the web". Vendoring
+   unbundled means doing that substitution ourselves, which the vite plugin now
+   does when it copies the package.
+
+Removing either one fails the check in `src/check.ts`, each with its own
+unresolved specifier — `"@mercuryworkshop/wisp-js/client"` and `"ws"`.
+
+**What this does not do is move traffic.** The transport loads and a sandbox
+starts; egress additionally needs a WISP server to point `url` at, and that is
+a decision about whose machine carries somebody else's traffic rather than a
+missing import. The table below is the part that is still open.
 
 ## What TLS and pip look like, since they decide whether egress is worth it
 
@@ -162,7 +186,9 @@ the pad's whole "send someone the link" premise.
    The origin is compiled in as `VITE_PREVIEW_ORIGIN`; an empty value disables
    previews and is what a deploy without that subdomain should do. Whatever
    people run must not be `python3 -m http.server`.
-2. **The import map for WISP.** One specifier, and `pip install` follows.
+2. ~~**The import map for WISP.**~~ Done on 15 September, and it needed the
+   browser compat substitution alongside it. `pip install` now waits only on a
+   WISP endpoint to point at.
 3. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
    your own browser.
