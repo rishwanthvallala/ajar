@@ -11,6 +11,11 @@ Documentation=https://github.com/rishwanthvallala/ajar
 After=network-online.target
 Wants=network-online.target
 
+# Rate limiting lives in [Unit]: systemd ignores these under [Service] and
+# says so in the journal, which is easy to miss and leaves the limit off.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=exec
 User=ajar
@@ -26,8 +31,6 @@ Restart=always
 RestartSec=2s
 # Sessions are in-memory and die with the process, so a restart loop would
 # quietly destroy people's sessions over and over. Give up and page instead.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # The relay reads a directory of static files and talks to one socket. It has
 # no business doing anything else, and saying so costs nothing.

@@ -103,6 +103,9 @@ export const BOX = ".ajar/box.py";
  * so the muscle memory does.
  */
 export const EDIT = ".ajar/edit.py";
+
+/** Where pip installs, inside the folder rather than the interpreter. */
+export const DEPS = ".deps";
 export const EDITORS = ["nano", "edit"] as const;
 
 const MARK = "";
@@ -197,6 +200,16 @@ export class Shell {
       ),
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
+      // Where `pip install` puts things, and where python looks for them.
+      //
+      // Neither is a convenience. python's own site-packages is under a
+      // read-only /nix/store path: a plain `pip install` reports success and
+      // the package is then not importable, because the write landed in a
+      // layer that does not outlive the process. PIP_TARGET sends it to the
+      // folder instead, which is somewhere real — so it survives a reload,
+      // it syncs, and whoever opens the link has it too.
+      `export PIP_TARGET=/workspace/${DEPS}`,
+      `export PYTHONPATH=/workspace/${DEPS}`,
     ];
     await shell.run(aliases.join("; "));
 

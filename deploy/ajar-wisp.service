@@ -1,0 +1,72 @@
+# The pad's egress endpoint, as a service that survives reboots.
+#
+# Install to /etc/systemd/system/ajar-wisp.service, then:
+#     systemctl daemon-reload && systemctl enable --now ajar-wisp
+#
+# It binds loopback only. Caddy is what faces the internet, at
+# wss://code.rishwanth.dev/wisp.
+
+[Unit]
+Description=ajar wisp egress
+Documentation=https://github.com/rishwanthvallala/ajar/blob/main/docs/dev/networking.md
+After=network-online.target
+Wants=network-online.target
+
+# Rate limiting lives in [Unit]: systemd ignores these under [Service] and
+# says so in the journal, which is easy to miss and leaves the limit off.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=ajar
+Group=ajar
+ExecStart=/usr/bin/node /srv/ajar/wisp/wisp-server.mjs
+WorkingDirectory=/srv/ajar/wisp
+Environment=WISP_HOST=127.0.0.1
+Environment=WISP_PORT=8788
+
+Restart=always
+RestartSec=2s
+
+# This process exists to open sockets to other people's machines on request,
+# which makes the list of things it must NOT be able to reach the important
+# part of this file. wisp-server.mjs refuses private and link-local
+# destinations in software; the rules below mean a bug there is not the only
+# thing standing between a pad and the instance metadata service.
+#
+# 169.254.169.254 hands out this instance's IAM credentials to anything that
+# can make an HTTP request from it, so it is denied at the kernel. Loopback is
+# allowed because Caddy reaches this service over it — and allow wins over
+# deny, which is why the loopback range is listed separately rather than being
+# left to fall through.
+IPAddressDeny=169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fd00::/8 fe80::/10
+IPAddressAllow=127.0.0.0/8 ::1
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/srv/ajar
+
+# A relay of other people's bytes is exactly the thing that grows without
+# bound if something goes wrong.
+MemoryMax=384M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

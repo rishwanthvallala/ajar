@@ -41,6 +41,9 @@ npm run check --workspace=ajar-pad
 | `src/net-probe.ts` | Whether a process in the sandbox can serve HTTP. See [`docs/dev/networking.md`](../docs/dev/networking.md) |
 | `scripts/ingress-check.mjs` | Drives that, with the second origin it requires |
 | `scripts/preview-check.mjs` | The Preview button, end to end — locally, or against live with `PAD_ORIGIN` |
+| `src/wisp-probe.ts` | Egress, and the limits on it, measured inside the sandbox |
+| `scripts/wisp-check.mjs` | Drives that against a local or deployed WISP endpoint |
+| [`../deploy/wisp-server.mjs`](../deploy/wisp-server.mjs) | The endpoint itself, and the allowlist that keeps it from being an open proxy |
 | `scripts/probe-packages.mjs` | Installs each candidate package and exercises it |
 | `public/sw.js` | Serves the wasm packages from this origin instead of Wasmer's CDN |
 | [`../crates/ajar-relay/src/pad.rs`](../crates/ajar-relay/src/pad.rs) | The durable store, on the server |

@@ -112,6 +112,7 @@ export default defineConfig({
         // to install packages we have not decided to ship.
         probe: new URL("./probe.html", import.meta.url).pathname,
         net: new URL("./net.html", import.meta.url).pathname,
+        wisp: new URL("./wisp.html", import.meta.url).pathname,
       },
     },
   },

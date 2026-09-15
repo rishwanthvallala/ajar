@@ -127,22 +127,31 @@ what removes that from the critical path.
 
 ### A network for the pad
 
-The runtime supports TCP egress and HTTP ingress. Listening already works and
-is what the Preview button runs on. **The module blockers are gone as of 15
-September** — there were two, not one, and a sandbox now starts with
-`mode: "wisp"` in about 2.9 s, which nothing here had ever done.
+**Built and live as of 15 September.** `pip install` works from a pad, against
+our own WISP endpoint at `wss://code.rishwanth.dev/wisp`. The decision about
+whose machine carries the traffic was settled by making it an allowlist rather
+than a proxy: PyPI on 443 and nothing else, with private and link-local
+destinations refused in the software filter and again by the unit's
+`IPAddressDeny=`. See [dev/networking.md](dev/networking.md).
 
-What remains is not code. Egress needs a **WISP endpoint to point at**, and
-that is a decision about whose machine carries somebody else's traffic: run one
-ourselves and our IP is the exit for anything anyone does in a pad; point at a
-public one and their operator sees it instead. The risk table in
-[dev/networking.md](dev/networking.md) is the place that argument is laid out,
-and it is unresolved.
+What is still open about it:
 
-Nothing past "the transport loads" has been measured — the syscall rows in that
-document's table are deliberately blank rather than guessed. `pip install` sits
-behind an endpoint and nothing else: TLS, the CA bundle and pip itself are all
-present and verified.
+**A multi-dependency install stops the sandbox.** `pip install six` is
+reliable. `pip install requests`, which pulls four more packages, ends with the
+SDK worker dying — `WebAssembly.Module.imports(): Argument 0 must be a
+WebAssembly.Module`, after a run of `received a DATA packet for a stream which
+doesn't exist` from the wisp client. The runtime goes with it and the tab needs
+a reload. It is not asserted in `wisp-check.mjs` because it does not fail there,
+it hangs, and takes every check after it. Whether this is concurrency in the
+wisp client, memory, or the SDK's worker is unknown.
+
+**Nothing rate-limits the endpoint.** `stream_limit_total` is 32 per
+connection, and there is no limit on connections. Caddy has no rate limiting
+without a plugin. A pad is anonymous, so there is nothing to attribute use to.
+
+**`bind()` under the wisp policy is unmeasured.** The preview works in
+production, which is the ingress that matters, but that syscall has not been
+run under this policy — the networking table says so rather than guessing.
 
 Measured in full in [dev/networking.md](dev/networking.md), including the
 undocumented COEP header the preview origin needs and the three wrong answers

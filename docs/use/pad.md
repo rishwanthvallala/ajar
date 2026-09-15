@@ -24,7 +24,7 @@ ls cat cp mv rm mkdir touch head tail wc sort uniq cut tr tee seq echo printf
 grep sed awk find diff patch cmp xargs tree stat du split which rev
 tar gzip gunzip zip unzip bzip2 xz         archives
 sha256sum md5sum sha1sum hexdump xxd       checksums and bytes
-python3 qjs sqlite3 jq                     scripting and data
+python3 pip qjs sqlite3 jq                 scripting and data
 nano                                       an editor in the terminal
 ```
 
@@ -37,6 +37,7 @@ grep -c ERROR *.log | sort -n
 for f in *.txt; do echo "$f: $(wc -l < "$f")"; done
 diff old.txt new.txt > changes.patch
 find . -name '*.py' -exec wc -l {} +
+pip install six
 zip -r backup.zip .
 ```
 
@@ -88,9 +89,16 @@ everyone once it finishes.
 the first time — about 19 MB — and runs everything locally. That means it is
 private, and it means there is no machine to reach.
 
-**No internet from inside.** No `pip install`, no `git clone`, no `curl`.
-Whatever is in the list above is what you get. A server you start can be
-previewed by you, but it is not reachable from anywhere else.
+**`pip install` works. Nothing else reaches the internet.** Packages come from
+PyPI and that is the only place a pad can reach — no `git clone`, no `curl`, no
+connecting to your own servers. Installs land in a `.deps` folder beside your
+files, so they stay after a reload and whoever opens the link has them too.
+
+Small pure-python packages are what this is for. Anything that pulls several
+dependencies at once currently stops the sandbox and you have to reload.
+
+A server you start can be previewed by you, but it is not reachable from
+anywhere else.
 
 **No `git`, `make`, or compilers.** It is for scripts and text, not builds.
 

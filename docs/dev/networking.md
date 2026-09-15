@@ -13,19 +13,25 @@ The runtime **supports** TCP egress and HTTP ingress. `SandboxOptions.network`
 takes a `NetworkPolicy`. Production passes `mode: "http"`, which is what makes
 the Preview button possible; it grants no egress.
 
-| | `disabled` | `mode: "http"` (production) | `mode: "wisp"` |
+| | `disabled` | `mode: "http"` | `mode: "wisp"` (production) |
 |---|---|---|---|
-| loads at all | yes | yes | **yes, since 15 September** |
-| `socket()` | succeeds | succeeds | not measured |
+| loads at all | yes | yes | yes |
+| `socket()` | succeeds | succeeds | succeeds |
 | `bind()` + `listen()` | `ENOTSUP` | **works** | not measured |
-| `connect()` | `ENOTSUP` | `ENOTSUP` | not measured |
-| DNS | `Name does not resolve` | `Name does not resolve` | not measured |
+| `connect()` | `ENOTSUP` | `ENOTSUP` | **works, to the allowlist** |
+| DNS | `Name does not resolve` | `Name does not resolve` | **resolves** |
+| TLS to PyPI | — | — | **TLSv1.3, end to end** |
+| `pip install six` | — | — | **works** |
 
-The `wisp` column says only what has actually been run. A sandbox starts with
-that transport selected, and that is the whole of it — the syscall rows would
-need a sandbox with python in it and an endpoint to answer, and neither has
-been done. They are left blank rather than guessed at, because a plausible
-guess in this table is indistinguishable from a measurement later.
+Measured against the deployed endpoint by `pad/scripts/wisp-check.mjs`, which
+is the reusable form of all of this: it drives the sandbox through
+`src/wisp-probe.ts` rather than through the terminal, so nothing it reports
+depends on typing landing in the right place.
+
+`bind()` under wisp is the one row still blank. The preview works in
+production, which is the ingress that matters, but the syscall itself has not
+been run under this policy — and a guess in this table is indistinguishable
+from a measurement later.
 
 `mode: "wisp"` used to fail before the sandbox existed:
 
@@ -62,6 +68,65 @@ unresolved specifier — `"@mercuryworkshop/wisp-js/client"` and `"ws"`.
 starts; egress additionally needs a WISP server to point `url` at, and that is
 a decision about whose machine carries somebody else's traffic rather than a
 missing import. The table below is the part that is still open.
+
+## The endpoint
+
+`wss://code.rishwanth.dev/wisp`, which Caddy proxies to a node process bound to
+loopback. It is `deploy/wisp-server.mjs`, run by `deploy/ajar-wisp.service`.
+
+**It is an allowlist, not a proxy.** An unrestricted WISP endpoint is an open
+TCP proxy with our IP as the exit: anybody with a pad link could reach any host
+on the internet from this address, and the first we would know is an abuse
+report or a terminated instance. The thing being bought is `pip install`, so
+the list is `pypi.org` and `files.pythonhosted.org` on port 443 and nothing
+else. The patterns are anchored, because an unanchored `pypi\.org` also matches
+`pypi.org.example.com`, which is a host somebody else controls.
+
+Three restrictions matter as much as the hostname list:
+
+- `allow_private_ips` and `allow_loopback_ips` stay false, which blocks the
+  link-local range and so **169.254.169.254** — the instance metadata service,
+  which hands this instance's IAM credentials to anything that can make an HTTP
+  request from it. The unit denies the same ranges with `IPAddressDeny=`, so a
+  bug in the software filter is not the only thing in the way.
+- `allow_direct_ip` is false, so a raw address cannot step around the hostname
+  list.
+- UDP is off. pip does not need it, and open UDP is how a proxy becomes an
+  amplification source.
+
+The hostname is checked, then resolved, then the *resolved* address is checked
+again, so a name pointing into private space is refused rather than followed.
+
+TLS is end to end between the sandbox and PyPI: python does the handshake and
+the endpoint relays ciphertext. It sees hostnames and byte counts, never
+content.
+
+### Four things that had to be found by running it
+
+1. **`stream_limit_per_host` crashes wisp-js 0.4.1.** It does `for (let stream
+   of connection.streams)` over what the same file elsewhere reads with
+   `Object.keys()`, so the first stream throws `connection.streams is not
+   iterable` and takes the process down. What you see from the sandbox is a
+   connection that opens and then cannot carry a byte — `OSError [Errno 29]`.
+   Only `stream_limit_total` is set.
+2. **The SDK appends a trailing slash.** A Caddy route matching `/wisp` alone
+   lets `/wisp/` fall through to the SPA handler, which answers 200 with
+   `index.html`; the browser reports "handshake failed: unexpected response
+   code 200", which reads like a proxy fault rather than a routing one.
+3. **DNS does not go through the tunnel.** The SDK resolves over DoH with
+   `fetch`, and its default is `cloudflare-dns.com` — a cross-origin request
+   that `connect-src 'self'` refuses. Inside the sandbox that is
+   `Name does not resolve`; in the console it is `Failed to fetch`. Caddy now
+   proxies `/dns-query` so the request is same-origin, which also keeps the
+   names off a third party's logs and tells us nothing we do not already see,
+   since every hostname comes past `/wisp` a moment later.
+4. **A plain `pip install` reports success and installs nothing usable.**
+   python's site-packages is under a read-only `/nix/store` path and the write
+   lands in a layer that does not outlive the process. `PIP_TARGET` and
+   `PYTHONPATH` point at `/workspace/.deps`, so packages land in the folder —
+   which also means they sync, survive a reload, and reach whoever opens the
+   link. Verified: eight files on the server, imported from a freshly opened
+   page.
 
 ## What TLS and pip look like, since they decide whether egress is worth it
 

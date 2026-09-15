@@ -93,6 +93,42 @@ code.rishwanth.dev {
 		}
 	}
 
+	# The pad's way out to the network. A sandbox in the browser cannot open a
+	# TCP socket, so it opens one WebSocket here and the endpoint behind it
+	# makes the real connections — to PyPI and nowhere else. The allowlist
+	# lives in deploy/wisp-server.mjs, which is where widening it is a
+	# deliberate act. See docs/dev/networking.md.
+	# Both spellings: the SDK appends a trailing slash to whatever URL it is
+	# given, so a route matching only /wisp lets /wisp/ fall through to the SPA
+	# handler, which answers 200 with index.html — and the browser reports that
+	# as "handshake failed: unexpected response code 200", which reads like a
+	# proxy problem rather than a routing one.
+	# Name resolution for the sandbox, proxied rather than pointed at a third
+	# party. The SDK resolves over DNS-over-HTTPS with `fetch`, not through the
+	# WISP tunnel, so its default — cloudflare-dns.com — is a cross-origin
+	# request that `connect-src 'self'` refuses. The failure surfaces inside the
+	# sandbox as "Name does not resolve" and in the console as "Failed to
+	# fetch", neither of which points at a policy.
+	#
+	# Same-origin keeps it allowed without widening the policy, and keeps the
+	# names a person resolves off a third party's logs. It tells us nothing we
+	# do not already see: every hostname comes past /wisp a moment later anyway.
+	handle /dns-query {
+		reverse_proxy https://cloudflare-dns.com {
+			header_up Host cloudflare-dns.com
+		}
+	}
+
+	@wisp path /wisp /wisp/*
+	handle @wisp {
+		reverse_proxy 127.0.0.1:8788 {
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+			}
+		}
+	}
+
 	handle {
 		root * /srv/ajar/pad
 		# Any path that is not a file is a folder name, and the page reads

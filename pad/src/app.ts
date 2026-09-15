@@ -7,7 +7,7 @@
  */
 import type * as Monaco from "monaco-editor";
 
-import type { BrowserServer } from "@wasmer/sdk";
+import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 
 import { Console } from "./console";
 import { DocSession } from "./editing";
@@ -41,6 +41,7 @@ type Status = "" | "loading" | "running" | "saving" | "error";
  * not be able to script the pad. Empty disables previews entirely, which is
  * what a build without the second origin should do.
  */
+const WISP_URL: string = import.meta.env.VITE_WISP_URL ?? "";
 const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
 
 export class App {
@@ -557,7 +558,23 @@ export class App {
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
       const files = seedFiles(this.known, this.models, this.docs);
-      const rt = await Runtime.start(files, PREVIEW_ORIGIN ? { network: { mode: "http" } } : undefined);
+      // wisp carries egress *and* the http ingress the preview needs, so it
+        // supersedes the http policy rather than sitting beside it. Without a
+        // configured endpoint this falls back to http, which is what every
+        // build that is not production does.
+        const network: SandboxOptions["network"] | undefined = WISP_URL
+          ? {
+              mode: "wisp",
+              url: WISP_URL,
+              // Same origin, because the SDK resolves names over DoH with
+              // `fetch` rather than through the tunnel, and its default host is
+              // one `connect-src 'self'` refuses. Caddy proxies this.
+              dnsUrl: `${location.origin}/dns-query`,
+            }
+          : PREVIEW_ORIGIN
+            ? { mode: "http" }
+            : undefined;
+        const rt = await Runtime.start(files, network ? { network } : undefined);
       // Without a network policy the sandbox cannot listen at all, so this is
       // what makes a dev server started in the folder possible. It grants no
       // egress: `connect` is still refused. See docs/dev/networking.md.

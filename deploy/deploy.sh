@@ -17,6 +17,8 @@ HOST="${1:-}"
 MODE="${2:-}"
 TARGET="${AJAR_TARGET:-aarch64-unknown-linux-gnu}"
 DOMAIN="${AJAR_DOMAIN:-ajar.rishwanth.dev}"
+# Pinned: this is the version the egress checks were run against.
+WISP_VERSION="${AJAR_WISP_VERSION:-0.4.1}"
 
 [ -n "$HOST" ] || { echo "usage: $0 user@host [--bootstrap]" >&2; exit 1; }
 
@@ -83,7 +85,11 @@ fi
 # The preview origin is compiled in: the pad has to know which origin may
 # serve what a visitor runs, and an empty value disables previews entirely,
 # which is the right behaviour for a deploy without that subdomain.
+# The egress endpoint is compiled in the same way and for the same reason: an
+# empty value means no network policy beyond the preview's, which is what every
+# build that is not this one gets.
 VITE_PREVIEW_ORIGIN="${AJAR_PREVIEW_ORIGIN:-https://preview.rishwanth.dev}" \
+VITE_WISP_URL="${AJAR_WISP_URL:-wss://code.rishwanth.dev/wisp}" \
     npm run build:pad --silent >/dev/null
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
@@ -134,6 +140,33 @@ say "shipping to $HOST"
 # that wanted --pad-dir met a unit that had never heard of it.
 scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
 ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service && $SUDO systemctl daemon-reload"
+
+# The egress endpoint. Node only exists on the box for this — the relay is a
+# static binary — so it is installed on demand rather than in the bootstrap,
+# which keeps a box that never runs it from carrying it.
+scp -q deploy/wisp-server.mjs "$HOST:/tmp/wisp-server.mjs"
+scp -q deploy/ajar-wisp.service "$HOST:/tmp/ajar-wisp.service"
+ssh "$HOST" "$SUDO bash -euo pipefail -s" <<WISP
+if ! command -v node >/dev/null; then
+    apt-get update -qq
+    apt-get install -y -qq nodejs npm
+fi
+mkdir -p /srv/ajar/wisp
+mv /tmp/wisp-server.mjs /srv/ajar/wisp/wisp-server.mjs
+# Pinned, and installed on the box rather than rsynced, so what runs here is
+# the same tree npm would resolve and not whatever a laptop happened to have.
+# --omit=optional skips bufferutil, which is a native build and only a speed-up.
+cd /srv/ajar/wisp
+if [ ! -d node_modules/@mercuryworkshop/wisp-js ]; then
+    npm install --no-fund --no-audit --omit=optional \
+        @mercuryworkshop/wisp-js@$WISP_VERSION ws ipaddr.js >/dev/null 2>&1
+fi
+chown -R ajar:ajar /srv/ajar/wisp
+mv /tmp/ajar-wisp.service /etc/systemd/system/ajar-wisp.service
+systemctl daemon-reload
+systemctl enable ajar-wisp >/dev/null 2>&1 || true
+systemctl restart ajar-wisp
+WISP
 # To a temporary name first, then moved into place: a half-copied binary that
 # systemd tries to exec is a worse outage than a few seconds of downtime.
 scp -q "$BIN" "$HOST:/tmp/ajar-relay.new"

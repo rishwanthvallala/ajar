@@ -206,3 +206,26 @@ Two things that were not obvious:
 **Anyone holding a clone must re-clone**, or reset onto the new history — every
 commit id from the first runtime commit onward is different, so a plain `git
 pull` will try to merge the two histories together.
+
+## The egress endpoint
+
+`ajar-wisp.service` runs `deploy/wisp-server.mjs` on loopback:8788; Caddy
+proxies `wss://code.rishwanth.dev/wisp` to it and `/dns-query` to Cloudflare so
+the sandbox's DoH lookups are same-origin. Node exists on the box only for
+this — the relay is a static binary — and `deploy.sh` installs it on demand.
+
+```sh
+systemctl status ajar-wisp
+journalctl -u ajar-wisp -f          # every stream it opens, and every refusal
+curl -s http://127.0.0.1:8788/healthz
+```
+
+The log line to know is `refusing to create a stream to <host>:<port>`, which
+is the allowlist working. Widening it means editing `ALLOWED` in
+`deploy/wisp-server.mjs` — deliberately one place, and deliberately in the
+repository rather than in a config file on the box.
+
+Two failure modes seen so far: the service dying on a bad option (it is
+`Restart=always`, and `journalctl` shows the stack), and a Caddy route that
+does not match `/wisp/` with its trailing slash, which presents as a 200 and a
+WebSocket handshake failure rather than a 404.
