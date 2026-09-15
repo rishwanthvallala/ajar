@@ -9,7 +9,7 @@ the first.
 
 ```sh
 npm ci                                 # from the repository root
-node pad/scripts/fetch-packages.mjs    # mirrors ~73 MB of wasm; needed once
+node pad/scripts/fetch-packages.mjs    # mirrors ~124 MB of wasm; needed once
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -39,6 +39,9 @@ npm run check --workspace=ajar-pad
 | `src/tools/box.py` | Twenty-three more, dispatched on the first argument — including `find`, which shadows the shipped one |
 | `src/tools/edit.py` | A terminal editor, aliased as `nano` — curses cannot start here |
 | `src/net-probe.ts` | Whether a process in the sandbox can serve HTTP. See [`docs/dev/networking.md`](../docs/dev/networking.md) |
+| `src/check.ts` | What has to be true for any of this to work, asserted in a real browser |
+| `scripts/browser-check.mjs` | Runs that page under headless Chromium and reports what it found |
+| `scripts/app-check.mjs` | The product as a person uses it — locally, or against live with `PAD_ORIGIN` |
 | `scripts/ingress-check.mjs` | Drives that, with the second origin it requires |
 | `scripts/preview-check.mjs` | The Preview button, end to end — locally, or against live with `PAD_ORIGIN` |
 | `src/wisp-probe.ts` | Egress, and the limits on it, measured inside the sandbox |

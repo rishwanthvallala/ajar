@@ -256,3 +256,32 @@ The estimate that was wrong in the reader's favour: Pyodide is 5 MB, not ~10.
 The one wrong against it: WASIX python is 59 MB alone but 73 MB with the
 dependencies a real shell drags in — about 16 MB once compressed and served
 from an origin that bothers to compress it, which Wasmer's CDN does not.
+
+---
+
+## Second postscript, 16 September 2026
+
+*Appended, not edited. The text above is what was believed at the time.*
+
+**The sockets wall has since fallen, and the word "permanently" was wrong.** A
+pad can `pip install` from PyPI as of 15 September 2026.
+
+The reasoning above was right about browsers and wrong about the runtime: the
+Wasmer SDK ships a WISP client, which carries TCP over a single WebSocket, and
+what actually stood between the pad and a socket was **two unresolvable module
+specifiers** — one that assumed a bundler, and one node built-in the package
+expects a bundler to substitute. Both are a few lines of build configuration.
+
+What the wall was really made of was the second half of the sentence: the
+endpoint. Carrying somebody's TCP means running a proxy with your IP as the
+exit, which is a decision about abuse rather than a technical limit. The answer
+was an allowlist — PyPI on 443 and nothing else — which is narrow enough to be
+defensible and wide enough to make `pip install` work.
+
+So the honest correction is: *no sockets* was never the wall. *No one had
+decided whose network it would be* was. See
+[`../dev/networking.md`](../dev/networking.md).
+
+The `git clone` half of that sentence still stands, for the reason the body
+gives — git is 85 MB of binary nobody has decided to ship, and the network was
+never what stopped it.

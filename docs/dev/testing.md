@@ -16,6 +16,7 @@ worse than no gate, because it still reports success.
 |---|---|
 | `cargo test` | Frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions |
 | `npm run typecheck` / `build` | Both browser builds |
+| `pad/scripts/browser-check.mjs` | Drives `pad/src/check.ts` in headless Chromium — the runtime, the shell, every python shim against its real tool, the sandbox seed, and that the WISP transport loads. It cannot be a node test: the python package fails wasm validation there, and `SharedArrayBuffer` needs cross-origin isolation |
 | dockerfile check | Every `COPY` source exists — the cheap half of `docker build` |
 | `scripts/test-ui.cjs` | Workspace layout, editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, lazy loading, disposal; both apps boot with no page errors |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |

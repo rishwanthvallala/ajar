@@ -44,16 +44,49 @@ pub const MAX_NAME: usize = 64;
 /// there is no taking `api` back once somebody owns it.
 pub const RESERVED: &[&str] = &[
     // Served by the relay.
-    "ws", "healthz", "install", "run", "j", "api",
+    "ws",
+    "healthz",
+    "install",
+    "run",
+    "j",
+    "api",
     // Served by the web server in front of it. `packages` and `sw` were
     // missing until an audit found them: the browser tier serves `/packages/*`
     // for the mirrored wasm and `/sw.js` for the worker that rewrites it, and
     // a pad holding either name would have sat underneath a real path.
-    "assets", "vendor", "packages", "static", "sw", "index", "public", "dist",
+    "assets",
+    "vendor",
+    "packages",
+    "static",
+    "sw",
+    "index",
+    "public",
+    "dist",
+    // The pad's egress endpoint and the DNS it resolves through, both proxied
+    // by Caddy on this origin. Added after they were built and not reserved —
+    // a pad called `wisp` would have been shadowed by the route and the name
+    // lost for good, which is the exact failure this list exists to prevent.
+    "wisp",
+    "dns-query",
     // Kept back for things that do not exist yet, because a name cannot be
     // taken back once somebody owns it.
-    "admin", "login", "logout", "signup", "account", "settings", "new", "about", "terms", "privacy",
-    "pricing", "docs", "help", "status", "favicon", "robots", "sitemap",
+    "admin",
+    "login",
+    "logout",
+    "signup",
+    "account",
+    "settings",
+    "new",
+    "about",
+    "terms",
+    "privacy",
+    "pricing",
+    "docs",
+    "help",
+    "status",
+    "favicon",
+    "robots",
+    "sitemap",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -555,18 +588,64 @@ mod tests {
 
     #[test]
     fn every_path_the_site_serves_is_reserved() {
-        // The list has to be complete before the first name is handed out —
-        // there is no taking `packages` back once a pad owns it. These are the
-        // prefixes the two origins actually answer on.
-        for path in [
-            "ws", "healthz", "install", "run", "j", "api", "assets", "vendor", "packages", "sw",
-        ] {
-            assert_eq!(
-                check_name(path).err(),
-                Some(Error::Reserved),
-                "{path} is served but claimable"
-            );
+        // Read out of the deployed config rather than listed here.
+        //
+        // A hand-written list is what this test used to be, and it drifted the
+        // first time it mattered: `/wisp` and `/dns-query` were added to the
+        // pad's origin and neither this list nor RESERVED heard about it, so a
+        // pad called `wisp` would have been shadowed by the route — and names
+        // are never reused, so it would have been lost for good. The property
+        // the comment claimed was never actually being checked.
+        //
+        // include_str! rather than a runtime read: this fails to compile if the
+        // Caddyfile moves, instead of passing vacuously.
+        let caddyfile = include_str!("../../../deploy/Caddyfile");
+
+        // Only the pad's own origin. The preview origin serves
+        // `/wasmer-host.js` and friends, and a pad called `wasmer-host` sits on
+        // a different hostname entirely — reserving it would cost a name for no
+        // reason, and asserting it would be asserting something untrue.
+        let block = caddyfile
+            .split_once("\ncode.")
+            .expect("the pad origin block is in the Caddyfile")
+            .1;
+        let block = block.split_once("\n}").expect("the block is closed").0;
+
+        let mut checked = 0;
+        for line in block.lines() {
+            let line = line.trim();
+            // `handle /api/*`, `handle /ws`, `@wisp path /wisp /wisp/*`
+            let rest = line
+                .strip_prefix("handle ")
+                .or_else(|| line.split_once(" path ").map(|(_, r)| r));
+            let Some(rest) = rest else { continue };
+            for token in rest.split_whitespace() {
+                let Some(path) = token.strip_prefix('/') else {
+                    continue;
+                };
+                let segment = path.trim_end_matches('*').trim_end_matches('/');
+                // A path with a dot is a file the server answers for directly
+                // (`/sw.js`), not a prefix a pad name could sit under.
+                let segment = match segment.split_once('.') {
+                    Some((before, _)) if !before.is_empty() => before,
+                    _ => segment,
+                };
+                if segment.is_empty() || segment.contains('/') {
+                    continue;
+                }
+                checked += 1;
+                assert_eq!(
+                    check_name(segment).err(),
+                    Some(Error::Reserved),
+                    "{segment} is served by the Caddyfile but claimable as a pad name"
+                );
+            }
         }
+        // A parser that matched nothing would make this test pass silently.
+        assert!(
+            checked >= 4,
+            "only found {checked} routes — the parse is wrong"
+        );
     }
 
     #[test]

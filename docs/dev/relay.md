@@ -60,10 +60,20 @@ colliding on the temp path.
 A pad name becomes a path on the origin, so anything the site already serves
 must be refused: `packages`, `sw`, `index`, `public`, `dist`, `api`, `assets`
 and friends. A pad called `sw` would sit underneath `/sw.js` with no way to
-recover the name.
+recover the name — and since **a name is never reused**, the loss is permanent.
 
-The test asserts that *every prefix the origin serves* is reserved, rather
-than listing names by hand — the list drifts, the property does not.
+The test reads the routes out of `deploy/Caddyfile` and asserts each one is
+reserved. It used to say that and not do it: the list was written by hand in
+the test, so it asserted a property it was not measuring. That drifted the
+first time it mattered — `/wisp` and `/dns-query` were added to this origin in
+September 2026 and neither the constant nor the test noticed, leaving `wisp`
+claimable as a pad name and shadowed by the route.
+
+It now parses the pad origin's block, so a route added to the Caddyfile fails
+the test until the name is reserved. Scoped to that block on purpose: the
+preview origin serves `/wasmer-host.js`, which is a different hostname and not
+a name a pad could collide with. Both directions are checked — removing a
+reserved name fails, and adding an unreserved route fails.
 
 ### Lifetime
 

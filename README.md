@@ -13,7 +13,8 @@ end-to-end with a key the relay never sees.
 **[code.rishwanth.dev](https://code.rishwanth.dev)** shares *a folder*. No
 agent, no machine lent: the compute runs in each visitor's own tab as
 WebAssembly, and the server holds the files. Open a URL, paste, press Run,
-send the link. A real bash with about 140 commands, including an editor.
+send the link. A real bash with about 140 commands, an editor, and
+`pip install` — which reaches PyPI and nothing else.
 
 > **A sandbox is not a virtual machine.** A guest runs real commands on a real
 > machine with your toolchain, your network and whatever the shared folder can
@@ -67,7 +68,7 @@ the way it is. Start with [architecture](docs/dev/architecture.md).
 | `web` | The session client — Vite, TypeScript, xterm.js, Monaco |
 | `pad` | The browser tier — same stack, plus a WASIX runtime |
 | `scripts/` | The gate: end-to-end suites and acceptance |
-| `deploy/` | Caddyfile, systemd unit, deploy script |
+| `deploy/` | Caddyfile, systemd units, deploy script, and the egress endpoint the pad installs through |
 | `docs/use/` | Product documentation |
 | `docs/dev/` | Why everything is the way it is |
 | `docs/history/` | Design records, kept because the reasoning outlived the decision |

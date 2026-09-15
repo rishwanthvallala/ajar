@@ -17,7 +17,7 @@ restart that drops every session is *correct* rather than merely tolerable.
 The pad has no agent. Nobody lends a machine, so the compute moved into each
 visitor's tab — and everything the agent used to own had to go somewhere. The
 files went to the server, which means the relay grew the one durable thing in
-it, plus an origin, cross-origin isolation headers, and 73 MB of mirrored
+it, plus an origin, cross-origin isolation headers, and 124 MB of mirrored
 WebAssembly to serve.
 
 That is the trade, stated plainly: the pad is easier to use and the server

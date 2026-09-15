@@ -9,7 +9,7 @@ Every finding below cost real time and none of it is documented upstream.
 
 ```sh
 npm ci
-node pad/scripts/fetch-packages.mjs   # mirrors ~73 MB of wasm; needed once
+node pad/scripts/fetch-packages.mjs   # mirrors ~124 MB of wasm; needed once
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -17,8 +17,9 @@ npm run check --workspace=ajar-pad
 
 ## The binary set
 
-Pinned, mirrored, and served from this origin — **80 MB raw, 18.6 MB
-compressed**. A folder that ran last week has to run this week, and a registry
+Pinned, mirrored, and served from this origin — **124 MB raw, 18.6 MB
+compressed**, across twelve `.webc` files for eleven pinned packages and what
+they pull in. A folder that ran last week has to run this week, and a registry
 nobody here controls cannot promise that.
 
 ```
@@ -44,11 +45,12 @@ limitation and which was only ever that build.
 
 ## Commands that come from python
 
-Twenty-six of them, aliased in `shell.ts`:
+Twenty-eight aliases, covering twenty-eight names, all of them in
+`shell.ts`:
 
 | | Why |
 |---|---|
-| `awk`, `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `xz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
+| `awk`, `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `bunzip2`, `xz`, `unxz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
 | `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `sha1sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
 | `hexdump`, `cal`, `rev` | Published in `syrusakbary/util-linux`, where only `cal` runs |
 | `nano` / `edit` | Neither nano nor vim can be installed, and curses cannot start |
@@ -363,10 +365,10 @@ ordinary, and `src/check.ts` asserts it directly.
 
 ## The download
 
-Wasmer's CDN sends `.webc` with no content encoding at all: 73 MB raw for the
-eight packages the runtime actually fetches. From this origin, pre-compressed
-with zstd, the same set is about 16 MB, and an immutable cache header makes
-any later visit free.
+Wasmer's CDN sends `.webc` with no content encoding at all: **124 MB raw** for
+the twelve files the runtime actually fetches. From this origin, pre-compressed
+with zstd, the same set is **18.6 MB**, and an immutable cache header makes any
+later visit free.
 
 It has to be a service worker. The SDK has no registry override, its browser
 build cannot decode in-memory WEBC (`packages.load(bytes)` fails with

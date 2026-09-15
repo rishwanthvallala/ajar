@@ -119,5 +119,5 @@ so an old link can never quietly turn into a stranger's files.
 Ctrl-C stops it. That also restarts the shell, so you will be back in the
 folder root and any variables you set are gone.
 
-The first command is slow — that is the 16 MB arriving. After that it is
+The first command is slow — that is the 19 MB arriving. After that it is
 instant, and a later visit is free.

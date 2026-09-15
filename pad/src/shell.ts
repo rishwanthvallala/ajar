@@ -55,8 +55,8 @@ export const TOOLS = {
 /**
  * The rest, dispatched out of one file on its first argument.
  *
- * Separate files would be eleven writes and eleven aliases before the first
- * prompt; this is one of each. The shape is the same multi-call trick the
+ * Separate files would be twenty-three writes and twenty-three aliases before
+ * the first prompt; this is one of each. The shape is the same multi-call trick the
  * shipped coreutils uses — and unlike that one, everything listed here is
  * actually present.
  *

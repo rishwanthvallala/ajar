@@ -14,9 +14,10 @@ die with them. The only durable thing is the pad store.
 Cross-compiles the relay for `aarch64-unknown-linux-gnu`, builds both browser
 clients, ships everything, and restarts the service. Idempotent.
 
-`deploy/` holds a Caddyfile (TLS, and nothing else), a hardened systemd unit,
-and the script. Caddy handles WebSocket upgrades without configuration, which
-is most of why it is there rather than nginx.
+`deploy/` holds a Caddyfile (TLS, routing and the headers the pad needs), two
+hardened systemd units — `ajar-relay.service` and `ajar-wisp.service` — the
+egress endpoint they run, and the script. Caddy handles WebSocket upgrades
+without configuration, which is most of why it is there rather than nginx.
 
 ### Things that have gone wrong here
 
