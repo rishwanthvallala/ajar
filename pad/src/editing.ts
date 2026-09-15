@@ -31,12 +31,6 @@ export function colourFor(id: number): string {
   return COLOURS[id % COLOURS.length] ?? COLOURS[0]!;
 }
 
-export interface RemoteCursor {
-  index: number;
-  length: number;
-  name: string;
-  id: number;
-}
 
 /**
  * A name, safe to drop inside a CSS string.

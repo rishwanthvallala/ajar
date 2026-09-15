@@ -126,6 +126,18 @@ the pad needs it to work.
 
 ## Built, with the parts that are still open
 
+### `playwright` is declared in the wrong workspace
+
+`web/package.json` declares it and nothing in `web/` uses it; the root
+`scripts/` use it while declaring nothing, and work only because npm workspaces
+hoist. `pad/` declares and uses its own.
+
+Left alone deliberately. Fixing it means editing a `package.json`, which means
+regenerating `package-lock.json`, which on a mac strips every platform binary
+out of it — see [dev/operations.md](dev/operations.md#do-not-casually-regenerate-package-lockjson).
+The declaration being in the wrong place costs nothing today; a lockfile that
+only builds on one platform costs a CI run and an afternoon.
+
 ### The pad's network
 
 **Built and live as of 15 September.** `pip install` works from a pad, against

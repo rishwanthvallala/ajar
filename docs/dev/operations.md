@@ -230,3 +230,31 @@ Two failure modes seen so far: the service dying on a bad option (it is
 `Restart=always`, and `journalctl` shows the stack), and a Caddy route that
 does not match `/wisp/` with its trailing slash, which presents as a 200 and a
 WebSocket handshake failure rather than a 404.
+
+## Do not casually regenerate package-lock.json
+
+`npm install` on a mac **prunes every platform binary but this one** out of the
+lockfile. Measured: 34 `lightningcss` entries across 11 platforms before, 12
+entries and no platform packages after — and the same for `@rolldown/binding-*`
+and the TypeScript natives. `--package-lock-only` does it too.
+
+The next `npm ci` then installs a tree with no native CSS minifier and the web
+build dies on `Cannot find module '../lightningcss.darwin-arm64.node'`, which
+names a file for the platform you are on and so reads like a local problem
+rather than a lockfile one.
+
+This has cost two sessions. It arrived in PR #2 as a lockfile generated on
+Windows that carried win32 binaries only, and again when a dependency was moved
+between workspaces and the lock was regenerated to match.
+
+**So: change dependencies rarely, and when you do, check the lockfile
+afterwards.**
+
+```sh
+grep -c 'lightningcss-' package-lock.json                     # expect 34
+grep -o '"node_modules/lightningcss-[a-z0-9-]*"' package-lock.json | sort -u | wc -l   # expect 11
+```
+
+If those numbers fall, `git checkout -- package-lock.json` and find another way
+— a dependency that is merely declared in the wrong workspace is not worth a
+lockfile that only builds on one machine.

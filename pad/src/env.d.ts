@@ -22,8 +22,19 @@ declare module "y-protocols/awareness" {
   export function removeAwarenessStates(a: Awareness, clients: number[], origin: unknown): void;
 }
 
+/**
+ * The build-time values this app reads.
+ *
+ * Declaring one narrows it from `any` to `string | undefined`, so `strict`
+ * forces the empty-string fallback each site already has. It does **not** catch
+ * a misspelling: `vite/client` declares an index signature over this interface,
+ * so `import.meta.env.VITE_ANYTHING_AT_ALL` type-checks whether or not it is
+ * listed here. Measured, not assumed — a deliberately undeclared name compiles
+ * clean. Adding a name here documents it and types it; nothing more.
+ */
 interface ImportMetaEnv {
   readonly VITE_PREVIEW_ORIGIN?: string;
+  readonly VITE_WISP_URL?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;
