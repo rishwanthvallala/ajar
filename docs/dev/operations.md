@@ -167,3 +167,42 @@ W=$(ls web/dist/assets/index-*.js | head -1)
 curl -sS "https://ajar.rishwanth.dev/assets/$(basename $W)" | shasum -a256
 shasum -a256 "$W"
 ```
+
+## The history rewrite of 15 September 2026
+
+`pad/.wasmer/` — the wasmer SDK's own package cache — was committed by accident
+with the first runtime commit: three blobs totalling 66 MB, one of them 58.9 MB
+and so over GitHub's 50 MB warning threshold. Nothing ever read them; the
+packages the app serves are mirrored into `public/packages/` by
+`scripts/fetch-packages.mjs` and are ignored.
+
+They were untracked first, which stops new commits carrying them but leaves
+every old one intact, so the history was rewritten with
+`git filter-repo --path pad/.wasmer --invert-paths`.
+
+| | before | after |
+|---|---|---|
+| a fresh clone | ~28 MB | **1.0 MB** |
+| largest blob | 58.9 MB | 90 KB (`Cargo.lock`) |
+| commits | 76 | 76 |
+| `HEAD` tree | `d4ef963` | `d4ef963` |
+
+The tree hash is the check that matters: **the content is byte-for-byte what it
+was**, and only commit ids changed. `feature/ui-improvements` was deleted from
+the remote because it still carried ten of those objects; it was verified
+merged into `main` beforehand, and the full pre-rewrite state is in a bundle
+under `~/ajar-backup-<timestamp>/`. `feature/ajar-1` carried none and was left
+alone.
+
+Two things that were not obvious:
+
+- **A worktree kept the old objects alive.** After the rewrite `.git` was still
+  21 MB with only 5 MB reachable. A leftover worktree held a detached HEAD on a
+  pre-rewrite commit, and no amount of `gc --prune=now` touches what a worktree
+  references. `git worktree prune` first, then collect.
+- **Tags need forcing too.** `v0.0.2` pointed into rewritten history and moved;
+  `v0.0.1` predates the bad commit, so it was untouched.
+
+**Anyone holding a clone must re-clone**, or reset onto the new history — every
+commit id from the first runtime commit onward is different, so a plain `git
+pull` will try to merge the two histories together.

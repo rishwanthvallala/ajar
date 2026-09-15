@@ -51,31 +51,6 @@ diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 `npm` and `pnpm` at 73.7 MB, `php` at 81.7, `git` at 85.1, `clang` at 104.3 —
 against a mirror that is currently 80 MB.
 
-### 66 MB of wasm cache is still in the git history
-
-`pad/.wasmer/` was committed by accident with the first runtime commit — three
-`.bin` blobs, one of them 59 MB, which is over GitHub's 50 MB warning
-threshold. Nothing reads them: the packages the app serves are mirrored into
-`public/packages/` by `scripts/fetch-packages.mjs`, which is ignored and
-regenerated on demand.
-
-They are untracked and ignored as of 15 September, so the tracked tree went
-from 66 MB to 1.5 MB and no future commit carries them. **The history still
-does**, so a fresh clone still pulls them. Removing that needs a rewrite
-(`git filter-repo`) and a force-push, which rewrites every commit id and has to
-be coordinated with anyone holding a clone — a decision rather than a chore,
-and deliberately not taken here.
-
-### The preview cannot be checked against live
-
-`scripts/preview-check.mjs` ignores `PAD_ORIGIN` and always serves the local
-`dist/`, so pointing it at production quietly checks the local build instead.
-It now refuses to run against a bundle built for a different preview origin
-rather than failing as a bare CSP violation, but the gap is real: nothing
-verifies the preview on `code.rishwanth.dev` end to end. `app-check.mjs` takes
-`PAD_ORIGIN` and does run against live; this one would need the host origin to
-be reachable from the browser it drives.
-
 ---
 
 ## How to reach the server
