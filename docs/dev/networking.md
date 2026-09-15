@@ -1,17 +1,23 @@
 # Networking in the pad
 
-*An investigation, not a feature. Nothing here is built; everything here was
-measured. Written so the next attempt starts where this one stopped.*
+*Started as an investigation and ended as a feature. Egress shipped on 15
+September 2026; the measurements that led there are kept because they are what
+the next change to it has to start from.*
 
-The pad's sandbox has no network. That is usually explained as "a browser
-cannot open a TCP socket", which is true and is not the reason. The reason is
-narrower and more fixable, and it took three wrong answers to find.
+The pad's sandbox reaches exactly one place on the internet: PyPI, through an
+endpoint we run. Everything else is refused.
+
+That it reaches anywhere at all is worth stating plainly, because the usual
+explanation for why it could not — "a browser cannot open a TCP socket" — is
+true and was never the reason. It took three wrong answers to find the real
+one, and then two module specifiers and four deployment faults to get past it.
 
 ## What is actually true
 
 The runtime **supports** TCP egress and HTTP ingress. `SandboxOptions.network`
-takes a `NetworkPolicy`. Production passes `mode: "http"`, which is what makes
-the Preview button possible; it grants no egress.
+takes a `NetworkPolicy`, and production passes `mode: "wisp"` with our own
+endpoint — which carries egress *and* the HTTP ingress the preview needs, so it
+supersedes `mode: "http"` rather than sitting beside it.
 
 | | `disabled` | `mode: "http"` | `mode: "wisp"` (production) |
 |---|---|---|---|
@@ -64,10 +70,11 @@ in this repository had ever done.
 Removing either one fails the check in `src/check.ts`, each with its own
 unresolved specifier — `"@mercuryworkshop/wisp-js/client"` and `"ws"`.
 
-**What this does not do is move traffic.** The transport loads and a sandbox
-starts; egress additionally needs a WISP server to point `url` at, and that is
-a decision about whose machine carries somebody else's traffic rather than a
-missing import. The table below is the part that is still open.
+On its own this moved no traffic: the transport loads and a sandbox starts, but
+egress also needs an endpoint to point `url` at, and that was a decision about
+whose machine carries somebody else's traffic rather than a missing import.
+That decision is [below](#whose-network-it-is), and the endpoint it produced is
+next.
 
 ## The endpoint
 
@@ -225,23 +232,32 @@ behind the WISP fix, like everything else.
 
 Three arrangements, differing only in what `requestUrl` returns:
 
-| | Egress from | Abuse lands on |
-|---|---|---|
-| We run an open WISP server | our IP | us, anonymously |
-| We run an allowlisted HTTP proxy | our IP | bounded to a list we choose |
-| **The user runs the endpoint** | **their machine** | **them, by name** |
+| | Egress from | Abuse lands on | |
+|---|---|---|---|
+| We run an open WISP server | our IP | us, anonymously | rejected |
+| **We run an allowlisted endpoint** | **our IP** | **bounded to a list we choose** | **built** |
+| The user runs the endpoint | their machine | them, by name | still the answer for anything wider |
 
-The third is the only one that scales without accounts, and it is cheap for the
-user: browsers treat `localhost` as a secure context, so an HTTPS pad can talk
-to `ws://127.0.0.1:6001` with no certificate, no domain and no open firewall
-port. One local command.
+**The second was chosen and shipped.** The first is an open TCP proxy and was
+never a real option. The third is genuinely better on abuse — it is the only
+one that scales without accounts — but it costs the user a local command before
+anything works, and it breaks the premise the pad is built on: a pad with a
+tunnel **cannot be shared**, because the second visitor would egress through
+the first person's network. Network mode would have to become per-tab and
+per-session, which cuts against "send someone the link".
 
-Two consequences follow and neither is a bug. **The endpoint URL is a
-credential** — pads are plaintext and readable by anyone with the link, so it
-must live in the tab and never in a file. And **a pad with a tunnel cannot be
-shared**, because the second visitor would egress through the first person's
-network. Network mode is therefore per-tab and per-session, which cuts against
-the pad's whole "send someone the link" premise.
+The allowlist is what makes the middle row survivable. Bounded to two
+hostnames, the abuse surface is "somebody downloads a lot of packages", not
+"somebody scans the internet from our address". It is the narrow version of a
+bad idea, and it stays defensible only while the list stays short — which is
+why widening it is an edit to `deploy/wisp-server.mjs` in the repository rather
+than a setting on the box.
+
+The third row is still the answer for anything wider than PyPI. If `git clone`
+or arbitrary egress is ever wanted, it is that, not a longer allowlist — and
+the note above about the endpoint URL being a credential applies then: pads are
+plaintext and readable by anyone with the link, so such a URL must live in the
+tab and never in a file.
 
 ## Order to do it in
 
@@ -251,16 +267,29 @@ the pad's whole "send someone the link" premise.
    The origin is compiled in as `VITE_PREVIEW_ORIGIN`; an empty value disables
    previews and is what a deploy without that subdomain should do. Whatever
    people run must not be `python3 -m http.server`.
-2. ~~**The import map for WISP.**~~ Done on 15 September, and it needed the
-   browser compat substitution alongside it. `pip install` now waits only on a
-   WISP endpoint to point at.
-3. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
+2. ~~**The import map for WISP.**~~ **Built**, and it needed the browser compat
+   substitution alongside it — two specifiers, not one.
+3. ~~**An endpoint to point it at.**~~ **Built and live**, as an allowlist
+   rather than a proxy. `pip install` works from a pad; `scripts/wisp-check.mjs`
+   asserts both that it reaches PyPI and that nothing else is reachable.
+4. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
    your own browser.
+5. **Whatever makes a multi-dependency install survive.** `pip install six`
+   works; `pip install requests` kills the runtime. That is the next thing in
+   this area worth anyone's time, and it is the one item here with no diagnosis
+   behind it yet.
 
 ## How wrong I was, in order
 
 Worth recording because each wrong answer sounded complete.
+
+**"The allowlist is not working — `example.com` was reachable."** It was not.
+`socket.create_connection` returns successfully for a destination WISP refused,
+because the stream is opened optimistically and the refusal only lands on first
+I/O. The server had logged `refusing to create a stream to example.com:443` for
+every attempt while the check reported an open proxy. Read the other side's log
+before believing an alarming result.
 
 **"A browser cannot open a TCP socket, so this is impossible."** True about
 browsers, wrong about the runtime, which ships a WISP client for exactly this.

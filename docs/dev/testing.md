@@ -83,25 +83,42 @@ experimenting here does not rearrange anybody's actual workspace.
 
 ## The pad's own harnesses
 
-Three, none of them in `check.sh` — each drives a real browser and moves real
+Four, none of them in `check.sh` — each drives a real browser and moves real
 bytes, and the gate is already the slowest thing in the repository.
 
 ```sh
 npm run check --workspace=ajar-pad          # the pieces, then the product
 npm run probe --workspace=ajar-pad          # what a package can actually do
 node pad/scripts/ingress-check.mjs          # a process in the sandbox serving HTTP
+
 VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build
 node pad/scripts/preview-check.mjs          # the Preview button, end to end
+
+node deploy/wisp-server.mjs &               # or point at the deployed one
+node pad/scripts/wisp-check.mjs             # egress, and the limits on it
+WISP_URL=wss://code.rishwanth.dev/wisp/ node pad/scripts/wisp-check.mjs
 ```
 
 `preview-check.mjs` is the one worth reading if you touch the preview: it
 writes a server, runs it, waits for the button, presses it, reads the iframe
 and presses it again. Three of its steps only exist because earlier versions
-lied — see below.
+lied — see below. It takes `PAD_ORIGIN` to drive the deployed site, which it
+silently ignored until 15 September.
+
+`wisp-check.mjs` asserts two things that are only worth anything together:
+`pip install` reaches PyPI, **and** everything that is not PyPI is refused. The
+second is what separates a package installer from an open proxy running on our
+address, so it is measured rather than read off the configuration — and it is
+gated on the first, because with the endpoint down every destination is refused
+and the allowlist assertions pass while proving nothing.
+
+It drives `src/wisp-probe.ts` through `rt.run()` rather than typing into the
+terminal. That is deliberate: every flaky result in this area came from a
+driver racing its own keystrokes, and this one has never been flaky.
 
 ## Checks that passed for the wrong reason
 
-Fifteen so far, and they are the most transferable lesson in this repository.
+Sixteen so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -122,6 +139,7 @@ passing evidence by accident.**
 | "the shell survived the editor" | A *negative* assertion on shared scrollback, and an earlier check interrupts `cat` on purpose — it reported the previous test's work as this one's failure |
 | The preview's server | Seeded through the store, where a pad's files are present but empty in the sandbox, so the server exited instantly and the button never appeared |
 | Three revert tests of the seeding fix | The revert failed the typecheck, so `vite` never ran and `dist/` still held the build made from the *fixed* source — the check measured the fix it was meant to be deprived of |
+| "the egress allowlist is refusing hosts" | With the endpoint down, every destination is refused and the allowlist assertions pass without an allowlist doing anything. They now require `pypi.org` to work in the same run |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service
@@ -143,6 +161,26 @@ length from evidence that was partly an artefact of the build. Discarding the
 build output to `/dev/null` is what hid it. **Never discard the build output
 in a revert test; assert the build exited 0 before believing anything the
 check says.**
+
+A fourth, from the egress work, and the most alarming: **a check that
+reported a security hole that was not there.** The probe connected to
+`example.com` through the allowlisted endpoint, got no error, and called it
+`REACHED IT` — an open proxy. The server log showed it refusing every attempt.
+`socket.create_connection` returns successfully for a destination WISP refused:
+the stream is opened optimistically and the refusal only lands on first I/O. A
+connect that "works" proves nothing, so the check now sends a byte and reads
+one. **When a check says something alarming, read the other side's log before
+believing it** — the server knew the answer the whole time.
+
+And a fifth, which wasted more wall-clock than the rest put together: **a
+driver that types into a terminal races the thing it typed.** `waitForFunction`
+returns when a marker appears, which can be before the command finishes, and
+the next keystrokes then go into the running command rather than the shell. It
+does not fail — it mangles the next line, so a working feature reports as
+broken. Twice this looked like `pip install` failing in production when it was
+fine. Wait for the prompt to come back, or better, drive the runtime directly:
+`wisp-check.mjs` goes through `wisp-probe.ts` and `rt.run()` for exactly this
+reason, and has never once been flaky.
 
 A third way to be misled, from verifying `find` on live: **a check that failed
 because of its own quoting.** The driver types a shell command as a JS string,

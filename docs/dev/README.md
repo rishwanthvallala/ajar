@@ -16,7 +16,7 @@ are touching.
 | [agent.md](agent.md) | The agent: terminals, the file tree, editing, the offline copy |
 | [relay.md](relay.md) | The relay: sessions, backpressure, the durable pad store |
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
-| [networking.md](networking.md) | Whether the sandbox can have a network, and the preview that came out of it |
+| [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [operations.md](operations.md) | Deploying, reaching the server, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |

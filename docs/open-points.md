@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 15 September 2026, after the sandbox seeding fix and the `find` shim.*
+*Kept as of 16 September 2026, after egress shipped and `pip install` began working.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -117,15 +117,16 @@ for a URL anyone can open. Decided deliberately —
 "for agent it'll be encrypted, but for the personal type, we can let it be
 clear and its fine."
 
-**No network from the sandbox.** A browser cannot open a TCP socket, so there
-is no `pip install` and no `git clone`, permanently. The pinned binary set is
-what removes that from the critical path.
+**The network reaches PyPI and nowhere else.** `pip install` works as of 15
+September; everything else is refused by the endpoint's allowlist. The pinned
+binary set is still what keeps the network off the critical path — nothing in
+the pad needs it to work.
 
 ---
 
-## Designed, not started
+## Built, with the parts that are still open
 
-### A network for the pad
+### The pad's network
 
 **Built and live as of 15 September.** `pip install` works from a pad, against
 our own WISP endpoint at `wss://code.rishwanth.dev/wisp`. The decision about
@@ -157,6 +158,10 @@ Measured in full in [dev/networking.md](dev/networking.md), including the
 undocumented COEP header the preview origin needs and the three wrong answers
 it took to get there.
 
+---
+
+## Designed, not started
+
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of
@@ -178,12 +183,17 @@ test suite can stand in for them.
 
 ## A note on how these were found
 
-Of the seven real bugs fixed or found in the last two rounds, none came from
-using the product and all came from reading it or measuring it. The audit found
-six; the live verification found the seventh, which no local test could see.
+Almost none came from using the product. They came from reading it, measuring
+it, or running it against the deployed site — which is a different thing again,
+and the one that keeps paying: `find .` listing five files nobody wrote, a pad
+opened from a link coming up empty, and the preview's own origin were all
+invisible locally.
 
-The recurring hazard is checks that pass for the wrong reason — fifteen so far
-in this project, and one that failed for the wrong reason. The pattern is consistent: whenever the thing under test can
-produce the passing evidence by accident, the check proves nothing. Reverting
-the fix and watching the check fail is the only habit that has reliably caught
-them.
+The recurring hazard is checks that pass for the wrong reason — sixteen so far,
+plus two that *failed* for the wrong reason and cost more than any of them. The
+pattern never changes: whenever the thing under test can produce the passing
+evidence by accident, the check proves nothing. Reverting the fix and watching
+the check fail is the only habit that has reliably caught them, and it has one
+failure mode of its own worth knowing — a revert that does not compile leaves
+the previous build in place, and the check then measures the fix it was meant
+to be deprived of. See [dev/testing.md](dev/testing.md).

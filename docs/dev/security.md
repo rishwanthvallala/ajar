@@ -192,3 +192,47 @@ sets that header — otherwise any caller can claim any address.
 The pad is plaintext on the server, has no accounts and no locks, and anyone
 with the link can change anything. That was decided deliberately as the trade
 for a URL anyone can open. Do not read pad code expecting ajar's guarantees.
+
+## The egress endpoint is the one thing that acts on the internet for a stranger
+
+`wss://code.rishwanth.dev/wisp` takes a request from an anonymous browser and
+makes a TCP connection from our address. That is a different shape of risk from
+everything else here: the relay only ever talks to itself and the sandbox only
+ever talks to the tab, but this reaches outward on somebody else's say-so, and
+whatever it does is attributed to our IP.
+
+**It is an allowlist, not a proxy.** `pypi.org` and `files.pythonhosted.org`,
+port 443, TCP only. That is the whole reachable internet from a pad. The
+alternative — an open WISP endpoint — is an open TCP proxy, and the first thing
+anyone would know about it is an abuse report or a terminated instance.
+
+Four properties are doing the work, and each is worth keeping:
+
+| | |
+|---|---|
+| Anchored patterns | `/^pypi\.org$/`, not `/pypi\.org/`. The loose form also matches `pypi.org.example.com`, a host somebody else controls |
+| No direct IPs | `allow_direct_ip: false`, so a raw address cannot step around the hostname list |
+| No private or link-local | Refused in the filter, and denied again by the unit's `IPAddressDeny=`. **169.254.169.254** hands out this instance's IAM credentials to anything that can make an HTTP request from it, and a server-side proxy talked into fetching it is the worst outcome available here |
+| No UDP | pip does not need it, and open UDP is how a proxy becomes an amplification source |
+
+The hostname is checked, then resolved, then the **resolved address** is checked
+against the same ranges — so a name that points into private space is refused
+rather than followed.
+
+TLS is end to end between the sandbox and PyPI. python does the handshake and
+the endpoint relays ciphertext, so it sees hostnames and byte counts and never
+content. That is a privacy property and also a limit: it cannot inspect what is
+being downloaded, so the allowlist is the only control.
+
+**What it does not have.** Nothing rate-limits it beyond 32 streams per
+connection, and nothing limits connections. A pad is anonymous, so there is
+nothing to attribute use to and nothing to throttle against. Caddy cannot rate
+limit without a plugin. This is the known gap, recorded in
+[open-points.md](../open-points.md) rather than quietly carried.
+
+**The DNS proxy is a smaller version of the same thing.** `/dns-query` forwards
+to Cloudflare so the sandbox's DoH lookups are same-origin, which keeps them
+inside `connect-src 'self'`. It will resolve any name for anyone who asks. It
+was accepted because a public resolver is already public, and because it tells
+us nothing `/wisp` does not show a moment later — but it is an open forwarder
+and should be counted as one.

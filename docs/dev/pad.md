@@ -59,7 +59,17 @@ live in `src/tools/box.py` and dispatch on their first argument — the same
 multi-call shape as the coreutils binary, and unlike that one everything listed
 is present. One file rather than twenty-three because the shell writes and
 aliases these before the first prompt; all twenty-eight aliases go out in a
-single `run` for the same reason. A warm command costs **142 ms**.
+single `run` for the same reason, along with the two `export`s below. A warm
+command costs **142 ms**.
+
+Those exports are `PIP_TARGET` and `PYTHONPATH`, both pointing at
+`/workspace/.deps`, and neither is a convenience. python's own site-packages
+lives under a read-only `/nix/store` path: a plain `pip install` reports
+success and the package is then not importable, because the write landed in a
+layer that does not outlive the process. Sending it to the folder instead makes
+it real — installed packages sync, survive a reload, and reach whoever opens
+the link, which was verified rather than assumed: eight files on the server,
+imported from a freshly opened page.
 
 `find` is the one entry in that table that shadows a *working* binary, and it
 earns the exception twice over. `-exec` needs to spawn, which the binary cannot
@@ -391,8 +401,10 @@ decides from Content-Type and does not know that extension.
   under them, so one with nothing in it has nothing to imply it.
 - **No accounts, no locks, no encryption.** Deliberate — the trade for a clean
   shareable URL. See [security.md](security.md#what-the-pad-does-not-have).
-- **No network from the sandbox.** A browser cannot open a TCP socket, so
-  there is no `pip install` and no `git clone`, permanently.
+- **The network reaches PyPI and nowhere else.** `pip install` works, through
+  an endpoint we run that allows those two hostnames on 443 and refuses the
+  rest. No `git clone`, no `curl`, no reaching your own machines. See
+  [networking.md](networking.md).
 - **A process that never exits never syncs.** The folder is published at
   command exit, which is a real transaction boundary — it either ran or it did
   not, and a half-written file is never shared. Fine for paste-run-look; wrong

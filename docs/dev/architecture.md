@@ -106,6 +106,14 @@ separate origin, which is the right refusal.
 Both separations are forced by the platform rather than chosen, and both are
 load-bearing. See [operations.md](operations.md#the-three-origins).
 
+Two paths on the pad's origin are not the pad. `/wisp` is the egress endpoint
+and `/dns-query` forwards DNS, both proxied by Caddy to processes on loopback.
+They live on this origin rather than a fourth one for the same reason the
+preview cannot: the page's own `connect-src 'self'` has to reach them, and
+widening that policy to admit somebody else's host is the thing being avoided.
+Neither serves the pad's content and neither can be reached by what a visitor
+runs — the sandbox talks to them through the SDK, not through the folder.
+
 ## How a change travels
 
 Both products separate *text in an open file* from *everything else*, and the
