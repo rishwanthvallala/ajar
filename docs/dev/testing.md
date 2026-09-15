@@ -144,6 +144,20 @@ build output to `/dev/null` is what hid it. **Never discard the build output
 in a revert test; assert the build exited 0 before believing anything the
 check says.**
 
+A third way to be misled, from verifying `find` on live: **a check that failed
+because of its own quoting.** The driver types a shell command as a JS string,
+and `"\\;"` written as `"\;"` is not an escape — JS silently drops the
+backslash, so bash received a bare `;` and read it as a command separator. Two
+rounds of live verification reported `-exec` broken when it was not, and the
+tell was there each time in the echoed command line: `-exec cat {} ;`. The fix
+is to build the argument as `String.fromCharCode(92, 59)` rather than trusting
+a literal, and the habit is to **read the echoed command before believing the
+result** — the terminal shows exactly what it was asked to run.
+
+That round was not wasted: running against live is what turned up `find .`
+listing five shim files nobody wrote, which no local check could see because
+the fixtures never looked.
+
 The same day, the inverse: a check that *failed* for the wrong reason.
 `preview-check.mjs` drives `dist/`, and the preview origin is compiled into the
 build — so running it straight after a deploy drove a production bundle, which
