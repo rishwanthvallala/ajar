@@ -97,9 +97,10 @@ is shimmed.
 
 ### Four worth knowing individually
 
-`xargs` needs to launch other programs, and `find -exec` cannot. That is find's
-limitation rather than the runtime's: python's `os.system`, `subprocess.run`
-and `os.popen` all work here, though `os.fork` does not.
+`xargs` needs to launch other programs, and so does `find -exec`. Neither is a
+limitation of the runtime: python's `os.system`, `subprocess.run` and
+`os.popen` all work here, though `os.fork` does not. It was the shipped
+findutils binary that could not spawn, which is why `find` is a shim too.
 
 `patch` applies context-matched hunks with no fuzz. A hunk whose context does
 not match is refused rather than guessed at, because patch guessing wrong is
@@ -208,8 +209,10 @@ deliberately and starts a fresh one.
 time, no hash — so the sync diff must read every file to know what changed.
 Affordable only under the 500-file cap; if that cap rises this breaks first.
 
-**`find` exits 1** after doing its work, unable to restore its working
-directory. The output is correct; only `find … && …` is affected.
+**A binary cannot restore its working directory**, so the shipped `find`
+exited 1 after doing its work correctly and `find … && …` never ran its second
+half. That is what made a shim worth writing rather than a quirk worth
+documenting; python does not chdir, so the shim exits 0.
 
 ## Probing a package before shipping it
 
@@ -264,8 +267,10 @@ Still real and unfixed:
 
 | | |
 |---|---|
-| `find -exec` | Produces nothing and exits 1 in all three forms — it cannot spawn |
 | `lua` | Does not start; even `lua -v` exits 45. The only published build |
+
+`find -exec` was on this list — it produced nothing in all three forms, being
+unable to spawn — until `find` became a shim like the rest.
 
 **`git` works, and needs `--no-pager`.** `git log` alone spawns a pager that
 does not exist and exits 79 with no output — indistinguishable from a commit
