@@ -864,8 +864,18 @@ def cmd_find(argv):
             return True
         return False
 
+    # The shims live in the folder so the shell can reach them, and they are
+    # emphatically not part of anybody's folder — sync.ts says the same thing
+    # in the same words and refuses to publish them. The file tree hides them
+    # and `ls` hides them, being a dotfile; a search should not be the one
+    # place five files nobody wrote turn up. `find .ajar` still works if you
+    # name it, exactly as a hidden directory should.
+    HIDDEN = ".ajar"
+
     def walk(root, depth):
         nonlocal status
+        if depth > 0 and os.path.basename(root) == HIDDEN:
+            return
         try:
             st = os.lstat(root)
         except OSError as e:

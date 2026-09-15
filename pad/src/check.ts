@@ -234,6 +234,17 @@ async function main() {
   await sh.run("find . -type f -name 'poem*' -o -name 'nothing*'");
   is(printed.trim(), "./poem.txt", "find understands -o");
 
+  // Counted rather than asserted absent: a negative assertion on scrollback
+  // this shell shares with every other check is one of the ways this suite has
+  // fooled itself before.
+  printed = "";
+  await sh.run("find . -name '*.py' | grep -c '\\.ajar' | sed 's/^/AJARCOUNT=/'");
+  is(printed.trim(), "AJARCOUNT=0", "find does not list the shims it is one of");
+
+  printed = "";
+  await sh.run("find .ajar -name 'box.py' | sed 's/^/NAMED=/'");
+  is(printed.trim(), "NAMED=.ajar/box.py", "but naming the directory still reaches them");
+
   // The example in docs/use/pad.md, run verbatim. A user doc that promises a
   // command should be a check, not a hope.
   printed = "";

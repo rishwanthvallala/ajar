@@ -71,6 +71,13 @@ are silent: a correct search that looks like a failed one. The shim's own
 only, never the aliases in this file, and says so rather than ending in a
 traceback.
 
+It also hides `.ajar/` from a walk, which was found by running it against the
+live site: `find . -name '*.py'` listed five files nobody wrote. The shims live
+in the folder so the shell can reach them, `sync.ts` already refuses to publish
+them in those words, the file tree does not draw them and `ls` does not show
+them — a search should not be the one place they surface. Naming the directory
+still reaches them, exactly as a hidden one should.
+
 `sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
 answers `file: function/utility not found`, and so does `sort sort file` — the
 name is simply not among the functions built in. `wasmer/coreutils@1.0.25` is

@@ -33,6 +33,10 @@ looked like a failed one. It supports `-name`, `-iname`, `-path`, `-type`,
 `-print0`, `-delete`, `-exec` with both `;` and `+`, and `!` / `-o` / `-a` with
 parentheses.
 
+It hides `.ajar/` from a walk, the directory the shims themselves live in —
+found by running it against live, where `find . -name '*.py'` listed five files
+nobody wrote.
+
 One limit is worth knowing: **`-exec` can only run real binaries.** Every tool
 in `box.py` is a shell alias, and a spawned process does not inherit those, so
 `find . -exec tree {} \;` cannot work however much it looks like it should. It
