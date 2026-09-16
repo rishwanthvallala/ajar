@@ -60,8 +60,12 @@ pub async fn handle(
         }
     };
 
-    let (session_id, role) = match hello.parse_json::<Control>() {
-        Ok(Control::Hello { session, role }) => (session, role),
+    let (session_id, role, locked) = match hello.parse_json::<Control>() {
+        Ok(Control::Hello {
+            session,
+            role,
+            locked,
+        }) => (session, role, locked),
         _ => refuse!("expected_hello", "first frame must be a hello"),
     };
 
@@ -91,7 +95,7 @@ pub async fn handle(
     };
 
     let joined = match role {
-        Role::Host => registry.open(&session_id, tx.clone()),
+        Role::Host => registry.open_locked(&session_id, tx.clone(), locked),
         Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
@@ -176,6 +180,13 @@ pub async fn handle(
     let mut expecting: Option<(u64, u32)> = None;
 
     while let Some(frame) = next_frame(&mut stream).await {
+        if !registry.contains_participant(&session_id, &me) {
+            debug!(
+                participant = me.id,
+                "frame from a removed participant; closing socket"
+            );
+            break;
+        }
         // Two shapes, and the rules differ because the topologies do.
         //
         // Hosted: the host may address one guest or broadcast; a guest may
@@ -188,6 +199,13 @@ pub async fn handle(
         // already editing one shared folder.
         match me.role {
             Role::Guest => {
+                // Control messages are relay authority. Guests never need to
+                // originate one after the handshake, and forwarding malformed
+                // cleartext control to the agent used to terminate the host.
+                if frame.channel == Channel::Control {
+                    debug!("guest control frame dropped");
+                    continue;
+                }
                 if frame.channel.is_encrypted() && frame.target != me.id {
                     debug!(
                         "guest sent encrypted content without its authenticated sender id; dropped"
@@ -234,6 +252,10 @@ pub async fn handle(
                 registry.with(&session_id, |s| s.send_host(&frame.encode()));
             }
             Role::Peer => {
+                if frame.channel == Channel::Control {
+                    debug!("peer control frame dropped");
+                    continue;
+                }
                 // Same rule a guest follows — you may only speak as yourself,
                 // so the id cannot be forged and, on channels that seal their
                 // header, cannot be rewritten by us either. What differs is
@@ -386,9 +408,10 @@ fn kick(registry: &Registry, session_id: &str, participant_id: u32) {
         reason: "removed by the host".into(),
     };
     if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &closed) {
-        registry.with(session_id, |s| s.send_one(participant_id, &f.encode()));
+        registry.kick_guest(session_id, participant_id, f.encode());
+    } else {
+        registry.drop_guest(session_id, participant_id);
     }
-    registry.drop_guest(session_id, participant_id);
     warn!(session = %session_id, participant_id, "kicked");
 }
 

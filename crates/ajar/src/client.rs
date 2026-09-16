@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ajar_proto::{Channel, Cipher, Control, Frame};
+use ajar_proto::{Channel, Cipher, Control, Direction, Frame};
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -64,7 +64,7 @@ impl Shutdown {
 /// `cipher` seals everything on a content channel as it goes out and opens
 /// it as it comes in. Doing it here, at the one place frames touch the
 /// socket, is what keeps the rest of the agent unaware that it exists.
-pub fn spawn(url: String, hello: Control, cipher: Cipher) -> RelayHandle {
+pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool>) -> RelayHandle {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<RelayEvent>();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -76,7 +76,7 @@ pub fn spawn(url: String, hello: Control, cipher: Cipher) -> RelayHandle {
             if flag.load(Ordering::SeqCst) {
                 return;
             }
-            match session(&url, &hello, &cipher, &mut out_rx, &ev_tx).await {
+            match session(&url, &hello, &cipher, &locked, &mut out_rx, &ev_tx).await {
                 Ok(Outcome::Closed) => {
                     let _ = ev_tx.send(RelayEvent::Disconnected("relay closed".into()));
                 }
@@ -115,6 +115,7 @@ async fn session(
     url: &str,
     hello: &Control,
     cipher: &Cipher,
+    locked: &AtomicBool,
     out_rx: &mut UnboundedReceiver<Frame>,
     ev_tx: &UnboundedSender<RelayEvent>,
 ) -> Result<Outcome> {
@@ -124,8 +125,16 @@ async fn session(
     debug!("relay handshake: {}", response.status());
     let (mut sink, mut source) = stream.split();
 
+    let hello = match hello {
+        Control::Hello { session, role, .. } => Control::Hello {
+            session: session.clone(),
+            role: *role,
+            locked: locked.load(Ordering::SeqCst),
+        },
+        other => other.clone(),
+    };
     sink.send(Message::Binary(
-        Frame::json(Channel::Control, ajar_proto::TARGET_ALL, hello)?
+        Frame::json(Channel::Control, ajar_proto::TARGET_ALL, &hello)?
             .encode()
             .into(),
     ))
@@ -159,7 +168,7 @@ async fn session(
         tokio::select! {
             outgoing = out_rx.recv() => {
                 let Some(frame) = outgoing else { return Ok(Outcome::Closed) };
-                let bytes = frame.seal(cipher).encode();
+                let bytes = frame.seal(cipher, Direction::HostToGuest).encode();
                 if sink.send(Message::Binary(bytes.into())).await.is_err() {
                     return Ok(Outcome::Closed);
                 }
@@ -167,7 +176,7 @@ async fn session(
             incoming = source.next() => {
                 match incoming {
                     Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
-                        Ok(f) => match f.open(cipher) {
+                        Ok(f) => match f.open(cipher, Direction::GuestToHost) {
                             Ok(f) => {
                                 if ev_tx.send(RelayEvent::Frame(f)).is_err() {
                                     return Ok(Outcome::Closed);

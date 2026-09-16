@@ -60,6 +60,8 @@ export class App {
   private cols = 80;
   private rows = 24;
   private known: Known = new Map();
+  /** Latest durable revision applied by this tab. */
+  private storeSeq = 0;
   private prefetched = false;
   private peers: Peers | null = null;
   private busy = false;
@@ -79,7 +81,9 @@ export class App {
   private byStream = new Map<number, string>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
-  private awaiting = new Map<string, () => void>();
+  private awaiting = new Map<string, (answered: boolean) => void>();
+  /** Store writes from this tab are strictly ordered. */
+  private writeChain: Promise<void> = Promise.resolve();
   /** This browser's participant id and name, as cursors are labelled. */
   private me = 1;
   private whoami = "someone";
@@ -128,6 +132,7 @@ export class App {
 
     const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
     this.known = knownFrom(pad.files);
+    this.storeSeq = pad.seq;
 
     this.joinPeers();
     await this.openEditor();
@@ -168,6 +173,9 @@ export class App {
         for (const [path, doc] of this.docs) {
           this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector());
         }
+        // The peer socket carries nudges, not history. Re-read the durable
+        // folder to recover every nudge that may have been missed offline.
+        void this.refresh();
       },
       onDoc: (stream, kind, bytes) => this.onDoc(stream, kind, bytes),
     });
@@ -193,6 +201,7 @@ export class App {
     } catch {
       return;
     }
+    if (pad.seq <= this.storeSeq) return;
     const rt = this.runtime ? await this.runtime : null;
     const incoming = knownFrom(pad.files);
 
@@ -202,19 +211,23 @@ export class App {
       // A file with a live document is owned by the CRDT, which already has
       // every keystroke. Writing the store's copy over it would undo whatever
       // has been typed since that copy was saved.
-      if (this.docs.has(path)) continue;
-      this.setFile(path, content);
+      const doc = this.docs.get(path);
+      if (!doc) this.setFile(path, content);
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
-      if (rt) await rt.write(path, content);
+      if (rt) await rt.write(path, doc?.contents() ?? content);
     }
     for (const path of this.known.keys()) {
       if (incoming.has(path)) continue;
+      this.dirty.delete(path);
+      this.closeDoc(path);
       this.models.get(path)?.dispose();
       this.models.delete(path);
+      if (rt) await rt.remove(path).catch(() => {});
     }
     this.applyingRemote = false;
     this.known = incoming;
+    this.storeSeq = pad.seq;
     if (!this.models.has(this.active)) {
       const first = [...this.models.keys()].sort()[0];
       if (first) this.show(first);
@@ -276,13 +289,13 @@ export class App {
     // ids — which Yjs discards as already known. The result is two documents
     // that exchange updates and silently ignore each other.
     this.peers.doc(stream, DOC_WANT, doc.stateVector());
-    await new Promise<void>((resolve) => {
+    const answered = await new Promise<boolean>((resolve) => {
       this.awaiting.set(path, resolve);
-      setTimeout(resolve, 600);
+      setTimeout(() => resolve(false), 600);
     });
     this.awaiting.delete(path);
     // Nobody answered, so nobody else has it open and the stored copy is safe.
-    if (doc.length === 0) doc.seed(stored);
+    if (!answered) doc.seed(stored);
     return doc;
   }
 
@@ -318,7 +331,11 @@ export class App {
     if (kind === DOC_UPDATE) {
       doc.applyUpdate(bytes);
       // Whoever was waiting for state has it now.
-      this.awaiting.get(path)?.();
+      this.awaiting.get(path)?.(true);
+      // The document is also the source executed by the sandbox. Keeping only
+      // Monaco current lets the next harmless command publish stale runtime
+      // bytes over somebody else's edit.
+      void this.runtime?.then((rt) => rt.write(path, doc.contents()));
     }
     else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
     else if (kind === DOC_WANT) {
@@ -494,33 +511,39 @@ export class App {
       .filter((c) => this.known.get(c.path) !== c.content);
     if (changes.length === 0) return;
 
-    try {
-      const seq = await this.store.write(this.name, changes);
-      for (const c of changes) this.known.set(c.path, c.content);
-      // The sandbox too, when there is one, so a shell command run next sees
-      // what is on screen rather than what was there before the typing.
-      if (this.runtime) {
-        const rt = await this.runtime;
-        for (const c of changes) await rt.write(c.path, c.content);
+    return this.queueWrite(async () => {
+      try {
+        const seq = await this.store.write(this.name, changes);
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        for (const c of changes) this.known.set(c.path, c.content);
+        // Do not copy an older completed save over text edited while its
+        // request was in flight. The later edit remains queued for saving.
+        if (this.runtime) {
+          const rt = await this.runtime;
+          for (const c of changes) {
+            const current = this.docs.get(c.path)?.contents() ?? this.models.get(c.path)?.getValue();
+            if (current === c.content) await rt.write(c.path, c.content);
+          }
+        }
+        this.peers?.moved(seq);
+        this.say("", "saved");
+      } catch (e) {
+        const why = e as StoreError;
+        if (why.gone || why.tooBig) {
+          this.say("error", `${why.message} — this is not being saved`);
+          return;
+        }
+        for (const p of paths) this.dirty.add(p);
+        this.say("error", why.message);
+        this.saveSoon();
       }
-      this.peers?.moved(seq);
-      this.say("", "saved");
-    } catch (e) {
-      const why = e as StoreError;
-      // Some failures will never succeed however often they are tried: a pad
-      // past its size cap, or a name that has expired. Retrying those is a
-      // request every half second for as long as the tab is open, and it still
-      // never saves. Say so once and stop.
-      if (why.gone || why.tooBig) {
-        this.say("error", `${why.message} — this is not being saved`);
-        return;
-      }
-      // Anything else is worth another go: an unsaved change that nothing
-      // retries is the one failure this product cannot afford.
-      for (const p of paths) this.dirty.add(p);
-      this.say("error", why.message);
-      this.saveSoon();
-    }
+    });
+  }
+
+  private queueWrite(work: () => Promise<void>): Promise<void> {
+    const run = this.writeChain.then(work, work);
+    this.writeChain = run.catch(() => {});
+    return run;
   }
 
   /**
@@ -723,9 +746,13 @@ export class App {
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
       this.console?.announce(command);
-      const { exitCode } = await sh.run(command);
-      if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
-      this.console?.resume();
+      let exitCode: number;
+      try {
+        ({ exitCode } = await sh.run(command));
+        if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
+      } finally {
+        this.console?.resume();
+      }
 
       this.say("saving", "saving…");
       await this.publish(rt);
@@ -761,26 +788,25 @@ export class App {
 
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
-    await this.flushModels(rt);
-    const { changes, next } = await diff(rt, this.known);
-    if (changes.length === 0) return;
-    const seq = await this.store.write(this.name, changes);
-    // Only once the server has it: a failed write must not leave the page
-    // believing it is in sync, or the change is never retried.
-    this.known = next;
-    for (const change of changes) {
-      if (change.content === null) {
-        this.closeDoc(change.path);
-        this.models.get(change.path)?.dispose();
-        this.models.delete(change.path);
-      } else {
-        this.setFile(change.path, change.content);
+    return this.queueWrite(async () => {
+      await this.flushModels(rt);
+      const { changes, next } = await diff(rt, this.known);
+      if (changes.length === 0) return;
+      const seq = await this.store.write(this.name, changes);
+      this.storeSeq = Math.max(this.storeSeq, seq);
+      this.known = next;
+      for (const change of changes) {
+        if (change.content === null) {
+          this.closeDoc(change.path);
+          this.models.get(change.path)?.dispose();
+          this.models.delete(change.path);
+        } else {
+          this.setFile(change.path, change.content);
+        }
       }
-    }
-    this.renderFiles();
-    // Only after the server has it, so nobody is told to read a version that
-    // does not exist yet.
-    this.peers?.moved(seq);
+      this.renderFiles();
+      this.peers?.moved(seq);
+    });
   }
 
   private async share(): Promise<void> {

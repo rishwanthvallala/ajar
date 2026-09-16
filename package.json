@@ -16,6 +16,7 @@
     "build:ajar": "npm run build --workspace=ajar-web",
     "build:pad": "npm run build --workspace=ajar-pad",
     "build": "npm run build --workspace=ajar-web && npm run build --workspace=ajar-pad",
+    "test:review": "node scripts/review-repros.cjs",
     "test:ui": "npm run build && node scripts/test-ui.cjs"
   }
 }

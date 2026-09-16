@@ -24,9 +24,10 @@ use ajar_proto::{
     Channel, Cipher, Control, Doc as DocMsg, DocKind, Frame, Fs, Participant, Person, Presence,
     Pty, Role, SnapshotBody, SnapshotFile, Store, SNAPSHOT_STREAM, STREAM_CONTROL, TARGET_ALL,
 };
-use anyhow::{bail, Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::{bail, Result};
 use clap::Parser;
-use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -138,6 +139,7 @@ struct Host {
     out_tx: mpsc::UnboundedSender<PtyOutput>,
     exit_tx: mpsc::UnboundedSender<PtyExit>,
     outbound: mpsc::UnboundedSender<Frame>,
+    lock_state: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Host {
@@ -228,8 +230,22 @@ async fn run() -> Result<()> {
     // and "we can hear ctrl-c" — press it in that window and the agent dies
     // without telling the relay, stranding the session for its whole grace
     // period. A signal stream queues from the moment it is created.
-    let mut interrupt = tokio::signal::unix::signal(SignalKind::interrupt())
-        .context("installing the interrupt handler")?;
+    let (interrupt_tx, mut interrupt) = mpsc::unbounded_channel::<()>();
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::SignalKind;
+        let mut signal = tokio::signal::unix::signal(SignalKind::interrupt())
+            .context("installing the interrupt handler")?;
+        tokio::spawn(async move {
+            let _ = signal.recv().await;
+            let _ = interrupt_tx.send(());
+        });
+    }
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = interrupt_tx.send(());
+    });
 
     let verdict = guard::check(&args.path, args.force)?;
     let folder = verdict
@@ -260,14 +276,17 @@ async fn run() -> Result<()> {
     let (cipher, key) = Cipher::generate();
     // The agent seals its own snapshots, so it keeps a copy of the key.
     let cipher_for_host = cipher.clone();
+    let lock_state = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let relay: RelayHandle = client::spawn(
         client::ws_url(&args.relay)?,
         Control::Hello {
             session: session.clone(),
             role: Role::Host,
+            locked: false,
         },
         cipher,
+        lock_state.clone(),
     );
     let shutdown = relay.shutdown_handle();
     let mut events = relay.events;
@@ -353,6 +372,7 @@ async fn run() -> Result<()> {
         out_tx,
         exit_tx,
         outbound: relay.outbound.clone(),
+        lock_state,
     };
 
     let mut online = false;
@@ -474,6 +494,7 @@ async fn run() -> Result<()> {
                     Action::ToggleLock => {
                         let locked = !host.state.locked;
                         host.state.locked = locked;
+                        host.lock_state.store(locked, std::sync::atomic::Ordering::SeqCst);
                         // The relay enforces this: it is the only thing that
                         // sees a connection before the host does.
                         let _ = host.outbound.send(Frame::json(
@@ -566,6 +587,27 @@ async fn run() -> Result<()> {
 }
 
 fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
+    // Remote input is untrusted even after decryption. A malformed JSON
+    // control frame is one bad message, not a reason to unwind the agent's
+    // event loop and terminate the host session.
+    if frame.channel == Channel::Control {
+        if let Err(e) = frame.parse_json::<Control>() {
+            debug!("dropping malformed control frame: {e}");
+            return Ok(());
+        }
+    }
+    if frame.channel == Channel::Pty && frame.stream_id == STREAM_CONTROL {
+        if let Err(e) = frame.parse_json::<Pty>() {
+            debug!("dropping malformed pty control frame: {e}");
+            return Ok(());
+        }
+    }
+    if frame.channel == Channel::Doc && frame.stream_id == STREAM_CONTROL {
+        if let Err(e) = frame.parse_json::<DocMsg>() {
+            debug!("dropping malformed document control frame: {e}");
+            return Ok(());
+        }
+    }
     match frame.channel {
         Channel::Control => match frame.parse_json::<Control>()? {
             Control::Joined { participant } => on_join(&participant, host)?,
@@ -885,7 +927,35 @@ fn broadcast_roster(host: &Host) -> Result<()> {
 }
 
 /// Write a document back to the file it came from.
-fn write_back(path: &str, contents: &str, host: &mut Host) {
+fn write_back(path: &str, contents: &str, host: &mut Host) -> bool {
+    // An open document may have changed underneath us since it was admitted.
+    // Never replace a now-binary or over-limit file with the stale editable
+    // prefix the CRDT was originally seeded from.
+    match host.workspace.read(path) {
+        Fs::Content {
+            binary: false,
+            truncated: false,
+            ..
+        } => {}
+        Fs::Content { binary: true, .. } => {
+            host.log(format!(
+                "{path} became binary — edits are no longer being saved"
+            ));
+            return false;
+        }
+        Fs::Content {
+            truncated: true, ..
+        } => {
+            host.log(format!(
+                "{path} grew over 1 MB — edits are no longer being saved"
+            ));
+            return false;
+        }
+        _ => {
+            host.log(format!("{path} is gone — edits are no longer being saved"));
+            return false;
+        }
+    }
     let filter = host.workspace.filter();
     // `resolve` rather than `resolve_unchecked`: it canonicalises, so a
     // symlink planted where the document used to be cannot redirect the write
@@ -894,12 +964,14 @@ fn write_back(path: &str, contents: &str, host: &mut Host) {
     // here, because a silent return looks exactly like a successful save.
     let Some(abs) = filter.resolve(path) else {
         host.log(format!("{path} is gone — edits are no longer being saved"));
-        return;
+        return false;
     };
     if let Err(e) = atomic_write(&abs, filter.root(), contents.as_bytes()) {
         warn!("could not write {path}: {e}");
         host.log(format!("could not write {path}: {e}"));
+        return false;
     }
+    true
 }
 
 /// Replace the directory entry rather than opening it for writing. If a
@@ -1002,6 +1074,7 @@ fn reconcile_docs(paths: &[String], host: &mut Host) {
         let Fs::Content {
             text,
             binary: false,
+            truncated: false,
             ..
         } = host.workspace.read(path)
         else {
@@ -1021,14 +1094,18 @@ fn reconcile_docs(paths: &[String], host: &mut Host) {
 
 /// Write back every document that has stopped changing.
 fn flush_documents(host: &mut Host) {
-    for (_, path, contents) in host.docs.due_for_write(Instant::now()) {
-        write_back(&path, &contents, host);
+    for (id, path, contents) in host.docs.due_for_write(Instant::now()) {
+        if write_back(&path, &contents, host) {
+            host.docs.mark_written(id, &contents);
+        }
     }
 }
 
 fn flush_all_documents(host: &mut Host) {
-    for (_, path, contents) in host.docs.pending_writes() {
-        write_back(&path, &contents, host);
+    for (id, path, contents) in host.docs.pending_writes() {
+        if write_back(&path, &contents, host) {
+            host.docs.mark_written(id, &contents);
+        }
     }
 }
 
@@ -1053,9 +1130,11 @@ fn on_join(participant: &Participant, host: &mut Host) -> Result<()> {
 fn on_fs_event(event: FsEvent, host: &mut Host) {
     match event {
         FsEvent::Touched(paths) => {
+            // File contents can change while size and tree metadata stay the
+            // same. Such edits still invalidate the stored snapshot.
+            host.snapshot_due = Some(Instant::now());
             if let Some(patch) = host.workspace.apply(&paths) {
                 send_fs(host, &patch);
-                host.snapshot_due = Some(Instant::now());
             }
             reconcile_docs(&paths, host);
         }

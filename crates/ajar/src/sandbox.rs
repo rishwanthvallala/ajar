@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// people would turn the sandbox off.
 const CACHE_DIRS: &[&str] = &[
     // Whole cache roots, deliberately, and not the subdirectories inside
-    // them. Narrowing these to `.npm/_cacache`, `.cargo/registry` and the
+    // them. Narrowing these to `.npm/_cacache` and the
     // like was tried and reverted: a grant whose path does not exist yet is
     // dropped on the floor (see `existing` in the landlock builder, and the
     // same is true of an sbpl subpath), and every one of these tools creates
@@ -34,7 +34,6 @@ const CACHE_DIRS: &[&str] = &[
     // create what it was about to use, so the narrower list works on a
     // machine where those directories already happen to exist and fails on a
     // fresh one, with an error that names npm rather than the sandbox.
-    ".cargo",
     ".rustup",
     ".npm",
     ".cache",
@@ -95,9 +94,9 @@ pub const CONFINE_ARG: &str = "__confine";
 
 pub struct Sandbox {
     pub mode: Mode,
-    /// Kept alive for the lifetime of the session: `sandbox-exec` reads it
-    /// at spawn time, and every new terminal spawns again.
-    profile: Option<PathBuf>,
+    /// Passed directly to `sandbox-exec`, so no guest-writable pathname can
+    /// replace the policy between construction and process launch.
+    profile: Option<String>,
     project: PathBuf,
     network: bool,
 }
@@ -117,12 +116,12 @@ impl Sandbox {
         match &self.mode {
             Mode::Confined { mechanism, .. } if *mechanism == "seatbelt" => {
                 let profile = match &self.profile {
-                    Some(p) => p.display().to_string(),
+                    Some(p) => p.clone(),
                     None => return (shell.to_string(), Vec::new()),
                 };
                 (
                     "/usr/bin/sandbox-exec".to_string(),
-                    vec!["-f".to_string(), profile, shell.to_string()],
+                    vec!["-p".to_string(), profile, shell.to_string()],
                 )
             }
             Mode::Confined { mechanism, .. } if *mechanism == "landlock" => {
@@ -169,12 +168,12 @@ impl Sandbox {
         #[cfg(target_os = "macos")]
         {
             match macos::profile(project, allow_network) {
-                Ok((path, allows)) => Sandbox {
+                Ok((profile, allows)) => Sandbox {
                     mode: Mode::Confined {
                         mechanism: "seatbelt",
                         allows,
                     },
-                    profile: Some(path),
+                    profile: Some(profile),
                     project: project.to_path_buf(),
                     network: allow_network,
                 },
@@ -221,14 +220,6 @@ impl Sandbox {
     }
 }
 
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        if let Some(p) = &self.profile {
-            let _ = std::fs::remove_file(p);
-        }
-    }
-}
-
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
@@ -268,7 +259,7 @@ mod macos {
         std::env::var_os("HOME").map(PathBuf::from)
     }
 
-    pub fn profile(project: &Path, allow_network: bool) -> Result<(PathBuf, Vec<String>), String> {
+    pub fn profile(project: &Path, allow_network: bool) -> Result<(String, Vec<String>), String> {
         if !Path::new("/usr/bin/sandbox-exec").exists() {
             return Err("sandbox-exec is missing from this system".into());
         }
@@ -326,18 +317,6 @@ mod macos {
             sbpl.push_str("\n;; no outbound anything\n(deny network*)\n");
         }
 
-        // A per-session file rather than an inline profile: the text is long,
-        // and every new terminal re-reads it.
-        let path = std::env::temp_dir().join(format!(
-            "ajar-sandbox-{}-{}.sb",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&path, sbpl).map_err(|e| format!("could not write the profile: {e}"))?;
-
         let allows = vec![
             "writes confined to the shared folder, temp and build caches".to_string(),
             "ssh, cloud and browser credentials unreadable".to_string(),
@@ -347,7 +326,7 @@ mod macos {
                 "no network".to_string()
             },
         ];
-        Ok((path, allows))
+        Ok((sbpl, allows))
     }
 }
 
@@ -452,6 +431,10 @@ pub mod linux {
         ".oh-my-zsh",
         ".terminfo",
         ".gitconfig",
+        // Rustup installs its executable proxies here. Cargo's mutable home is
+        // redirected to the guest cache, so this directory can remain read-only
+        // and cannot expose credentials.toml.
+        ".cargo/bin",
     ];
 
     /// Restrict this process, then become the shell.

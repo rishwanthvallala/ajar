@@ -128,7 +128,7 @@ export interface Person {
 }
 
 export type Control =
-  | { t: "hello"; session: string; role: Role }
+  | { t: "hello"; session: string; role: Role; locked?: boolean }
   | { t: "welcome"; participant_id: number; participants: Participant[] }
   | { t: "joined"; participant: Participant }
   | { t: "left"; participant_id: number }

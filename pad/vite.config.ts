@@ -1,6 +1,6 @@
 import { cp } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 /**
@@ -59,9 +59,7 @@ const sdkRoot = new URL("../", pathToFileURL(sdkEntry));
 // lands in `dist/`, which is one level deeper than the ESM entry it advertises.
 const WISP_PKG = "@mercuryworkshop/wisp-js";
 const wispEntry = createRequire(import.meta.url).resolve(`${WISP_PKG}/client`);
-const wispRoot = pathToFileURL(
-  `${wispEntry.slice(0, wispEntry.lastIndexOf(WISP_PKG) + WISP_PKG.length)}/`,
-);
+const wispRoot = new URL("../", pathToFileURL(wispEntry));
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",
   async buildStart() {
@@ -106,13 +104,13 @@ export default defineConfig({
       input: {
         // The app, and the page the browser checks run in. Two entries rather
         // than one, so a check never ships in the bundle a visitor downloads.
-        index: new URL("./index.html", import.meta.url).pathname,
-        check: new URL("./check.html", import.meta.url).pathname,
+        index: fileURLToPath(new URL("./index.html", import.meta.url)),
+        check: fileURLToPath(new URL("./check.html", import.meta.url)),
         // The package probe. Also kept out of the visitor's bundle: it exists
         // to install packages we have not decided to ship.
-        probe: new URL("./probe.html", import.meta.url).pathname,
-        net: new URL("./net.html", import.meta.url).pathname,
-        wisp: new URL("./wisp.html", import.meta.url).pathname,
+        probe: fileURLToPath(new URL("./probe.html", import.meta.url)),
+        net: fileURLToPath(new URL("./net.html", import.meta.url)),
+        wisp: fileURLToPath(new URL("./wisp.html", import.meta.url)),
       },
     },
   },

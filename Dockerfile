@@ -18,16 +18,20 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY install.sh ./
+COPY run.sh ./
 RUN cargo build --release -p ajar-relay
 
 FROM alpine:3
 RUN apk add --no-cache ca-certificates \
-    && adduser -D -H -u 10001 ajar
+    && adduser -D -H -u 10001 ajar \
+    && mkdir -p /var/lib/ajar/pads \
+    && chown -R ajar:ajar /var/lib/ajar
 COPY --from=build /src/target/release/ajar-relay /usr/local/bin/ajar-relay
 COPY --from=web /w/web/dist /srv/web
 USER ajar
+VOLUME ["/var/lib/ajar"]
 EXPOSE 8787
 ENV RUST_LOG=ajar_relay=info
 HEALTHCHECK --interval=30s --timeout=3s \
     CMD wget -qO- http://127.0.0.1:8787/healthz || exit 1
-ENTRYPOINT ["ajar-relay", "--bind", "0.0.0.0:8787", "--web", "/srv/web"]
+ENTRYPOINT ["ajar-relay", "--bind", "0.0.0.0:8787", "--web", "/srv/web", "--pad-dir", "/var/lib/ajar/pads"]

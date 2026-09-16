@@ -24,7 +24,8 @@ function load(file) {
     }
     return local(name);
   };
-  const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+  const source = fs.readFileSync(file, 'utf8').replaceAll('import.meta.env', '({})');
+  const code = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   new Function('require', 'module', 'exports', code)(customRequire, mod, mod.exports);
@@ -35,13 +36,14 @@ const { Console } = load('pad/src/console.ts');
 const { FileTree } = load('pad/src/files.ts');
 const { DocSession } = load('pad/src/editing.ts');
 const { streamFor, DOC_UPDATE } = load('pad/src/peers.ts');
-const { Sealer } = load('web/src/sealed.ts');
+const { Sealer, SealDirection } = load('web/src/sealed.ts');
 const Y = padRequire('yjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function runtime(files) {
   return {
     files: new Map(Object.entries(files)),
     async write(p, c) { this.files.set(p, c); },
+    async remove(p) { this.files.delete(p); },
     async read(p) { return this.files.get(p); },
     async list() { return [...this.files.keys()].map(path => ({ path, size: 1 })); },
   };
@@ -57,29 +59,27 @@ function app(store, rt) {
   return a;
 }
 const results = [];
-async function repro(name, fn) {
+async function regression(name, fn) {
   await fn();
   results.push(name);
-  console.log('REPRODUCED: ' + name);
+  console.log('FIXED: ' + name);
 }
 (async () => {
-  await repro('A targeted host PTY ciphertext also authenticates as guest-to-host input', async () => {
+  await regression('Host PTY ciphertext is bound to its direction', async () => {
     const sealer = await Sealer.fromHash('#k=' + Buffer.alloc(32, 7).toString('base64url'));
     const output = { channel: 2, streamId: 1, target: 2, payload: new TextEncoder().encode('command-looking terminal output\r') };
-    const sealed = await sealer.seal(output);
-    // Host->guest target=2 and guest(2)->host sender=2 have identical AAD.
-    // Reflection uses unchanged ciphertext and no secret-key knowledge.
-    const reflected = await sealer.open(sealed);
-    assert.deepEqual(reflected.payload, output.payload);
+    const sealed = await sealer.seal(output, SealDirection.HostToGuest);
+    const reflected = await sealer.open(sealed, SealDirection.GuestToHost);
+    assert.equal(reflected, null);
   });
-  await repro('Arrow-left inserts [D instead of moving the console cursor', async () => {
+  await regression('Arrow-left moves the console cursor without inserting bytes', async () => {
     const c = new Console({ write() {} }, async () => null, () => {});
     c.handle('abc');
     c.handle('\x1b[D');
     c.handle('X');
-    assert.equal(c.line, 'abc[DX');
+    assert.equal(c.line, 'abXc');
   });
-  await repro('A Run-button command does not put Console into running mode; Ctrl-C never closes the shell', async () => {
+  await regression('A Run-button command owns console input and Ctrl-C', async () => {
     let closed = 0;
     const shell = { alive: true, close: async () => { closed++; } };
     const c = new Console({ write() {} }, async () => shell, () => {});
@@ -87,10 +87,10 @@ async function repro(name, fn) {
     c.announce('python main.py');
     c.handle('\x03');
     await tick();
-    assert.equal(c.busy, false);
-    assert.equal(closed, 0);
+    assert.equal(c.busy, true);
+    assert.equal(closed, 1);
   });
-  await repro('A remotely deleted file survives in the runtime and is recreated by the next publish', async () => {
+  await regression('A remotely deleted file is removed from the runtime', async () => {
     const writes = [];
     const rt = runtime({ 'deleted.txt': 'old' });
     const a = app({ read: async () => ({ files: {}, seq: 2 }), write: async (_, c) => { writes.push(c); return 3; } }, rt);
@@ -98,11 +98,11 @@ async function repro(name, fn) {
     a.setFile('deleted.txt', 'old');
     await a.refresh();
     assert.equal(a.models.has('deleted.txt'), false);
-    assert.equal(rt.files.has('deleted.txt'), true);
+    assert.equal(rt.files.has('deleted.txt'), false);
     await a.publish(rt);
-    assert.deepEqual(writes[0], [{ path: 'deleted.txt', content: 'old' }]);
+    assert.equal(writes.length, 0);
   });
-  await repro('Remote CRDT edits update the document but leave runtime stale; publish overwrites durable text', async () => {
+  await regression('Remote CRDT edits update the execution runtime before publication', async () => {
     const writes = [];
     const rt = runtime({ 'note.txt': 'old' });
     const a = app({ read: async () => ({ files: { 'note.txt': { content: 'new', encoding: 'utf8', seq: 2 } }, seq: 2 }), write: async (_, c) => { writes.push(c); return 3; } }, rt);
@@ -116,15 +116,16 @@ async function repro(name, fn) {
     a.docs.set('note.txt', doc);
     a.byStream.set(streamFor('note.txt'), 'note.txt');
     a.onDoc(streamFor('note.txt'), DOC_UPDATE, Y.encodeStateAsUpdate(peer));
+    await tick();
     assert.equal(doc.contents(), 'new');
     await a.refresh();
-    assert.equal(rt.files.get('note.txt'), 'old');
+    assert.equal(rt.files.get('note.txt'), 'new');
     await a.publish(rt);
-    assert.deepEqual(writes[0], [{ path: 'note.txt', content: 'old' }]);
+    assert.equal(writes.length, 0);
     doc.destroy();
     peer.destroy();
   });
-  await repro('Overlapping autosaves allow an older request to overwrite newer text', async () => {
+  await regression('Autosaves are serialized in edit order', async () => {
     const queued = [];
     let durable = '';
     const rt = runtime({ 'a.txt': 'zero' });
@@ -136,27 +137,38 @@ async function repro(name, fn) {
     a.setFile('a.txt', 'second');
     a.dirty.add('a.txt');
     const second = a.saveEdits();
+    await tick();
+    assert.equal(queued.length, 1);
+    queued[0](); await first;
+    await tick();
     assert.equal(queued.length, 2);
     queued[1](); await second;
-    queued[0](); await first;
-    assert.equal(durable, 'first');
+    assert.equal(durable, 'second');
     assert.equal(a.models.get('a.txt').getValue(), 'second');
     assert.equal(a.dirty.size, 0);
   });
-  await repro('An empty state response after a complete CRDT deletion reseeds old stored text', async () => {
+  await regression('A valid empty CRDT response is not reseeded from stored text', async () => {
     const source = new DocSession(1, 'a.txt', { id: 1, name: 'one' }, () => {});
-    const newcomer = new DocSession(1, 'a.txt', { id: 2, name: 'two' }, () => {});
     source.seed('old');
     source.ytext.delete(0, 3);
-    newcomer.applyUpdate(Y.encodeStateAsUpdate(source.ydoc));
-    assert.equal(newcomer.length, 0);
-    newcomer.seed('old'); // readyDoc uses length===0 even after a valid reply.
-    assert.equal(newcomer.contents(), 'old');
+    const a = app({}, runtime({ 'a.txt': 'old' }));
+    a.known.set('a.txt', 'old');
+    a.peers = {
+      ready: Promise.resolve(),
+      alone: false,
+      doc(stream, kind) {
+        if (kind === 3) setImmediate(() => a.onDoc(stream, DOC_UPDATE, Y.encodeStateAsUpdate(source.ydoc)));
+      },
+    };
+    const newcomer = await a.readyDoc('a.txt');
+    assert.equal(newcomer.contents(), '');
     source.destroy(); newcomer.destroy();
   });
-  await repro('Accepted file paths a and a/b crash the pad tree renderer', async () => {
-    const tree = new FileTree({}, {});
-    assert.throws(() => tree.render(['a', 'a/b'], ''), /Cannot read properties of null/);
+  await regression('Legacy file/directory conflicts render defensively', async () => {
+    const element = () => ({ className: '', style: {}, dataset: {}, append() {}, setAttribute() {}, replaceChildren() {} });
+    globalThis.document = { createElement: element };
+    const tree = new FileTree(element(), { onOpen() {}, onNewFile() {}, onNewFolder() {} });
+    assert.doesNotThrow(() => tree.render(['a', 'a/b'], ''));
   });
-  console.log('\n' + results.length + ' defects reproduced in actual application classes.');
+  console.log('\n' + results.length + ' focused regressions pass in actual application classes.');
 })().catch(e => { console.error(e); process.exitCode = 1; });

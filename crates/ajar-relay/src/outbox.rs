@@ -45,6 +45,9 @@ pub struct Outbox {
     /// tasks that are *already parked*, so an overflow occurring while the
     /// writer was mid-send would vanish and the connection would limp on.
     closed: Arc<AtomicBool>,
+    /// Finish after already-queued frames have been written. Used for a kick:
+    /// the client receives the reason, then the writer closes the socket.
+    draining: Arc<AtomicBool>,
     wake: Arc<Notify>,
 }
 
@@ -53,6 +56,7 @@ pub struct Drain {
     inner: mpsc::Receiver<Vec<u8>>,
     queued: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
+    draining: Arc<AtomicBool>,
     wake: Arc<Notify>,
 }
 
@@ -60,18 +64,21 @@ pub fn channel() -> (Outbox, Drain) {
     let (tx, rx) = mpsc::channel(MAX_QUEUED_FRAMES);
     let queued = Arc::new(AtomicUsize::new(0));
     let closed = Arc::new(AtomicBool::new(false));
+    let draining = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
     (
         Outbox {
             inner: tx,
             queued: queued.clone(),
             closed: closed.clone(),
+            draining: draining.clone(),
             wake: wake.clone(),
         },
         Drain {
             inner: rx,
             queued,
             closed,
+            draining,
             wake,
         },
     )
@@ -87,6 +94,9 @@ impl Outbox {
     /// it does not cause. What is refused is *accumulation* behind a reader
     /// that has stopped draining.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), Overflowed> {
+        if self.closed.load(Ordering::Acquire) || self.draining.load(Ordering::Acquire) {
+            return Err(Overflowed);
+        }
         let queued = self.queued.load(Ordering::Relaxed);
         if queued > 0 && queued.saturating_add(bytes.len()) > MAX_QUEUED_BYTES {
             self.shut();
@@ -109,6 +119,14 @@ impl Outbox {
     fn shut(&self) {
         self.closed.store(true, Ordering::Release);
         self.wake.notify_waiters();
+    }
+
+    /// Queue one final frame and close once everything ahead of it is sent.
+    pub fn finish(&self, bytes: Vec<u8>) {
+        if self.send(bytes).is_ok() {
+            self.draining.store(true, Ordering::Release);
+            self.wake.notify_waiters();
+        }
     }
 
     /// Bytes currently waiting to go out. Only the tests look at this; the
@@ -136,17 +154,34 @@ impl Drain {
         if self.closed.load(Ordering::Acquire) {
             return None;
         }
+        if self.draining.load(Ordering::Acquire) {
+            return self.take_now();
+        }
         tokio::select! {
             // A refused send means this socket is already beyond saving;
             // prefer noticing that over draining more into it.
             biased;
-            _ = self.wake.notified() => None,
+            _ = self.wake.notified() => {
+                if self.closed.load(Ordering::Acquire) {
+                    None
+                } else if self.draining.load(Ordering::Acquire) {
+                    self.take_now()
+                } else {
+                    None
+                }
+            },
             frame = self.inner.recv() => {
                 let frame = frame?;
                 self.queued.fetch_sub(frame.len(), Ordering::Relaxed);
                 Some(frame)
             }
         }
+    }
+
+    fn take_now(&mut self) -> Option<Vec<u8>> {
+        let frame = self.inner.try_recv().ok()?;
+        self.queued.fetch_sub(frame.len(), Ordering::Relaxed);
+        Some(frame)
     }
 }
 
@@ -161,6 +196,17 @@ mod tests {
         assert_eq!(tx.queued(), 5);
         assert_eq!(rx.next().await.as_deref(), Some(b"hello".as_slice()));
         assert_eq!(tx.queued(), 0, "draining should release the reservation");
+    }
+
+    #[tokio::test]
+    async fn a_final_frame_is_delivered_before_the_connection_ends() {
+        let (tx, mut rx) = channel();
+        tx.send(b"ahead".to_vec()).unwrap();
+        tx.finish(b"closed".to_vec());
+        assert_eq!(rx.next().await.as_deref(), Some(b"ahead".as_slice()));
+        assert_eq!(rx.next().await.as_deref(), Some(b"closed".as_slice()));
+        assert!(rx.next().await.is_none());
+        assert_eq!(tx.send(b"late".to_vec()), Err(Overflowed));
     }
 
     #[tokio::test]

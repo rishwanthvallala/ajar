@@ -24,6 +24,11 @@ const NONCE_LEN = 12;
  */
 const REMEMBERED = 4096;
 
+export enum SealDirection {
+  HostToGuest = 0xa1,
+  GuestToHost = 0xa2,
+}
+
 export class Sealer {
   /** Insertion-ordered, so the first entry is always the oldest. */
   private received = new Set<string>();
@@ -43,12 +48,12 @@ export class Sealer {
     return new Sealer(key);
   }
 
-  async seal(f: Frame): Promise<Frame> {
+  async seal(f: Frame, direction: SealDirection): Promise<Frame> {
     if (!f.channel || !isEncrypted(f.channel)) return f;
     const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
     const ct = new Uint8Array(
       await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: nonce, additionalData: authenticatedHeader(f) },
+        { name: "AES-GCM", iv: nonce, additionalData: authenticatedHeader(f, direction) },
         this.key,
         f.payload,
       ),
@@ -60,7 +65,7 @@ export class Sealer {
   }
 
   /** `null` for a frame that will not open — wrong key, or interfered with. */
-  async open(f: Frame): Promise<Frame | null> {
+  async open(f: Frame, direction: SealDirection): Promise<Frame | null> {
     if (!isEncrypted(f.channel)) return f;
     if (f.payload.length < NONCE_LEN) return null;
     const nonce = f.payload.subarray(0, NONCE_LEN);
@@ -70,7 +75,7 @@ export class Sealer {
     try {
       const plain = new Uint8Array(
         await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv: nonce, additionalData: authenticatedHeader(f) },
+          { name: "AES-GCM", iv: nonce, additionalData: authenticatedHeader(f, direction) },
           this.key,
           body,
         ),
@@ -105,12 +110,13 @@ export class Sealer {
   }
 }
 
-function authenticatedHeader(f: Frame): Uint8Array<ArrayBuffer> {
-  const header = new Uint8Array(9);
+function authenticatedHeader(f: Frame, direction: SealDirection): Uint8Array<ArrayBuffer> {
+  const header = new Uint8Array(10);
   const view = new DataView(header.buffer);
-  header[0] = f.channel;
-  view.setUint32(1, f.streamId, true);
-  view.setUint32(5, f.target, true);
+  header[0] = direction;
+  header[1] = f.channel;
+  view.setUint32(2, f.streamId, true);
+  view.setUint32(6, f.target, true);
   return header;
 }
 

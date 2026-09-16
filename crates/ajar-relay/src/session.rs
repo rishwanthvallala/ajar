@@ -176,7 +176,18 @@ impl Registry {
 
     /// A host opening a session, or re-opening one whose socket dropped
     /// inside the grace period.
+    #[cfg(test)]
     pub fn open(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
+        self.open_locked(id, tx, false)
+    }
+
+    /// Open while atomically restoring the host's current admission state.
+    pub fn open_locked(
+        &self,
+        id: &str,
+        tx: Tx,
+        locked: bool,
+    ) -> Result<(Participant, bool), JoinError> {
         let mut entry = self
             .sessions
             .entry(id.to_string())
@@ -188,6 +199,10 @@ impl Registry {
             return Err(JoinError::HostTaken);
         }
         let resumed = entry.host_left_at.take().is_some();
+        // The agent supplies this on every handshake. That restores the
+        // admission boundary after a relay restart, before any guest can race
+        // through a later Lock control frame.
+        entry.locked = locked;
         let participant = Participant {
             id: 1,
             role: Role::Host,
@@ -283,6 +298,21 @@ impl Registry {
         self.sessions.get(id).map(|s| f(&s))
     }
 
+    /// Whether this socket still owns a participant entry. Kicking removes
+    /// that entry first; the next frame from the old socket then closes it
+    /// without granting one last action.
+    pub fn contains_participant(&self, id: &str, participant: &Participant) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|s| match participant.role {
+                Role::Host => s
+                    .host
+                    .as_ref()
+                    .is_some_and(|h| h.participant.id == participant.id),
+                Role::Guest | Role::Peer => s.guests.contains_key(&participant.id),
+            })
+    }
+
     /// Seal or unseal a session. Returns the new state, or `None` if the
     /// session has gone.
     pub fn set_locked(&self, id: &str, locked: bool) -> Option<bool> {
@@ -337,6 +367,18 @@ impl Registry {
         if let Some(mut s) = self.sessions.get_mut(id) {
             s.guests.remove(&pid);
         }
+    }
+
+    /// Revoke membership and close the participant's socket after a final
+    /// control notice has drained.
+    pub fn kick_guest(&self, id: &str, pid: u32, notice: Vec<u8>) -> bool {
+        let conn = self
+            .sessions
+            .get_mut(id)
+            .and_then(|mut s| s.guests.remove(&pid));
+        let Some(conn) = conn else { return false };
+        conn.tx.finish(notice);
+        true
     }
 
     /// The host's socket ended. `Deliberate` tears the session down now;
@@ -536,6 +578,27 @@ mod tests {
             r.join("s", later).is_ok(),
             "unlocking should let people in again"
         );
+    }
+
+    #[test]
+    fn a_host_handshake_restores_lock_before_the_first_join() {
+        let r = Registry::new();
+        let (host, _rh) = tx();
+        r.open_locked("s", host, true).unwrap();
+        let (guest, _rg) = tx();
+        assert_eq!(r.join("s", guest).err(), Some(JoinError::Locked));
+    }
+
+    #[test]
+    fn removing_a_guest_revokes_membership_immediately() {
+        let r = Registry::new();
+        let (host, _rh) = tx();
+        let (guest, _rg) = tx();
+        r.open("s", host).unwrap();
+        let participant = r.join("s", guest).unwrap();
+        assert!(r.contains_participant("s", &participant));
+        r.drop_guest("s", participant.id);
+        assert!(!r.contains_participant("s", &participant));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { Channel, decode, encode, Frame, jsonFrame, Role, TARGET_ALL } from "./proto";
-import { isEncrypted, Sealer } from "./sealed";
+import { isEncrypted, SealDirection, Sealer } from "./sealed";
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
@@ -94,7 +94,7 @@ export class Connection {
       // that throws is dropped; the next one still gets its turn.
       this.inbound = this.inbound
         .then(async () => {
-          const opened = await sealer.open(frame);
+          const opened = await sealer.open(frame, SealDirection.HostToGuest);
           // Wrong key, or a frame that was interfered with. Neither is worth
           // guessing at.
           if (opened) this.deliver(opened);
@@ -145,7 +145,9 @@ export class Connection {
     }
     const routed = content ? { ...f, target: this.participantId! } : f;
     const sealer = this.opts.sealer;
-    const outgoing = sealer ? await sealer.seal(routed) : routed;
+    const outgoing = sealer
+      ? await sealer.seal(routed, SealDirection.GuestToHost)
+      : routed;
     // Sealing is asynchronous, so the socket may have gone in the meantime.
     // Park the *unsealed* frame, never the one stamped for the old identity.
     if (!this.isOpen()) {
@@ -164,6 +166,7 @@ export class Connection {
   }
 
   private deliver(f: Frame) {
+    let welcomed = false;
     if (f.channel === Channel.Control) {
       try {
         const msg = JSON.parse(new TextDecoder().decode(f.payload)) as {
@@ -172,13 +175,18 @@ export class Connection {
         };
         if (msg.t === "welcome" && typeof msg.participant_id === "number") {
           this.participantId = msg.participant_id;
-          this.flush();
+          // Document stream ids belong to the old host-side registration.
+          // The application reopens the active path and replays its local
+          // delta after this welcome.
+          this.pending = this.pending.filter((queued) => queued.channel !== Channel.Doc);
+          welcomed = true;
         }
       } catch {
         // The application owns malformed control-message handling.
       }
     }
     this.opts.onFrame(f);
+    if (welcomed) this.flush();
   }
 
   private isGuest() {
