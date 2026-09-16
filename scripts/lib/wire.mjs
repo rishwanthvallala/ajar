@@ -24,6 +24,8 @@ const dec = new TextDecoder();
 // ------------------------------------------------------------------ sealing
 
 const NONCE_LEN = 12;
+const DIR_HOST_TO_GUEST = 0xa1;
+const DIR_GUEST_TO_HOST = 0xa2;
 
 /** Mirrors `Channel::is_encrypted` on the Rust side. */
 export const isEncrypted = (channel) =>
@@ -35,12 +37,12 @@ export async function importKey(b64url) {
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-async function seal(key, frame) {
+async function seal(key, frame, direction) {
   if (!isEncrypted(frame.channel)) return frame;
   const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
   const ct = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce, additionalData: header(frame) },
+      { name: "AES-GCM", iv: nonce, additionalData: authenticatedHeader(frame, direction) },
       key,
       frame.payload,
     ),
@@ -51,7 +53,7 @@ async function seal(key, frame) {
   return { ...frame, payload };
 }
 
-async function open(key, frame) {
+async function open(key, frame, direction) {
   if (!isEncrypted(frame.channel)) return frame;
   if (frame.payload.length < NONCE_LEN) return null;
   try {
@@ -60,7 +62,7 @@ async function open(key, frame) {
         {
           name: "AES-GCM",
           iv: frame.payload.subarray(0, NONCE_LEN),
-          additionalData: header(frame),
+          additionalData: authenticatedHeader(frame, direction),
         },
         key,
         frame.payload.subarray(NONCE_LEN),
@@ -72,12 +74,13 @@ async function open(key, frame) {
   }
 }
 
-function header(frame) {
-  const out = new Uint8Array(HEADER_LEN);
+function authenticatedHeader(frame, direction) {
+  const out = new Uint8Array(HEADER_LEN + 1);
   const view = new DataView(out.buffer);
-  out[0] = frame.channel;
-  view.setUint32(1, frame.streamId, true);
-  view.setUint32(5, frame.target, true);
+  out[0] = direction;
+  out[1] = frame.channel;
+  view.setUint32(2, frame.streamId, true);
+  view.setUint32(6, frame.target, true);
   return out;
 }
 
@@ -225,7 +228,7 @@ export class Guest {
         if (this.key) {
           this.inChain = this.inChain
             .then(async () => {
-              const f = await open(this.key, raw);
+              const f = await open(this.key, raw, DIR_HOST_TO_GUEST);
               if (f) this.dispatch(f, resolve, reject);
             })
             // Same reason as the browser client: a rejection here would gate
@@ -356,7 +359,7 @@ export class Guest {
       return;
     }
     const routed = content ? { ...frame, target: this.participantId } : frame;
-    const outgoing = this.key ? await seal(this.key, routed) : routed;
+    const outgoing = this.key ? await seal(this.key, routed, DIR_GUEST_TO_HOST) : routed;
     if (!this.isOpen()) {
       this.pending.push(frame);
       return;

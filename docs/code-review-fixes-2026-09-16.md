@@ -10,7 +10,7 @@ constraints in [`open-points.md`](./open-points.md) remain outside this work.
 |---|---|---|
 | F01 | Fixed | The macOS Seatbelt policy is passed directly with `sandbox-exec -p`; no policy file exists in guest-writable temporary storage. |
 | F02 | Fixed | The relay drops post-handshake guest/peer control frames, and the agent treats malformed control JSON as a dropped frame instead of unwinding the session. |
-| F03 | Fixed | AES-GCM authenticated data now includes a host-to-guest or guest-to-host direction byte in Rust and the browser. Reflected ciphertext fails authentication. |
+| F03 | Fixed | AES-GCM authenticated data now includes a host-to-guest or guest-to-host direction byte in Rust, the browser, and the shared Node smoke client. Reflected ciphertext fails authentication. |
 | F04 | Fixed | Kick removes membership, queues one final `Closed` notice, rejects later sends, drains the notice, and closes the WebSocket. Every received frame also rechecks membership. |
 | F05 | Fixed | Host `Hello` carries the live lock state on every connection. The relay applies it while registering the host, before a guest can join. |
 | F06 | Fixed | `~/.cargo` is no longer a writable Linux cache grant. Only `~/.cargo/bin` is readable, while `CARGO_HOME` is redirected to `~/.cache/ajar/cargo`. |
@@ -39,7 +39,11 @@ The frame wire format remains a nine-byte routing header, but encrypted payloads
 now authenticate a tenth, non-transmitted direction byte. Both endpoints use the
 same constants: `0xa1` for host-to-guest and `0xa2` for guest-to-host. This is a
 wire-compatibility change for encrypted content, so the agent and browser need to
-be deployed together.
+be deployed together. The shared Node wire client used by the end-to-end smoke
+suites was updated at the same time: outbound guest frames authenticate `0xa2`,
+and inbound host frames authenticate `0xa1`. Without that harness update, the
+agent correctly discarded the smoke client's old-format PTY-open request and CI
+timed out waiting for a terminal.
 
 The relay's outbound queue now distinguishes an immediate abort caused by
 backpressure from an orderly finish. Kick uses the orderly path so the browser
@@ -85,6 +89,7 @@ persistent pad store while retaining the unprivileged runtime user.
 - `npm run build` — passed for both production clients on Windows; WISP vendoring and all five pad Vite HTML entries completed.
 - `npm run test:ui` — passed workspace lifecycle/resizing/focus checks at four viewports; both Ajar and Pad booted without page errors.
 - `npm run test:review` — passed all eight focused regressions for F03, F08–F10, F12–F15.
+- `node --check scripts/lib/wire.mjs` — passed after synchronizing the smoke client's directional authenticated header with Rust and the browser.
 - `cargo test -p ajar-proto -p ajar-relay` — passed 75 tests (21 protocol, 54 relay).
 - `cargo test --workspace` — compiled all three crates and passed 78 of 82 agent tests plus all protocol/relay tests. The four agent failures are existing Windows-environment assumptions (`/bin/echo`, Unix process-limit wording, and a PATH without `git`), outside the changed paths; the supported agent targets remain Linux/macOS.
 - `cargo clippy -p ajar-proto -p ajar-relay --all-targets -- -D warnings` — passed.
