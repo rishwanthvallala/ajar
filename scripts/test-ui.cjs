@@ -114,6 +114,11 @@ async function checkBoots() {
         `${error.message}\nPad status: ${status ?? "missing"}\n${padErrors.join("\n")}`,
       );
     });
+    assert.equal(
+      await padPage.locator("#preview-pane").isHidden(),
+      true,
+      "Pad preview pane must not consume a grid row before a server is opened",
+    );
     assert.deepEqual(ajarErrors, []);
     assert.deepEqual(padErrors.filter((line) => line.startsWith("pageerror:")), []);
     console.log("Ajar and Pad both boot with no page errors.");

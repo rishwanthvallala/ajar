@@ -194,6 +194,9 @@ button.icon svg { width: 15px; height: 15px; }
   display: flex;
   background: var(--surface, #fff);
 }
+.preview[hidden] {
+  display: none;
+}
 .preview iframe {
   flex: 1;
   border: 0;

@@ -96,3 +96,12 @@ persistent pad store while retaining the unprivileged runtime user.
 - `cargo fmt --all -- --check` — passed after formatting.
 - `git diff --check` — passed.
 - Docker image construction could not run because the installed Docker Desktop service is unavailable to this session. Linux/macOS sandbox behavior still needs its normal kernel-specific CI coverage.
+
+## Post-review UI follow-up
+
+The Pad preview pane carried the HTML `hidden` attribute at startup, but its
+author CSS set `.preview { display: flex; }`. That display declaration overrode
+the hidden state and made CSS Grid allocate a blank third row between Monaco and
+the terminal. `.preview[hidden]` now explicitly uses `display: none`, and the UI
+boot check asserts that the pane consumes no layout space until a server preview
+is opened.
