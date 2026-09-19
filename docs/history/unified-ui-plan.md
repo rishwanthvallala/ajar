@@ -1,8 +1,8 @@
 # Unified UI plan: Ajar and Pad
 
 Created: 12 September 2026  
-Status: **On hold from UI-02 onward — section 1 no longer reflects what shipped.**  
-Recommended first work: settle the question in "What changed, and what it costs" below.
+Status: **Superseded by the source-only TypeScript workspace package.**
+Current implementation: [`../dev/workspace-ui.md`](../dev/workspace-ui.md).
 
 ## What changed, and what it costs
 
@@ -27,6 +27,14 @@ Everything below from section 1 onward was written assuming React and a shared
 direction, not as instructions to follow. Whoever picks up UI-02 should rewrite
 this section first, either restating the React plan against that bar or
 replanning the phases in plain TypeScript.
+
+The September 18 implementation took the second path. A private
+`@ajar/workspace-ui` package now owns the shared TypeScript shell, geometry,
+drawer behavior, preferences, and workspace CSS. Ajar and Pad keep their own
+editor, terminal, transport, persistence, and runtime code. The historical
+React phases UI-02 through UI-07 are therefore closed as a planning direction;
+their product requirements are tracked by the OpenSpec change
+`unify-pad-workspace-ui` and the current implementation document linked above.
 
 ## 1. The decision
 

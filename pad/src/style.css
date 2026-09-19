@@ -1,205 +1,67 @@
-/* One window: what is in the folder, what you are editing, what it printed. */
-:root {
-  --bg: #ffffff;
-  --panel: #f5f8f9;
-  --ink: #1b2226;
-  --muted: #5f7078;
-  --rule: #dde5e8;
-  --accent: #1a5a76;
-  --bad: #9b3c22;
-  --term: #ffffff;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1417;
-    --panel: #151c20;
-    --ink: #d8e2e6;
-    --muted: #8698a1;
-    --rule: #26343a;
-    --accent: #6fb6d6;
-    --bad: #e08e72;
-    --term: #12181c;
-  }
-}
-
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
-body {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  color: var(--ink);
-  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); }
+
+.pad-shell #workspace { font-family: var(--mono); }
+.pad-shell .dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--muted); }
+.pad-shell .status { color: var(--muted); }
+.pad-shell .status[data-status="loading"], .pad-shell .status[data-status="saving"] { color: var(--warn); }
+.pad-shell .status[data-status="running"] { color: var(--accent); }
+.pad-shell .status[data-status="error"] { color: var(--hard); }
+.pad-shell .status[data-status=""] + * { color: inherit; }
+.pad-shell .presence { color: var(--accent); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+
+.pad-shell .pad-action {
+  display: inline-flex; align-items: center; gap: 0.35rem; flex: none;
+  font: inherit; padding: 0.35rem 0.65rem; border: 1px solid var(--rule);
+  border-radius: 5px; background: var(--surface); color: var(--ink-2); cursor: pointer;
+  font-size: 0.75rem; line-height: 1.4;
+}
+.pad-shell .pad-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pad-shell .pad-action:disabled { opacity: 0.45; cursor: default; }
+.pad-shell .pad-action.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.pad-shell .pad-action.on { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.pad-shell .pad-action svg { width: 0.8125rem; height: 0.8125rem; }
+.pad-shell #back-to-editor { margin-left: auto; }
+
+.pad-shell .files { min-width: 0; min-height: 0; overflow: auto; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.pad-shell .tree-bar { display: flex; gap: 2px; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--rule); }
+.pad-shell .tree { overflow: auto; padding: 0.25rem 0 0.5rem; }
+.pad-shell button.icon { border: 0; background: transparent; padding: 0.25rem; border-radius: 3px; color: var(--muted); line-height: 0; cursor: pointer; }
+.pad-shell button.icon:hover { background: var(--surface-2); color: var(--ink); }
+.pad-shell button.icon svg { width: 0.9375rem; height: 0.9375rem; }
+.pad-shell .row {
+  display: flex; align-items: center; gap: 0.3rem; width: 100%; height: var(--tree-row);
+  text-align: left; border: 0; border-radius: 0; background: transparent;
+  font-family: var(--mono); font-size: 0.75rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.pad-shell .row:hover { background: var(--surface-2); color: var(--ink); }
+.pad-shell .row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); box-shadow: inset 2px 0 var(--accent); }
+.pad-shell .row .ico, .pad-shell .row .chev { flex: none; line-height: 0; opacity: 0.75; }
+.pad-shell .row .ico svg { width: 0.8125rem; height: 0.8125rem; }
+.pad-shell .row .chev { width: 0.6875rem; }
+.pad-shell .row .chev svg { width: 0.6875rem; height: 0.6875rem; transition: transform 120ms; }
+.pad-shell .row.dir.open .chev svg { transform: rotate(90deg); }
+.pad-shell .row.dir { color: var(--ink-2); }
+
+.pad-shell #viewer { position: relative; display: block; overflow: hidden; }
+.pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.pad-shell .preview { display: flex; background: var(--surface); }
+.pad-shell .preview[hidden] { display: none; }
+.pad-shell .preview iframe { flex: 1; border: 0; width: 100%; height: 100%; }
+.pad-shell .terms { position: relative; overflow: hidden; }
+.pad-shell .terminal { position: absolute; inset: 0; min-width: 0; min-height: 0; padding: 0.35rem 0.5rem; overflow: hidden; background: var(--surface); }
+.pad-shell .fixture-code, .pad-shell .fixture-terminal { margin: 0; min-height: 100%; padding: 1rem; overflow: auto; color: var(--ink-2); background: var(--surface); font: 0.8125rem/1.55 var(--mono); white-space: pre-wrap; }
+.pad-shell .fixture-terminal { padding: 0.65rem 0.75rem; }
+.pad-shell .fixture-icon { min-width: 2rem; font: 0.6875rem var(--mono); line-height: 1.2; }
+
+@media (max-width: 47.999rem) {
+  .pad-shell .workspace-actions { width: 100%; justify-content: flex-end; }
+  .pad-shell .workspace-actions .pad-action span { display: none; }
+  .pad-shell .workspace-actions .pad-action { min-width: 2rem; justify-content: center; }
 }
 
-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--rule);
-  flex: none;
-}
-.grow { flex: 1; }
-.name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 600;
-}
-.status { color: var(--muted); font-size: 12px; }
-.status[data-status="error"] { color: var(--bad); }
-
-button {
-  font: inherit;
-  padding: 0.25rem 0.7rem;
-  border: 1px solid var(--rule);
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--ink);
-  cursor: pointer;
-}
-button:hover:not(:disabled) { border-color: var(--accent); }
-button:disabled { opacity: 0.45; cursor: default; }
-button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-/* Sidebar and panes. `minmax(0, …)` on both axes so a long filename or a wide
-   line of output scrolls inside its own pane instead of stretching the grid. */
-main {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: clamp(9rem, 16vw, 15rem) minmax(0, 1fr);
-  /* The row has to be named. Left implicit it is `auto`, which sizes to the
-     tallest child and lets the sidebar and the editor grow past the viewport
-     instead of scrolling inside themselves — the whole column then sits above
-     the fold and the panel looks empty. */
-  grid-template-rows: minmax(0, 1fr);
-}
-.files {
-  border-right: 1px solid var(--rule);
-  background: var(--panel);
-  overflow: auto;
-  padding: 0.4rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.file {
-  text-align: left;
-  border: none;
-  border-radius: 3px;
-  background: none;
-  padding: 0.25rem 0.4rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.file:hover { background: var(--bg); }
-.file.on { color: var(--ink); background: var(--bg); font-weight: 600; }
-
-.panes {
-  display: grid;
-  grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
-  min-width: 0;
-}
-.editor { min-height: 0; }
-.terminal {
-  min-height: 0;
-  border-top: 1px solid var(--rule);
-  background: var(--term);
-  padding: 0.35rem 0.5rem;
-  overflow: hidden;
-}
-
-/* Only rendered when somebody else is here, so an empty folder stays quiet. */
-.presence {
-  color: var(--accent);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* ---------------------------------------------------------------- icons */
-
-button svg { width: 13px; height: 13px; vertical-align: -2px; }
-button.primary { display: inline-flex; align-items: center; gap: 0.35rem; }
-#share { display: inline-flex; align-items: center; gap: 0.35rem; }
-
-/* ------------------------------------------------------------ file tree */
-
-/* The sidebar is a column: a fixed strip of actions, then a scrolling tree.
-   `minmax(0, 1fr)` on the tree so it scrolls rather than pushing the bar off. */
-.files {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 0;
-  padding: 0;
-}
-.tree-bar {
-  display: flex;
-  gap: 2px;
-  padding: 0.3rem 0.35rem;
-  border-bottom: 1px solid var(--rule);
-}
-.tree { overflow: auto; padding: 0.25rem 0.2rem 0.5rem; }
-
-button.icon {
-  border: none;
-  background: none;
-  padding: 0.25rem;
-  border-radius: 3px;
-  color: var(--muted);
-  line-height: 0;
-}
-button.icon:hover { background: var(--bg); color: var(--ink); }
-button.icon svg { width: 15px; height: 15px; }
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: none;
-  border-radius: 3px;
-  padding: 0.2rem 0.4rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.row:hover { background: var(--bg); color: var(--ink); }
-.row.on { background: var(--bg); color: var(--ink); font-weight: 600; }
-.row .ico, .row .chev { flex: none; line-height: 0; opacity: 0.75; }
-.row .ico svg { width: 13px; height: 13px; }
-/* The chevron is always present, rotated when open, so a file and a folder at
-   the same depth line up rather than shifting by its width. */
-.row .chev { width: 11px; }
-.row .chev svg { width: 11px; height: 11px; transition: transform 120ms; }
-.row.dir.open .chev svg { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) {
-  .row .chev svg { transition: none; }
-}
-.row.dir { color: var(--ink); }
-
-/* The preview pane sits where the editor is and takes the same box, so
-   switching between them never moves anything else. */
-.preview {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  background: var(--surface, #fff);
-}
-.preview[hidden] {
-  display: none;
-}
-.preview iframe {
-  flex: 1;
-  border: 0;
-  width: 100%;
-  height: 100%;
+  .pad-shell .row .chev svg { transition: none; }
 }

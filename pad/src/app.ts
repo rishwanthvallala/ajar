@@ -18,6 +18,7 @@ import { Shell } from "./shell";
 import { Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
+import type { PadWorkspace } from "./workspace";
 
 const STARTER = `# Paste over this, or start typing.
 import csv
@@ -45,6 +46,7 @@ const WISP_URL: string = import.meta.env.VITE_WISP_URL ?? "";
 const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
 
 export class App {
+  private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private monaco: typeof Monaco | null = null;
   private models = new Map<string, Monaco.editor.ITextModel>();
@@ -53,7 +55,7 @@ export class App {
   private shell: Shell | null = null;
   private console: Console | null = null;
   private tree: FileTree | null = null;
-  private term: { write: (s: string) => void; fit: () => void } | null = null;
+  private term: { write: (s: string) => void; fit: () => void; dispose: () => void } | null = null;
   /** The port something in the folder is listening on, if any. */
   private listening: number | null = null;
   private served: BrowserServer | null = null;
@@ -98,12 +100,19 @@ export class App {
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       preview: HTMLButtonElement;
+      backToEditor: HTMLButtonElement;
       previewPane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
       title: HTMLElement;
     },
-  ) {}
+    private readonly ui?: PadWorkspace,
+  ) {
+    this.ui?.onLayout(() => {
+      this.editor?.layout();
+      this.term?.fit();
+    });
+  }
 
   /** Exposed for the browser checks, which need to see what synced. */
   private expose(): void {
@@ -361,12 +370,17 @@ export class App {
     // Exposed so the browser checks can drive the editor the way a person
     // would. Monaco's own API, not a hook invented for testing.
     (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
+    const color = matchMedia("(prefers-color-scheme: dark)");
     this.editor = monaco.editor.create(this.el.editor, {
       automaticLayout: true,
       minimap: { enabled: false },
-      fontSize: 13,
+      fontSize: this.codeFontPx(),
       scrollBeyondLastLine: false,
-      theme: matchMedia("(prefers-color-scheme: dark)").matches ? "vs-dark" : "vs",
+      theme: color.matches ? "vs-dark" : "vs",
+    });
+    color.addEventListener("change", () => {
+      monaco.editor.setTheme(color.matches ? "vs-dark" : "vs");
+      this.editor?.updateOptions({ fontSize: this.codeFontPx() });
     });
     this.editor.onDidChangeModelContent(() => this.warm());
   }
@@ -405,6 +419,8 @@ export class App {
     const model = this.models.get(path);
     if (!model || !this.editor || !this.monaco) return;
     this.active = path;
+    this.el.editor.dataset.active = path;
+    this.ui?.setActiveFile(path);
     this.editor.setModel(model);
     this.unbind?.();
     this.unbind = null;
@@ -475,11 +491,15 @@ export class App {
 
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
-      onOpen: (path) => this.show(path),
+      onOpen: (path) => {
+        this.show(path);
+        if (this.ui?.fileSelected()) this.editor?.focus();
+      },
       onNewFile: (dir) => this.addFile(dir),
       onNewFolder: (dir) => this.addFolder(dir),
     });
     this.tree.render([...this.models.keys()], this.active);
+    this.ui?.setFileCount(this.models.size);
   }
 
 
@@ -627,7 +647,10 @@ export class App {
     if (!this.el.previewPane.hidden) {
       this.el.previewPane.hidden = true;
       this.el.editor.hidden = false;
-      this.el.preview.classList.remove("on");
+      this.ui?.setPreview(false);
+      if (!this.ui) this.el.preview.classList.remove("on");
+      this.editor?.layout();
+      this.editor?.focus();
       return;
     }
     const port = this.listening;
@@ -641,12 +664,14 @@ export class App {
       this.el.previewPane.replaceChildren(frame);
       this.el.previewPane.hidden = false;
       this.el.editor.hidden = true;
-      this.el.preview.classList.add("on");
+      this.ui?.setPreview(true);
+      if (!this.ui) this.el.preview.classList.add("on");
     } catch (e) {
       // The terminal is where everything else says what went wrong, and a
       // preview that fails silently is indistinguishable from one that is
       // slow.
       this.term?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
+      this.say("error", `preview: ${(e as Error).message}`);
     }
   }
 
@@ -666,19 +691,29 @@ export class App {
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
     await import("@xterm/xterm/css/xterm.css");
+    const color = matchMedia("(prefers-color-scheme: dark)");
+    const terminalTheme = () => {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        background: style.getPropertyValue("--surface").trim(),
+        foreground: style.getPropertyValue("--ink-2").trim(),
+      };
+    };
     const term = new Terminal({
-      fontSize: 12,
+      fontSize: Math.max(11, this.codeFontPx() - 1),
       convertEol: true,
-      theme: matchMedia("(prefers-color-scheme: dark)").matches
-        ? { background: "#12181c", foreground: "#d8e2e6" }
-        : { background: "#ffffff", foreground: "#1b2226" },
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(this.el.terminal);
     fit.fit();
-    addEventListener("resize", () => fit.fit());
-    this.term = { write: (s) => term.write(s), fit: () => fit.fit() };
+    color.addEventListener("change", () => {
+      term.options.theme = terminalTheme();
+      term.options.fontSize = Math.max(11, this.codeFontPx() - 1);
+      fit.fit();
+    }, { signal: this.events.signal });
+    this.term = { write: (s) => term.write(s), fit: () => fit.fit(), dispose: () => term.dispose() };
     this.cols = term.cols;
     this.rows = term.rows;
 
@@ -715,12 +750,13 @@ export class App {
     this.el.run.onclick = () => void this.run();
     this.el.share.onclick = () => void this.share();
     this.el.preview.onclick = () => void this.togglePreview();
+    this.el.backToEditor.onclick = () => void this.togglePreview();
     addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         void this.run();
       }
-    });
+    }, { signal: this.events.signal });
   }
 
   private async run(): Promise<void> {
@@ -822,5 +858,24 @@ export class App {
   private say(status: Status, text: string): void {
     this.el.status.textContent = text;
     this.el.status.dataset.status = status;
+  }
+
+  private codeFontPx(): number {
+    const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    return Math.max(11, Math.min(20, root * 0.8125));
+  }
+
+  dispose(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.events.abort();
+    this.peers?.close();
+    this.unbind?.();
+    for (const doc of this.docs.values()) doc.destroy();
+    this.docs.clear();
+    for (const model of this.models.values()) model.dispose();
+    this.models.clear();
+    this.editor?.dispose();
+    this.term?.dispose();
+    void this.shell?.close().catch(() => {});
   }
 }

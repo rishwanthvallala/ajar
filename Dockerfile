@@ -7,8 +7,10 @@ WORKDIR /w
 COPY package.json package-lock.json ./
 COPY web/package.json web/package.json
 COPY pad/package.json pad/package.json
+COPY packages/workspace-ui/package.json packages/workspace-ui/package.json
 RUN npm ci --no-audit --no-fund
 COPY web/ web/
+COPY packages/workspace-ui/ packages/workspace-ui/
 RUN npm run build:ajar
 
 FROM rust:1-alpine AS build

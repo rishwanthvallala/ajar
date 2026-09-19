@@ -105,3 +105,9 @@ the hidden state and made CSS Grid allocate a blank third row between Monaco and
 the terminal. `.preview[hidden]` now explicitly uses `display: none`, and the UI
 boot check asserts that the pane consumes no layout space until a server preview
 is opened.
+
+The subsequent shared-workspace implementation retained that regression check
+while replacing Pad's fixed grid with the same shell, resizers, narrow-screen
+drawer, focus behavior, and panel styling used by Ajar. Detailed ownership,
+fixture states, bundle measurements, and validation evidence are recorded in
+[`dev/workspace-ui.md`](./dev/workspace-ui.md).

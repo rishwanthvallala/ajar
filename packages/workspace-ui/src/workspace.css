@@ -7,6 +7,7 @@
   grid-template-rows: auto auto auto minmax(0, 1fr);
   min-width: 0; min-height: 0;
   background: var(--surface);
+  color: var(--ink);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 0.8125rem;
 }
@@ -35,8 +36,11 @@
 .shell .body { position: relative; display: grid; grid-template-columns: var(--sidebar-width) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
 .shell.no-sidebar .body, .shell.narrow .body { grid-template-columns: minmax(0, 1fr); }
 .shell #sidebar { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--surface); border: 0; }
-.shell .side-head { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); color: var(--ink-2); font-size: 0.75rem; text-transform: none; letter-spacing: 0; }
+.shell .side-head { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); color: var(--ink-2); font-size: 0.75rem; }
 .shell #filecount { margin-left: auto; font-size: 0.6875rem; color: var(--muted); }
+.shell .sidebar-actions, .shell .workspace-actions, .shell .editor-actions { display: flex; align-items: center; gap: 0.4rem; }
+.shell .workspace-actions { margin-left: auto; }
+.shell .people:not(:empty) + .workspace-actions { margin-left: 0; }
 .shell .tree-row { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 0 0.75rem; height: var(--tree-row); font-size: 0.8125rem; font-weight: 400; color: var(--ink-2); }
 .shell .tree-row:hover { background: var(--surface-2); }
 .shell .tree-row.active { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); box-shadow: inset 2px 0 var(--accent); }
@@ -44,7 +48,6 @@
 .shell .viewer { grid-row: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border: 0; }
 .shell .viewer-head, .shell .terminal-head { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.4rem 0.875rem; border-bottom: 1px solid var(--rule); min-width: 0; background: var(--surface); }
 .shell .region-label { font-size: 0.75rem; font-weight: 600; color: var(--ink-2); flex: none; }
-.shell .viewer-head .region-label { flex: none; }
 .shell #viewer-title { flex: 1; min-width: 0; color: var(--muted); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell #viewer-title.problem { color: var(--warn); }
 .shell .editor-content { position: relative; min-width: 0; min-height: 0; }

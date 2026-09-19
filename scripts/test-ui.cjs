@@ -119,6 +119,35 @@ async function checkBoots() {
       true,
       "Pad preview pane must not consume a grid row before a server is opened",
     );
+    await padPage.locator(".xterm").waitFor({ state: "attached" });
+    const editorState = await padPage.evaluate(() => {
+      const editor = window.monaco.editor.getEditors()[0];
+      editor.setValue("layout state");
+      editor.executeEdits("layout-check", [{
+        range: new window.monaco.Range(1, 13, 1, 13),
+        text: " survives",
+      }]);
+      return editor.getValue();
+    });
+    await padPage.locator("#splitter").focus();
+    await padPage.keyboard.press("ArrowUp");
+    await padPage.emulateMedia({ colorScheme: "dark" });
+    await padPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(
+      await padPage.evaluate(() => window.monaco.editor.getEditors()[0].getValue()),
+      editorState,
+      "Pad layout and theme changes preserve editor content",
+    );
+    assert.equal(
+      await padPage.evaluate(() => window.monaco.editor.getEditors()[0].getModel().canUndo()),
+      true,
+      "Pad layout and theme changes preserve Monaco undo history",
+    );
+    await padPage.locator(".xterm-helper-textarea").focus();
+    await padPage.keyboard.type("pending-command");
+    await padPage.locator("#splitter").focus();
+    await padPage.keyboard.press("ArrowDown");
+    assert.match(await padPage.locator(".xterm-rows").innerText(), /pending-command/, "Pad resize preserves terminal contents");
     assert.deepEqual(ajarErrors, []);
     assert.deepEqual(padErrors.filter((line) => line.startsWith("pageerror:")), []);
     console.log("Ajar and Pad both boot with no page errors.");
@@ -156,7 +185,7 @@ async function requireBrowser() {
 
 async function main() {
   await requireBrowser();
-  for (const port of [5173, 5174, 5175]) await portFree(port);
+  for (const port of [5173, 5174, 5175, 5176]) await portFree(port);
   const viteBin = (workspaceRequire) =>
     path.join(path.dirname(workspaceRequire.resolve("vite/package.json")), "bin", "vite.js");
   const webVite = viteBin(webRequire);
@@ -164,14 +193,20 @@ async function main() {
   const dev = start(web, webVite, ["--host", "127.0.0.1", "--port", "5173", "--strictPort"]);
   const webPreview = start(web, webVite, ["preview", "--host", "127.0.0.1", "--port", "5174", "--strictPort"]);
   const padPreview = start(pad, padVite, ["preview", "--host", "127.0.0.1", "--port", "5175", "--strictPort"]);
+  const padDev = start(pad, padVite, ["--host", "127.0.0.1", "--port", "5176", "--strictPort"]);
 
   await Promise.all([
     ready("http://127.0.0.1:5173/", dev),
     ready("http://127.0.0.1:5174/", webPreview),
     ready("http://127.0.0.1:5175/", padPreview),
+    ready("http://127.0.0.1:5176/", padDev),
   ]);
   await run(path.join(root, "scripts", "check-workspace-layout.cjs"), {
     AJAR_PRODUCTION_URL: "http://127.0.0.1:5174",
+  });
+  await run(path.join(root, "scripts", "check-pad-layout.cjs"), {
+    PAD_PREVIEW_URL: "http://127.0.0.1:5176",
+    PAD_PRODUCTION_URL: "http://127.0.0.1:5175",
   });
   await checkBoots();
 }

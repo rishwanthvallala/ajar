@@ -10,6 +10,7 @@
     "probe": "npm run build && node scripts/probe-packages.mjs"
   },
   "dependencies": {
+    "@ajar/workspace-ui": "0.0.0",
     "@wasmer/sdk": "0.11.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",

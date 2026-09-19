@@ -1,8 +1,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "@ajar/workspace-ui/theme.css";
 import "./style.css";
-import "./workspace.css";
+import "@ajar/workspace-ui/workspace.css";
 
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
