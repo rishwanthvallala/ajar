@@ -66,6 +66,9 @@ pub struct Session {
     pub guests: HashMap<u32, Conn>,
     /// Sealed by the host. New guests are refused; existing ones stay.
     pub locked: bool,
+    /// What the host speaks, from its handshake. Relayed to each guest so a
+    /// version mismatch can be reported rather than felt.
+    pub host_protocol: u32,
     next_id: u32,
 }
 
@@ -78,6 +81,7 @@ impl Session {
             host_left_at: None,
             guests: HashMap::new(),
             locked: false,
+            host_protocol: ajar_proto::PROTOCOL_UNVERSIONED,
             // In a hosted session 1 is reserved for the host, so guests start
             // at 2. A peer session has no reserved id and starts at 1 — but
             // never at 0, which is TARGET_ALL on the wire.
@@ -178,7 +182,7 @@ impl Registry {
     /// inside the grace period.
     #[cfg(test)]
     pub fn open(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
-        self.open_locked(id, tx, false)
+        self.open_locked(id, tx, false, ajar_proto::PROTOCOL_VERSION)
     }
 
     /// Open while atomically restoring the host's current admission state.
@@ -187,6 +191,7 @@ impl Registry {
         id: &str,
         tx: Tx,
         locked: bool,
+        protocol: u32,
     ) -> Result<(Participant, bool), JoinError> {
         let mut entry = self
             .sessions
@@ -203,6 +208,9 @@ impl Registry {
         // admission boundary after a relay restart, before any guest can race
         // through a later Lock control frame.
         entry.locked = locked;
+        // Recorded on every handshake for the same reason as the lock: after a
+        // relay restart a guest must still learn which version it is talking to.
+        entry.host_protocol = protocol;
         let participant = Participant {
             id: 1,
             role: Role::Host,
@@ -584,9 +592,52 @@ mod tests {
     fn a_host_handshake_restores_lock_before_the_first_join() {
         let r = Registry::new();
         let (host, _rh) = tx();
-        r.open_locked("s", host, true).unwrap();
+        r.open_locked("s", host, true, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
         let (guest, _rg) = tx();
         assert_eq!(r.join("s", guest).err(), Some(JoinError::Locked));
+    }
+
+    #[test]
+    fn the_hosts_protocol_version_reaches_the_session_for_guests_to_read() {
+        // What a guest is told decides whether it can explain a dead session
+        // or has to sit in one. An older agent sends no version at all, and
+        // the relay must carry that through as "older" rather than as current.
+        let r = Registry::new();
+        let (old_host, _a) = tx();
+        r.open_locked("old", old_host, false, ajar_proto::PROTOCOL_UNVERSIONED)
+            .unwrap();
+        assert_eq!(
+            r.with("old", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_UNVERSIONED)
+        );
+
+        let (new_host, _b) = tx();
+        r.open_locked("new", new_host, false, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
+        assert_eq!(
+            r.with("new", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_VERSION)
+        );
+    }
+
+    #[test]
+    fn a_reconnecting_host_refreshes_its_protocol_version() {
+        // The same reason the lock is re-sent on every handshake: after a relay
+        // restart the stored value has to come from the agent that is actually
+        // connected now, not from whatever opened the session first.
+        let r = Registry::new();
+        let (first, _a) = tx();
+        r.open_locked("s", first, false, ajar_proto::PROTOCOL_UNVERSIONED)
+            .unwrap();
+        r.host_gone("s", HostExit::Dropped, b"");
+        let (second, _b) = tx();
+        r.open_locked("s", second, false, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
+        assert_eq!(
+            r.with("s", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_VERSION)
+        );
     }
 
     #[test]

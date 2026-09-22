@@ -29,6 +29,7 @@ constraints in [`open-points.md`](./open-points.md) remain outside this work.
 | F19 | Fixed | `run.sh`, which is embedded by the relay build, is copied into the Rust Docker build stage. |
 | F20 | Fixed | The final image creates and owns `/var/lib/ajar/pads`, declares `/var/lib/ajar` as a volume, and passes the pad directory explicitly. |
 | F21 | Fixed | Every relevant filesystem touch invalidates the offline snapshot, even when the visible tree metadata is unchanged. |
+| F23 | Fixed | The wire change in F03 is now negotiated. The host sends `protocol` in `Hello`, the relay returns it to guests as `host_protocol` in `Welcome`, and a guest facing a mismatch is told which side is behind and what to run — instead of a session that connects and silently drops every frame. |
 | F22 | Fixed | Pending document writes remain dirty until `atomic_write` succeeds; only then does `mark_written` acknowledge the exact content. Failed timer writes are retried. |
 
 ## Implementation notes

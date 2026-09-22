@@ -37,6 +37,24 @@ pub enum Channel {
     Store = 0x06,
 }
 
+/// What this build speaks on the content channels.
+///
+/// Bumped when a change makes frames from an older peer unreadable. Version 1
+/// is the direction byte below: before it, sealed payloads authenticated the
+/// nine-byte header alone, so an agent and a browser on opposite sides of that
+/// change cannot decrypt each other at all.
+///
+/// The failure is otherwise invisible — both ends drop what they cannot open,
+/// and the session looks connected while nothing works. Agents are installed by
+/// people and live on their machines for as long as they like, so old ones are
+/// always in the field. This travels in `Hello` and comes back in `Welcome`,
+/// both on the cleartext control channel, so the notice survives exactly the
+/// mismatch it reports.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// An agent that predates version negotiation sends no field at all.
+pub const PROTOCOL_UNVERSIONED: u32 = 0;
+
 /// The direction a sealed content frame is allowed to travel. It is part of
 /// the authenticated data so a guest cannot reflect host output back as host
 /// input (or vice versa) while keeping a valid authentication tag.
@@ -221,10 +239,19 @@ pub enum Control {
         /// relay restart cannot silently reopen a locked room.
         #[serde(default)]
         locked: bool,
+        /// What this endpoint speaks. Absent from an agent that predates
+        /// version negotiation, which `serde(default)` reads as 0.
+        #[serde(default)]
+        protocol: u32,
     },
     Welcome {
         participant_id: u32,
         participants: Vec<Participant>,
+        /// The host's `PROTOCOL_VERSION`, carried through by the relay so a
+        /// guest can say something useful instead of sitting in a session
+        /// where nothing it sends can be read.
+        #[serde(default)]
+        host_protocol: u32,
     },
     Joined {
         participant: Participant,
@@ -550,6 +577,7 @@ mod tests {
             session: "quiet-ember-4417".into(),
             role: Role::Guest,
             locked: false,
+            protocol: PROTOCOL_VERSION,
         };
         let f = Frame::json(Channel::Control, TARGET_ALL, &msg).unwrap();
         let back = Frame::decode(&f.encode()).unwrap();
@@ -571,6 +599,7 @@ mod tests {
             session: "s".into(),
             role: Role::Guest,
             locked: false,
+            protocol: PROTOCOL_VERSION,
         })
         .unwrap();
         assert!(
@@ -584,6 +613,7 @@ mod tests {
                 id: 1,
                 role: Role::Host,
             }],
+            host_protocol: PROTOCOL_VERSION,
         })
         .unwrap();
         assert!(
@@ -618,6 +648,7 @@ mod tests {
                 session: "quiet-ember-4417".into(),
                 role: Role::Guest,
                 locked: false,
+                protocol: PROTOCOL_VERSION,
             },
         )
         .unwrap();
@@ -650,6 +681,41 @@ mod tests {
             sealed.open(&cipher, Direction::HostToGuest),
             Err(CryptoError::Replayed)
         ));
+    }
+
+    #[test]
+    fn a_hello_from_an_agent_that_predates_versioning_reads_as_unversioned() {
+        // Exactly what an installed older agent puts on the wire. It has to
+        // keep parsing — refusing it would turn a fixable "your agent is old"
+        // into a session that will not open at all — and it has to be
+        // distinguishable, which is the whole point of the field.
+        let old = r#"{"t":"hello","session":"quiet-ember-4417","role":"host","locked":true}"#;
+        match serde_json::from_str::<Control>(old).expect("an old hello still parses") {
+            Control::Hello {
+                protocol, locked, ..
+            } => {
+                assert_eq!(protocol, PROTOCOL_UNVERSIONED);
+                assert!(locked, "the fields it does send still arrive");
+            }
+            other => panic!("expected a hello, got {other:?}"),
+        }
+        assert_ne!(
+            PROTOCOL_VERSION, PROTOCOL_UNVERSIONED,
+            "an unversioned peer must not look current"
+        );
+    }
+
+    #[test]
+    fn a_welcome_without_a_host_version_reads_as_unversioned() {
+        // A relay that has not been redeployed yet. The guest should conclude
+        // "older", not crash and not assume current.
+        let old = r#"{"t":"welcome","participant_id":2,"participants":[]}"#;
+        match serde_json::from_str::<Control>(old).expect("an old welcome still parses") {
+            Control::Welcome { host_protocol, .. } => {
+                assert_eq!(host_protocol, PROTOCOL_UNVERSIONED)
+            }
+            other => panic!("expected a welcome, got {other:?}"),
+        }
     }
 
     #[test]

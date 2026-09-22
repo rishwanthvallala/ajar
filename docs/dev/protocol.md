@@ -71,6 +71,41 @@ Frames the agent tries to send while disconnected are **dropped, not queued**.
 The ring buffers already hold the terminal output a guest needs, and queueing
 here would replay it twice.
 
+## Versions, because the agent is not ours to deploy
+
+`PROTOCOL_VERSION` in `ajar-proto` is what a build speaks on the content
+channels. It is bumped when a change makes an older peer's frames unreadable —
+version 1 is the direction byte in the sealed frame's authenticated data.
+
+This exists because of how the failure looks without it. Both ends drop what
+they cannot decrypt, and neither says anything: the agent logs at `debug!`, the
+browser has no branch for it at all. A guest joining an agent from the wrong
+side of that change gets a session that connects, draws a terminal, and
+silently discards every frame in both directions. It reads as the product being
+broken.
+
+The web client we deploy; **the agent lives on other people's machines** until
+they choose to reinstall, so old ones are permanently in the field. That makes
+this a normal condition rather than a migration window.
+
+The host sends `protocol` in its `Hello` on every handshake — every reconnect,
+for the same reason the lock bit is re-sent: after a relay restart the stored
+value has to come from the agent connected now. The relay keeps it on the
+session and returns it to each guest as `host_protocol` in `Welcome`. Both are
+on the **cleartext control channel**, so the notice survives exactly the
+mismatch it reports.
+
+Absent and zero mean different things, and the client distinguishes them:
+
+| `host_protocol` | means | the guest |
+|---|---|---|
+| missing | a relay from before this field — it cannot tell | joins normally |
+| `0` | a current relay reporting an agent from before versioning | is told to ask the host to update, with the command |
+| anything else ≠ ours | a genuine mismatch either way | is told which side is behind |
+
+Treating a missing field as "old" would refuse working sessions whenever the
+relay lagged a deploy, which is why it is not.
+
 ## Refusals have to arrive
 
 `send_error` used to queue a frame on the writer task and then call

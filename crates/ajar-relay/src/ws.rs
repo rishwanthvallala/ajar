@@ -60,12 +60,13 @@ pub async fn handle(
         }
     };
 
-    let (session_id, role, locked) = match hello.parse_json::<Control>() {
+    let (session_id, role, locked, protocol) = match hello.parse_json::<Control>() {
         Ok(Control::Hello {
             session,
             role,
             locked,
-        }) => (session, role, locked),
+            protocol,
+        }) => (session, role, locked, protocol),
         _ => refuse!("expected_hello", "first frame must be a hello"),
     };
 
@@ -95,7 +96,7 @@ pub async fn handle(
     };
 
     let joined = match role {
-        Role::Host => registry.open_locked(&session_id, tx.clone(), locked),
+        Role::Host => registry.open_locked(&session_id, tx.clone(), locked, protocol),
         Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
@@ -123,11 +124,20 @@ pub async fn handle(
         .with(&session_id, |s| s.participants())
         .unwrap_or_else(|| vec![me.clone()]);
 
+    // What the host speaks, so a guest can tell the difference between a quiet
+    // session and one where nothing it sends can be decrypted. Read from the
+    // session rather than this connection: for a guest the relevant version is
+    // the host's, and for the host it is simply its own coming back.
+    let host_protocol = registry
+        .with(&session_id, |s| s.host_protocol)
+        .unwrap_or(ajar_proto::PROTOCOL_UNVERSIONED);
+
     send_control(
         &tx,
         &Control::Welcome {
             participant_id: me.id,
             participants,
+            host_protocol,
         },
     );
 

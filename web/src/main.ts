@@ -32,6 +32,7 @@ import {
   TARGET_ALL,
   textEncoder,
   untag,
+  PROTOCOL_VERSION,
 } from "./proto";
 
 
@@ -340,7 +341,40 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (f.channel === Channel.Control) {
       const msg = parseJson<Control>(f);
       switch (msg.t) {
-        case "welcome":
+        case "welcome": {
+          // Checked before anything else, because everything else is sealed.
+          //
+          // A host on a different protocol cannot read a byte this client
+          // sends, and nothing anywhere reports that: both ends drop what they
+          // cannot decrypt. Left alone the session connects, the terminal
+          // draws, and typing does nothing — which reads as the product being
+          // broken rather than the agent being old.
+          // Absent and zero are different answers. A relay that predates this
+          // field sends nothing, and knows nothing — blocking on that would
+          // refuse working sessions during a partial rollout. A current relay
+          // always serialises it, so a zero is that relay saying the host it
+          // is connected to is older than this client.
+          const hostProtocol = msg.host_protocol;
+          if (hostProtocol !== undefined && hostProtocol !== PROTOCOL_VERSION) {
+            dispose();
+            conn.close();
+            app.innerHTML =
+              hostProtocol < PROTOCOL_VERSION
+                ? `
+              <div class="centered">
+                <h1>This host is running an older ajar</h1>
+                <p class="muted">Nothing you sent could be read, so this session was not opened.
+                Ask them to update and send a new link:</p>
+                <pre class="muted">curl -sSf https://ajar.rishwanth.dev/install.sh | sh</pre>
+              </div>`
+                : `
+              <div class="centered">
+                <h1>This page is out of date</h1>
+                <p class="muted">The host is running a newer ajar than this tab.
+                Reload to pick up the current version.</p>
+              </div>`;
+            break;
+          }
           me = msg.participant_id;
           // The relay has no idea who we are. Say so on the encrypted
           // channel; the host answers with a roster.
@@ -359,6 +393,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
           }
           break;
+        }
         case "joined":
           // A roster follows once they have introduced themselves.
           break;
