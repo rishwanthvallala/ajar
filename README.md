@@ -28,7 +28,8 @@ send the link. A real bash with about 140 commands, an editor, and
 From the folder you want to share:
 
 ```sh
-curl -sSf https://ajar.rishwanth.dev/run.sh | sh
+curl -sSf https://ajar.rishwanth.dev/run.sh | sh     # share this folder
+curl -sSf https://ajar.rishwanth.dev/install.sh | sh # install, or update
 ```
 
 Or open [code.rishwanth.dev](https://code.rishwanth.dev) and start typing.

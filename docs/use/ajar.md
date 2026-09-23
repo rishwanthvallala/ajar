@@ -27,6 +27,16 @@ ajar                      # shares the current folder
 ajar ~/some/project       # shares that one
 ```
 
+**To update, run the install command again.** `run.sh` reuses whatever `ajar`
+it finds, so it will never move you off an old one — that is deliberate, since
+it is also what makes starting a session fast. `install.sh` always fetches the
+current release and replaces what is there.
+
+This matters more than it sounds. A guest opening your link needs a version
+that can talk to theirs, and if yours is too old they are told so and given
+this command. Nothing breaks silently, but nothing updates on its own
+either.
+
 One static binary, nothing to configure. On Windows use WSL2 and keep the
 project inside the WSL filesystem.
 
