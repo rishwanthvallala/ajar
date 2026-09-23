@@ -34,6 +34,9 @@ npm run check --workspace=ajar-pad
 | `src/seed.ts` | What the sandbox starts with — store, model, document, in that order |
 | `src/files.ts` | The file tree, with folders derived from paths |
 | `src/app.ts` | Everything wired together |
+| `src/bootstrap.ts` | The entry: mints or reads the name, raises the shell, then starts the app |
+| `src/workspace.ts` | The pad's layout, built on the shared `WorkspaceShell` |
+| `src/workspace-preview.ts` | The layout on its own, for `?preview=workspace` and the layout checks |
 | `src/tools/awk.py` | An awk, because none is published for this runtime |
 | `src/tools/sort.py`, `tail.py` | Advertised by the shipped coreutils and not compiled into it |
 | `src/tools/box.py` | Twenty-three more, dispatched on the first argument — including `find`, which shadows the shipped one |

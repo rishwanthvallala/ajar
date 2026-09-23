@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 16 September 2026, after egress shipped and `pip install` began working.*
+*Kept as of 23 September 2026, after the review fixes merged and 0.0.3 shipped.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -9,6 +9,28 @@ not what would be nice.
 ---
 
 ## Waiting on a decision
+
+### Two things the September review left untested or unbounded
+
+From the 22-finding review merged as PR #3 — the findings are in
+[code-review-2026-09-16.md](code-review-2026-09-16.md) and what was done about
+each in [code-review-fixes-2026-09-16.md](code-review-fixes-2026-09-16.md).
+Both of the below were implemented; neither is finished.
+
+**The relay's control-frame refusal has no test.** Guests and peers can no
+longer originate a control frame after the handshake — forwarding malformed
+cleartext control used to terminate the host — but nothing exercises it. The
+end-to-end smokes only ever have the *host* send control frames, so a
+regression here would pass the gate. Seven relay tests came with that work;
+this is not one of them.
+
+**The pad's HTTP body limit is large.** `MAX_PAD_HTTP_BODY` is
+`MAX_BYTES * 6 + 1 MiB`, about 151 MB, sized so JSON escaping cannot reject a
+legitimate 25 MiB pad. It is bounded and the store rejects anything past the
+cap after parsing, but the relay runs on a 1.8 GB box and nothing limits
+concurrent uploads. Streaming the body, or a smaller limit with a less
+pessimistic escaping assumption, would both be better than the current
+arithmetic.
 
 ### Tools that do not fully work
 

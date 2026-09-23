@@ -18,7 +18,9 @@ worse than no gate, because it still reports success.
 | `npm run typecheck` / `build` | Both browser builds |
 | `pad/scripts/browser-check.mjs` | Drives `pad/src/check.ts` in headless Chromium — the runtime, the shell, every python shim against its real tool, the sandbox seed, and that the WISP transport loads. It cannot be a node test: the python package fails wasm validation there, and `SharedArrayBuffer` needs cross-origin isolation |
 | dockerfile check | Every `COPY` source exists — the cheap half of `docker build` |
-| `scripts/test-ui.cjs` | Workspace layout, editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, lazy loading, disposal; both apps boot with no page errors |
+| `scripts/test-ui.cjs` | Runs both layout checks below, then boots each app and requires no page errors |
+| `scripts/check-workspace-layout.cjs` | The session client: editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, preferences, preview isolation, lazy loading, disposal — and that a guest meeting a host on another protocol is told so instead of getting a dead session |
+| `scripts/check-pad-layout.cjs` | The pad against the same shared shell: resize, four viewports, drawer focus, status fixtures, and that pad preferences and network state stay isolated from the session client's |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | Ignore rules, reads, path-traversal refusal, patches, an install-sized burst |
 | `scripts/smoke-editing.mjs` | Two people editing one file while the terminal rewrites it |

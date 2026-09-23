@@ -67,6 +67,7 @@ the way it is. Start with [architecture](docs/dev/architecture.md).
 | `crates/ajar-relay/src/pad.rs` | The one durable thing in the relay: folders for the browser tier |
 | `web` | The session client — Vite, TypeScript, xterm.js, Monaco |
 | `pad` | The browser tier — same stack, plus a WASIX runtime |
+| `packages/workspace-ui` | The workspace shell and theme both clients build their layout from |
 | `scripts/` | The gate: end-to-end suites and acceptance |
 | `deploy/` | Caddyfile, systemd units, deploy script, and the egress endpoint the pad installs through |
 | `docs/use/` | Product documentation |

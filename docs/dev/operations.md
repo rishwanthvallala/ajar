@@ -149,6 +149,47 @@ relay ships the browser clients and the relay binary; it does nothing for
 `crates/ajar`. A fix to the agent is not in anyone's hands until a release is
 cut.
 
+### Cutting one
+
+The workspace version and the tag move together. `.github/workflows/release.yml`
+fires on `v*`, builds `-p ajar` for four targets, and publishes assets named
+exactly as `install.sh` expects.
+
+```sh
+# bump `version` in the root Cargo.toml, then
+cargo build --release -p ajar-relay -p ajar    # updates Cargo.lock
+git commit -am "release: 0.0.3"
+git tag -a v0.0.3 -m "…"
+git push origin main && git push origin v0.0.3
+```
+
+**The GitHub API lags the workflow badly.** After v0.0.3 the release reported
+zero assets for about nine minutes and then briefly 404'd, while the run had
+already succeeded. Check `actions/runs` rather than `releases/latest`, and
+don't conclude anything from the first answer.
+
+### A wire change means the release goes first
+
+`install.sh` serves whatever the **latest release** holds. So when a change
+makes an older agent unable to talk to the current browser client — anything
+that bumps `PROTOCOL_VERSION` — the order is not a preference:
+
+1. Cut the release, so `install.sh` serves an agent that can talk to what is
+   about to be deployed.
+2. Confirm it is really published: the workflow green, the assets listed, the
+   checksum matching, and the downloaded binary reporting the new version.
+3. Then `deploy.sh`.
+
+Deploying first breaks the product for **everyone, including people installing
+for the first time**. A fresh `curl | sh` would fetch the old agent, the new
+client would correctly report it as too old, and the command in that notice
+would reinstall the same old agent. The message is accurate and the fix it
+names does not work, which is worse than the silent failure it replaced.
+
+This is why `deploy.sh` does not publish the agent and never should: the two
+have to be sequenced by hand, and a script that did both would hide which one
+went first.
+
 ## Verifying a deploy
 
 The script's own health check is not enough — it has reported success while
@@ -168,6 +209,29 @@ W=$(ls web/dist/assets/index-*.js | head -1)
 curl -sS "https://ajar.rishwanth.dev/assets/$(basename $W)" | shasum -a256
 shasum -a256 "$W"
 ```
+
+## Verifying a protocol change, both ways
+
+The 0.0.3 deploy is the pattern worth repeating, because a version guard that
+is only tested against a fixture proves very little.
+
+Two agents were run against production and joined with a real browser:
+
+| agent | expected | got |
+|---|---|---|
+| **0.0.3**, from the release just published | session opens | no notice; `hello.py` appeared in the tree |
+| **0.0.2**, downloaded from the previous release | refused, with a reason | the mismatch notice, naming `install.sh` |
+
+The first is the stronger of the two. The file tree crosses the **encrypted**
+fs channel, so a folder arriving is the direction-byte change working end to
+end against the live relay — not a unit test agreeing with itself.
+
+The second needed the real old binary. A fixture can only assert that the
+client does the right thing with a number; downloading v0.0.2 and watching a
+genuine pre-change agent get refused is what shows the number arrives at all.
+
+Both are cheap: `curl` the tarball from the release, run it against
+`--relay https://ajar.rishwanth.dev`, and drive the printed link.
 
 ## The history rewrite of 15 September 2026
 

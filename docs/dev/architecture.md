@@ -141,9 +141,24 @@ would leave a browser confidently out of step with no way to notice.
 | `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store |
 | `web/src` | The session client |
 | `pad/src` | The browser tier, including the WASIX runtime and the shell |
+| `packages/workspace-ui` | `WorkspaceShell` and the theme both products' layouts are built from |
 
-`web/src/editing.ts` and `pad/src/editing.ts` are deliberate near-duplicates:
-the pad's was lifted from ajar's and they have diverged only where the
-products differ. A shared package was tried and removed — see
-[history/unified-ui-plan.md](../history/unified-ui-plan.md) for what that cost
-and why it was reverted.
+**One shared package, and it is a narrow one.** `@ajar/workspace-ui` exports a
+`WorkspaceShell` — the panel arrangement, the resizing, the drawer, the theme
+tokens — and nothing else. Both `web/src/workspace.ts` and `pad/src/workspace.ts`
+build on it: `web/src/workspace.ts` went from 262 lines to 84, and the pad's
+equivalent is 126 where it previously had none of its own.
+
+It is worth being precise about how this differs from the shared package that
+was tried and reverted, because the earlier attempt is still on record in
+[history/unified-ui-plan.md](../history/unified-ui-plan.md): that one was React,
+and it took the pad's entry chunk from 18 KB to 235 KB to render a placeholder
+into a hidden div. This one is plain TypeScript and shares layout, not
+rendering. The pad's entry stayed small — the two applications still ship
+separate editor, terminal, shell, sync and runtime chunks, and neither pulls in
+the other's.
+
+`web/src/editing.ts` and `pad/src/editing.ts` remain deliberate near-duplicates:
+the pad's was lifted from ajar's and they have diverged only where the products
+differ. Sharing the *shell* did not mean sharing those, and the reasons in the
+history document still hold.

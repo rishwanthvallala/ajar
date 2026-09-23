@@ -75,7 +75,7 @@ P1 means a security boundary, data integrity, or deployment blocker that should 
 
 ### F01 — Keep the macOS sandbox policy outside guest-writable storage
 
-**Locations:** [profile creation](D:/ajar/ajar/crates/ajar/src/sandbox.rs:331), [temporary-directory grants](D:/ajar/ajar/crates/ajar/src/sandbox.rs:287), [launch wrapper](D:/ajar/ajar/crates/ajar/src/sandbox.rs:116).
+**Locations:** [profile creation](../crates/ajar/src/sandbox.rs) (line 331), [temporary-directory grants](../crates/ajar/src/sandbox.rs) (line 287), [launch wrapper](../crates/ajar/src/sandbox.rs) (line 116).
 
 The agent writes its Seatbelt profile into `std::env::temp_dir()`. The profile grants guest writes to `/tmp`, `/private/tmp`, and the macOS per-user temporary-directory roots. Every later terminal invokes `sandbox-exec -f` with that same file.
 
@@ -87,7 +87,7 @@ A guest can change the policy file from an existing terminal and then request an
 
 ### F02 — Reject guest control traffic and isolate parse failures
 
-**Locations:** [guest forwarding](D:/ajar/ajar/crates/ajar-relay/src/ws.rs:190), [host control parsing](D:/ajar/ajar/crates/ajar/src/main.rs:570), [fatal propagation](D:/ajar/ajar/crates/ajar/src/main.rs:431).
+**Locations:** [guest forwarding](../crates/ajar-relay/src/ws.rs) (line 190), [host control parsing](../crates/ajar/src/main.rs) (line 570), [fatal propagation](../crates/ajar/src/main.rs) (line 431).
 
 After joining an unlocked hosted session, a guest can send a Control-channel frame with target zero. The relay forwards it to the agent without validating its payload. Control frames are unencrypted, and `handle_frame` propagates a failed `parse_json::<Control>()` through the main event loop.
 
@@ -99,7 +99,7 @@ A valid frame header followed by malformed JSON, or a JSON object with an unknow
 
 ### F03 — Authenticate message direction, not only the existing header
 
-**Locations:** [authenticated header](D:/ajar/ajar/crates/ajar-proto/src/lib.rs:90), [browser sealing/opening](D:/ajar/ajar/web/src/sealed.ts:45), [targeted terminal replay](D:/ajar/ajar/crates/ajar/src/main.rs:1116), [terminal input handler](D:/ajar/ajar/crates/ajar/src/main.rs:645).
+**Locations:** [authenticated header](../crates/ajar-proto/src/lib.rs) (line 90), [browser sealing/opening](../web/src/sealed.ts) (line 45), [targeted terminal replay](../crates/ajar/src/main.rs) (line 1116), [terminal input handler](../crates/ajar/src/main.rs) (line 645).
 
 The target field means destination on host-to-guest traffic and sender on guest-to-host traffic. A host output frame for guest 2 and an input frame from guest 2 therefore have identical authenticated headers for the same PTY. Both directions use the same key.
 
@@ -111,7 +111,7 @@ The existing reproduction seals a targeted PTY output frame and successfully ope
 
 ### F04 — Kick must cancel the connection and revoke its routing authority
 
-**Locations:** [kick](D:/ajar/ajar/crates/ajar-relay/src/ws.rs:384), [registry removal](D:/ajar/ajar/crates/ajar-relay/src/session.rs:336), [guest route](D:/ajar/ajar/crates/ajar-relay/src/ws.rs:190).
+**Locations:** [kick](../crates/ajar-relay/src/ws.rs) (line 384), [registry removal](../crates/ajar-relay/src/session.rs) (line 336), [guest route](../crates/ajar-relay/src/ws.rs) (line 190).
 
 Kick sends a `Closed` notice and removes the guest from the map. The socket handler still owns its sender, writer task, and fixed `me` identity. Its receive loop does not check that the participant remains a member. A modified client can ignore the notice and continue sending correctly stamped encrypted input to the host.
 
@@ -123,7 +123,7 @@ The standard browser closes voluntarily, which hides the missing server-side rev
 
 ### F05 — Restore the lock before accepting joins after reconnect
 
-**Locations:** [reconnect handler](D:/ajar/ajar/crates/ajar/src/main.rs:384), [new session defaults](D:/ajar/ajar/crates/ajar-relay/src/session.rs:73), [lock action](D:/ajar/ajar/crates/ajar/src/main.rs:473).
+**Locations:** [reconnect handler](../crates/ajar/src/main.rs) (line 384), [new session defaults](../crates/ajar-relay/src/session.rs) (line 73), [lock action](../crates/ajar/src/main.rs) (line 473).
 
 The host retains `state.locked`, but a restarted relay creates a new session with `locked: false`. The agent's connection handler does not resend its current lock state. The panel can continue showing a locked session while new guests are admitted.
 
@@ -135,7 +135,7 @@ This also affects a lock toggled while the host is offline, since outbound traff
 
 ### F06 — Linux cache grants include a credential location
 
-**Locations:** [cache roots](D:/ajar/ajar/crates/ajar/src/sandbox.rs:25), [Linux grants](D:/ajar/ajar/crates/ajar/src/sandbox.rs:496), [macOS credential exclusions](D:/ajar/ajar/crates/ajar/src/sandbox.rs:77).
+**Locations:** [cache roots](../crates/ajar/src/sandbox.rs) (line 25), [Linux grants](../crates/ajar/src/sandbox.rs) (line 496), [macOS credential exclusions](../crates/ajar/src/sandbox.rs) (line 77).
 
 Linux grants read/write access to the entire `~/.cargo` directory. That includes `~/.cargo/credentials.toml`, which this same module explicitly identifies and denies on macOS. Landlock's additive grants do not contain an equivalent exclusion. A Linux host with Cargo credentials can expose them even though the sandbox is presented as withholding home-directory credentials.
 
@@ -149,7 +149,7 @@ The need to create cache directories on fresh machines is real, but it does not 
 
 ### F07 — Reopen documents when a guest connection gets a new identity
 
-**Locations:** [browser welcome handler](D:/ajar/ajar/web/src/main.ts:329), [host leave cleanup](D:/ajar/ajar/crates/ajar/src/main.rs:572), [host join initialization](D:/ajar/ajar/crates/ajar/src/main.rs:1037), [document lifetime](D:/ajar/ajar/crates/ajar/src/docs.rs:151).
+**Locations:** [browser welcome handler](../web/src/main.ts) (line 329), [host leave cleanup](../crates/ajar/src/main.rs) (line 572), [host join initialization](../crates/ajar/src/main.rs) (line 1037), [document lifetime](../crates/ajar/src/docs.rs) (line 151).
 
 When the only reader disconnects, the host flushes and drops that document. The browser reconnects with a new participant ID but retains its old `DocSession` and document ID. Welcome sends only a presence introduction; host join initialization sends the tree, PTYs, and roster, not a reopened document.
 
@@ -161,7 +161,7 @@ Subsequent browser edits are addressed to the old document ID. The host rejects 
 
 ### F11 — Refuse truncated reads during external document reconciliation
 
-**Locations:** [reconciliation](D:/ajar/ajar/crates/ajar/src/main.rs:997), [read truncation](D:/ajar/ajar/crates/ajar/src/workspace/mod.rs:171), [initial edit eligibility](D:/ajar/ajar/crates/ajar/src/main.rs:756).
+**Locations:** [reconciliation](../crates/ajar/src/main.rs) (line 997), [read truncation](../crates/ajar/src/workspace/mod.rs) (line 171), [initial edit eligibility](../crates/ajar/src/main.rs) (line 756).
 
 Initial document opening correctly refuses files over 1 MB. Later, `reconcile_docs` accepts any nonbinary `Fs::Content` and ignores its `truncated` field.
 
@@ -173,7 +173,7 @@ Open a small file, then replace it from the host or terminal with a text file la
 
 ### F21 — Content changes must invalidate snapshots even when metadata is equal
 
-**Locations:** [metadata comparison](D:/ajar/ajar/crates/ajar/src/workspace/mod.rs:120), [snapshot scheduling](D:/ajar/ajar/crates/ajar/src/main.rs:1053), [snapshot generation](D:/ajar/ajar/crates/ajar/src/main.rs:813).
+**Locations:** [metadata comparison](../crates/ajar/src/workspace/mod.rs) (line 120), [snapshot scheduling](../crates/ajar/src/main.rs) (line 1053), [snapshot generation](../crates/ajar/src/main.rs) (line 813).
 
 Workspace entries contain path, kind, and size. A same-length file rewrite compares equal, so `Workspace::apply` emits no patch. `on_fs_event` schedules a new snapshot only when a patch exists.
 
@@ -185,7 +185,7 @@ After an initial snapshot settles, replacing `old` with `new` leaves the relay's
 
 ### F22 — Acknowledge persistence only after the write succeeds
 
-**Locations:** [due writes](D:/ajar/ajar/crates/ajar/src/docs.rs:226), [pending shutdown writes](D:/ajar/ajar/crates/ajar/src/docs.rs:249), [write-back](D:/ajar/ajar/crates/ajar/src/main.rs:888).
+**Locations:** [due writes](../crates/ajar/src/docs.rs) (line 226), [pending shutdown writes](../crates/ajar/src/docs.rs) (line 249), [write-back](../crates/ajar/src/main.rs) (line 888).
 
 `due_for_write` clears `dirty` and sets `written` before `write_back` attempts the filesystem operation. Write-back only logs failure and returns no success result. A transient write/rename error therefore stops timer retries, and shutdown can also skip the content because it already equals `written`.
 
@@ -199,7 +199,7 @@ The last-reader close path may make another write attempt, but a later close is 
 
 ### F08 — Propagate remote document changes into the execution filesystem
 
-**Locations:** [remote updates](D:/ajar/ajar/pad/src/app.ts:310), [refresh exclusion](D:/ajar/ajar/pad/src/app.ts:205), [dirty-only model flush](D:/ajar/ajar/pad/src/app.ts:534), [publish](D:/ajar/ajar/pad/src/app.ts:763).
+**Locations:** [remote updates](../pad/src/app.ts) (line 310), [refresh exclusion](../pad/src/app.ts) (line 205), [dirty-only model flush](../pad/src/app.ts) (line 534), [publish](../pad/src/app.ts) (line 763).
 
 Remote CRDT updates alter the document but do not mark local edits dirty or update the runtime file. The following HTTP refresh skips any file with a live document, while replacing `known` with the newly saved server content. Publishing after a typed command then compares an old runtime file with that newer baseline and uploads the old text as a change.
 
@@ -211,7 +211,7 @@ The reproduction changes a document from `old` to `new` remotely, refreshes the 
 
 ### F09 — Remove remotely deleted files from the runtime and document registry
 
-**Locations:** [remote removal](D:/ajar/ajar/pad/src/app.ts:211), [document cleanup helper](D:/ajar/ajar/pad/src/app.ts:296), [publish](D:/ajar/ajar/pad/src/app.ts:763).
+**Locations:** [remote removal](../pad/src/app.ts) (line 211), [document cleanup helper](../pad/src/app.ts) (line 296), [publish](../pad/src/app.ts) (line 763).
 
 Refresh disposes the deleted file's Monaco model and removes it from `known`, but leaves the file in the runtime. It also does not call `closeDoc`, so live document state may remain subscribed. The next runtime diff treats the surviving file as newly created and sends it back to the store.
 
@@ -223,7 +223,7 @@ The reproduction confirms a remotely deleted file is uploaded again after refres
 
 ### F10 — Serialize autosaves and command publication
 
-**Locations:** [save debounce](D:/ajar/ajar/pad/src/app.ts:477), [autosave](D:/ajar/ajar/pad/src/app.ts:482), [command publication](D:/ajar/ajar/pad/src/app.ts:763).
+**Locations:** [save debounce](../pad/src/app.ts) (line 477), [autosave](../pad/src/app.ts) (line 482), [command publication](../pad/src/app.ts) (line 763).
 
 The debounce coalesces pending timers but does not serialize in-flight HTTP writes. `saveEdits` clears `dirty` before awaiting its request, so another save can start while the first is pending. The server uses arrival order and receives no client revision or compare-and-swap condition.
 
@@ -235,7 +235,7 @@ The reproduction resolves a newer save before an older save; durable content end
 
 ### F12 — Distinguish an empty document from no response
 
-**Locations:** [state request fallback](D:/ajar/ajar/pad/src/app.ts:276), [seed](D:/ajar/ajar/pad/src/editing.ts:136).
+**Locations:** [state request fallback](../pad/src/app.ts) (line 276), [seed](../pad/src/editing.ts) (line 136).
 
 After waiting for peer state, `readyDoc` uses `doc.length === 0` to decide nobody answered. An empty document is a valid result, particularly just after someone deletes all text and before the HTTP debounce saves it. Seeding the stale stored text then revives the deleted content.
 
@@ -247,7 +247,7 @@ The reproduction applies a complete CRDT deletion state and shows that the subse
 
 ### F15 — Reject conflicting file and directory paths
 
-**Locations:** [store path validation](D:/ajar/ajar/crates/ajar-relay/src/pad.rs:208), [write application](D:/ajar/ajar/crates/ajar-relay/src/pad.rs:347), [tree construction](D:/ajar/ajar/pad/src/files.ts:35).
+**Locations:** [store path validation](../crates/ajar-relay/src/pad.rs) (line 208), [write application](../crates/ajar-relay/src/pad.rs) (line 347), [tree construction](../pad/src/files.ts) (line 35).
 
 The API validates individual paths but accepts a folder containing both `a` and `a/b`. The tree inserts `a` as a file with `children: null`, then dereferences its children while placing `a/b`. The renderer reproduction throws before drawing the folder.
 
@@ -259,7 +259,7 @@ A normal rename/create interaction or a direct API write can leave a pad that fa
 
 ### F16 — Re-read the store on peer reconnect
 
-**Locations:** [presence/rejoin callback](D:/ajar/ajar/pad/src/app.ts:157), [peer welcome](D:/ajar/ajar/pad/src/peers.ts:198).
+**Locations:** [presence/rejoin callback](../pad/src/app.ts) (line 157), [peer welcome](../pad/src/peers.ts) (line 198).
 
 Reconnect asks for state for documents already open, but never calls `refresh` to recover missed folder changes. Files added, removed, or changed without an open document while the socket was down stay stale until another peer happens to send a later `moved` message. A failed refresh is also silently abandoned without retry.
 
@@ -273,7 +273,7 @@ The state-vector exchange cannot recover files the browser does not yet know exi
 
 ### F13 — Run-button execution must own console foreground state
 
-**Locations:** [Run path](D:/ajar/ajar/pad/src/app.ts:703), [announcement](D:/ajar/ajar/pad/src/console.ts:242), [input routing](D:/ajar/ajar/pad/src/console.ts:71).
+**Locations:** [Run path](../pad/src/app.ts) (line 703), [announcement](../pad/src/console.ts) (line 242), [input routing](../pad/src/console.ts) (line 71).
 
 The Run button calls `announce` and `sh.run` directly. `announce` only prints; it does not set `Console.running`. As a result, a Run-launched program waiting for input receives none: keystrokes edit the next command line instead. Ctrl-C clears that line rather than terminating the running program.
 
@@ -285,7 +285,7 @@ The focused reproduction confirms Ctrl-C after `attach`/`announce` never calls t
 
 ### F14 — Parse terminal escape sequences before splitting text
 
-**Locations:** [input loop](D:/ajar/ajar/pad/src/console.ts:104), [arrow cases](D:/ajar/ajar/pad/src/console.ts:122).
+**Locations:** [input loop](../pad/src/console.ts) (line 104), [arrow cases](../pad/src/console.ts) (line 122).
 
 `handle` loops over individual characters and passes each to `key`. The arrow cases in `key` compare against complete three-character escape sequences, so they cannot match. Escape is ignored and `[D`, `[A`, and similar fragments are inserted as ordinary text.
 
@@ -299,7 +299,7 @@ The reproduction types `abc`, Left, and `X`; the command becomes `abc[DX` rather
 
 ### F17 — Align the HTTP write limit with the pad's capacity
 
-**Locations:** [route setup](D:/ajar/ajar/crates/ajar-relay/src/main.rs:138), [JSON extractor](D:/ajar/ajar/crates/ajar-relay/src/main.rs:220), [25 MB store limit](D:/ajar/ajar/crates/ajar-relay/src/pad.rs:27).
+**Locations:** [route setup](../crates/ajar-relay/src/main.rs) (line 138), [JSON extractor](../crates/ajar-relay/src/main.rs) (line 220), [25 MB store limit](../crates/ajar-relay/src/pad.rs) (line 27).
 
 The pad route uses `Json<WriteBody>` without overriding Axum's default body limit. Axum 0.8.9 applies a default 2 MB limit to this extractor, so a valid pad update with a larger JSON body is rejected before the 25 MB store check runs. This affects single large files and batches of otherwise valid files. The browser treats 413 as a permanent save failure. [Axum's version-specific documentation](https://docs.rs/axum/0.8.9/axum/extract/struct.DefaultBodyLimit.html) confirms the extractor behavior.
 
@@ -309,7 +309,7 @@ The pad route uses `Json<WriteBody>` without overriding Axum's default body limi
 
 ### F18 — Use platform-aware package paths in the pad build
 
-**Locations:** [WISP root calculation](D:/ajar/ajar/pad/vite.config.ts:62), [Rollup input paths](D:/ajar/ajar/pad/vite.config.ts:109).
+**Locations:** [WISP root calculation](../pad/vite.config.ts) (line 62), [Rollup input paths](../pad/vite.config.ts) (line 109).
 
 On Windows, `createRequire().resolve()` returns a path containing backslashes. Searching it for the forward-slashed string `@mercuryworkshop/wisp-js` returns `-1`. The slice then produces an unrelated prefix rather than the package root.
 
@@ -328,7 +328,7 @@ The config also passes URL `.pathname` values directly to Rollup, which should b
 
 ### F19 — Include the relay's embedded runner in the Docker build
 
-**Locations:** [Rust image inputs](D:/ajar/ajar/Dockerfile:18), [embedded runner](D:/ajar/ajar/crates/ajar-relay/src/main.rs:243).
+**Locations:** [Rust image inputs](../Dockerfile) (line 18), [embedded runner](../crates/ajar-relay/src/main.rs) (line 243).
 
 The Rust Docker stage copies the Cargo files, crates, and `install.sh`, but not `run.sh`. The relay compiles `../../../run.sh` with `include_str!`, which resolves to `/src/run.sh` in that stage. The file does not exist, so a clean container build cannot compile.
 
@@ -340,7 +340,7 @@ The current gate checks that listed COPY sources exist; it cannot detect a requi
 
 ### F20 — Give the Docker relay a writable persistent pad directory
 
-**Locations:** [runtime image](D:/ajar/ajar/Dockerfile:23), [entrypoint](D:/ajar/ajar/Dockerfile:33), [store startup](D:/ajar/ajar/crates/ajar-relay/src/main.rs:79).
+**Locations:** [runtime image](../Dockerfile) (line 23), [entrypoint](../Dockerfile) (line 33), [store startup](../crates/ajar-relay/src/main.rs) (line 79).
 
 After fixing F19, the default image still runs as the unprivileged `ajar` user with no writable working directory or explicit `--pad-dir`. The final Alpine stage defaults to `/`, so the default `./ajar-pads` resolves beneath the root directory. Store initialization runs unconditionally before the listener and fails when it cannot create that directory.
 
