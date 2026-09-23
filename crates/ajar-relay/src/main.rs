@@ -53,6 +53,14 @@ struct Args {
     #[arg(long, default_value = "./ajar-pads")]
     pad_dir: String,
 
+    /// Bytes every pad together may occupy. Refuses new writes past it.
+    ///
+    /// The default suits the box this normally runs on. A smaller disk should
+    /// say so — the point is to refuse before the disk is gone, and what
+    /// "before" means is a property of the disk, not of this program.
+    #[arg(long, default_value_t = pad::MAX_STORE_BYTES)]
+    max_store_bytes: u64,
+
     /// Read the caller's address from `X-Forwarded-For`.
     ///
     /// Only when something you control sets it. Left on with nothing in
@@ -81,10 +89,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let pads = Arc::new(
-        Store::open(&args.pad_dir)
+        Store::open(&args.pad_dir, args.max_store_bytes)
             .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?,
     );
-    info!("pads stored in {}", args.pad_dir);
+    // Both numbers, because the interesting one is the gap. A relay that starts
+    // already near its ceiling is a thing to know at boot rather than from the
+    // first refused write.
+    info!(
+        "pads stored in {} — holding {} MB of {} MB",
+        args.pad_dir,
+        pads.used() / (1024 * 1024),
+        args.max_store_bytes / (1024 * 1024),
+    );
 
     let state = AppState {
         registry: Arc::new(Registry::new()),
@@ -199,6 +215,9 @@ fn refuse(e: pad::Error) -> (StatusCode, String) {
     let code = match e {
         pad::Error::Gone => StatusCode::GONE,
         pad::Error::TooBig { .. } | pad::Error::TooManyFiles => StatusCode::PAYLOAD_TOO_LARGE,
+        // Not the request's fault and worth retrying, which is what this status
+        // means and what PAYLOAD_TOO_LARGE would wrongly deny.
+        pad::Error::StoreFull => StatusCode::INSUFFICIENT_STORAGE,
         pad::Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };

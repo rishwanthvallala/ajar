@@ -16,7 +16,14 @@
 //
 // Nothing here may run against a deployed relay. It starts its own.
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { fail, finish, Guest, ok, Procs, sleep, waitForHealth } from "./lib/wire.mjs";
+
+/** Its own directory, so a filled store never touches a real one. */
+const padDir = mkdtempSync(join(tmpdir(), "ajar-abuse-"));
 
 const PORT = 8823;
 const HTTP = `http://127.0.0.1:${PORT}`;
@@ -88,6 +95,55 @@ async function main() {
     ok(`one address is held to ${MAX_JOINS} joins (refused the ${refusedAt.at + 1}th)`);
   }
 
+  // -------------------------------------------- the disk cannot be filled
+  //
+  // Pads cost nothing to create and nothing bounded their sum, so roughly 640
+  // writes at the per-pad cap filled the disk — after which the relay could
+  // save nothing for anybody. The ceiling is a flag so this can be reached in a
+  // few requests rather than a few gigabytes.
+  const CEILING = 3 * 1024 * 1024;
+  procs.start(
+    "target/debug/ajar-relay",
+    [
+      "--bind",
+      `127.0.0.1:${PORT + 1}`,
+      "--pad-dir",
+      padDir,
+      "--max-store-bytes",
+      String(CEILING),
+    ],
+    "relay-small",
+  );
+  const SMALL = `http://127.0.0.1:${PORT + 1}`;
+  await waitForHealth(SMALL);
+
+  const mb = "x".repeat(1024 * 1024);
+  const statuses = [];
+  for (let i = 0; i < 6; i++) {
+    const r = await fetch(`${SMALL}/api/pad/filler-${i}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ writes: [{ path: "big.txt", content: mb }] }),
+    });
+    statuses.push(r.status);
+    if (r.status !== 200) break;
+  }
+
+  const stored = statuses.filter((c) => c === 200).length;
+  const last = statuses[statuses.length - 1];
+  if (last === 507) {
+    ok(`the store refuses past its ceiling (507 after ${stored} pads)`);
+  } else {
+    fail(`filling the store past its ceiling returned ${last}, not 507`);
+  }
+
+  // Reads must keep working. Refusing writes is survival; refusing reads is an
+  // outage, and a full disk should not become one.
+  const readable = await fetch(`${SMALL}/api/pad/filler-0`).then((r) => r.ok);
+  readable
+    ? ok("a pad already stored is still readable when the store is full")
+    : fail("a full store stopped serving what it already had");
+
   // ------------------------------------------- and the relay is still alive
   //
   // Refusing is only half of it. A limiter that takes the process down with it
@@ -109,11 +165,13 @@ async function main() {
     ? ok("closing the flood frees the allowance again")
     : fail(`still refused after the flood closed: ${again.why}`);
 
+  rmSync(padDir, { recursive: true, force: true });
   finish(procs, "the relay refuses abuse and keeps serving");
 }
 
 main().catch((e) => {
   console.error(e);
+  rmSync(padDir, { recursive: true, force: true });
   finish(procs, null);
   process.exit(1);
 });

@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Total bytes one pad may hold. Matches the snapshot cap the agent tier uses.
 pub const MAX_BYTES: usize = 25 * 1024 * 1024;
@@ -33,6 +34,20 @@ pub const MAX_BYTES: usize = 25 * 1024 * 1024;
 /// because the runtime reports no modification times. A cap that keeps that
 /// walk trivial is worth more here than room nobody asked for.
 pub const MAX_FILES: usize = 500;
+
+/// Bytes every pad in the store may add up to.
+///
+/// The per-pad cap bounds one folder; nothing bounded the sum, and pads cost
+/// nothing to create. At 25 MiB each, roughly 640 writes fill a 16 GB disk, and
+/// the seven-day lease is no help against something that takes an afternoon —
+/// a full disk stops the relay saving anything, including the pads belonging to
+/// people who were using it properly.
+///
+/// Chosen to be survivable rather than generous: well under the free space on
+/// the box this runs on, so filling it is an error somebody sees rather than an
+/// outage. The number is the *serialised* size on disk, which is what actually
+/// competes for the disk.
+pub const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// How long an untouched pad survives. Restarted by any write.
 pub const LEASE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -152,6 +167,8 @@ pub enum Error {
         bytes: usize,
     },
     TooManyFiles,
+    /// Every pad together is at the ceiling. Nothing to do with *this* pad.
+    StoreFull,
     Io(String),
 }
 
@@ -168,6 +185,10 @@ impl Error {
                 MAX_BYTES / (1024 * 1024)
             ),
             Error::TooManyFiles => format!("a pad holds at most {MAX_FILES} files"),
+            // Deliberately says it is not the caller's fault. Somebody who has
+            // just pasted four lines and been refused should not go looking for
+            // what is wrong with their four lines.
+            Error::StoreFull => "this server is out of room for new pads — try again later".into(),
             Error::Io(e) => format!("could not store that: {e}"),
         }
     }
@@ -257,6 +278,16 @@ const STRIPES: usize = 64;
 
 pub struct Store {
     dir: PathBuf,
+    /// The ceiling this store enforces. A field rather than the constant so a
+    /// smaller disk can say so, and so a test can reach it without writing 4 GB.
+    ceiling: u64,
+    /// Serialised bytes currently on disk, maintained rather than measured.
+    ///
+    /// Counted once at startup and adjusted by every save and every entombment.
+    /// The alternative is walking the directory per write, which is the cost
+    /// the file-count cap exists to avoid — and the sweeper already shows what
+    /// a full scan costs when it does one hourly.
+    used: AtomicU64,
     /// Serialises the read-modify-write in `write`.
     ///
     /// Without it two saves to one pad both read the same starting point and
@@ -268,13 +299,30 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
+    /// The ceiling is always explicit. There was a convenience `open` applying
+    /// the default, and with one real caller passing a flag it was only ever
+    /// reached from tests — a constructor that exists for tests is how a default
+    /// diverges from what production runs.
+    pub fn open(dir: impl Into<PathBuf>, ceiling: u64) -> std::io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
+        let used = std::fs::read_dir(&dir)?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
         Ok(Self {
             dir,
+            ceiling,
+            used: AtomicU64::new(used),
             stripes: (0..STRIPES).map(|_| Mutex::new(())).collect(),
         })
+    }
+
+    /// Serialised bytes the store is holding right now.
+    pub fn used(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
     }
 
     fn stripe(&self, name: &str) -> &Mutex<()> {
@@ -387,6 +435,21 @@ impl Store {
 
     fn save(&self, name: &str, pad: &Pad) -> Result<(), Error> {
         let body = serde_json::to_vec(pad).map_err(|e| Error::Io(e.to_string()))?;
+
+        // What this write costs the store, as a delta against whatever the name
+        // already occupied. Replacing a large pad with a small one has to give
+        // the difference back, or the ceiling ratchets shut on ordinary use.
+        let was = std::fs::metadata(self.pad_path(name))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let now = body.len() as u64;
+        if now > was {
+            let after = self.used.load(Ordering::Relaxed) + (now - was);
+            if after > self.ceiling {
+                return Err(Error::StoreFull);
+            }
+        }
+
         // Written beside the target and renamed over it. A half-written pad
         // that a restart then tries to parse is worse than a lost write.
         // Unique per call, not per process. Sharing one temporary path meant
@@ -400,14 +463,28 @@ impl Store {
         std::fs::rename(&tmp, self.pad_path(name)).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             Error::Io(e.to_string())
-        })
+        })?;
+        // Only once the rename landed. Counting before it would charge the
+        // store for bytes that never reached the disk.
+        if now >= was {
+            self.used.fetch_add(now - was, Ordering::Relaxed);
+        } else {
+            self.used.fetch_sub(was - now, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// Delete the contents, keep the name forever.
     fn entomb(&self, name: &str) -> Result<(), Error> {
         std::fs::write(self.tomb_path(name), b"").map_err(|e| Error::Io(e.to_string()))?;
+        let freed = std::fs::metadata(self.pad_path(name))
+            .map(|m| m.len())
+            .unwrap_or(0);
         match std::fs::remove_file(self.pad_path(name)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.used.fetch_sub(freed, Ordering::Relaxed);
+                Ok(())
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::Io(e.to_string())),
         }
@@ -448,9 +525,120 @@ fn stem(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A pad ~1 MiB on disk, so a ceiling can be reached without writing 4 GB.
+    fn megabyte(s: &Store, name: &str) -> Result<u64, Error> {
+        s.write(name, &[put("big.txt", &"x".repeat(1024 * 1024))])
+    }
+
+    #[test]
+    fn the_store_refuses_once_every_pad_together_reaches_the_ceiling() {
+        // The vector this exists for: pads are free to create, so ~640 writes
+        // at the per-pad cap fill a 16 GB disk and the relay can then save
+        // nothing at all — including for the people who were using it properly.
+        let dir = tempdir::Dir::new();
+        let s = Store::open(dir.path(), 3 * 1024 * 1024).unwrap();
+
+        megabyte(&s, "one").unwrap();
+        megabyte(&s, "two").unwrap();
+        let refused = megabyte(&s, "three");
+        assert_eq!(
+            refused.err(),
+            Some(Error::StoreFull),
+            "a third megabyte past a 3 MB ceiling must be refused"
+        );
+
+        // And the refusal must not have been charged: a rejected write that
+        // still counts would walk the ceiling down to nothing.
+        let before = s.used();
+        let _ = megabyte(&s, "four");
+        assert_eq!(s.used(), before, "a refused write must cost nothing");
+    }
+
+    #[test]
+    fn a_full_store_still_serves_what_it_already_has() {
+        // Refusing new writes is survival; refusing reads would be an outage.
+        let dir = tempdir::Dir::new();
+        let s = Store::open(dir.path(), 2 * 1024 * 1024).unwrap();
+        megabyte(&s, "kept").unwrap();
+        assert!(megabyte(&s, "extra").is_err(), "the store should be full");
+
+        assert!(
+            s.get("kept").unwrap().is_some(),
+            "an existing pad must still be readable when the store is full"
+        );
+        // And a pad already there can still be edited *down*, which is the only
+        // way somebody can help.
+        assert!(
+            s.write("kept", &[put("big.txt", "small now")]).is_ok(),
+            "shrinking an existing pad must be allowed when full"
+        );
+    }
+
+    #[test]
+    fn the_store_counts_what_is_on_disk_and_gives_it_back() {
+        // The ceiling is only as good as the arithmetic behind it. Over-counting
+        // ratchets it shut on ordinary use; under-counting means it never trips.
+        let (s, _d) = store();
+        assert_eq!(s.used(), 0, "a fresh store holds nothing");
+
+        megabyte(&s, "one").unwrap();
+        let after_one = s.used();
+        assert!(
+            after_one > 1024 * 1024,
+            "a megabyte of text must be counted"
+        );
+
+        megabyte(&s, "two").unwrap();
+        assert!(s.used() > after_one, "a second pad adds to the total");
+
+        // Replacing a large pad with a small one has to return the difference.
+        s.write("one", &[put("big.txt", "tiny")]).unwrap();
+        assert!(
+            s.used() < after_one + 1024,
+            "shrinking a pad must give the bytes back, not ratchet"
+        );
+    }
+
+    #[test]
+    fn a_reopened_store_recounts_rather_than_starting_at_zero() {
+        // A restart that forgets the total is a ceiling an attacker resets by
+        // waiting for a deploy.
+        let dir = tempdir::Dir::new();
+        {
+            let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+            megabyte(&s, "kept").unwrap();
+            assert!(s.used() > 1024 * 1024);
+        }
+        let again = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        assert!(
+            again.used() > 1024 * 1024,
+            "reopening must count what is already there"
+        );
+    }
+
+    #[test]
+    fn expiring_a_pad_returns_its_bytes_to_the_store() {
+        let (s, _d) = store();
+        megabyte(&s, "stale").unwrap();
+        let held = s.used();
+        assert!(held > 1024 * 1024);
+
+        // Age it past the lease the same way the sweeper's own test does.
+        let path = s.dir.join("stale.json");
+        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        pad.updated_ms -= LEASE.as_millis() as u64 + 1;
+        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
+
+        assert_eq!(s.sweep(), vec!["stale".to_string()]);
+        assert!(
+            s.used() < held,
+            "a swept pad must stop counting against the ceiling"
+        );
+    }
+
     fn store() -> (Store, tempdir::Dir) {
         let dir = tempdir::Dir::new();
-        let store = Store::open(dir.path()).unwrap();
+        let store = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
         (store, dir)
     }
 
@@ -598,10 +786,10 @@ mod tests {
         // would care.
         let dir = tempdir::Dir::new();
         {
-            let s = Store::open(dir.path()).unwrap();
+            let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
             s.write("keeper", &[put("main.py", "print(1)")]).unwrap();
         }
-        let reopened = Store::open(dir.path()).unwrap();
+        let reopened = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
         assert_eq!(
             reopened.get("keeper").unwrap().unwrap().files["main.py"].content,
             "print(1)"
@@ -790,7 +978,7 @@ mod tests {
         // pad genuinely do overlap.
         use std::sync::Arc;
         let dir = tempdir::Dir::new();
-        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let store = Arc::new(Store::open(dir.path(), MAX_STORE_BYTES).unwrap());
         store.write("p", &[put("seed", "0")]).unwrap();
 
         let hands: Vec<_> = (0..8)
