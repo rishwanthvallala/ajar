@@ -69,6 +69,9 @@ node scripts/smoke-reconnect.mjs
 echo "── smoke: peer sessions ──────────────────────────────"
 node scripts/smoke-peer.mjs
 
+echo "── smoke: abuse ──────────────────────────────────────"
+node scripts/smoke-abuse.mjs
+
 echo "── acceptance ────────────────────────────────────────"
 node scripts/acceptance.mjs
 

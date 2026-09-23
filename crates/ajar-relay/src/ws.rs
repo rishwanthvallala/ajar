@@ -12,6 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use tracing::{debug, info, warn};
 
 use crate::outbox::{self, Outbox};
+use crate::quota::Kind;
 use crate::quota::Quota;
 use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYTES};
 
@@ -75,24 +76,26 @@ pub async fn handle(
     // host invited would be limiting the wrong side.
     // Held for the life of this connection; releases on every exit path,
     // including the refusals below.
+    // Every connection is charged to something now. It used to be only the
+    // ones that *created* a session — guests were exempt outright and peers
+    // were exempt whenever the name already existed, which is every pad after
+    // the first visit. One address could therefore hold unlimited sockets, each
+    // with an 8 MiB outbox allowance, and the quota never saw them.
+    //
     // Creating a peer session costs the same as opening a hosted one, since
     // both mint a name nobody had. Two peers racing to create the same name
     // will both be metered; over-counting by one is not worth a lock here.
-    let metered = match role {
-        Role::Host => true,
-        Role::Peer => !registry.exists(&session_id),
-        Role::Guest => false,
+    let kind = match role {
+        Role::Host => Kind::Open,
+        Role::Peer if !registry.exists(&session_id) => Kind::Open,
+        _ => Kind::Join,
     };
-    let _slot = if metered {
-        match quota.claim(caller, std::time::Instant::now()) {
-            Ok(slot) => Some(slot),
-            Err(denied) => {
-                warn!(%caller, "refused: {}", denied.message());
-                refuse!("rate_limited", denied.message());
-            }
+    let _slot = match quota.claim(caller, std::time::Instant::now(), kind) {
+        Ok(slot) => slot,
+        Err(denied) => {
+            warn!(%caller, ?kind, "refused: {}", denied.message());
+            refuse!("rate_limited", denied.message());
         }
-    } else {
-        None
     };
 
     let joined = match role {

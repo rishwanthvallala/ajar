@@ -24,12 +24,71 @@ pub const MAX_OPEN_PER_IP: usize = 8;
 /// Sessions one address may start within [`WINDOW`].
 pub const MAX_STARTS_PER_WINDOW: usize = 20;
 
+/// Connections one address may hold to sessions it did **not** create.
+///
+/// Much larger than [`MAX_OPEN_PER_IP`] on purpose. Joining is the ordinary
+/// thing a visitor does, a whole office or classroom can arrive from one
+/// address, and every pad the browser tier opens is a join — so a tight number
+/// here refuses real people. It is a ceiling against one address holding
+/// thousands of sockets, not a policy about how many colleagues you may have.
+pub const MAX_JOINS_PER_IP: usize = 96;
+
+/// Joins one address may start within [`WINDOW`].
+pub const MAX_JOIN_STARTS_PER_WINDOW: usize = 240;
+
+// The join ceiling exists to stop one address holding thousands of sockets, not
+// to ration how many colleagues somebody may have. If it ever drops near the
+// open ceiling it has stopped being that, so say so here rather than discover it
+// from a support message.
+const _: () = assert!(MAX_JOINS_PER_IP > MAX_OPEN_PER_IP * 8);
+const _: () = assert!(MAX_JOIN_STARTS_PER_WINDOW > MAX_STARTS_PER_WINDOW * 8);
+
 pub const WINDOW: Duration = Duration::from_secs(60);
+
+/// Which budget a connection is charged to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// Bringing a session into existence. Scarce.
+    Open,
+    /// Connecting to one that already exists. Generous.
+    Join,
+}
+
+impl Kind {
+    fn limits(self) -> (usize, usize) {
+        match self {
+            Kind::Open => (MAX_OPEN_PER_IP, MAX_STARTS_PER_WINDOW),
+            Kind::Join => (MAX_JOINS_PER_IP, MAX_JOIN_STARTS_PER_WINDOW),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Budget {
+    held: usize,
+    starts: Vec<Instant>,
+}
 
 #[derive(Default)]
 struct Caller {
-    open: usize,
-    starts: Vec<Instant>,
+    open: Budget,
+    join: Budget,
+}
+
+impl Caller {
+    fn budget(&mut self, kind: Kind) -> &mut Budget {
+        match kind {
+            Kind::Open => &mut self.open,
+            Kind::Join => &mut self.join,
+        }
+    }
+
+    fn idle(&self) -> bool {
+        self.open.held == 0
+            && self.open.starts.is_empty()
+            && self.join.held == 0
+            && self.join.starts.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -66,42 +125,46 @@ impl Quota {
     /// id already in use, most obviously — and every one of them is a path
     /// where a manual release is easy to forget and leaks the address's
     /// allowance to a session that never existed.
-    pub fn claim(self: &Arc<Self>, ip: IpAddr, now: Instant) -> Result<Claim, Denied> {
-        self.take(ip, now)?;
+    pub fn claim(self: &Arc<Self>, ip: IpAddr, now: Instant, kind: Kind) -> Result<Claim, Denied> {
+        self.take(ip, now, kind)?;
         Ok(Claim {
             quota: self.clone(),
             ip,
+            kind,
         })
     }
 
-    fn take(&self, ip: IpAddr, now: Instant) -> Result<(), Denied> {
+    fn take(&self, ip: IpAddr, now: Instant, kind: Kind) -> Result<(), Denied> {
+        let (max_held, max_starts) = kind.limits();
         let mut callers = self.callers.lock();
         let caller = callers.entry(ip).or_default();
+        let budget = caller.budget(kind);
 
-        caller.starts.retain(|t| now.duration_since(*t) < WINDOW);
+        budget.starts.retain(|t| now.duration_since(*t) < WINDOW);
 
-        if caller.open >= MAX_OPEN_PER_IP {
+        if budget.held >= max_held {
             return Err(Denied::TooManyOpen);
         }
-        if caller.starts.len() >= MAX_STARTS_PER_WINDOW {
+        if budget.starts.len() >= max_starts {
             return Err(Denied::TooFast);
         }
 
-        caller.open += 1;
-        caller.starts.push(now);
+        budget.held += 1;
+        budget.starts.push(now);
         Ok(())
     }
 
-    fn release(&self, ip: IpAddr, now: Instant) {
+    fn release(&self, ip: IpAddr, now: Instant, kind: Kind) {
         let mut callers = self.callers.lock();
         let Some(caller) = callers.get_mut(&ip) else {
             return;
         };
-        caller.open = caller.open.saturating_sub(1);
-        caller.starts.retain(|t| now.duration_since(*t) < WINDOW);
+        let budget = caller.budget(kind);
+        budget.held = budget.held.saturating_sub(1);
+        budget.starts.retain(|t| now.duration_since(*t) < WINDOW);
         // An address with nothing open and no recent history is not worth
         // remembering. Without this the map only ever grows.
-        if caller.open == 0 && caller.starts.is_empty() {
+        if caller.idle() {
             callers.remove(&ip);
         }
     }
@@ -117,11 +180,12 @@ impl Quota {
 pub struct Claim {
     quota: Arc<Quota>,
     ip: IpAddr,
+    kind: Kind,
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.quota.release(self.ip, Instant::now());
+        self.quota.release(self.ip, Instant::now(), self.kind);
     }
 }
 
@@ -147,7 +211,7 @@ mod tests {
         for i in 0..50 {
             let at = start + Duration::from_secs(i * 120);
             let held = q
-                .claim(ip(1), at)
+                .claim(ip(1), at, Kind::Open)
                 .expect("ordinary spaced-out use was refused");
             drop(held);
         }
@@ -158,9 +222,12 @@ mod tests {
         let q = quota();
         let now = Instant::now();
         let _held: Vec<Claim> = (0..MAX_OPEN_PER_IP)
-            .map(|_| q.claim(ip(1), now).unwrap())
+            .map(|_| q.claim(ip(1), now, Kind::Open).unwrap())
             .collect();
-        assert_eq!(q.claim(ip(1), now).err(), Some(Denied::TooManyOpen));
+        assert_eq!(
+            q.claim(ip(1), now, Kind::Open).err(),
+            Some(Denied::TooManyOpen)
+        );
     }
 
     #[test]
@@ -168,11 +235,11 @@ mod tests {
         let q = quota();
         let now = Instant::now();
         let mut held: Vec<Claim> = (0..MAX_OPEN_PER_IP)
-            .map(|_| q.claim(ip(1), now).unwrap())
+            .map(|_| q.claim(ip(1), now, Kind::Open).unwrap())
             .collect();
         held.pop();
         assert!(
-            q.claim(ip(1), now).is_ok(),
+            q.claim(ip(1), now, Kind::Open).is_ok(),
             "a freed slot should be reusable"
         );
     }
@@ -184,9 +251,9 @@ mod tests {
         let q = quota();
         let now = Instant::now();
         for _ in 0..MAX_STARTS_PER_WINDOW {
-            drop(q.claim(ip(1), now).unwrap());
+            drop(q.claim(ip(1), now, Kind::Open).unwrap());
         }
-        assert_eq!(q.claim(ip(1), now).err(), Some(Denied::TooFast));
+        assert_eq!(q.claim(ip(1), now, Kind::Open).err(), Some(Denied::TooFast));
     }
 
     #[test]
@@ -194,11 +261,17 @@ mod tests {
         let q = quota();
         let start = Instant::now();
         for _ in 0..MAX_STARTS_PER_WINDOW {
-            drop(q.claim(ip(1), start).unwrap());
+            drop(q.claim(ip(1), start, Kind::Open).unwrap());
         }
-        assert_eq!(q.claim(ip(1), start).err(), Some(Denied::TooFast));
+        assert_eq!(
+            q.claim(ip(1), start, Kind::Open).err(),
+            Some(Denied::TooFast)
+        );
         let later = start + WINDOW + Duration::from_secs(1);
-        assert!(q.claim(ip(1), later).is_ok(), "the window never expired");
+        assert!(
+            q.claim(ip(1), later, Kind::Open).is_ok(),
+            "the window never expired"
+        );
     }
 
     #[test]
@@ -206,12 +279,74 @@ mod tests {
         let q = quota();
         let now = Instant::now();
         let _held: Vec<Claim> = (0..MAX_OPEN_PER_IP)
-            .map(|_| q.claim(ip(1), now).unwrap())
+            .map(|_| q.claim(ip(1), now, Kind::Open).unwrap())
             .collect();
-        assert_eq!(q.claim(ip(1), now).err(), Some(Denied::TooManyOpen));
+        assert_eq!(
+            q.claim(ip(1), now, Kind::Open).err(),
+            Some(Denied::TooManyOpen)
+        );
         assert!(
-            q.claim(ip(2), now).is_ok(),
+            q.claim(ip(2), now, Kind::Open).is_ok(),
             "a busy neighbour blocked an unrelated address"
+        );
+    }
+
+    #[test]
+    fn joining_is_metered_too_but_far_more_generously() {
+        // Joins used to be exempt outright, so one address could hold
+        // unlimited sockets — each with an 8 MiB outbox allowance — without the
+        // quota ever seeing them. They are charged now, against a ceiling set
+        // high enough that an office or a classroom behind one address is not
+        // the thing it catches.
+        let q = quota();
+        let now = Instant::now();
+        let held: Vec<_> = (0..MAX_JOINS_PER_IP)
+            .map(|_| q.claim(ip(1), now, Kind::Join).unwrap())
+            .collect();
+        assert_eq!(held.len(), MAX_JOINS_PER_IP);
+        assert_eq!(
+            q.claim(ip(1), now, Kind::Join).err(),
+            Some(Denied::TooManyOpen)
+        );
+    }
+
+    #[test]
+    fn the_two_budgets_do_not_spend_each_other() {
+        // Somebody with a room full of guests must still be able to start a
+        // session, and a busy host must not eat the allowance its own visitors
+        // need. Sharing one counter would make each starve the other.
+        let q = quota();
+        let now = Instant::now();
+        let _joins: Vec<_> = (0..MAX_JOINS_PER_IP)
+            .map(|_| q.claim(ip(1), now, Kind::Join).unwrap())
+            .collect();
+        assert!(
+            q.claim(ip(1), now, Kind::Open).is_ok(),
+            "joins exhausted should not block opening"
+        );
+
+        let q = quota();
+        let _opens: Vec<_> = (0..MAX_OPEN_PER_IP)
+            .map(|_| q.claim(ip(2), now, Kind::Open).unwrap())
+            .collect();
+        assert!(
+            q.claim(ip(2), now, Kind::Join).is_ok(),
+            "opens exhausted should not block joining"
+        );
+    }
+
+    #[test]
+    fn a_join_slot_is_returned_when_the_connection_goes() {
+        let q = quota();
+        let now = Instant::now();
+        let held: Vec<_> = (0..MAX_JOINS_PER_IP)
+            .map(|_| q.claim(ip(1), now, Kind::Join).unwrap())
+            .collect();
+        assert!(q.claim(ip(1), now, Kind::Join).is_err());
+        drop(held);
+        assert!(
+            q.claim(ip(1), now, Kind::Join).is_ok(),
+            "a closed connection must give its slot back"
         );
     }
 
@@ -222,14 +357,14 @@ mod tests {
         let q = quota();
         let start = Instant::now();
         for n in 0..100 {
-            drop(q.claim(ip(n), start).unwrap());
+            drop(q.claim(ip(n), start, Kind::Open).unwrap());
         }
         assert_eq!(q.tracked(), 100, "entries should persist while recent");
 
         let later = start + WINDOW + Duration::from_secs(1);
         // A single later claim prunes the caller it touches; the rest go when
         // they are next seen. Check the one we touched.
-        drop(q.claim(ip(0), later).unwrap());
+        drop(q.claim(ip(0), later, Kind::Open).unwrap());
         assert!(q.tracked() <= 100);
     }
 }

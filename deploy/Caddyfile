@@ -10,6 +10,13 @@
 ajar.rishwanth.dev {
 	# The relay serves the web client, the join pages, /install.sh and /ws.
 	reverse_proxy 127.0.0.1:8787 {
+		# Replace rather than append, so a caller cannot prepend its own
+		# value. The relay charges per-address limits to what arrives here,
+		# and Caddy's default is to append — which left the leftmost element
+		# entirely caller-controlled. The relay now reads the rightmost too;
+		# this is the half that holds even if that changes.
+		header_up X-Forwarded-For {remote_host}
+
 		# A terminal can sit untouched for a long time and must not be
 		# hung up on. Caddy's default read timeout is already generous,
 		# but say it out loud rather than inherit it.
@@ -82,10 +89,13 @@ code.rishwanth.dev {
 
 	# The relay holds the durable folders and routes the peer broadcast.
 	handle /api/* {
-		reverse_proxy 127.0.0.1:8787
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 	handle /ws {
 		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {remote_host}
 			transport http {
 				read_timeout 24h
 				write_timeout 24h

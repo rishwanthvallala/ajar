@@ -295,22 +295,41 @@ async fn install_script() -> impl IntoResponse {
     )
 }
 
+/// Which address the per-address limits should be charged to.
+///
+/// The **rightmost** `X-Forwarded-For` value, not the leftmost. A proxy
+/// *appends* the peer it actually saw, so the last element is the only one it
+/// vouched for — everything to the left was supplied by the caller and can say
+/// anything. Reading the leftmost made the quota decorative: a client sending
+/// `X-Forwarded-For: 1.2.3.4` got that value back out, and rotating it bought
+/// a fresh bucket on every request.
+///
+/// With `--trust-forwarded-for` off, or with no usable header, the socket's own
+/// peer is the answer. That is also correct when the proxy replaces the header
+/// rather than appending, since then there is only one element.
+fn caller_ip(
+    headers: &axum::http::HeaderMap,
+    peer: std::net::IpAddr,
+    trust_forwarded: bool,
+) -> std::net::IpAddr {
+    if !trust_forwarded {
+        return peer;
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(peer)
+}
+
 async fn upgrade(
     ws: WebSocketUpgrade,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let caller = if state.trust_forwarded {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or_else(|| peer.ip())
-    } else {
-        peer.ip()
-    };
+    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Cap what one client may send in a single frame. The largest legitimate
     // payload is a workspace snapshot, which the store already refuses above
     // 25 MB — so anything much larger than that is either a bug or an attempt
@@ -320,4 +339,80 @@ async fn upgrade(
         .on_upgrade(move |socket| {
             ws::handle(socket, state.registry.clone(), state.quota.clone(), caller)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caller_ip;
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn forwarded(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", value.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn a_caller_cannot_choose_its_own_address() {
+        // The whole point. Caddy appends the peer it saw, so a client that
+        // sends its own X-Forwarded-For produces `<theirs>, <real>` — and the
+        // limits must charge the real one. Reading the leftmost here is what
+        // made every per-address limit in the relay decorative.
+        let headers = forwarded("1.2.3.4, 203.0.113.9");
+        assert_eq!(
+            caller_ip(&headers, ip("127.0.0.1"), true),
+            ip("203.0.113.9")
+        );
+    }
+
+    #[test]
+    fn a_long_forged_chain_still_charges_the_last_hop() {
+        let headers = forwarded("9.9.9.9, 8.8.8.8, 7.7.7.7, 203.0.113.9");
+        assert_eq!(
+            caller_ip(&headers, ip("127.0.0.1"), true),
+            ip("203.0.113.9")
+        );
+    }
+
+    #[test]
+    fn one_honest_value_is_used_as_it_stands() {
+        // A proxy that replaces rather than appends leaves a single element.
+        let headers = forwarded("203.0.113.9");
+        assert_eq!(
+            caller_ip(&headers, ip("127.0.0.1"), true),
+            ip("203.0.113.9")
+        );
+    }
+
+    #[test]
+    fn the_header_is_ignored_unless_it_is_trusted() {
+        // Without the flag there is nothing in front, so the socket is the
+        // only thing that cannot lie.
+        let headers = forwarded("1.2.3.4");
+        assert_eq!(
+            caller_ip(&headers, ip("198.51.100.7"), false),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn rubbish_falls_back_to_the_socket() {
+        for value in ["", "not-an-ip", "1.2.3.4, ", ",,,"] {
+            assert_eq!(
+                caller_ip(&forwarded(value), ip("198.51.100.7"), true),
+                ip("198.51.100.7"),
+                "{value:?} should fall back"
+            );
+        }
+        assert_eq!(
+            caller_ip(&HeaderMap::new(), ip("198.51.100.7"), true),
+            ip("198.51.100.7"),
+            "an absent header should fall back"
+        );
+    }
 }
