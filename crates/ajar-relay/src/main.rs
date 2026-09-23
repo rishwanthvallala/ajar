@@ -12,7 +12,7 @@ mod ws;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, Path, State};
+use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -24,6 +24,10 @@ use tracing::info;
 
 use crate::pad::Store;
 use crate::session::Registry;
+
+// A pad may contain 25 MiB of text. JSON escaping can expand each byte to six
+// bytes on the wire, so the extractor limit must sit above the store's cap.
+const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 6 + 1024 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "ajar-relay", version, about = "Frame relay for ajar sessions")]
@@ -135,7 +139,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(health))
         .route("/install.sh", get(install_script))
         .route("/run.sh", get(run_script))
-        .route("/api/pad/{name}", get(read_pad).put(write_pad))
+        .route(
+            "/api/pad/{name}",
+            get(read_pad)
+                .put(write_pad)
+                .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 

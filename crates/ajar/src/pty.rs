@@ -102,6 +102,7 @@ pub struct PtyRegistry {
     /// wrapped around it.
     launch: (String, Vec<String>),
     confined: bool,
+    cargo_home: Option<std::path::PathBuf>,
     limits: crate::limits::Limits,
     cwd: std::path::PathBuf,
 }
@@ -117,11 +118,23 @@ impl PtyRegistry {
         // the sandbox launches inherits them too.
         let (program, args) = sandbox.wrap(&shell);
         // Ids start at 1 because 0 means "this frame is JSON, not stream bytes".
+        let confined = sandbox.is_confined();
+        let cargo_home = confined
+            .then(|| std::env::var_os("HOME"))
+            .flatten()
+            .map(std::path::PathBuf::from)
+            .map(|home| home.join(".cache/ajar/cargo"));
+        if let Some(path) = &cargo_home {
+            // Landlock can only grant paths that exist when the ruleset is
+            // applied. The agent creates the isolated Cargo home first.
+            let _ = std::fs::create_dir_all(path);
+        }
         Self {
             sessions: HashMap::new(),
             next_id: 1,
             launch: limits.wrap(program, args),
-            confined: sandbox.is_confined(),
+            confined,
+            cargo_home,
             limits,
             cwd,
         }
@@ -202,6 +215,9 @@ impl PtyRegistry {
             // The home directory is not writable inside the sandbox, and a
             // shell that cannot save its history says so on every exit.
             cmd.env("HISTFILE", "/dev/null");
+            if let Some(path) = &self.cargo_home {
+                cmd.env("CARGO_HOME", path);
+            }
         }
 
         let child = pair.slave.spawn_command(cmd).context("spawning shell")?;

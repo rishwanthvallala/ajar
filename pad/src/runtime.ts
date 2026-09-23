@@ -229,6 +229,10 @@ export class Runtime {
     await this.box.fs.writeText(`/${path}`, contents);
   }
 
+  async remove(path: string): Promise<void> {
+    await this.box.fs.remove(`/${path}`);
+  }
+
   /**
    * Every file in the sandbox, recursively.
    *

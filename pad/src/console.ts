@@ -30,6 +30,8 @@ export class Console {
   private started = false;
   private browsing: number | null = null;
   private running = false;
+  /** A terminal may split one escape sequence across several callbacks. */
+  private pendingInput = "";
 
   /** Whether a command is in the foreground. */
   get busy(): boolean {
@@ -101,7 +103,26 @@ export class Console {
       void this.shell?.type(data.replace(/\r/g, "\n"));
       return;
     }
-    for (const ch of data) this.key(ch);
+    this.pendingInput += data;
+    const arrows = ["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"];
+    while (this.pendingInput) {
+      if (this.pendingInput[0] === "\x1b") {
+        const complete = arrows.find((sequence) => this.pendingInput.startsWith(sequence));
+        if (complete) {
+          this.pendingInput = this.pendingInput.slice(complete.length);
+          this.key(complete);
+          continue;
+        }
+        if (arrows.some((sequence) => sequence.startsWith(this.pendingInput))) return;
+        // Unknown escape sequence. Ignore the escape byte and keep processing
+        // any printable tail rather than inserting the escape itself.
+        this.pendingInput = this.pendingInput.slice(1);
+        continue;
+      }
+      const ch = this.pendingInput[0]!;
+      this.pendingInput = this.pendingInput.slice(1);
+      this.key(ch);
+    }
   }
 
   private key(ch: string): void {
@@ -240,11 +261,13 @@ export class Console {
 
   /** Echo a command the page is running on the user's behalf. */
   announce(command: string): void {
+    this.running = true;
     this.screen.write(`\r\x1b[K${PROMPT}${command}\r\n`);
   }
 
   /** Redraw the prompt after something else wrote to the screen. */
   resume(): void {
+    this.running = false;
     this.screen.write(PROMPT + this.line);
   }
 }

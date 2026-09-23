@@ -12,9 +12,10 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const ROOT = new URL("../dist/", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5199;
 
 const TYPES = {
@@ -80,7 +81,9 @@ const server = createServer(async (req, res) => {
 
 await new Promise((r) => server.listen(PORT, r));
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({
+  channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
+});
 const page = await browser.newPage();
 const noise = [];
 page.on("pageerror", (e) => noise.push(`pageerror: ${e.message.slice(0, 200)}`));

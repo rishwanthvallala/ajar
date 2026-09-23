@@ -63,24 +63,30 @@ and broke over https was caught.
 
 ## The workspace preview
 
-The session UI can be opened without Rust, a relay, or a session at all:
+Both workspace UIs can be opened without Rust, a relay, or a session at all:
 
 ```sh
 npm run dev:ajar
 # then http://localhost:5173/?preview=workspace
+
+npm run dev:pad
+# then http://localhost:5175/?preview=workspace
 ```
 
-It renders the real layout, file tree, editor and panel controls against
-sample data, with three examples — **Populated**, **Empty**, **Disconnected**.
-Terminal output is simulated; typing does not execute anything.
+The Ajar fixture has **Populated**, **Empty**, and **Disconnected** examples.
+The Pad fixture adds **Saving**, **Save failure**, **Runtime loading**, and
+**Running**. Both use the production presentation adapter and simulated data;
+neither opens a relay socket or starts a runtime. Pad's simulated Run and Share
+controls make the resulting status and terminal presentation reviewable.
 
 It exists because the alternative is standing up an agent and a relay to look
 at a padding change, and because `check-workspace-layout.cjs` needs a
 deterministic UI to assert against. It is **development-only**: the route has
 no special behaviour in a production build, so it cannot ship by accident.
 
-Layout preferences in the preview are kept separate from real-session ones, so
-experimenting here does not rearrange anybody's actual workspace.
+Layout preferences in each preview use injected in-memory storage. Real Ajar
+preferences remain under `ajar.*`, real Pad preferences remain under `pad.*`,
+and experimenting in either fixture writes neither set.
 
 ## The pad's own harnesses
 

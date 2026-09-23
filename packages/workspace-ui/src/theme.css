@@ -1,0 +1,32 @@
+:root {
+  color-scheme: light;
+  --bg: #f3f4f7;
+  --surface: #ffffff;
+  --surface-2: #eaecf1;
+  --ink: #13171e;
+  --ink-2: #414b59;
+  --muted: #6c7684;
+  --rule: #d9dde4;
+  --accent: #2447c9;
+  --ok: #1c6a4b;
+  --warn: #8a5a0b;
+  --hard: #a63a2a;
+  --mono: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0f1218;
+    --surface: #161a22;
+    --surface-2: #1d222c;
+    --ink: #e7eaf0;
+    --ink-2: #b4bcc8;
+    --muted: #8a94a2;
+    --rule: #262c37;
+    --accent: #8ca6ff;
+    --ok: #55bc8d;
+    --warn: #dca84e;
+    --hard: #e5745f;
+  }
+}

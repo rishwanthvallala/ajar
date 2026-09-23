@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const { chromium } = createRequire(import.meta.url)("playwright");
 
@@ -27,7 +28,7 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 // it about production told you about your working copy.
 const LIVE = process.env.PAD_ORIGIN ?? null;
 
-const ROOT = new URL("../dist/", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const VENDOR = join(ROOT, "vendor/wasmer/dist");
 const PORT = 5250, HOST_PORT = 5251, RELAY_PORT = 8844;
 // The build has the preview origin compiled into it, so a dist built for
@@ -145,7 +146,9 @@ await fetch(`${ORIGIN}/api/pad/${name}`, {
   body: JSON.stringify({ writes: [{ path: "serve.py", content: SERVER }] }),
 });
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({
+  channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
+});
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log(`      pageerror: ${e.message.slice(0, 160)}`));
 page.on("console", (m) => m.type() === "error" && console.log(`      console: ${m.text().slice(0, 160)}`));

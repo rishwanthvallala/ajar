@@ -12,6 +12,7 @@
     "smoke": "node ../scripts/smoke.mjs"
   },
   "dependencies": {
+    "@ajar/workspace-ui": "0.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "monaco-editor": "^0.56.0",

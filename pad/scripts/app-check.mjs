@@ -12,12 +12,14 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join, normalize } from "node:path";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const ROOT = new URL("../dist/", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5200;
 const RELAY_PORT = 8842;
+const LIVE = process.env.PAD_ORIGIN ?? null;
 
 // `PAD_ORIGIN=https://code.rishwanth.dev node scripts/app-check.mjs` runs the
 // same checks against the deployed site instead of a local build. Worth having
@@ -32,12 +34,10 @@ const RELAY_PORT = 8842;
 const IMPORTMAP_SHA = createHash("sha256")
   .update(
     /<script type="importmap">(.*?)<\/script>/s.exec(
-      await readFile(new URL("../index.html", import.meta.url), "utf8"),
-    )[1],
+      await readFile(LIVE ? new URL("../index.html", import.meta.url) : join(ROOT, "index.html"), "utf8"),
+    )[1].replace(/\r\n?/g, "\n"),
   )
   .digest("base64");
-
-const LIVE = process.env.PAD_ORIGIN ?? null;
 
 const TYPES = {
   ".html": "text/html", ".css": "text/css", ".json": "application/json",
@@ -47,7 +47,7 @@ const TYPES = {
 
 const padDir = LIVE ? null : await mkdtemp(join(tmpdir(), "ajar-pad-app-"));
 const relay = LIVE ? null : spawn(
-  new URL("../../target/debug/ajar-relay", import.meta.url).pathname,
+  fileURLToPath(new URL(`../../target/debug/ajar-relay${process.platform === "win32" ? ".exe" : ""}`, import.meta.url)),
   ["--bind", `127.0.0.1:${RELAY_PORT}`, "--pad-dir", padDir],
   { stdio: "ignore" },
 );
@@ -82,8 +82,8 @@ const server = createServer(async (req, res) => {
       "base-uri 'none'",
     ].join("; "),
   );
-  const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
-  if (path.startsWith("/api/")) {
+  const urlPath = new URL(req.url, "http://x").pathname;
+  if (urlPath.startsWith("/api/")) {
     const up = httpRequest(
       { host: "127.0.0.1", port: RELAY_PORT, path: req.url, method: req.method, headers: req.headers },
       (r) => { res.writeHead(r.statusCode ?? 502, r.headers); r.pipe(res); },
@@ -94,7 +94,8 @@ const server = createServer(async (req, res) => {
   // The type comes from the file actually served, not from the request path —
   // `/` has no extension, and octet-stream makes a browser download the page
   // instead of rendering it.
-  const file = join(ROOT, path === "/" ? "index.html" : path);
+  const relative = urlPath.split("/").filter((part) => part && part !== "." && part !== "..").join("/");
+  const file = join(ROOT, relative || "index.html");
   try {
     const body = await readFile(file);
     res.setHeader("Content-Type", TYPES[extname(file)] ?? "application/octet-stream");
@@ -145,7 +146,9 @@ const ok = (m) => results.push(`ok   ${m}`);
 const fail = (m) => results.push(`FAIL ${m}`);
 const is = (a, b, m) => (a === b ? ok(m) : fail(`${m} — got ${JSON.stringify(a)}`));
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({
+  channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
+});
 const page = await browser.newPage();
 
 // Where the bulk actually came from. The mirror is the whole point of the
@@ -567,7 +570,7 @@ try {
 
 } catch (e) {
   fail(`${e.message.split("\n")[0]}`);
-  await page.screenshot({ path: new URL("../failed.png", import.meta.url).pathname });
+  await page.screenshot({ path: fileURLToPath(new URL("../failed.png", import.meta.url)) });
   // What the page was showing when it gave up. A bare timeout says only that
   // something did not happen, never what the user would have been looking at.
   try {
@@ -593,7 +596,7 @@ try {
   results.push(`note: dom ${JSON.stringify(dom)}`);
 }
 // One look at the finished page, so the layout is reviewed rather than assumed.
-await page.screenshot({ path: new URL("../shot.png", import.meta.url).pathname });
+await page.screenshot({ path: fileURLToPath(new URL("../shot.png", import.meta.url)) });
 await browser.close();
 if (!LIVE) {
   server.close();

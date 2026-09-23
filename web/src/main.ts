@@ -1,8 +1,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "@ajar/workspace-ui/theme.css";
 import "./style.css";
-import "./workspace.css";
+import "@ajar/workspace-ui/workspace.css";
 
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
@@ -31,6 +32,7 @@ import {
   TARGET_ALL,
   textEncoder,
   untag,
+  PROTOCOL_VERSION,
 } from "./proto";
 
 
@@ -216,6 +218,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The file currently open for editing, if any. */
   let editing: DocSession | null = null;
   let detach: (() => void) | null = null;
+  let reconnectingDocument: { path: string; base: string; local?: string } | null = null;
   /**
    * Document bytes that arrived before the editor was ready.
    *
@@ -226,9 +229,18 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   const earlyDocFrames: Array<[number, DocKind, Uint8Array]> = [];
 
   function closeDocument() {
+    reconnectingDocument = null;
+    discardDocument(true);
+  }
+
+  function discardDocument(notifyHost: boolean) {
     earlyDocFrames.length = 0;
     if (!editing) return;
-    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: editing.docId } satisfies Doc));
+    if (notifyHost) {
+      conn.send(
+        jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: editing.docId } satisfies Doc),
+      );
+    }
     detach?.();
     editing.destroy();
     editing = null;
@@ -308,6 +320,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     statusEl.textContent = detail ? `${s} · ${detail}` : s;
     dotEl.className = `dot ${s}`;
     newBtn.disabled = s !== "open";
+    if (s === "reconnecting" && editing && !reconnectingDocument) {
+      reconnectingDocument = { path: editing.path, base: editing.ytext.toString() };
+    }
   }
 
   function drawPeople() {
@@ -326,14 +341,59 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (f.channel === Channel.Control) {
       const msg = parseJson<Control>(f);
       switch (msg.t) {
-        case "welcome":
+        case "welcome": {
+          // Checked before anything else, because everything else is sealed.
+          //
+          // A host on a different protocol cannot read a byte this client
+          // sends, and nothing anywhere reports that: both ends drop what they
+          // cannot decrypt. Left alone the session connects, the terminal
+          // draws, and typing does nothing — which reads as the product being
+          // broken rather than the agent being old.
+          // Absent and zero are different answers. A relay that predates this
+          // field sends nothing, and knows nothing — blocking on that would
+          // refuse working sessions during a partial rollout. A current relay
+          // always serialises it, so a zero is that relay saying the host it
+          // is connected to is older than this client.
+          const hostProtocol = msg.host_protocol;
+          if (hostProtocol !== undefined && hostProtocol !== PROTOCOL_VERSION) {
+            dispose();
+            conn.close();
+            app.innerHTML =
+              hostProtocol < PROTOCOL_VERSION
+                ? `
+              <div class="centered">
+                <h1>This host is running an older ajar</h1>
+                <p class="muted">Nothing you sent could be read, so this session was not opened.
+                Ask them to update and send a new link:</p>
+                <pre class="muted">curl -sSf https://ajar.rishwanth.dev/install.sh | sh</pre>
+              </div>`
+                : `
+              <div class="centered">
+                <h1>This page is out of date</h1>
+                <p class="muted">The host is running a newer ajar than this tab.
+                Reload to pick up the current version.</p>
+              </div>`;
+            break;
+          }
           me = msg.participant_id;
           // The relay has no idea who we are. Say so on the encrypted
           // channel; the host answers with a roster.
           conn.send(
             jsonFrame(Channel.Presence, TARGET_ALL, { t: "iam", name } satisfies Presence),
           );
+          if (editing) {
+            const base = reconnectingDocument?.base ?? editing.ytext.toString();
+            reconnectingDocument = {
+              path: editing.path,
+              base,
+              local: editing.ytext.toString(),
+            };
+            const path = editing.path;
+            discardDocument(false);
+            conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
+          }
           break;
+        }
         case "joined":
           // A roster follows once they have introduced themselves.
           break;
@@ -648,6 +708,32 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       if (kind === DocKind.Update) doc.applyUpdate(body);
       else doc.applyAwareness(body);
     }
+
+    const resume = reconnectingDocument?.path === path ? reconnectingDocument : null;
+    if (resume?.local !== undefined && resume.local !== resume.base) {
+      // Replay only the local splice made while disconnected onto the host's
+      // fresh state. This preserves unrelated host edits better than replacing
+      // the entire file with a stale browser copy.
+      let prefix = 0;
+      const shared = Math.min(resume.base.length, resume.local.length);
+      while (prefix < shared && resume.base[prefix] === resume.local[prefix]) prefix++;
+      let suffix = 0;
+      while (
+        suffix < shared - prefix &&
+        resume.base[resume.base.length - 1 - suffix] ===
+          resume.local[resume.local.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+      const remove = resume.base.length - prefix - suffix;
+      const insert = resume.local.slice(prefix, resume.local.length - suffix);
+      doc.ydoc.transact(() => {
+        const available = Math.max(0, doc.ytext.length - prefix);
+        if (remove > 0 && available > 0) doc.ytext.delete(prefix, Math.min(remove, available));
+        if (insert) doc.ytext.insert(Math.min(prefix, doc.ytext.length), insert);
+      }, "local");
+    }
+    if (resume) reconnectingDocument = null;
 
     // The model has to exist before the document can drive it.
     v.show(path, doc.ytext.toString(), false, false);

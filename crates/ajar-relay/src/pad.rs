@@ -359,6 +359,17 @@ impl Store {
             }
         }
 
+        // A path cannot be both a file and a directory. Validate the resulting
+        // pad so conflicts are caught even when the two paths arrive in
+        // separate requests.
+        for path in pad.files.keys() {
+            for (slash, _) in path.match_indices('/') {
+                if pad.files.contains_key(&path[..slash]) {
+                    return Err(Error::BadPath("a file is also used as a directory"));
+                }
+            }
+        }
+
         // Checked after applying rather than before: a write that replaces a
         // large file with a small one should be allowed even when the pad was
         // already at the limit.
@@ -525,6 +536,29 @@ mod tests {
         let pad = s.get("demowork").unwrap().unwrap();
         assert_eq!(pad.files["main.py"].content, "print(1)");
         assert_eq!(pad.seq, 1);
+    }
+
+    #[test]
+    fn file_and_directory_paths_are_rejected_atomically() {
+        let (s, _d) = store();
+        assert_eq!(
+            s.write("p", &[put("src", "file"), put("src/main.rs", "nested")]),
+            Err(Error::BadPath("a file is also used as a directory"))
+        );
+        assert!(s.get("p").unwrap().is_none(), "a rejected write was saved");
+    }
+
+    #[test]
+    fn a_later_write_cannot_turn_a_file_into_a_directory() {
+        let (s, _d) = store();
+        s.write("p", &[put("src", "file")]).unwrap();
+        assert_eq!(
+            s.write("p", &[put("src/main.rs", "nested")]),
+            Err(Error::BadPath("a file is also used as a directory"))
+        );
+        let pad = s.get("p").unwrap().unwrap();
+        assert_eq!(pad.files.len(), 1);
+        assert_eq!(pad.files["src"].content, "file");
     }
 
     #[test]

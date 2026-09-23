@@ -66,6 +66,9 @@ pub struct Session {
     pub guests: HashMap<u32, Conn>,
     /// Sealed by the host. New guests are refused; existing ones stay.
     pub locked: bool,
+    /// What the host speaks, from its handshake. Relayed to each guest so a
+    /// version mismatch can be reported rather than felt.
+    pub host_protocol: u32,
     next_id: u32,
 }
 
@@ -78,6 +81,7 @@ impl Session {
             host_left_at: None,
             guests: HashMap::new(),
             locked: false,
+            host_protocol: ajar_proto::PROTOCOL_UNVERSIONED,
             // In a hosted session 1 is reserved for the host, so guests start
             // at 2. A peer session has no reserved id and starts at 1 — but
             // never at 0, which is TARGET_ALL on the wire.
@@ -176,7 +180,19 @@ impl Registry {
 
     /// A host opening a session, or re-opening one whose socket dropped
     /// inside the grace period.
+    #[cfg(test)]
     pub fn open(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
+        self.open_locked(id, tx, false, ajar_proto::PROTOCOL_VERSION)
+    }
+
+    /// Open while atomically restoring the host's current admission state.
+    pub fn open_locked(
+        &self,
+        id: &str,
+        tx: Tx,
+        locked: bool,
+        protocol: u32,
+    ) -> Result<(Participant, bool), JoinError> {
         let mut entry = self
             .sessions
             .entry(id.to_string())
@@ -188,6 +204,13 @@ impl Registry {
             return Err(JoinError::HostTaken);
         }
         let resumed = entry.host_left_at.take().is_some();
+        // The agent supplies this on every handshake. That restores the
+        // admission boundary after a relay restart, before any guest can race
+        // through a later Lock control frame.
+        entry.locked = locked;
+        // Recorded on every handshake for the same reason as the lock: after a
+        // relay restart a guest must still learn which version it is talking to.
+        entry.host_protocol = protocol;
         let participant = Participant {
             id: 1,
             role: Role::Host,
@@ -283,6 +306,21 @@ impl Registry {
         self.sessions.get(id).map(|s| f(&s))
     }
 
+    /// Whether this socket still owns a participant entry. Kicking removes
+    /// that entry first; the next frame from the old socket then closes it
+    /// without granting one last action.
+    pub fn contains_participant(&self, id: &str, participant: &Participant) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|s| match participant.role {
+                Role::Host => s
+                    .host
+                    .as_ref()
+                    .is_some_and(|h| h.participant.id == participant.id),
+                Role::Guest | Role::Peer => s.guests.contains_key(&participant.id),
+            })
+    }
+
     /// Seal or unseal a session. Returns the new state, or `None` if the
     /// session has gone.
     pub fn set_locked(&self, id: &str, locked: bool) -> Option<bool> {
@@ -337,6 +375,18 @@ impl Registry {
         if let Some(mut s) = self.sessions.get_mut(id) {
             s.guests.remove(&pid);
         }
+    }
+
+    /// Revoke membership and close the participant's socket after a final
+    /// control notice has drained.
+    pub fn kick_guest(&self, id: &str, pid: u32, notice: Vec<u8>) -> bool {
+        let conn = self
+            .sessions
+            .get_mut(id)
+            .and_then(|mut s| s.guests.remove(&pid));
+        let Some(conn) = conn else { return false };
+        conn.tx.finish(notice);
+        true
     }
 
     /// The host's socket ended. `Deliberate` tears the session down now;
@@ -536,6 +586,70 @@ mod tests {
             r.join("s", later).is_ok(),
             "unlocking should let people in again"
         );
+    }
+
+    #[test]
+    fn a_host_handshake_restores_lock_before_the_first_join() {
+        let r = Registry::new();
+        let (host, _rh) = tx();
+        r.open_locked("s", host, true, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
+        let (guest, _rg) = tx();
+        assert_eq!(r.join("s", guest).err(), Some(JoinError::Locked));
+    }
+
+    #[test]
+    fn the_hosts_protocol_version_reaches_the_session_for_guests_to_read() {
+        // What a guest is told decides whether it can explain a dead session
+        // or has to sit in one. An older agent sends no version at all, and
+        // the relay must carry that through as "older" rather than as current.
+        let r = Registry::new();
+        let (old_host, _a) = tx();
+        r.open_locked("old", old_host, false, ajar_proto::PROTOCOL_UNVERSIONED)
+            .unwrap();
+        assert_eq!(
+            r.with("old", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_UNVERSIONED)
+        );
+
+        let (new_host, _b) = tx();
+        r.open_locked("new", new_host, false, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
+        assert_eq!(
+            r.with("new", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_VERSION)
+        );
+    }
+
+    #[test]
+    fn a_reconnecting_host_refreshes_its_protocol_version() {
+        // The same reason the lock is re-sent on every handshake: after a relay
+        // restart the stored value has to come from the agent that is actually
+        // connected now, not from whatever opened the session first.
+        let r = Registry::new();
+        let (first, _a) = tx();
+        r.open_locked("s", first, false, ajar_proto::PROTOCOL_UNVERSIONED)
+            .unwrap();
+        r.host_gone("s", HostExit::Dropped, b"");
+        let (second, _b) = tx();
+        r.open_locked("s", second, false, ajar_proto::PROTOCOL_VERSION)
+            .unwrap();
+        assert_eq!(
+            r.with("s", |s| s.host_protocol),
+            Some(ajar_proto::PROTOCOL_VERSION)
+        );
+    }
+
+    #[test]
+    fn removing_a_guest_revokes_membership_immediately() {
+        let r = Registry::new();
+        let (host, _rh) = tx();
+        let (guest, _rg) = tx();
+        r.open("s", host).unwrap();
+        let participant = r.join("s", guest).unwrap();
+        assert!(r.contains_participant("s", &participant));
+        r.drop_guest("s", participant.id);
+        assert!(!r.contains_participant("s", &participant));
     }
 
     #[test]

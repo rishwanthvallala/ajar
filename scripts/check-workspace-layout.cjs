@@ -125,6 +125,7 @@ async function main() {
   });
 
   await checkSession();
+  await checkVersionMismatch();
 
   // A 1440x900 display at 200% browser zoom exposes a 720x450 CSS viewport.
   const zoomPage = await browser.newPage({ viewport: { width: 720, height: 450 }, deviceScaleFactor: 2 });
@@ -172,11 +173,59 @@ async function main() {
   console.log('Workspace layout checks passed: editor lifecycle, pointer/keyboard resize, four viewport sizes, drawer focus, preferences, preview isolation, lazy loading, and disposal.');
 }
 
+async function checkVersionMismatch() {
+  // The one thing a version mismatch must not do is nothing.
+  //
+  // Before the guard, a guest joining an agent that predates the direction
+  // byte got a session that connected, drew a terminal, and silently dropped
+  // every frame in both directions — indistinguishable from the product being
+  // broken. This asserts the guest is told, and told what to run.
+  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const frame = (channel, data) => {
+    const body = Buffer.from(JSON.stringify(data));
+    const header = Buffer.alloc(9); header[0] = channel; header.writeUInt32LE(0, 1);
+    return Buffer.concat([header, body]);
+  };
+  await page.routeWebSocket('**/ws', ws => {
+    ws.onMessage(data => {
+      const buffer = Buffer.from(data);
+      if (buffer.readUInt32LE(1)) return;
+      const msg = JSON.parse(buffer.subarray(9).toString());
+      // 0 is a current relay reporting an agent from before versioning.
+      if (msg.t === 'hello') {
+        ws.send(frame(1, { t: 'welcome', participant_id: 2, participants: [], host_protocol: 0 }));
+        ws.send(frame(3, { t: 'tree', entries: [{ path: 'main.ts', kind: 'file', size: 40 }] }));
+      }
+    });
+  });
+  await page.goto(`${base}/j/version-check`);
+  await page.locator('#name').fill('Version check');
+  await page.getByRole('button', { name: 'Join', exact: true }).click();
+
+  await page.getByRole('heading', { name: /older ajar/i }).waitFor({ timeout: 15000 });
+  const body = await page.locator('.centered').innerText();
+  assert(/install\.sh/.test(body), 'the mismatch notice names the command that fixes it');
+  // And it must not pretend to be a working session underneath the notice.
+  assert(
+    !(await page.getByRole('button', { name: 'main.ts', exact: true }).isVisible()),
+    'a mismatched session does not also render a file tree',
+  );
+  await page.close();
+}
+
 async function checkSession() {
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   const errors = [], sent = [];
   page.on('pageerror', error => errors.push(error.message));
   let wire;
+  // Read out of web/src/proto.ts so this fixture cannot drift into claiming a
+  // version the client no longer speaks.
+  const PROTOCOL_VERSION = Number(
+    /export const PROTOCOL_VERSION = (\d+)/.exec(
+      fs.readFileSync(path.join(__dirname, '..', 'web', 'src', 'proto.ts'), 'utf8'),
+    )[1],
+  );
+
   const frame = (channel, data, stream = 0) => {
     const body = Buffer.isBuffer(data) ? data : Buffer.from(JSON.stringify(data));
     const header = Buffer.alloc(9); header[0] = channel; header.writeUInt32LE(stream, 1);
@@ -189,7 +238,9 @@ async function checkSession() {
       if (stream) { sent.push({ channel, stream, bytes: buffer.subarray(9) }); return; }
       const msg = JSON.parse(buffer.subarray(9).toString()); sent.push({ channel, ...msg });
       if (msg.t === 'hello') {
-        ws.send(frame(1, { t: 'welcome', participant_id: 2, participants: [] }));
+        // host_protocol models a current relay. Absent would exercise the
+        // "cannot tell" path, which is not what this check is about.
+        ws.send(frame(1, { t: 'welcome', participant_id: 2, participants: [], host_protocol: PROTOCOL_VERSION }));
         ws.send(frame(3, { t: 'tree', entries: [{ path: 'main.ts', kind: 'file', size: 40 }] }));
       }
       if (channel === 2 && msg.t === 'open') {

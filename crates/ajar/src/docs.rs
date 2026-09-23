@@ -226,19 +226,17 @@ impl Docs {
     }
 
     /// Documents that have been quiet long enough to write back.
-    pub fn due_for_write(&mut self, now: Instant) -> Vec<(u32, String, String)> {
+    pub fn due_for_write(&self, now: Instant) -> Vec<(u32, String, String)> {
         let mut out = Vec::new();
-        for doc in self.docs.values_mut() {
+        for doc in self.docs.values() {
             let Some(since) = doc.dirty else { continue };
             if now.duration_since(since) < WRITE_AFTER {
                 continue;
             }
             let contents = doc.text.get_string(&doc.doc.transact());
-            doc.dirty = None;
             if contents == doc.written {
                 continue;
             }
-            doc.written = contents.clone();
             out.push((doc.id, doc.path.clone(), contents));
         }
         out
@@ -246,19 +244,28 @@ impl Docs {
 
     /// Every change not known to be on disk, regardless of debounce age.
     /// Used during orderly shutdown, when there will be no later tick.
-    pub fn pending_writes(&mut self) -> Vec<(u32, String, String)> {
+    pub fn pending_writes(&self) -> Vec<(u32, String, String)> {
         let mut out = Vec::new();
-        for doc in self.docs.values_mut() {
+        for doc in self.docs.values() {
             let contents = doc.contents();
             if contents == doc.written {
-                doc.dirty = None;
                 continue;
             }
-            doc.written = contents.clone();
-            doc.dirty = None;
             out.push((doc.id, doc.path.clone(), contents));
         }
         out
+    }
+
+    /// Acknowledge persistence only after the filesystem write succeeds.
+    /// Failed writes remain dirty and are offered again on the next tick.
+    pub fn mark_written(&mut self, id: u32, contents: &str) {
+        let Some(doc) = self.docs.get_mut(&id) else {
+            return;
+        };
+        doc.written = contents.to_string();
+        if doc.contents() == contents {
+            doc.dirty = None;
+        }
     }
 }
 
@@ -549,6 +556,7 @@ mod tests {
         let due = docs.due_for_write(Instant::now() + WRITE_AFTER + Duration::from_millis(1));
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].2, "hello!");
+        docs.mark_written(due[0].0, &due[0].2);
         assert!(
             docs.due_for_write(Instant::now() + Duration::from_secs(9))
                 .is_empty(),
@@ -575,7 +583,35 @@ mod tests {
         let pending = docs.pending_writes();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].2, "hello!");
+        docs.mark_written(pending[0].0, &pending[0].2);
         assert!(docs.pending_writes().is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_remains_pending_until_acknowledged() {
+        let mut docs = Docs::new();
+        let (id, _) = docs.open("a.txt", "hello", 2);
+        let update = {
+            let doc = docs.get(id).unwrap();
+            let before = doc.state_vector();
+            {
+                let mut txn = doc.doc.transact_mut();
+                doc.text.insert(&mut txn, 5, "!");
+            }
+            doc.diff_since(&before)
+        };
+        docs.apply(id, &update).unwrap();
+
+        let now = Instant::now() + WRITE_AFTER + Duration::from_millis(1);
+        let first = docs.due_for_write(now);
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            docs.due_for_write(now).len(),
+            1,
+            "failure was treated as saved"
+        );
+        docs.mark_written(first[0].0, &first[0].2);
+        assert!(docs.due_for_write(now).is_empty());
     }
 
     #[test]

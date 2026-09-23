@@ -33,6 +33,12 @@ function build(paths: string[], pending: string[]): Node {
       const last = i === parts.length - 1;
       const here = parts.slice(0, i + 1).join("/");
       let next = at.children!.get(part);
+      // A file and one of its descendants cannot both exist in a real
+      // filesystem. The server rejects this now; keep rendering defensive for
+      // any pad written by an older relay.
+      if (next?.children === null && !last) {
+        next.children = new Map();
+      }
       if (!next) {
         next = { name: part, path: here, children: last && !isDir ? null : new Map() };
         at.children!.set(part, next);

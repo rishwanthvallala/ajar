@@ -37,6 +37,34 @@ pub enum Channel {
     Store = 0x06,
 }
 
+/// What this build speaks on the content channels.
+///
+/// Bumped when a change makes frames from an older peer unreadable. Version 1
+/// is the direction byte below: before it, sealed payloads authenticated the
+/// nine-byte header alone, so an agent and a browser on opposite sides of that
+/// change cannot decrypt each other at all.
+///
+/// The failure is otherwise invisible — both ends drop what they cannot open,
+/// and the session looks connected while nothing works. Agents are installed by
+/// people and live on their machines for as long as they like, so old ones are
+/// always in the field. This travels in `Hello` and comes back in `Welcome`,
+/// both on the cleartext control channel, so the notice survives exactly the
+/// mismatch it reports.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// An agent that predates version negotiation sends no field at all.
+pub const PROTOCOL_UNVERSIONED: u32 = 0;
+
+/// The direction a sealed content frame is allowed to travel. It is part of
+/// the authenticated data so a guest cannot reflect host output back as host
+/// input (or vice versa) while keeping a valid authentication tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Direction {
+    HostToGuest = 0xa1,
+    GuestToHost = 0xa2,
+}
+
 impl Channel {
     /// Whether this channel's payloads are sealed before they leave.
     ///
@@ -87,11 +115,12 @@ pub struct Frame {
 }
 
 impl Frame {
-    fn authenticated_header(&self) -> [u8; HEADER_LEN] {
-        let mut header = [0u8; HEADER_LEN];
-        header[0] = self.channel as u8;
-        header[1..5].copy_from_slice(&self.stream_id.to_le_bytes());
-        header[5..9].copy_from_slice(&self.target.to_le_bytes());
+    fn authenticated_header(&self, direction: Direction) -> [u8; HEADER_LEN + 1] {
+        let mut header = [0u8; HEADER_LEN + 1];
+        header[0] = direction as u8;
+        header[1] = self.channel as u8;
+        header[2..6].copy_from_slice(&self.stream_id.to_le_bytes());
+        header[6..10].copy_from_slice(&self.target.to_le_bytes());
         header
     }
 
@@ -154,18 +183,20 @@ impl Frame {
 
     /// Seal the payload if this channel carries content. Applied once, at the
     /// point the frame goes on the wire.
-    pub fn seal(mut self, cipher: &Cipher) -> Self {
+    pub fn seal(mut self, cipher: &Cipher, direction: Direction) -> Self {
         if self.channel.is_encrypted() {
-            self.payload = cipher.seal_with_aad(&self.payload, &self.authenticated_header());
+            self.payload =
+                cipher.seal_with_aad(&self.payload, &self.authenticated_header(direction));
         }
         self
     }
 
     /// Undo [`Frame::seal`]. A frame that will not open is dropped by the
     /// caller rather than guessed at.
-    pub fn open(mut self, cipher: &Cipher) -> Result<Self, CryptoError> {
+    pub fn open(mut self, cipher: &Cipher, direction: Direction) -> Result<Self, CryptoError> {
         if self.channel.is_encrypted() {
-            self.payload = cipher.open_with_aad(&self.payload, &self.authenticated_header())?;
+            self.payload =
+                cipher.open_with_aad(&self.payload, &self.authenticated_header(direction))?;
         }
         Ok(self)
     }
@@ -204,10 +235,23 @@ pub enum Control {
     Hello {
         session: String,
         role: Role,
+        /// The host's current admission state. Sent on every reconnect so a
+        /// relay restart cannot silently reopen a locked room.
+        #[serde(default)]
+        locked: bool,
+        /// What this endpoint speaks. Absent from an agent that predates
+        /// version negotiation, which `serde(default)` reads as 0.
+        #[serde(default)]
+        protocol: u32,
     },
     Welcome {
         participant_id: u32,
         participants: Vec<Participant>,
+        /// The host's `PROTOCOL_VERSION`, carried through by the relay so a
+        /// guest can say something useful instead of sitting in a session
+        /// where nothing it sends can be read.
+        #[serde(default)]
+        host_protocol: u32,
     },
     Joined {
         participant: Participant,
@@ -532,12 +576,14 @@ mod tests {
         let msg = Control::Hello {
             session: "quiet-ember-4417".into(),
             role: Role::Guest,
+            locked: false,
+            protocol: PROTOCOL_VERSION,
         };
         let f = Frame::json(Channel::Control, TARGET_ALL, &msg).unwrap();
         let back = Frame::decode(&f.encode()).unwrap();
         assert!(!back.is_stream());
         match back.parse_json::<Control>().unwrap() {
-            Control::Hello { session, role } => {
+            Control::Hello { session, role, .. } => {
                 assert_eq!(session, "quiet-ember-4417");
                 assert_eq!(role, Role::Guest);
             }
@@ -552,6 +598,8 @@ mod tests {
         let hello = serde_json::to_string(&Control::Hello {
             session: "s".into(),
             role: Role::Guest,
+            locked: false,
+            protocol: PROTOCOL_VERSION,
         })
         .unwrap();
         assert!(
@@ -565,6 +613,7 @@ mod tests {
                 id: 1,
                 role: Role::Host,
             }],
+            host_protocol: PROTOCOL_VERSION,
         })
         .unwrap();
         assert!(
@@ -578,12 +627,18 @@ mod tests {
         let (cipher, _) = Cipher::generate();
 
         let pty = Frame::stream(Channel::Pty, 1, 0, b"cat ~/.ssh/id_rsa\r".to_vec());
-        let sealed = pty.clone().seal(&cipher);
+        let sealed = pty.clone().seal(&cipher, Direction::HostToGuest);
         assert!(
             !String::from_utf8_lossy(&sealed.payload).contains(".ssh"),
             "terminal input went out in the clear"
         );
-        assert_eq!(sealed.open(&cipher).unwrap().payload, pty.payload);
+        assert_eq!(
+            sealed
+                .open(&cipher, Direction::HostToGuest)
+                .unwrap()
+                .payload,
+            pty.payload
+        );
 
         // The relay routes on this, so it has to stay readable.
         let hello = Frame::json(
@@ -592,10 +647,12 @@ mod tests {
             &Control::Hello {
                 session: "quiet-ember-4417".into(),
                 role: Role::Guest,
+                locked: false,
+                protocol: PROTOCOL_VERSION,
             },
         )
         .unwrap();
-        let after = hello.clone().seal(&cipher);
+        let after = hello.clone().seal(&cipher, Direction::HostToGuest);
         assert_eq!(
             after.payload, hello.payload,
             "control must stay in the clear"
@@ -605,15 +662,71 @@ mod tests {
     #[test]
     fn routing_metadata_is_authenticated_and_replays_are_rejected() {
         let (cipher, _) = Cipher::generate();
-        let sealed = Frame::stream(Channel::Pty, 7, 2, b"whoami\r".to_vec()).seal(&cipher);
+        let sealed = Frame::stream(Channel::Pty, 7, 2, b"whoami\r".to_vec())
+            .seal(&cipher, Direction::HostToGuest);
 
         let mut redirected = sealed.clone();
         redirected.target = 3;
-        assert!(matches!(redirected.open(&cipher), Err(CryptoError::Failed)));
+        assert!(matches!(
+            redirected.open(&cipher, Direction::HostToGuest),
+            Err(CryptoError::Failed)
+        ));
 
-        let opened = sealed.clone().open(&cipher).unwrap();
+        let opened = sealed
+            .clone()
+            .open(&cipher, Direction::HostToGuest)
+            .unwrap();
         assert_eq!(opened.payload, b"whoami\r");
-        assert!(matches!(sealed.open(&cipher), Err(CryptoError::Replayed)));
+        assert!(matches!(
+            sealed.open(&cipher, Direction::HostToGuest),
+            Err(CryptoError::Replayed)
+        ));
+    }
+
+    #[test]
+    fn a_hello_from_an_agent_that_predates_versioning_reads_as_unversioned() {
+        // Exactly what an installed older agent puts on the wire. It has to
+        // keep parsing — refusing it would turn a fixable "your agent is old"
+        // into a session that will not open at all — and it has to be
+        // distinguishable, which is the whole point of the field.
+        let old = r#"{"t":"hello","session":"quiet-ember-4417","role":"host","locked":true}"#;
+        match serde_json::from_str::<Control>(old).expect("an old hello still parses") {
+            Control::Hello {
+                protocol, locked, ..
+            } => {
+                assert_eq!(protocol, PROTOCOL_UNVERSIONED);
+                assert!(locked, "the fields it does send still arrive");
+            }
+            other => panic!("expected a hello, got {other:?}"),
+        }
+        assert_ne!(
+            PROTOCOL_VERSION, PROTOCOL_UNVERSIONED,
+            "an unversioned peer must not look current"
+        );
+    }
+
+    #[test]
+    fn a_welcome_without_a_host_version_reads_as_unversioned() {
+        // A relay that has not been redeployed yet. The guest should conclude
+        // "older", not crash and not assume current.
+        let old = r#"{"t":"welcome","participant_id":2,"participants":[]}"#;
+        match serde_json::from_str::<Control>(old).expect("an old welcome still parses") {
+            Control::Welcome { host_protocol, .. } => {
+                assert_eq!(host_protocol, PROTOCOL_UNVERSIONED)
+            }
+            other => panic!("expected a welcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sealed_frame_cannot_be_reflected_in_the_other_direction() {
+        let (cipher, _) = Cipher::generate();
+        let sealed = Frame::stream(Channel::Pty, 7, 2, b"host output".to_vec())
+            .seal(&cipher, Direction::HostToGuest);
+        assert!(matches!(
+            sealed.open(&cipher, Direction::GuestToHost),
+            Err(CryptoError::Failed)
+        ));
     }
 
     #[test]

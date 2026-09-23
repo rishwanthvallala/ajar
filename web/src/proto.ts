@@ -127,9 +127,27 @@ export interface Person {
   role: Role;
 }
 
+/**
+ * What this build speaks on the content channels. Must match
+ * `PROTOCOL_VERSION` in `crates/ajar-proto`.
+ *
+ * Version 1 is the direction byte in the sealed frame's authenticated data.
+ * An agent from before it cannot decrypt anything this client sends, and
+ * neither end raises anything when that happens — both simply drop what they
+ * cannot open, so the session looks connected and does nothing. Agents live on
+ * people's machines until they reinstall, so older ones are always out there.
+ */
+export const PROTOCOL_VERSION = 1;
+
 export type Control =
-  | { t: "hello"; session: string; role: Role }
-  | { t: "welcome"; participant_id: number; participants: Participant[] }
+  | { t: "hello"; session: string; role: Role; locked?: boolean; protocol?: number }
+  | {
+      t: "welcome";
+      participant_id: number;
+      participants: Participant[];
+      /** Absent from a relay or agent that predates version negotiation. */
+      host_protocol?: number;
+    }
   | { t: "joined"; participant: Participant }
   | { t: "left"; participant_id: number }
   | { t: "kick"; participant_id: number }

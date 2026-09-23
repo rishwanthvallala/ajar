@@ -18,6 +18,7 @@ import { Shell } from "./shell";
 import { Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
+import type { PadWorkspace } from "./workspace";
 
 const STARTER = `# Paste over this, or start typing.
 import csv
@@ -45,6 +46,7 @@ const WISP_URL: string = import.meta.env.VITE_WISP_URL ?? "";
 const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
 
 export class App {
+  private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private monaco: typeof Monaco | null = null;
   private models = new Map<string, Monaco.editor.ITextModel>();
@@ -53,13 +55,15 @@ export class App {
   private shell: Shell | null = null;
   private console: Console | null = null;
   private tree: FileTree | null = null;
-  private term: { write: (s: string) => void; fit: () => void } | null = null;
+  private term: { write: (s: string) => void; fit: () => void; dispose: () => void } | null = null;
   /** The port something in the folder is listening on, if any. */
   private listening: number | null = null;
   private served: BrowserServer | null = null;
   private cols = 80;
   private rows = 24;
   private known: Known = new Map();
+  /** Latest durable revision applied by this tab. */
+  private storeSeq = 0;
   private prefetched = false;
   private peers: Peers | null = null;
   private busy = false;
@@ -79,7 +83,9 @@ export class App {
   private byStream = new Map<number, string>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
-  private awaiting = new Map<string, () => void>();
+  private awaiting = new Map<string, (answered: boolean) => void>();
+  /** Store writes from this tab are strictly ordered. */
+  private writeChain: Promise<void> = Promise.resolve();
   /** This browser's participant id and name, as cursors are labelled. */
   private me = 1;
   private whoami = "someone";
@@ -94,12 +100,19 @@ export class App {
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       preview: HTMLButtonElement;
+      backToEditor: HTMLButtonElement;
       previewPane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
       title: HTMLElement;
     },
-  ) {}
+    private readonly ui?: PadWorkspace,
+  ) {
+    this.ui?.onLayout(() => {
+      this.editor?.layout();
+      this.term?.fit();
+    });
+  }
 
   /** Exposed for the browser checks, which need to see what synced. */
   private expose(): void {
@@ -128,6 +141,7 @@ export class App {
 
     const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
     this.known = knownFrom(pad.files);
+    this.storeSeq = pad.seq;
 
     this.joinPeers();
     await this.openEditor();
@@ -168,6 +182,9 @@ export class App {
         for (const [path, doc] of this.docs) {
           this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector());
         }
+        // The peer socket carries nudges, not history. Re-read the durable
+        // folder to recover every nudge that may have been missed offline.
+        void this.refresh();
       },
       onDoc: (stream, kind, bytes) => this.onDoc(stream, kind, bytes),
     });
@@ -193,6 +210,7 @@ export class App {
     } catch {
       return;
     }
+    if (pad.seq <= this.storeSeq) return;
     const rt = this.runtime ? await this.runtime : null;
     const incoming = knownFrom(pad.files);
 
@@ -202,19 +220,23 @@ export class App {
       // A file with a live document is owned by the CRDT, which already has
       // every keystroke. Writing the store's copy over it would undo whatever
       // has been typed since that copy was saved.
-      if (this.docs.has(path)) continue;
-      this.setFile(path, content);
+      const doc = this.docs.get(path);
+      if (!doc) this.setFile(path, content);
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
-      if (rt) await rt.write(path, content);
+      if (rt) await rt.write(path, doc?.contents() ?? content);
     }
     for (const path of this.known.keys()) {
       if (incoming.has(path)) continue;
+      this.dirty.delete(path);
+      this.closeDoc(path);
       this.models.get(path)?.dispose();
       this.models.delete(path);
+      if (rt) await rt.remove(path).catch(() => {});
     }
     this.applyingRemote = false;
     this.known = incoming;
+    this.storeSeq = pad.seq;
     if (!this.models.has(this.active)) {
       const first = [...this.models.keys()].sort()[0];
       if (first) this.show(first);
@@ -276,13 +298,13 @@ export class App {
     // ids — which Yjs discards as already known. The result is two documents
     // that exchange updates and silently ignore each other.
     this.peers.doc(stream, DOC_WANT, doc.stateVector());
-    await new Promise<void>((resolve) => {
+    const answered = await new Promise<boolean>((resolve) => {
       this.awaiting.set(path, resolve);
-      setTimeout(resolve, 600);
+      setTimeout(() => resolve(false), 600);
     });
     this.awaiting.delete(path);
     // Nobody answered, so nobody else has it open and the stored copy is safe.
-    if (doc.length === 0) doc.seed(stored);
+    if (!answered) doc.seed(stored);
     return doc;
   }
 
@@ -318,7 +340,11 @@ export class App {
     if (kind === DOC_UPDATE) {
       doc.applyUpdate(bytes);
       // Whoever was waiting for state has it now.
-      this.awaiting.get(path)?.();
+      this.awaiting.get(path)?.(true);
+      // The document is also the source executed by the sandbox. Keeping only
+      // Monaco current lets the next harmless command publish stale runtime
+      // bytes over somebody else's edit.
+      void this.runtime?.then((rt) => rt.write(path, doc.contents()));
     }
     else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
     else if (kind === DOC_WANT) {
@@ -344,12 +370,17 @@ export class App {
     // Exposed so the browser checks can drive the editor the way a person
     // would. Monaco's own API, not a hook invented for testing.
     (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
+    const color = matchMedia("(prefers-color-scheme: dark)");
     this.editor = monaco.editor.create(this.el.editor, {
       automaticLayout: true,
       minimap: { enabled: false },
-      fontSize: 13,
+      fontSize: this.codeFontPx(),
       scrollBeyondLastLine: false,
-      theme: matchMedia("(prefers-color-scheme: dark)").matches ? "vs-dark" : "vs",
+      theme: color.matches ? "vs-dark" : "vs",
+    });
+    color.addEventListener("change", () => {
+      monaco.editor.setTheme(color.matches ? "vs-dark" : "vs");
+      this.editor?.updateOptions({ fontSize: this.codeFontPx() });
     });
     this.editor.onDidChangeModelContent(() => this.warm());
   }
@@ -388,6 +419,8 @@ export class App {
     const model = this.models.get(path);
     if (!model || !this.editor || !this.monaco) return;
     this.active = path;
+    this.el.editor.dataset.active = path;
+    this.ui?.setActiveFile(path);
     this.editor.setModel(model);
     this.unbind?.();
     this.unbind = null;
@@ -458,11 +491,15 @@ export class App {
 
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
-      onOpen: (path) => this.show(path),
+      onOpen: (path) => {
+        this.show(path);
+        if (this.ui?.fileSelected()) this.editor?.focus();
+      },
       onNewFile: (dir) => this.addFile(dir),
       onNewFolder: (dir) => this.addFolder(dir),
     });
     this.tree.render([...this.models.keys()], this.active);
+    this.ui?.setFileCount(this.models.size);
   }
 
 
@@ -494,33 +531,39 @@ export class App {
       .filter((c) => this.known.get(c.path) !== c.content);
     if (changes.length === 0) return;
 
-    try {
-      const seq = await this.store.write(this.name, changes);
-      for (const c of changes) this.known.set(c.path, c.content);
-      // The sandbox too, when there is one, so a shell command run next sees
-      // what is on screen rather than what was there before the typing.
-      if (this.runtime) {
-        const rt = await this.runtime;
-        for (const c of changes) await rt.write(c.path, c.content);
+    return this.queueWrite(async () => {
+      try {
+        const seq = await this.store.write(this.name, changes);
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        for (const c of changes) this.known.set(c.path, c.content);
+        // Do not copy an older completed save over text edited while its
+        // request was in flight. The later edit remains queued for saving.
+        if (this.runtime) {
+          const rt = await this.runtime;
+          for (const c of changes) {
+            const current = this.docs.get(c.path)?.contents() ?? this.models.get(c.path)?.getValue();
+            if (current === c.content) await rt.write(c.path, c.content);
+          }
+        }
+        this.peers?.moved(seq);
+        this.say("", "saved");
+      } catch (e) {
+        const why = e as StoreError;
+        if (why.gone || why.tooBig) {
+          this.say("error", `${why.message} — this is not being saved`);
+          return;
+        }
+        for (const p of paths) this.dirty.add(p);
+        this.say("error", why.message);
+        this.saveSoon();
       }
-      this.peers?.moved(seq);
-      this.say("", "saved");
-    } catch (e) {
-      const why = e as StoreError;
-      // Some failures will never succeed however often they are tried: a pad
-      // past its size cap, or a name that has expired. Retrying those is a
-      // request every half second for as long as the tab is open, and it still
-      // never saves. Say so once and stop.
-      if (why.gone || why.tooBig) {
-        this.say("error", `${why.message} — this is not being saved`);
-        return;
-      }
-      // Anything else is worth another go: an unsaved change that nothing
-      // retries is the one failure this product cannot afford.
-      for (const p of paths) this.dirty.add(p);
-      this.say("error", why.message);
-      this.saveSoon();
-    }
+    });
+  }
+
+  private queueWrite(work: () => Promise<void>): Promise<void> {
+    const run = this.writeChain.then(work, work);
+    this.writeChain = run.catch(() => {});
+    return run;
   }
 
   /**
@@ -604,7 +647,10 @@ export class App {
     if (!this.el.previewPane.hidden) {
       this.el.previewPane.hidden = true;
       this.el.editor.hidden = false;
-      this.el.preview.classList.remove("on");
+      this.ui?.setPreview(false);
+      if (!this.ui) this.el.preview.classList.remove("on");
+      this.editor?.layout();
+      this.editor?.focus();
       return;
     }
     const port = this.listening;
@@ -618,12 +664,14 @@ export class App {
       this.el.previewPane.replaceChildren(frame);
       this.el.previewPane.hidden = false;
       this.el.editor.hidden = true;
-      this.el.preview.classList.add("on");
+      this.ui?.setPreview(true);
+      if (!this.ui) this.el.preview.classList.add("on");
     } catch (e) {
       // The terminal is where everything else says what went wrong, and a
       // preview that fails silently is indistinguishable from one that is
       // slow.
       this.term?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
+      this.say("error", `preview: ${(e as Error).message}`);
     }
   }
 
@@ -643,19 +691,29 @@ export class App {
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
     await import("@xterm/xterm/css/xterm.css");
+    const color = matchMedia("(prefers-color-scheme: dark)");
+    const terminalTheme = () => {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        background: style.getPropertyValue("--surface").trim(),
+        foreground: style.getPropertyValue("--ink-2").trim(),
+      };
+    };
     const term = new Terminal({
-      fontSize: 12,
+      fontSize: Math.max(11, this.codeFontPx() - 1),
       convertEol: true,
-      theme: matchMedia("(prefers-color-scheme: dark)").matches
-        ? { background: "#12181c", foreground: "#d8e2e6" }
-        : { background: "#ffffff", foreground: "#1b2226" },
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(this.el.terminal);
     fit.fit();
-    addEventListener("resize", () => fit.fit());
-    this.term = { write: (s) => term.write(s), fit: () => fit.fit() };
+    color.addEventListener("change", () => {
+      term.options.theme = terminalTheme();
+      term.options.fontSize = Math.max(11, this.codeFontPx() - 1);
+      fit.fit();
+    }, { signal: this.events.signal });
+    this.term = { write: (s) => term.write(s), fit: () => fit.fit(), dispose: () => term.dispose() };
     this.cols = term.cols;
     this.rows = term.rows;
 
@@ -692,12 +750,13 @@ export class App {
     this.el.run.onclick = () => void this.run();
     this.el.share.onclick = () => void this.share();
     this.el.preview.onclick = () => void this.togglePreview();
+    this.el.backToEditor.onclick = () => void this.togglePreview();
     addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         void this.run();
       }
-    });
+    }, { signal: this.events.signal });
   }
 
   private async run(): Promise<void> {
@@ -723,9 +782,13 @@ export class App {
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
       this.console?.announce(command);
-      const { exitCode } = await sh.run(command);
-      if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
-      this.console?.resume();
+      let exitCode: number;
+      try {
+        ({ exitCode } = await sh.run(command));
+        if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
+      } finally {
+        this.console?.resume();
+      }
 
       this.say("saving", "saving…");
       await this.publish(rt);
@@ -761,26 +824,25 @@ export class App {
 
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
-    await this.flushModels(rt);
-    const { changes, next } = await diff(rt, this.known);
-    if (changes.length === 0) return;
-    const seq = await this.store.write(this.name, changes);
-    // Only once the server has it: a failed write must not leave the page
-    // believing it is in sync, or the change is never retried.
-    this.known = next;
-    for (const change of changes) {
-      if (change.content === null) {
-        this.closeDoc(change.path);
-        this.models.get(change.path)?.dispose();
-        this.models.delete(change.path);
-      } else {
-        this.setFile(change.path, change.content);
+    return this.queueWrite(async () => {
+      await this.flushModels(rt);
+      const { changes, next } = await diff(rt, this.known);
+      if (changes.length === 0) return;
+      const seq = await this.store.write(this.name, changes);
+      this.storeSeq = Math.max(this.storeSeq, seq);
+      this.known = next;
+      for (const change of changes) {
+        if (change.content === null) {
+          this.closeDoc(change.path);
+          this.models.get(change.path)?.dispose();
+          this.models.delete(change.path);
+        } else {
+          this.setFile(change.path, change.content);
+        }
       }
-    }
-    this.renderFiles();
-    // Only after the server has it, so nobody is told to read a version that
-    // does not exist yet.
-    this.peers?.moved(seq);
+      this.renderFiles();
+      this.peers?.moved(seq);
+    });
   }
 
   private async share(): Promise<void> {
@@ -796,5 +858,24 @@ export class App {
   private say(status: Status, text: string): void {
     this.el.status.textContent = text;
     this.el.status.dataset.status = status;
+  }
+
+  private codeFontPx(): number {
+    const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    return Math.max(11, Math.min(20, root * 0.8125));
+  }
+
+  dispose(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.events.abort();
+    this.peers?.close();
+    this.unbind?.();
+    for (const doc of this.docs.values()) doc.destroy();
+    this.docs.clear();
+    for (const model of this.models.values()) model.dispose();
+    this.models.clear();
+    this.editor?.dispose();
+    this.term?.dispose();
+    void this.shell?.close().catch(() => {});
   }
 }
