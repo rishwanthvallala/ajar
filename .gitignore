@@ -16,6 +16,6 @@ web/artifacts/
 .env
 .env.*
 !.env.example
-./ajar-pads/
+ajar-pads/
 /openspec
 /.agents

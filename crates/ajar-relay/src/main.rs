@@ -27,7 +27,37 @@ use crate::session::Registry;
 
 // A pad may contain 25 MiB of text. JSON escaping can expand each byte to six
 // bytes on the wire, so the extractor limit must sit above the store's cap.
-const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 6 + 1024 * 1024;
+/// The largest pad write this will read off the wire.
+///
+/// A pad holds 25 MiB of *content*; JSON escaping makes the request bigger than
+/// that. The multiplier used to be six, for the worst case where every byte is a
+/// control character and becomes `\u00XX` — which is pathological, and it priced
+/// every request as if it were: 151 MiB each, with nothing bounding how many
+/// arrived at once. Four of them exceed the service's own `MemoryMax=512M`.
+///
+/// Two covers escaping that happens in real text — quotes, backslashes and
+/// newlines all double — and a pad that genuinely cannot fit is refused with a
+/// size error rather than being allowed to reserve six times its weight.
+const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 2 + 1024 * 1024;
+
+/// Pad writes read off the wire at once.
+///
+/// The body limit bounds one request; this bounds the sum. Without it the two
+/// numbers that matter are unrelated — any limit times any concurrency is an
+/// arbitrarily large amount of memory, and the ceiling that actually applies is
+/// the OOM killer.
+///
+/// A queue rather than a refusal, because waiting a moment is invisible and
+/// being told "busy" is not. Requests wait *before* their body is read, so
+/// queuing costs a connection rather than 51 MiB.
+const MAX_CONCURRENT_PAD_WRITES: usize = 4;
+
+// These two are only meaningful together, and the unit file's MemoryMax=512M is
+// what they have to fit inside — along with every session, outbox and snapshot
+// the relay is also holding. Raising either one alone is how a limit stops being
+// one, so the product is stated here rather than left to be worked out after an
+// OOM. 204 MiB against 512 MiB leaves room for the rest of the process.
+const _: () = assert!(MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
 
 #[derive(Parser, Debug)]
 #[command(name = "ajar-relay", version, about = "Frame relay for ajar sessions")]
@@ -75,6 +105,9 @@ struct AppState {
     registry: Arc<Registry>,
     quota: Arc<quota::Quota>,
     pads: Arc<Store>,
+    /// Bounds how many pad bodies are being read at once. See
+    /// [`MAX_CONCURRENT_PAD_WRITES`].
+    writing: Arc<tokio::sync::Semaphore>,
     trust_forwarded: bool,
 }
 
@@ -106,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         registry: Arc::new(Registry::new()),
         quota: Arc::new(quota::Quota::new()),
         pads: pads.clone(),
+        writing: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_WRITES)),
         trust_forwarded: args.trust_forwarded_for,
     };
 
@@ -242,9 +276,40 @@ async fn read_pad(
     }
 }
 
+/// A permit to read one pad body.
+///
+/// An extractor rather than something the handler takes for itself, because
+/// where it runs is the whole point: extractors that do not touch the body run
+/// first, so this waits *before* 51 MiB is pulled off the wire. Taken inside the
+/// handler it would bound nothing — the memory is already spent by then.
+struct WritePermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
+
+impl axum::extract::FromRequestParts<AppState> for WritePermit {
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        state
+            .writing
+            .clone()
+            .acquire_owned()
+            .await
+            .map(WritePermit)
+            .map_err(|_| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the server is shutting down".to_string(),
+                )
+            })
+    }
+}
+
 async fn write_pad(
     Path(name): Path<String>,
     State(state): State<AppState>,
+    _permit: WritePermit,
     Json(body): Json<WriteBody>,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
     let seq = state.pads.write(&name, &body.writes).map_err(refuse)?;

@@ -16,7 +16,8 @@
 //
 // Nothing here may run against a deployed relay. It starts its own.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -39,6 +40,32 @@ const MAX_JOINS = Number(
   )[1],
 );
 
+/**
+ * PUT a body and report the status the server actually sent.
+ *
+ * curl, not `fetch`, and not `node:http` either. The relay refuses an oversized
+ * body from its Content-Length, before reading it — which is the behaviour worth
+ * having, since it should not have to swallow 60 MB to decide it does not want
+ * it. Both node clients then lose the response: they are still writing when the
+ * socket closes and surface `ECONNRESET` instead of the 413 that was sent.
+ * `Expect: 100-continue` did not help. curl reports 413 cleanly for the same
+ * request, so the response is real and it is the client that cannot see it —
+ * and a check that cannot see the answer is not evidence of anything.
+ */
+function putStatus(url, body) {
+  const file = join(padDir, "body.json");
+  writeFileSync(file, body);
+  const out = execFileSync(
+    "curl",
+    ["-s", "-o", "/dev/null", "-w", "%{http_code} %{size_upload}", "--max-time", "90",
+     "-X", "PUT", "-H", "content-type: application/json",
+     "--data-binary", `@${file}`, url],
+    { encoding: "utf8" },
+  );
+  const [status, uploaded] = out.trim().split(/\s+/).map(Number);
+  return { status, uploaded };
+}
+
 const procs = new Procs();
 
 function peer(name, session) {
@@ -58,7 +85,14 @@ async function tryConnect(p) {
 }
 
 async function main() {
-  procs.start("target/debug/ajar-relay", ["--bind", `127.0.0.1:${PORT}`], "relay");
+  // Its own directory as well. Without --pad-dir the relay writes to
+  // ./ajar-pads, so running this from the repo root left twelve pads in the
+  // tree — and they were committed before anybody noticed.
+  procs.start(
+    "target/debug/ajar-relay",
+    ["--bind", `127.0.0.1:${PORT}`, "--pad-dir", join(padDir, "main")],
+    "relay",
+  );
   await waitForHealth(HTTP);
 
   // ------------------------------------------------- joins are bounded
@@ -143,6 +177,55 @@ async function main() {
   readable
     ? ok("a pad already stored is still readable when the store is full")
     : fail("a full store stopped serving what it already had");
+
+  // ---------------------------------------- an oversized body is refused
+  //
+  // Not with the connection dropped or the process growing: read off the wire
+  // up to a limit and then refused, so the memory cost of a request is a number
+  // somebody chose rather than whatever the sender felt like sending.
+  const huge = JSON.stringify({
+    writes: [{ path: "big.txt", content: "y".repeat(60 * 1024 * 1024) }],
+  });
+  const oversized = putStatus(`${HTTP}/api/pad/toobig`, huge);
+
+  // The status alone proves nothing. 60 MB of content is over the per-pad
+  // 25 MiB cap as well, so it comes back 413 whether or not there is an HTTP
+  // body limit — an earlier version of this check passed with the limit raised
+  // back to 151 MiB and was measuring the wrong refusal entirely.
+  //
+  // What the body limit buys is that the relay stops *reading*. Measured: with
+  // it, curl uploads ~55 MB of a 63 MB body and is cut off; without it, all
+  // 63 MB go up and are buffered before anything rejects them. So the evidence
+  // is how much the server was willing to take.
+  if (oversized.status !== 413) {
+    fail(`an oversized body returned ${oversized.status}, not 413`);
+  } else if (oversized.uploaded >= huge.length) {
+    fail(
+      `refused, but only after reading all ${oversized.uploaded} bytes — the body limit is not cutting it short`,
+    );
+  } else {
+    const mb = (n) => (n / 1048576).toFixed(0);
+    ok(`an oversized body is cut off at ${mb(oversized.uploaded)} MB of ${mb(huge.length)} MB, then 413`);
+  }
+
+  // ------------------------------------ concurrent writes queue, not fail
+  //
+  // The limit on how many bodies are read at once has to be a queue. Refusing
+  // the fifth simultaneous write would make a busy moment look like an outage,
+  // and the point is only to stop the memory being unbounded.
+  const together = await Promise.all(
+    Array.from({ length: 12 }, (_, i) =>
+      fetch(`${HTTP}/api/pad/parallel-${i}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ writes: [{ path: "a.txt", content: "x".repeat(256 * 1024) }] }),
+      }).then((r) => r.status),
+    ),
+  );
+  const notOk = together.filter((c) => c !== 200);
+  notOk.length === 0
+    ? ok(`${together.length} writes at once all completed — the bound queues rather than refuses`)
+    : fail(`concurrent writes returned ${[...new Set(notOk)].join(", ")} instead of queuing`);
 
   // ------------------------------------------- and the relay is still alive
   //
