@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 import { fail, finish, Guest, linkOf, ok, Procs, sleep, waitForHealth } from "./lib/wire.mjs";
 
-const PORT = 8823;
+const PORT = 8829;
 const HTTP = `http://127.0.0.1:${PORT}`;
 const WS = `ws://127.0.0.1:${PORT}/ws`;
 

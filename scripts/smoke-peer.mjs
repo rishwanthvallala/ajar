@@ -23,7 +23,7 @@ import {
   waitForHealth,
 } from "./lib/wire.mjs";
 
-const PORT = 8821;
+const PORT = 8831;
 const HTTP = `http://127.0.0.1:${PORT}`;
 const WS = `ws://127.0.0.1:${PORT}/ws`;
 
