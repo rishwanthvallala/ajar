@@ -295,6 +295,45 @@ Two failure modes seen so far: the service dying on a bad option (it is
 does not match `/wisp/` with its trailing slash, which presents as a 200 and a
 WebSocket handshake failure rather than a 404.
 
+## Adding the Caddy rate-limit plugin
+
+**Not done. This is the one piece of the hardening work still outstanding**, and
+it is the only thing that can bound bandwidth: 19 MB of wasm per cache-cold pad
+visitor, served by Caddy straight off disk, so the relay never sees the request
+and cannot limit it.
+
+Caddy here is the apt package with no plugins, and the box has no Go and no
+xcaddy. Caddy's own build service produces a binary with plugins compiled in,
+which avoids installing a toolchain:
+
+```sh
+curl -L -o caddy-rl \
+  "https://caddyserver.com/api/download?os=linux&arch=arm64&p=github.com/mholt/caddy-ratelimit"
+# verify before running it, then install alongside rather than over the package:
+sudo install -m 755 caddy-rl /usr/local/bin/caddy
+sudo systemctl edit caddy      # ExecStart= then ExecStart=/usr/local/bin/caddy ...
+```
+
+Then a generous per-IP budget on the static paths in the Caddyfile — high
+enough that a real first visit never trips it, low enough that a loop costs
+time. `/dns-query` wants one too.
+
+Three things to know before starting:
+
+1. **Run it from the server, not a laptop.** Downloading an executable, marking
+   it executable and running it in one SSH command is indistinguishable from
+   malware staging, and on a monitored machine it will be flagged — it was, on
+   24 September, by Cortex XDR as *Suspicious Process Creation*. The detection
+   was correct. Download, checksum, inspect, then run, as separate steps.
+2. **Caddy stops being a stock binary.** Installing to `/usr/local/bin` leaves
+   the apt package in place but unused, so an apt upgrade will not silently
+   revert the plugin — it will also not update the one being used. Whoever
+   upgrades Caddy has to rebuild.
+3. **Validate before reloading.** `caddy validate --config ... --adapter
+   caddyfile`. A bad config fails the reload and leaves the old one running,
+   which is how a broken `handle` directive was caught on 15 September without
+   an outage.
+
 ## Do not casually regenerate package-lock.json
 
 `npm install` on a mac **prunes every platform binary but this one** out of the

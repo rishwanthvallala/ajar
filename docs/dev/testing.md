@@ -99,6 +99,7 @@ bytes, and the gate is already the slowest thing in the repository.
 npm run check --workspace=ajar-pad          # the pieces, then the product
 npm run probe --workspace=ajar-pad          # what a package can actually do
 node pad/scripts/ingress-check.mjs          # a process in the sandbox serving HTTP
+node scripts/smoke-abuse.mjs                # refusing abuse — also runs in check.sh
 
 VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build
 node pad/scripts/preview-check.mjs          # the Preview button, end to end
@@ -124,6 +125,22 @@ and the allowlist assertions pass while proving nothing.
 It drives `src/wisp-probe.ts` through `rt.run()` rather than typing into the
 terminal. That is deliberate: every flaky result in this area came from a
 driver racing its own keystrokes, and this one has never been flaky.
+
+### The abuse suite, and why it is not unit tests
+
+`scripts/smoke-abuse.mjs` asserts the relay **refuses and survives**, which is a
+different property from working and was covered nowhere: `ws.rs` and
+`outbox.rs` had no tests at all.
+
+It exists because unit tests could not do the job. `quota.rs` has sixty-odd
+tests proving the arithmetic, and **every one of them passes with the claim in
+`ws.rs` deleted** — they prove the limit computes, not that it is reached. So
+this suite opens real sockets until it is refused, fills a store over HTTP until
+it answers 507, and watches how many bytes the server was willing to read.
+
+It is also why the suite is heavier than it looks: roughly 120 connections per
+run, which on a monitored laptop is close enough to a port scan to be worth
+knowing about. It belongs on a server or in CI.
 
 ## Checks that passed for the wrong reason
 

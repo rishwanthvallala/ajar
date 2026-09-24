@@ -1,6 +1,7 @@
 # Open points
 
-*Kept as of 23 September 2026, after the review fixes merged and 0.0.3 shipped.*
+*Kept as of 24 September 2026. Four of five hardening steps are done and
+unpushed — see [handoff-2026-09-24.md](handoff-2026-09-24.md).*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -9,6 +10,23 @@ not what would be nice.
 ---
 
 ## Waiting on a decision
+
+### Bandwidth, and the DNS rate, both wait on one plugin
+
+Every cache-cold pad visitor pulls **19 MB** of wasm, and Caddy serves it off
+disk without the relay seeing the request — so nothing in the relay can limit
+it. `/dns-query` is bounded in shape and size but not in frequency, for the
+same reason.
+
+Both need the Caddy rate-limit plugin, which is step 5 of the hardening work
+and the only piece not done. Procedure in
+[dev/operations.md](dev/operations.md#adding-the-caddy-rate-limit-plugin).
+
+### Tombstones are never reclaimed
+
+One permanent 0-byte file per name ever used. Deliberate — a name must never be
+reused — but unbounded in count and attacker-controlled. The store ceiling
+added on 24 September bounds bytes, not names.
 
 ### Two things the September review left untested or unbounded
 

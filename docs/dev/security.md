@@ -193,6 +193,58 @@ The pad is plaintext on the server, has no accounts and no locks, and anyone
 with the link can change anything. That was decided deliberately as the trade
 for a URL anyone can open. Do not read pad code expecting ajar's guarantees.
 
+## What bounds an anonymous caller
+
+Added 24 September 2026, after a survey found that the relay had exactly one
+limiter and both halves of it were broken. The posture is **cap what kills the
+box, not what looks impolite** — every number below is set so ordinary use never
+meets it.
+
+| | Limit | Where |
+|---|---|---|
+| Sessions opened per address | 8 at once, 20/min | `quota.rs` `MAX_OPEN_PER_IP` |
+| Sessions **joined** per address | 96 at once, 240/min | `quota.rs` `MAX_JOINS_PER_IP` |
+| Every pad together | 4 GB, `--max-store-bytes` | `pad.rs` `MAX_STORE_BYTES` |
+| One pad write, off the wire | 51 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
+| Pad writes being read at once | 4 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
+| Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
+| `/dns-query` | GET/POST only, 4 KB body | `deploy/Caddyfile` |
+
+Three of these need their reasoning kept, because the obvious version is wrong:
+
+**Joins are metered separately and generously.** They used to be exempt
+entirely — guests always, and peers whenever the name already existed, which is
+every pad after the first visit. One address could hold unlimited sockets, each
+with an 8 MiB outbox allowance, uncounted. But a whole office behind one NAT is
+an ordinary shape, so the join ceiling is twelve times the open ceiling and the
+two budgets cannot spend each other. A `const` assertion in `quota.rs` fails the
+build if that relationship is ever lost.
+
+**The address is the rightmost `X-Forwarded-For`, not the leftmost.** A proxy
+*appends* the peer it saw, so the last element is the only one it vouched for.
+Reading the leftmost made every per-address limit decorative: a caller sending
+its own header got that value back, and rotating it bought a fresh bucket per
+request. Caddy also replaces the header now rather than appending, so either
+half holds alone.
+
+**The body limit and the concurrency limit are one number, not two.** 51 MiB × 4
+is 204 MiB against the unit's `MemoryMax=512M`. Raising either alone fails to
+compile — there is a `const` assertion on the product, because the ceiling that
+applied before was the OOM killer.
+
+The permit for a pad write is taken in an **extractor, not the handler**.
+Extractors that do not touch the body run first, so a request waits before
+51 MiB is pulled off the wire; taken in the handler it would bound nothing.
+
+### Still unbounded
+
+- **Bandwidth.** 19 MB per cache-cold pad visitor, served by Caddy from disk
+  without the relay seeing it. Needs an edge rate limit — see
+  [operations.md](operations.md#adding-the-caddy-rate-limit-plugin).
+- **`/dns-query` request rate.** Bounded in shape and size, not in frequency.
+  Same plugin.
+- **Tombstones.** One permanent 0-byte file per name ever used.
+
 ## The egress endpoint is the one thing that acts on the internet for a stranger
 
 `wss://code.rishwanth.dev/wisp` takes a request from an anonymous browser and

@@ -21,6 +21,7 @@ are touching.
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [operations.md](operations.md) | Deploying, reaching the server, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
+| [../handoff-2026-09-24.md](../handoff-2026-09-24.md) | Where the abuse-hardening work stopped, and what a new machine needs |
 | [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A 22-finding review of the whole tree, and [what was done about each](../code-review-fixes-2026-09-16.md) |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |
 
