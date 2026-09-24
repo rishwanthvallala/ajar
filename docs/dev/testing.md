@@ -199,6 +199,17 @@ build output to `/dev/null` is what hid it. **Never discard the build output
 in a revert test; assert the build exited 0 before believing anything the
 check says.**
 
+The dev server has the same trap in a different place. Vite caches transformed
+modules in `web/node_modules/.vite`, and a revert tested through `npm run
+dev:ajar` can be served the cached transform of the fixed file. Delete that
+directory before any revert test that goes through the dev server.
+
+The same shape once more, one layer down: a revert that fails to *compile*
+leaves the previous binary under `target/`, and a smoke suite spawning
+`target/debug/ajar` runs the fix. Revert, build, see the build succeed, then
+run the check. A stub that lets the revert compile is fair; the point is only
+that the thing under test is the thing you think it is.
+
 A fourth, from the egress work, and the most alarming: **a check that
 reported a security hole that was not there.** The probe connected to
 `example.com` through the allowlisted endpoint, got no error, and called it

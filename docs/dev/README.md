@@ -19,16 +19,16 @@ are touching.
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share, the bundle measurements behind it, and what was deliberately not shared |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
-| [operations.md](operations.md) | Deploying, reaching the server, cutting a release |
+| [operations.md](operations.md) | Deploying, reaching the server, setting up a new machine, the AWS account, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
-| [../handoff-2026-09-24.md](../handoff-2026-09-24.md) | Where the abuse-hardening work stopped, and what a new machine needs |
 | [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A 22-finding review of the whole tree, and [what was done about each](../code-review-fixes-2026-09-16.md) |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |
 
 ## The one thing to read if you read nothing else
 
-**Checks in this project have a habit of passing for the wrong reason.** At
-least nine have, and the pattern is always the same: the thing under test
+**Checks in this project have a habit of passing for the wrong reason.** More
+than twenty have — [testing.md](testing.md#checks-that-passed-for-the-wrong-reason)
+keeps the list — and the pattern is always the same: the thing under test
 could produce the passing evidence by accident.
 
 A sandbox fixture wrote to a deliberately-writable directory. An encryption
@@ -55,3 +55,6 @@ that nothing is.
 
 Commit messages say why the change exists and what it cost to find. They are
 the only place some of this survives.
+
+Run `cargo fmt --all` before committing; the gate refuses unformatted code, and
+finding out at the end of a ten-minute run is the expensive way.

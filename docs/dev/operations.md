@@ -19,6 +19,32 @@ hardened systemd units — `ajar-relay.service` and `ajar-wisp.service` — the
 egress endpoint they run, and the script. Caddy handles WebSocket upgrades
 without configuration, which is most of why it is there rather than nginx.
 
+### From an x86_64 machine
+
+The box is ARM, so the relay is cross-compiled. `deploy.sh` tries `cross`, then
+a plain `cargo build --target`, then a container. The second is the lightest to
+make work — a cross linker and three variables, so the C in `ring` builds too:
+
+```sh
+sudo apt-get install gcc-aarch64-linux-gnu libc6-dev-arm64-cross zstd
+rustup target add aarch64-unknown-linux-gnu
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+       CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+       AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+```
+
+Built against Ubuntu 24.04's cross libc, which is what the box runs. The pad
+also needs its wasm mirror before a deploy will proceed: `npm run build:pad &&
+node pad/scripts/fetch-packages.mjs` (it compresses with `zstd`).
+
+**On Windows, deploy from WSL** with the build copy inside the WSL filesystem.
+Not from Git Bash — `deploy.sh` needs `rsync` and a Linux toolchain — and not
+from a checkout under `C:\`, least of all a synced folder like OneDrive, where
+`target/` and `node_modules/` are gigabytes of sync traffic and file operations
+run about twenty times slower. Git Bash also rewrites any argument beginning
+with `/` into a Windows path, so `wsl -- bash /mnt/c/...` from it needs
+`MSYS_NO_PATHCONV=1` in front.
+
 ### Things that have gone wrong here
 
 **`caddy validate` as root** created root-owned log files the caddy user could
@@ -57,7 +83,8 @@ talking to them, and 404 for everything else. Nothing is stored there and
 nothing is proxied.
 
 **`preview.rishwanth.dev` needs an A record to `13.207.222.42`.** DNS for the
-zone is on NS1, not Route 53, so it is added by hand. Until it exists, deploy
+zone is on NS1, not Route 53, so it is added by hand. It exists, and the
+default build has previews on. On a new domain, until the record exists, deploy
 with `AJAR_PREVIEW_ORIGIN=` empty:
 
 ```sh
@@ -88,6 +115,53 @@ The instance carries the `ajar-relay-ssm` instance profile
 (`AmazonSSMManagedInstanceCore`). The agent was already installed; the missing
 piece was only ever the IAM role.
 
+### Setting up a new machine
+
+Everything below is per machine; nothing is shared between them but the AWS
+account.
+
+**Sign in with `aws login`, not access keys.** It needs AWS CLI 2.32 or later.
+It reuses the console sign-in and hands the CLI credentials that last at most
+twelve hours, so no long-lived key sits on the disk. Signing in as an IAM user
+rather than root needs the `SignInLocalDevelopmentAccess` policy on that user.
+
+```sh
+aws configure set region ap-south-1 --profile personal
+aws login --profile personal       # prints a URL; any browser on the machine works
+aws sts get-caller-identity --profile personal
+```
+
+**Install the Session Manager plugin** — `aws ssm start-session`, and so ssh,
+cannot open a tunnel without it — then add the host block `deploy.sh` expects:
+
+```
+Host ajar-relay
+    HostName i-0ffebdae47c7b633d
+    User ubuntu
+    IdentityFile ~/.ssh/ajar-relay
+    IdentitiesOnly yes
+    ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --profile personal --region ap-south-1"
+```
+
+**The private key lives only on the machine that made it.** The EC2 key pair
+`ajar-relay` was created on the first machine, and a new one does not have it.
+That needs no inbound access to fix: make a key locally and append its public
+half through SSM Run Command, which runs as root on the box.
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/ajar-relay -C "ajar-relay deploy from $(hostname)"
+# append ~/.ssh/ajar-relay.pub to /home/ubuntu/.ssh/authorized_keys with
+aws ssm send-command --instance-ids i-0ffebdae47c7b633d \
+  --document-name AWS-RunShellScript --parameters file://params.json
+```
+
+Append, never replace: `authorized_keys` holds one key per machine that deploys,
+two as of 25 September 2026. Remove a machine's line when the machine is
+retired.
+
+**What must not be lost is the AWS sign-in itself** — the root account's email,
+password and MFA. Every other piece of access is rebuilt from it in minutes.
+
 ### Getting back in
 
 Closing the port was a small decision **only because re-opening it needs no
@@ -99,12 +173,36 @@ aws ec2 authorize-security-group-ingress --group-id sg-00195dc456fe6c099 \
   --profile personal --region ap-south-1
 ```
 
-`ajar-relay-direct` in `~/.ssh/config` still points at the address and works
-the moment a rule exists. The thing that must not be lost is the AWS
-credential itself.
+An `ajar-relay-direct` host block pointing at `13.207.222.42` works the moment
+such a rule exists.
 
 A deeper break-glass exists and is not set up: `t4g` is Nitro, so EC2 Serial
 Console works, but it needs a password on an OS user.
+
+## The AWS account, and what it can cost
+
+The account is on AWS's **Free plan** (the post-July-2025 credit model), and
+that decides everything about money:
+
+| | As of 25 September 2026 |
+|---|---|
+| Plan | `FREE` — the account cannot be billed at all |
+| Credits left | $94.66, which the box, its disk and its public IPv4 draw down |
+| Plan ends | **25 February 2027**, or when the credits run out if sooner |
+
+When it ends the account closes, and with it the relay, the pads and all three
+sites; AWS deletes the contents 90 days later unless the account is upgraded to
+the Paid plan. **Upgrading is what turns billing on**, and a Paid account has no
+hard spending cap: a zero-spend budget and budget alerts warn, and a budget
+action can stop the instance, but billing data lags by hours and the disk and
+address keep charging while it is stopped.
+
+```sh
+aws freetier get-account-plan-state --region us-east-1 --profile personal
+```
+
+That call is free. **Cost Explorer's API is not** — $0.01 a request — so cost
+questions go to the Billing console instead.
 
 ## Put the relay near the people using it
 
@@ -209,6 +307,17 @@ W=$(ls web/dist/assets/index-*.js | head -1)
 curl -sS "https://ajar.rishwanth.dev/assets/$(basename $W)" | shasum -a256
 shasum -a256 "$W"
 ```
+
+Do the same for `pad/dist` against `code.rishwanth.dev`, and read the relay's
+own account of its start — it says how full the store is, and anything it had
+to clean up on the way:
+
+```sh
+ssh ajar-relay 'sudo journalctl -u ajar-relay --since "10 min ago" -o cat'
+```
+
+`app-check.mjs` against the live site leaves one pad behind under a minted
+name. It is an ordinary pad and expires like one.
 
 ## Verifying a protocol change, both ways
 

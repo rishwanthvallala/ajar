@@ -1,12 +1,28 @@
 # Open points
 
-*Kept as of 24 September 2026. Four of five hardening steps are done and
-pushed — see [handoff-2026-09-24.md](handoff-2026-09-24.md). The sandbox and
-reconnect items below were found and partly fixed the same day.*
+*Kept as of 25 September 2026. The relay, both browser clients and the deploy
+config were deployed from `a37e97b` on 24 September: four of the five hardening
+steps, the sandbox and reconnect fixes that reach the browser, streamed pad
+reads, freed pad names and the 90-day lease. The agent's own fixes are not in
+anyone's hands yet — see [the first item](#the-agent-fixes-of-24-september-are-unreleased).*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
 not what would be nice.
+
+---
+
+## Not yet shipped
+
+### The agent fixes of 24 September are unreleased
+
+The agent reaches people only through a tagged release, and none has been cut
+since v0.0.3. Until v0.0.4 exists, every host still runs a Landlock pinned to
+ABI 1, hands its whole environment to guests, caps processes at a bare 512, and
+loses a guest's typing across its own blips — the relay and browser halves of
+those fixes are live, the agent halves are not. None of them changes the wire,
+so there is no ordering constraint: cut the release whenever it suits. See
+[dev/operations.md](dev/operations.md#releasing).
 
 ---
 
@@ -36,6 +52,11 @@ cleartext control used to terminate the host — but nothing exercises it. The
 end-to-end smokes only ever have the *host* send control frames, so a
 regression here would pass the gate. Seven relay tests came with that work;
 this is not one of them.
+
+**`smoke-editing` failed once, unexplained.** *Terminal 1 never became ready*,
+on 24 September, and it has passed every run since. Treated as
+a flake and not demonstrated to be one; if it recurs, the shell's startup time
+under load is the first suspect, since `ready()` gives it six attempts.
 
 **A few slow readers can still make pad reads wait.** Reads are streamed from
 disk now, so they no longer cost memory, and they are held to 32 in flight per
