@@ -1208,6 +1208,7 @@ fn resend_after_gap(host: &mut Host) -> Result<()> {
     let tree = host.workspace.tree();
     send_fs(host, &tree);
     announce_ptys(TARGET_ALL, &host.ptys, &host.outbound);
+    send_read_only(TARGET_ALL, host)?;
     for (doc_id, state) in host.docs.states() {
         host.outbound.send(Frame::stream(
             Channel::Doc,
@@ -1233,7 +1234,27 @@ fn on_join(participant: &Participant, host: &mut Host) -> Result<()> {
         &host.workspace.tree(),
     )?)?;
     announce_ptys(participant.id, &host.ptys, &host.outbound);
+    send_read_only(participant.id, host)?;
     broadcast_roster(host)?;
+    Ok(())
+}
+
+/// Tell someone whether the terminals take their typing.
+///
+/// Sent on arrival and after a gap, not only when the host toggles it. It used
+/// to be only the toggle, so a guest joining a `--read-only` session was never
+/// told: no badge, and every keystroke dropped at the host without a word. The
+/// check that should have caught it compared an array's length with zero.
+/// Always the current state, either way, since a toggle made during a gap was
+/// lost like everything else.
+fn send_read_only(target: u32, host: &Host) -> Result<()> {
+    host.outbound.send(Frame::json(
+        Channel::Pty,
+        target,
+        &Pty::ReadOnly {
+            read_only: host.state.read_only,
+        },
+    )?)?;
     Ok(())
 }
 

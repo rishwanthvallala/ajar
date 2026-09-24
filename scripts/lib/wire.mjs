@@ -168,6 +168,7 @@ export class Guest {
   reset() {
     this.participantId = null;
     this.ptys = new Map(); // ptyId -> accumulated text
+    this.ptyMessages = []; // json on the pty channel, in order
     this.control = [];
     this.presence = [];
     this.roster = []; // people, from the host's encrypted roster
@@ -278,6 +279,7 @@ export class Guest {
         if (f.channel === CH_PTY) {
           if (f.streamId === STREAM_CONTROL) {
             const msg = JSON.parse(text(f.payload));
+            this.ptyMessages.push(msg);
             if (msg.t === "opened" && !this.ptys.has(msg.pty_id)) {
               this.ptys.set(msg.pty_id, "");
             }

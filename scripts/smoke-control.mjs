@@ -57,7 +57,9 @@ async function main() {
     const pty = [...g.ptys.keys()][0];
     await g.settle(pty);
 
-    const sawFlag = g.control.length >= 0; // the flag rides the pty channel
+    // The flag rides the pty channel. This used to read `control.length >= 0`,
+    // which is true of every array, so a notice that never arrived passed.
+    const sawFlag = () => g.ptyMessages.some((m) => m.t === "read_only" && m.read_only === true);
     const before = (g.ptys.get(pty) ?? "").length;
     // Deliberately not using ready(), which requires the shell to answer —
     // the whole point is that it will not.
@@ -70,7 +72,8 @@ async function main() {
     } else {
       ok("read-only terminals drop guest keystrokes at the host");
     }
-    if (!sawFlag) fail("no read-only notice reached the guest");
+    if (!sawFlag()) fail("no read-only notice reached the guest");
+    else ok("the guest is told the terminals are read-only");
     g.close();
     procs.kill(agent, "SIGINT");
     await sleep(400);
