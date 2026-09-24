@@ -71,12 +71,7 @@ pub async fn handle(
         _ => refuse!("expected_hello", "first frame must be a hello"),
     };
 
-    // Only opening a session is metered. Joining one costs an address
-    // nothing: a guest already needs the link, and rationing the people a
-    // host invited would be limiting the wrong side.
-    // Held for the life of this connection; releases on every exit path,
-    // including the refusals below.
-    // Every connection is charged to something now. It used to be only the
+    // Every connection is charged to something. It used to be only the
     // ones that *created* a session — guests were exempt outright and peers
     // were exempt whenever the name already existed, which is every pad after
     // the first visit. One address could therefore hold unlimited sockets, each
@@ -90,6 +85,8 @@ pub async fn handle(
         Role::Peer if !registry.exists(&session_id) => Kind::Open,
         _ => Kind::Join,
     };
+    // Held for the life of this connection; releases on every exit path,
+    // including the refusals below.
     let _slot = match quota.claim(caller, std::time::Instant::now(), kind) {
         Ok(slot) => slot,
         Err(denied) => {

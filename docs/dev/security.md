@@ -13,8 +13,11 @@ restricted rather than the environment replaced.
 
 | | |
 |---|---|
-| Writes | Confined to the shared folder, temp, and build caches |
+| Writes | Confined to the shared folder, temp, and build caches — truncation included, from Linux 6.2 |
 | Credentials | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, keychains and browser profiles unreadable |
+| Environment | Variables that look like credentials, and the ones naming key agents, are withheld from a guest's shell. The host is told which, by name |
+| Key-holding sockets | ssh and gpg agents, Docker, the desktop session bus: **measured**, and the host warned about each one a guest can reach. Not yet refused — see below |
+| Other processes | A guest cannot signal anything outside its own terminal, the agent included — from Linux 6.12 |
 | Everything else | Readable, so compilers and language servers still work |
 | Network | Allowed by default. `--no-network` cuts it — Seatbelt on macOS, Landlock `ConnectTcp` on Linux. On a kernel older than 6.7 it **refuses to start** rather than pretend |
 
@@ -44,6 +47,67 @@ Landlock restricts the *calling* process and is inherited across `exec`, so
 there is no way to confine a pty's shell from outside it. Hence the launcher:
 `ajar __confine <project> net -- /bin/zsh`.
 
+### Which Landlock, and asking the kernel honestly
+
+The launcher targets **ABI 6** (`linux::TARGET`), best effort: an older kernel
+gets what it can enforce, and `gaps()` names the rest in the warning list
+before the link is printed.
+
+It was ABI 1 until September 2026, and that was a hole rather than a cautious
+floor. ABI 1 has no idea truncation exists, so `truncate(2)` — which takes a
+path and needs no writable file descriptor — emptied any file the host owned
+from a shell that could not write a byte outside the folder. ABI 1 also refused
+every cross-directory `rename(2)`, even inside the project, with
+`Invalid cross-device link`; `mv` hides that by copying, and tools that rename
+atomically do not. And it could not stop a guest `kill`ing the agent, which
+ends the session for everyone, or anything else the host runs.
+
+| ABI | Kernel | What it adds here |
+|---|---|---|
+| 2 | 5.19 | cross-directory renames inside what is writable |
+| 3 | 6.2 | truncation refused outside what is writable |
+| 4 | 6.7 | `--no-network` |
+| 6 | 6.12 | signals and abstract sockets scoped to the guest's own terminal |
+| 9 | 7.1 | pathname sockets — **not used yet**, see below |
+
+Scoping has a cost worth knowing: each terminal is its own domain, so `kill` of
+a server started in a *different* tab is refused. Stop it from the tab that
+started it.
+
+**Probes have to ask with a hard requirement.** The `landlock` crate's default
+is best effort, under which an unsupported right is dropped without an error
+and `create()` still succeeds. Every capability probe was written that way, so
+each one answered "yes" on every kernel: a host on Linux 6.1 who passed
+`--no-network` was told "no outbound network" and given a shell that could
+reach anything, and a kernel with Landlock switched off reported a sandbox and
+then failed to start every terminal. The probes now set
+`CompatLevel::HardRequirement`; the launcher itself stays best effort.
+
+### The environment, and the sockets it points at
+
+The agent runs in the host's own shell, and every pty used to inherit all of
+it. `env` was the whole attack: cloud keys, tokens, a database URL with the
+password in it, and `SSH_AUTH_SOCK`, which signs as the host without anyone
+reading `~/.ssh`. `secrets::withheld_env` now removes anything whose name looks
+like a credential, anything in a cloud provider's family, anything naming a key
+agent, and any URL carrying a password. It errs wide, because over-matching
+costs a guest a variable they can ask for and under-matching hands over a key.
+
+Withholding the *variable* does not hide the *socket*. An ssh agent listens in
+a temp directory the guest can list; Docker, gpg and the session bus sit at
+well-known paths. Refusing them needs Landlock ABI 9 (Linux 7.1) or Seatbelt
+rules that have not been written and verified on a Mac yet. So for now the
+agent **measures** instead of claiming: for each socket that exists it runs
+itself through the real sandbox (`__reach`) and tries to connect, and warns
+about exactly the ones that answered. `smoke-environment.mjs` checks the
+warning against what a guest can actually do, in both directions.
+
+The Landlock launcher answers the probe in its own process after restricting
+itself. The first version exec'd the agent binary inside the sandbox instead —
+and the binary lives under the home directory, which the sandbox hides, so the
+exec failed and every socket read as unreachable. A reassurance produced by the
+probe breaking.
+
 ### A trap when narrowing grants
 
 Landlock grants for paths that do not exist are **silently dropped**. An
@@ -68,8 +132,17 @@ could fork-bomb the machine they were lent.
 | | |
 |---|---|
 | Terminals | 12 per session, `--max-terminals` |
-| Processes | 512, enforced at `fork`, `--max-processes` |
+| Processes | 512 for guests together, above what the host already runs, enforced at `fork`, `--max-processes` |
 | CPU, memory, disk | **Not capped** — and the panel says so |
+
+**512 is headroom, not a total.** `RLIMIT_NPROC` is charged to the user, and
+the host's browser and editor are that same user — on Linux every thread
+counts. A desktop is past 512 before anyone joins, so a bare `ulimit -u 512`
+left guests unable to start a single command, while every test passed on CI
+machines running almost nothing. The cap is now set at each terminal's open to
+what the host is running (`limits::in_use`, which leaves out the guests' own
+process trees so they cannot raise their own ceiling) plus 512. Above the
+user's hard limit it falls back to the hard limit, never to no limit.
 
 That last row is deliberate. `RLIMIT_CPU` kills a long build, `RLIMIT_AS`
 breaks anything that maps aggressively including `rustc`, and disk is hard to
@@ -174,10 +247,12 @@ relay would accept sessions from anyone until it ran out of memory.
 |---|---|
 | Open at once | 8 per address |
 | Started per minute | 20 per address |
-| Joining a session | Unmetered — a guest already needs the link |
+| Joining a session | 96 at once, 240 per minute — see [below](#what-bounds-an-anonymous-caller) |
 
-Only *opening* is metered. Rationing the people a host invited would be
-limiting the wrong side.
+Opening is metered tightly and joining generously. Rationing the people a host
+invited would be limiting the wrong side, but leaving joins unmetered let one
+address hold unlimited sockets, which is why they have their own, much larger
+budget.
 
 The slot is a `Drop` guard rather than a matching `release()` call, because the
 handshake has several ways to fail after a slot is taken and every one is a

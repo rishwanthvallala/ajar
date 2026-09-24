@@ -62,7 +62,7 @@ deployed relay, not just locally.
 |---|---|
 | Guest's socket drops | Reconnects with backoff; the host re-announces every terminal and replays its ring buffer |
 | Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away" |
-| Host returns in the grace | `host_back`, terminals re-announced and replayed |
+| Host returns in the grace | `host_back`. The agent reconciles its guest list with the relay's, then resends the tree, every terminal and its replay, every open document's state and the roster. Each guest resends its name and its document's state |
 | Host never returns | The relay reaps the session and tells guests why |
 | Host presses ctrl-c | `Control::Close` — immediate, no grace |
 | Relay process dies | The agent dials back in and re-opens the same session id |
@@ -70,6 +70,20 @@ deployed relay, not just locally.
 Frames the agent tries to send while disconnected are **dropped, not queued**.
 The ring buffers already hold the terminal output a guest needs, and queueing
 here would replay it twice.
+
+That is only safe because everything else is *resent whole* afterwards, and
+until September 2026 it was not. A host blip inside the grace period lost, for
+good: patches for files made during it, document updates from the disk
+changing, the introduction of anyone who joined, the departure of anyone who
+left — and, worst, whatever a guest typed, which went to a host that was not
+connected. Every later keystroke from that guest depended on the lost ones, so
+Yjs parked them as pending on the host and the file never changed again while
+the editor showed the text as typed. `smoke-hostdrop.mjs` cuts only the host's
+socket, through a proxy, and checks each of those; `check-host-drop.mjs` does
+the typing part in the real browser client.
+
+None of the resends is incremental, and none needs to be: a tree already means
+*replace everything*, and a Yjs state is idempotent to apply.
 
 ## Versions, because the agent is not ours to deploy
 

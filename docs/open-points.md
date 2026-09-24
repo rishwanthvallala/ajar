@@ -1,7 +1,8 @@
 # Open points
 
 *Kept as of 24 September 2026. Four of five hardening steps are done and
-unpushed — see [handoff-2026-09-24.md](handoff-2026-09-24.md).*
+pushed — see [handoff-2026-09-24.md](handoff-2026-09-24.md). The sandbox and
+reconnect items below were found and partly fixed the same day.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -42,13 +43,52 @@ end-to-end smokes only ever have the *host* send control frames, so a
 regression here would pass the gate. Seven relay tests came with that work;
 this is not one of them.
 
-**The pad's HTTP body limit is large.** `MAX_PAD_HTTP_BODY` is
-`MAX_BYTES * 6 + 1 MiB`, about 151 MB, sized so JSON escaping cannot reject a
-legitimate 25 MiB pad. It is bounded and the store rejects anything past the
-cap after parsing, but the relay runs on a 1.8 GB box and nothing limits
-concurrent uploads. Streaming the body, or a smaller limit with a less
-pessimistic escaping assumption, would both be better than the current
-arithmetic.
+**Pad writes are bounded; pad reads are not.** `MAX_PAD_HTTP_BODY` is now
+51 MiB and at most four are read at once, with a `const` assertion on the
+product. Nothing bounds `GET /api/pad/<name>`: each read of a 25 MiB pad holds
+the file, the parsed pad and the serialised response at once, and the service
+has `MemoryMax=512M`. One large pad and a handful of concurrent reads is an OOM
+kill, and five of those inside a minute trips the unit's `StartLimitBurst`, so
+systemd stops restarting the relay — taking every ajar session with it. Reads
+want the same permit writes have, and the store's blocking I/O wants to leave
+the async workers.
+
+### The sandbox still lets a guest reach key-holding sockets
+
+The environment variables are withheld now, but the sockets they named are
+still reachable by path: an ssh agent in a temp directory a guest can list, the
+gpg agent and the session bus under `/run/user`, Docker's socket. The agent
+measures each through the real sandbox and warns about every one a guest can
+reach — so the host is told — but nothing refuses them yet.
+
+| | What would refuse them |
+|---|---|
+| Linux | Landlock ABI 9 (`ResolveUnix`, Linux 7.1). Not reached for until `linux-sandbox.sh` has run on a kernel that has it |
+| macOS | Seatbelt `network-outbound` denials on those paths. Needs writing and verifying on a Mac; nothing here can run one |
+
+### Found reading the code on 24 September, not fixed yet
+
+Each is from reading, not from a failing check, and each wants one written
+before it is touched.
+
+| | Where |
+|---|---|
+| The panel's kick takes one digit, and ids are never reused — every reconnect burns one — so a guest numbered 10 or more cannot be kicked | `ui.rs` `interpret` |
+| Read-only covers terminals only: document edits are applied and written to disk regardless | `main.rs` doc channel, `web/src/main.ts` `startEditing` |
+| A stored copy over about 8 MB never reaches a guest: its header and blob are queued back to back, and the outbox refuses the second once the first makes the queue non-empty | `ws.rs` store fetch, `outbox.rs` `send` |
+| A socket that never sends `hello` is charged to no quota and has no timeout | `ws.rs` handshake |
+| The watcher's filter reads only the root `.gitignore` and `.ignore`; the scanner also honours nested ones, global excludes and `info/exclude`, so changes there reach guests until the next resync | `workspace/filter.rs` |
+| In the pad, a trailing comment, a pasted `# …` line or a syntax error swallows the end-of-command sentinel and hangs the terminal until ctrl-c | `pad/src/shell.ts` `run` |
+| A cursor's `user.id` goes into a stylesheet unescaped — the name was fixed, the id was not. In the pad anyone with the link can send one | `web/src/editing.ts`, `pad/src/editing.ts` `drawCursors` |
+| The checkpoint leaves out untracked files, and "files changed" is measured against HEAD, so the host's own earlier edits are reported as the guest's | `checkpoint.rs` |
+
+### Scoped signals refuse `kill` across terminals
+
+Each terminal is its own Landlock domain, so from Linux 6.12 a guest cannot
+signal the agent or anything else the host runs — and also cannot `kill` a
+server started in a *different* tab. That was the trade taken, and it is one
+line (`Scope::Signal`) if it turns out to be the wrong one. Sharing one domain
+across terminals would need a single confined parent that spawns every shell.
 
 ### Tools that do not fully work
 
@@ -241,7 +281,7 @@ and the one that keeps paying: `find .` listing five files nobody wrote, a pad
 opened from a link coming up empty, and the preview's own origin were all
 invisible locally.
 
-The recurring hazard is checks that pass for the wrong reason — sixteen so far,
+The recurring hazard is checks that pass for the wrong reason — twenty-one so far,
 plus two that *failed* for the wrong reason and cost more than any of them. The
 pattern never changes: whenever the thing under test can produce the passing
 evidence by accident, the check proves nothing. Reverting the fix and watching

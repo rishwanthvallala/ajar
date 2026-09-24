@@ -25,11 +25,14 @@ worse than no gate, because it still reports success.
 | `scripts/smoke-workspace.mjs` | Ignore rules, reads, path-traversal refusal, patches, an install-sized burst |
 | `scripts/smoke-editing.mjs` | Two people editing one file while the terminal rewrites it |
 | `scripts/smoke-control.mjs` | Lock and read-only actually reach a guest |
+| `scripts/smoke-environment.mjs` | Credentials in the host's environment do not reach a guest's shell, and the socket warning matches what a guest can actually reach |
 | `scripts/smoke-encryption.mjs` | Wiretaps the wire and requires nothing readable crosses it |
 | `scripts/smoke-sync.mjs` | Kills the host mid-session; the guest can still read the folder |
 | `scripts/smoke-reconnect.mjs` | Kills the relay mid-session; the agent returns to the same link |
+| `scripts/smoke-hostdrop.mjs` | Cuts only the host's socket, through a proxy, and requires everything from the gap back: typing, disk changes, new files, joins and leaves |
+| `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco — needs `npm run build:ajar` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
-| `scripts/linux-sandbox.sh` | Nine attempts to escape Landlock, on a real kernel |
+| `scripts/linux-sandbox.sh` | Ten attempts to escape Landlock on a real kernel, and seven controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 
 The browser tier is checked separately, because each run downloads the wasm
@@ -144,7 +147,7 @@ knowing about. It belongs on a server or in CI.
 
 ## Checks that passed for the wrong reason
 
-Sixteen so far, and they are the most transferable lesson in this repository.
+Twenty-one so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -166,6 +169,11 @@ passing evidence by accident.**
 | The preview's server | Seeded through the store, where a pad's files are present but empty in the sandbox, so the server exited instantly and the button never appeared |
 | Three revert tests of the seeding fix | The revert failed the typecheck, so `vite` never ran and `dist/` still held the build made from the *fixed* source — the check measured the fix it was meant to be deprived of |
 | "the egress allowlist is refusing hosts" | With the endpoint down, every destination is refused and the allowlist assertions pass without an allowlist doing anything. They now require `pypi.org` to work in the same run |
+| `--no-network` refuses outbound tcp | The probe used `/dev/tcp` under `/bin/sh`, which is dash on Debian and Ubuntu, where `/dev/tcp` is just a missing path. It "failed to connect" with the network wide open. It now uses bash and requires the same probe to *succeed* with the network allowed first |
+| "a read-only notice reached the guest" | `control.length >= 0` — true of every array |
+| A busy host still lets a guest fork | First draft: `sh -c 'echo …'` as the shell's last command is exec'd rather than forked, and `echo` is a builtin, so nothing forked and it passed against the bug |
+| Someone who joined during a host's blip got a tree | "The mirrored tree is non-empty" — satisfied by a *patch* for a file somebody else saved meanwhile, with no tree ever sent |
+| Capability probes under Landlock | Built at the crate's default best-effort level, where an unsupported right is silently dropped and `create()` succeeds anyway. Every probe said yes on every kernel |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service
