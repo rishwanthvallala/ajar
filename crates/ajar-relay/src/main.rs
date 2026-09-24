@@ -59,6 +59,20 @@ const MAX_CONCURRENT_PAD_WRITES: usize = 4;
 // OOM. 204 MiB against 512 MiB leaves room for the rest of the process.
 const _: () = assert!(MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
 
+/// Pad reads being streamed at once, from every caller together.
+///
+/// Not a memory bound — a read is streamed from its file and costs a chunk
+/// buffer whatever the pad's size — but a descriptor bound: each is an open
+/// file and a socket, and the unit's soft limit is 1,024 of those shared with
+/// every session. Each address is held to `quota::MAX_READS_PER_IP` of these, so
+/// one slow reader cannot hold them all.
+const MAX_CONCURRENT_PAD_READS: usize = 64;
+
+/// How long a read waits for a slot before being told the server is busy.
+/// Queuing is right for a moment's contention; a queue with no end is how a
+/// few slow readers turn into requests that simply never answer.
+const PAD_READ_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Parser, Debug)]
 #[command(name = "ajar-relay", version, about = "Frame relay for ajar sessions")]
 struct Args {
@@ -108,6 +122,9 @@ struct AppState {
     /// Bounds how many pad bodies are being read at once. See
     /// [`MAX_CONCURRENT_PAD_WRITES`].
     writing: Arc<tokio::sync::Semaphore>,
+    /// Bounds how many pads are being streamed out at once. See
+    /// [`MAX_CONCURRENT_PAD_READS`].
+    reading: Arc<tokio::sync::Semaphore>,
     trust_forwarded: bool,
 }
 
@@ -140,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         quota: Arc::new(quota::Quota::new()),
         pads: pads.clone(),
         writing: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_WRITES)),
+        reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
         trust_forwarded: args.trust_forwarded_for,
     };
 
@@ -260,20 +278,77 @@ fn refuse(e: pad::Error) -> (StatusCode, String) {
 
 async fn read_pad(
     Path(name): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
-) -> Result<Json<PadBody>, (StatusCode, String)> {
-    match state.pads.get(&name).map_err(refuse)? {
-        Some(p) => Ok(Json(PadBody {
-            exists: true,
-            seq: p.seq,
-            files: p.files,
-        })),
-        None => Ok(Json(PadBody {
+) -> axum::response::Response {
+    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    let Ok(slot) = state
+        .quota
+        .claim(caller, std::time::Instant::now(), quota::Kind::Read)
+    else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many pads being read from this address at once — try again in a moment",
+        )
+            .into_response();
+    };
+    let Ok(Ok(permit)) =
+        tokio::time::timeout(PAD_READ_WAIT, state.reading.clone().acquire_owned()).await
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is busy sending other pads — try again in a moment",
+        )
+            .into_response();
+    };
+
+    // The lease check reads the whole file, so it goes where blocking belongs
+    // rather than stalling a worker that is also carrying people's keystrokes.
+    let pads = state.pads.clone();
+    let Ok(opened) = tokio::task::spawn_blocking(move || pads.open_for_read(&name)).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "reading the pad failed").into_response();
+    };
+    match opened {
+        Ok(Some(opened)) => stream_pad(opened, (slot, permit)),
+        Ok(None) => Json(PadBody {
             exists: false,
             seq: 0,
             files: Default::default(),
-        })),
+        })
+        .into_response(),
+        Err(e) => refuse(e).into_response(),
     }
+}
+
+/// The stored document, sent from its file with `exists` put in front.
+///
+/// `held` is what has to last as long as the sending: the address's read slot
+/// and the global permit. It rides inside the body stream, so it is released
+/// when the last byte goes or the client disappears — not when this function
+/// returns, which is before a single byte of the body has moved. Held by the
+/// handler instead, the bound would cover nothing but opening the file.
+fn stream_pad(opened: pad::Opened, held: impl Send + 'static) -> axum::response::Response {
+    use futures_util::StreamExt;
+
+    const HEAD: &[u8] = br#"{"exists":true,"#;
+    let rest = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(opened.file));
+    let body = futures_util::stream::once(async {
+        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(HEAD))
+    })
+    .chain(rest)
+    .map(move |chunk| {
+        let _held = &held;
+        chunk
+    });
+    axum::response::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(
+            axum::http::header::CONTENT_LENGTH,
+            HEAD.len() as u64 + opened.remaining,
+        )
+        .body(axum::body::Body::from_stream(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// A permit to read one pad body.
@@ -312,7 +387,18 @@ async fn write_pad(
     _permit: WritePermit,
     Json(body): Json<WriteBody>,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
-    let seq = state.pads.write(&name, &body.writes).map_err(refuse)?;
+    // Read, modify and rename under a lock: blocking work, kept off the workers
+    // that carry every session's frames.
+    let pads = state.pads.clone();
+    let seq = tokio::task::spawn_blocking(move || pads.write(&name, &body.writes))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storing the pad failed".to_string(),
+            )
+        })?
+        .map_err(refuse)?;
     Ok(Json(Wrote { seq }))
 }
 

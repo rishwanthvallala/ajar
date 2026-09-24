@@ -43,15 +43,13 @@ end-to-end smokes only ever have the *host* send control frames, so a
 regression here would pass the gate. Seven relay tests came with that work;
 this is not one of them.
 
-**Pad writes are bounded; pad reads are not.** `MAX_PAD_HTTP_BODY` is now
-51 MiB and at most four are read at once, with a `const` assertion on the
-product. Nothing bounds `GET /api/pad/<name>`: each read of a 25 MiB pad holds
-the file, the parsed pad and the serialised response at once, and the service
-has `MemoryMax=512M`. One large pad and a handful of concurrent reads is an OOM
-kill, and five of those inside a minute trips the unit's `StartLimitBurst`, so
-systemd stops restarting the relay — taking every ajar session with it. Reads
-want the same permit writes have, and the store's blocking I/O wants to leave
-the async workers.
+**A few slow readers can still make pad reads wait.** Reads are streamed from
+disk now, so they no longer cost memory, and they are held to 32 in flight per
+address and 64 in all. A handful of addresses each holding 32 unread responses
+fill the 64, and everyone else waits ten seconds and is told the server is busy.
+That is an availability problem for the pad rather than a threat to the relay,
+and it is the same shape a slow uploader already has against the four write
+permits. A deadline on a response still being sent would close it.
 
 ### The sandbox still lets a guest reach key-holding sockets
 

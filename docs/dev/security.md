@@ -282,6 +282,8 @@ meets it.
 | Every pad together | 4 GB, `--max-store-bytes` | `pad.rs` `MAX_STORE_BYTES` |
 | One pad write, off the wire | 51 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
 | Pad writes being read at once | 4 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
+| Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
+| Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
 | `/dns-query` | GET/POST only, 4 KB body | `deploy/Caddyfile` |
 
@@ -310,6 +312,23 @@ applied before was the OOM killer.
 The permit for a pad write is taken in an **extractor, not the handler**.
 Extractors that do not touch the body run first, so a request waits before
 51 MiB is pulled off the wire; taken in the handler it would bound nothing.
+
+**A pad read is streamed, and that is the bound — not the count.** Reads used to
+hold the file, the parsed pad and the serialised response at once, and nothing
+limited how many ran together: twelve concurrent reads of one 24 MiB pad grew
+the relay by 647 MiB, past its own `MemoryMax`, and five OOM kills inside a
+minute is systemd giving up on the relay and every session in it. Now the lease
+is checked by a pass that skips everything but `updated_ms` without allocating
+it, and the stored file itself is the response, with `exists` spliced in front
+of its opening brace. The same twelve reads grow it by about 1 MiB.
+
+The counts that remain bound descriptors and slow readers, not memory. The
+per-address slot and the global permit ride *inside the body stream*, so they are
+held until the last byte goes or the client leaves — held by the handler, they
+would be released before a byte of the body had moved. Reads are deliberately
+not metered by rate: every save in a busy pad sends every other browser to
+re-read it, and a classroom behind one address does that thousands of times a
+minute.
 
 ### Still unbounded
 

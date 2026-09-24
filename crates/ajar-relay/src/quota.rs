@@ -36,6 +36,18 @@ pub const MAX_JOINS_PER_IP: usize = 96;
 /// Joins one address may start within [`WINDOW`].
 pub const MAX_JOIN_STARTS_PER_WINDOW: usize = 240;
 
+/// Pad reads one address may have in flight at once.
+///
+/// Held for as long as the response is still being sent, so this is what stops
+/// one address that reads slowly from holding every read the relay will serve.
+/// Generous for the same reason joins are: a classroom behind one address opens
+/// the same pad together, and each save sends every other browser to re-read.
+///
+/// Deliberately not metered per [`WINDOW`]. Every save in a busy pad sends every
+/// other browser to re-read it, so a room behind one address legitimately reads
+/// thousands of times a minute — and a read is cheap now that it is streamed.
+pub const MAX_READS_PER_IP: usize = 32;
+
 // The join ceiling exists to stop one address holding thousands of sockets, not
 // to ration how many colleagues somebody may have. If it ever drops near the
 // open ceiling it has stopped being that, so say so here rather than discover it
@@ -52,13 +64,19 @@ pub enum Kind {
     Open,
     /// Connecting to one that already exists. Generous.
     Join,
+    /// A pad being read over HTTP. Bounded in flight, not in rate.
+    Read,
 }
 
 impl Kind {
-    fn limits(self) -> (usize, usize) {
+    /// How many may be held at once, and how many started per [`WINDOW`] —
+    /// `None` for a kind that is not rate-limited at all, which also means its
+    /// starts are never recorded.
+    fn limits(self) -> (usize, Option<usize>) {
         match self {
-            Kind::Open => (MAX_OPEN_PER_IP, MAX_STARTS_PER_WINDOW),
-            Kind::Join => (MAX_JOINS_PER_IP, MAX_JOIN_STARTS_PER_WINDOW),
+            Kind::Open => (MAX_OPEN_PER_IP, Some(MAX_STARTS_PER_WINDOW)),
+            Kind::Join => (MAX_JOINS_PER_IP, Some(MAX_JOIN_STARTS_PER_WINDOW)),
+            Kind::Read => (MAX_READS_PER_IP, None),
         }
     }
 }
@@ -69,10 +87,17 @@ struct Budget {
     starts: Vec<Instant>,
 }
 
+impl Budget {
+    fn idle(&self) -> bool {
+        self.held == 0 && self.starts.is_empty()
+    }
+}
+
 #[derive(Default)]
 struct Caller {
     open: Budget,
     join: Budget,
+    read: Budget,
 }
 
 impl Caller {
@@ -80,14 +105,12 @@ impl Caller {
         match kind {
             Kind::Open => &mut self.open,
             Kind::Join => &mut self.join,
+            Kind::Read => &mut self.read,
         }
     }
 
     fn idle(&self) -> bool {
-        self.open.held == 0
-            && self.open.starts.is_empty()
-            && self.join.held == 0
-            && self.join.starts.is_empty()
+        self.open.idle() && self.join.idle() && self.read.idle()
     }
 }
 
@@ -145,12 +168,16 @@ impl Quota {
         if budget.held >= max_held {
             return Err(Denied::TooManyOpen);
         }
-        if budget.starts.len() >= max_starts {
+        if max_starts.is_some_and(|max| budget.starts.len() >= max) {
             return Err(Denied::TooFast);
         }
 
         budget.held += 1;
-        budget.starts.push(now);
+        // Unmetered kinds leave no history. Recording them anyway would grow a
+        // vector by one per read for a busy room, to enforce nothing.
+        if max_starts.is_some() {
+            budget.starts.push(now);
+        }
         Ok(())
     }
 
@@ -366,5 +393,48 @@ mod tests {
         // they are next seen. Check the one we touched.
         drop(q.claim(ip(0), later, Kind::Open).unwrap());
         assert!(q.tracked() <= 100);
+    }
+
+    #[test]
+    fn reads_in_flight_are_bounded_per_address() {
+        let q = quota();
+        let now = Instant::now();
+        let _held: Vec<_> = (0..MAX_READS_PER_IP)
+            .map(|_| q.claim(ip(1), now, Kind::Read).unwrap())
+            .collect();
+        assert_eq!(
+            q.claim(ip(1), now, Kind::Read).err(),
+            Some(Denied::TooManyOpen)
+        );
+        assert!(
+            q.claim(ip(2), now, Kind::Read).is_ok(),
+            "one address's reads blocked another's"
+        );
+    }
+
+    #[test]
+    fn reads_are_never_rate_limited() {
+        // Every save in a busy pad sends every other browser to re-read it. A
+        // room behind one address does thousands a minute, one at a time.
+        let q = quota();
+        let now = Instant::now();
+        for _ in 0..10_000 {
+            drop(
+                q.claim(ip(1), now, Kind::Read)
+                    .expect("a sequential read was refused"),
+            );
+        }
+        assert_eq!(q.tracked(), 0, "unmetered reads left history behind");
+    }
+
+    #[test]
+    fn reading_spends_nothing_a_session_needs() {
+        let q = quota();
+        let now = Instant::now();
+        let _reads: Vec<_> = (0..MAX_READS_PER_IP)
+            .map(|_| q.claim(ip(1), now, Kind::Read).unwrap())
+            .collect();
+        assert!(q.claim(ip(1), now, Kind::Open).is_ok());
+        assert!(q.claim(ip(1), now, Kind::Join).is_ok());
     }
 }

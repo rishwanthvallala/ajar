@@ -55,6 +55,19 @@ per-call atomic counter in the temp filename. Either alone is insufficient —
 the stripe serialises writers to one pad, the counter stops unrelated writers
 colliding on the temp path.
 
+### Reads are streamed from the file
+
+A pad read does not load the pad. `Store::open_for_read` checks the lease with a
+parse that keeps only `updated_ms`, then hands back the open file positioned
+past its opening brace, and the handler sends `{"exists":true,` followed by the
+file. The stored document already is the response; the only difference was
+that one field. One descriptor serves the check and the bytes, so they are the
+same version even if a write renames a new file into place meanwhile.
+
+It used to parse, rebuild and re-serialise the whole pad per read — three copies
+in memory at once — and twelve concurrent reads of a 24 MiB pad grew the relay
+by 647 MiB. See [security.md](security.md#what-bounds-an-anonymous-caller).
+
 ### Reserved names
 
 A pad name becomes a path on the origin, so anything the site already serves

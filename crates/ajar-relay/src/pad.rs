@@ -149,8 +149,22 @@ impl Pad {
     }
 
     fn expired(&self, now_ms: u64) -> bool {
-        now_ms.saturating_sub(self.updated_ms) > LEASE.as_millis() as u64
+        lease_lapsed(self.updated_ms, now_ms)
     }
+}
+
+fn lease_lapsed(updated_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(updated_ms) > LEASE.as_millis() as u64
+}
+
+/// A stored pad opened for streaming: the file positioned just past its
+/// opening brace, and how many bytes follow.
+///
+/// Past the brace so a caller can put its own fields in front — the stored
+/// document already *is* the response, apart from `exists`.
+pub struct Opened {
+    pub file: std::fs::File,
+    pub remaining: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -360,6 +374,53 @@ impl Store {
             return Err(Error::Gone);
         }
         Ok(Some(pad))
+    }
+
+    /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
+    /// means the name is free.
+    ///
+    /// `get` holds the file, the parsed pad and — once the handler serialised
+    /// it — the response at the same time: about three times the pad, per read,
+    /// with nothing bounding how many ran together. Twelve concurrent reads of a
+    /// 24 MiB pad grew the relay by 647 MiB, past the unit's `MemoryMax=512M`.
+    ///
+    /// Here the lease is checked by a pass that parses `updated_ms` and skips
+    /// everything else without allocating it, and the file itself is what gets
+    /// sent. One descriptor serves both, so the check and the bytes are the
+    /// same version even if a write renames a new one into place meanwhile.
+    pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        check_name(name)?;
+        if self.tomb_path(name).exists() {
+            return Err(Error::Gone);
+        }
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        let mut file = match std::fs::File::open(self.pad_path(name)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io(e)),
+        };
+
+        #[derive(Deserialize)]
+        struct Lease {
+            updated_ms: u64,
+        }
+        let lease: Lease = serde_json::from_reader(std::io::BufReader::new(&file))
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if lease_lapsed(lease.updated_ms, now_ms()) {
+            self.entomb(name)?;
+            return Err(Error::Gone);
+        }
+
+        file.seek(SeekFrom::Start(0)).map_err(io)?;
+        let mut brace = [0u8; 1];
+        file.read_exact(&mut brace).map_err(io)?;
+        if brace != *b"{" {
+            return Err(Error::Io("a stored pad is not a JSON object".into()));
+        }
+        let remaining = file.metadata().map_err(io)?.len() - 1;
+        Ok(Some(Opened { file, remaining }))
     }
 
     /// Apply writes and removals, and return the new sequence number.
@@ -1000,6 +1061,64 @@ mod tests {
             "writes were lost: {:?}",
             pad.files.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// What a reader receives: the fields the handler puts in front, then the
+    /// rest of the stored document.
+    fn streamed(s: &Store, name: &str) -> serde_json::Value {
+        use std::io::Read;
+        let mut opened = s.open_for_read(name).unwrap().expect("the pad exists");
+        let mut rest = String::new();
+        opened.file.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest.len() as u64, opened.remaining, "remaining was wrong");
+        serde_json::from_str(&format!("{{\"exists\":true,{rest}")).expect("valid json")
+    }
+
+    #[test]
+    fn a_streamed_pad_is_the_same_pad() {
+        let (s, _d) = store();
+        s.write(
+            "p",
+            &[put("a.txt", "one"), put("dir/b.txt", "two \"quoted\"\n")],
+        )
+        .unwrap();
+        let body = streamed(&s, "p");
+        assert_eq!(body["exists"], true);
+        assert_eq!(body["seq"], 1);
+        assert_eq!(body["files"]["a.txt"]["content"], "one");
+        assert_eq!(body["files"]["dir/b.txt"]["content"], "two \"quoted\"\n");
+        assert_eq!(body["files"]["dir/b.txt"]["encoding"], "utf8");
+    }
+
+    #[test]
+    fn opening_to_read_a_free_name_is_not_an_error() {
+        let (s, _d) = store();
+        assert!(s.open_for_read("nobody-here").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_streamed_read_still_honours_the_lease() {
+        // Reads skip `get` now, and `get` was where an expired pad was caught
+        // on the way out. The check has to have come along.
+        let (s, _d) = store();
+        s.write("stale", &[put("a", "1")]).unwrap();
+        let path = s.pad_path("stale");
+        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        pad.updated_ms = now_ms() - LEASE.as_millis() as u64 - 1;
+        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
+
+        assert!(matches!(s.open_for_read("stale"), Err(Error::Gone)));
+        assert!(
+            matches!(s.open_for_read("stale"), Err(Error::Gone)),
+            "the name must stay gone once entombed"
+        );
+    }
+
+    #[test]
+    fn opening_to_read_refuses_what_get_refuses() {
+        let (s, _d) = store();
+        assert!(matches!(s.open_for_read("api"), Err(Error::Reserved)));
+        assert!(matches!(s.open_for_read("../x"), Err(Error::BadName(_))));
     }
 
     #[test]

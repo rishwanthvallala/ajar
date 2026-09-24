@@ -139,7 +139,10 @@ It exists because unit tests could not do the job. `quota.rs` has sixty-odd
 tests proving the arithmetic, and **every one of them passes with the claim in
 `ws.rs` deleted** — they prove the limit computes, not that it is reached. So
 this suite opens real sockets until it is refused, fills a store over HTTP until
-it answers 507, and watches how many bytes the server was willing to read.
+it answers 507, watches how many bytes the server was willing to read, and reads
+the relay's own resident memory while a dozen reads of a 24 MiB pad run at once —
+every one of those reads succeeds with or without the fix, so a status code
+could never have shown the 647 MiB they used to cost.
 
 It is also why the suite is heavier than it looks: roughly 120 connections per
 run, which on a monitored laptop is close enough to a port scan to be worth

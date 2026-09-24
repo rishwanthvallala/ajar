@@ -32,13 +32,19 @@ const WS = `ws://127.0.0.1:${PORT}/ws`;
 
 // Must match `quota::MAX_JOINS_PER_IP`. Read from the source rather than
 // restated, so raising the ceiling cannot quietly make this check vacuous.
-const MAX_JOINS = Number(
-  /MAX_JOINS_PER_IP: usize = (\d+)/.exec(
-    await import("node:fs").then((fs) =>
-      fs.readFileSync(new URL("../crates/ajar-relay/src/quota.rs", import.meta.url), "utf8"),
-    ),
-  )[1],
-);
+const QUOTA_RS = readFileSync(new URL("../crates/ajar-relay/src/quota.rs", import.meta.url), "utf8");
+const MAX_JOINS = Number(/MAX_JOINS_PER_IP: usize = (\d+)/.exec(QUOTA_RS)[1]);
+// Absent before reads were bounded per address, which is itself the finding.
+const MAX_READS = Number(/MAX_READS_PER_IP: usize = (\d+)/.exec(QUOTA_RS)?.[1] ?? 32);
+
+/** What the relay process holds in memory right now, in MiB. */
+function rssMiB(pid) {
+  if (process.platform === "linux") {
+    const m = /VmRSS:\s+(\d+) kB/.exec(readFileSync(`/proc/${pid}/status`, "utf8"));
+    return m ? Number(m[1]) / 1024 : NaN;
+  }
+  return Number(execFileSync("ps", ["-o", "rss=", "-p", String(pid)], { encoding: "utf8" }).trim()) / 1024;
+}
 
 /**
  * PUT a body and report the status the server actually sent.
@@ -88,7 +94,7 @@ async function main() {
   // Its own directory as well. Without --pad-dir the relay writes to
   // ./ajar-pads, so running this from the repo root left twelve pads in the
   // tree — and they were committed before anybody noticed.
-  procs.start(
+  const relay = procs.start(
     "target/debug/ajar-relay",
     ["--bind", `127.0.0.1:${PORT}`, "--pad-dir", join(padDir, "main")],
     "relay",
@@ -226,6 +232,78 @@ async function main() {
   notOk.length === 0
     ? ok(`${together.length} writes at once all completed — the bound queues rather than refuses`)
     : fail(`concurrent writes returned ${[...new Set(notOk)].join(", ")} instead of queuing`);
+
+  // ------------------------------- reading a pad costs a stream, not the pad
+  //
+  // Writes were bounded on the 24th; reads were not. Each read held the file,
+  // the parsed pad and the serialised response at once — about three times the
+  // pad — with nothing bounding how many ran together, against a unit with
+  // MemoryMax=512M. One large pad and a handful of reads was an OOM kill, and
+  // five of those in a minute is systemd giving up on the relay.
+  //
+  // So the check is the process's own memory while a dozen reads of a 24 MiB
+  // pad run at once, not a status code: every read here succeeds either way.
+  const BIG = 24 * 1024 * 1024;
+  const put = await fetch(`${HTTP}/api/pad/bigread`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ writes: [{ path: "big.txt", content: "r".repeat(BIG) }] }),
+  });
+  if (!put.ok) return fail(`could not store the pad the read checks need: ${put.status}`);
+
+  await sleep(300);
+  const before = rssMiB(relay.pid);
+  let peak = before;
+  const sampler = setInterval(() => (peak = Math.max(peak, rssMiB(relay.pid))), 5);
+  const reads = await Promise.all(
+    Array.from({ length: 12 }, () =>
+      fetch(`${HTTP}/api/pad/bigread`).then(async (r) => ({ status: r.status, body: await r.text() })),
+    ),
+  );
+  clearInterval(sampler);
+  peak = Math.max(peak, rssMiB(relay.pid));
+
+  const whole = reads.every((r) => {
+    if (r.status !== 200) return false;
+    const pad = JSON.parse(r.body);
+    return pad.exists === true && pad.files["big.txt"]?.content.length === BIG;
+  });
+  if (!whole) {
+    fail(`not every concurrent read came back whole: ${reads.map((r) => r.status).join(",")}`);
+  } else {
+    ok("twelve reads of a 24 MiB pad at once all came back whole");
+  }
+  const grew = peak - before;
+  grew < 96
+    ? ok(`and the relay grew by ${grew.toFixed(0)} MiB doing it — the pad is streamed, not held`)
+    : fail(`twelve reads of a 24 MiB pad grew the relay by ${grew.toFixed(0)} MiB`);
+
+  // One address cannot hold every read slot. Responses are left unread, so
+  // each one holds its slot for as long as a slow client would.
+  const holding = [];
+  let readRefused = null;
+  for (let i = 0; i < MAX_READS + 1; i++) {
+    const r = await fetch(`${HTTP}/api/pad/bigread`);
+    if (r.status === 200) holding.push(r);
+    else {
+      readRefused = { at: i, status: r.status };
+      await r.body?.cancel();
+      break;
+    }
+  }
+  readRefused?.at === MAX_READS && readRefused.status === 429
+    ? ok(`one address is held to ${MAX_READS} pad reads in flight, then 429`)
+    : fail(`held ${holding.length} unread pad reads against a cap of ${MAX_READS}: ${JSON.stringify(readRefused)}`);
+
+  for (const r of holding.splice(0)) await r.body?.cancel();
+  await sleep(500);
+  const readAgain = await fetch(`${HTTP}/api/pad/bigread`).then(async (r) => {
+    await r.body?.cancel();
+    return r.status;
+  });
+  readAgain === 200
+    ? ok("abandoning those reads gives the slots back")
+    : fail(`a read was still refused after the held ones were abandoned: ${readAgain}`);
 
   // ------------------------------------ the egress tunnel is bounded too
   //
