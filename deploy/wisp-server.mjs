@@ -72,6 +72,34 @@ Object.assign(wisp.options, {
   parse_real_ip_from: ["127.0.0.1"],
 });
 
+// How many tunnels may be open at once, in total and from one address.
+//
+// `stream_limit_total` bounds the sockets inside one tunnel; nothing bounded the
+// tunnels. N connections x 32 streams was unlimited concurrent TCP out of this
+// instance's IP, which is the part that gets an address blocked rather than
+// merely busy.
+//
+// A pad opens exactly one tunnel while it installs something, so these are
+// generous by the standards of real use: eight tabs from one address, and sixty
+// four people installing at the same moment.
+const MAX_TUNNELS = 64;
+const MAX_TUNNELS_PER_IP = 8;
+
+let openTunnels = 0;
+const perIp = new Map();
+
+/** The address Caddy saw, which is the only one worth counting. */
+function callerOf(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.length > 0) {
+    // Rightmost: a proxy appends the peer it actually saw, so anything left of
+    // the last element was supplied by the caller. Same reasoning as the relay.
+    const parts = forwarded.split(",");
+    return parts[parts.length - 1].trim();
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
 const http = createServer((req, res) => {
   // Nothing here serves HTTP. Answering the health probe and refusing the rest
   // keeps a stray request from looking like a working open proxy.
@@ -84,6 +112,36 @@ const http = createServer((req, res) => {
 });
 
 http.on("upgrade", (req, socket, head) => {
+  const caller = callerOf(req);
+  const mine = perIp.get(caller) ?? 0;
+
+  if (openTunnels >= MAX_TUNNELS || mine >= MAX_TUNNELS_PER_IP) {
+    // Refused before the WebSocket exists, so there is nothing to tear down and
+    // the client gets a status rather than a silent close.
+    const why = openTunnels >= MAX_TUNNELS ? "server" : "address";
+    console.warn(`refusing a tunnel: ${why} limit reached (${caller}, ${openTunnels} open)`);
+    socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+    return;
+  }
+
+  openTunnels += 1;
+  perIp.set(caller, mine + 1);
+
+  // Once, whichever way the socket ends. Releasing twice hands out allowance
+  // nobody gave back; never releasing leaks the ceiling shut after enough
+  // churn, which is worse than having no ceiling because it arrives quietly.
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    openTunnels -= 1;
+    const left = (perIp.get(caller) ?? 1) - 1;
+    if (left > 0) perIp.set(caller, left);
+    else perIp.delete(caller);
+  };
+  socket.on("close", release);
+  socket.on("error", release);
+
   // A proxy that can be killed by one malformed request is a denial of service
   // with extra steps. systemd restarts it, but not losing every other pad's
   // connection in the meantime is worth the guard.
@@ -91,6 +149,7 @@ http.on("upgrade", (req, socket, head) => {
     wisp.routeRequest(req, socket, head);
   } catch (e) {
     console.error("upgrade failed:", e?.message ?? e);
+    release();
     socket.destroy();
   }
 });

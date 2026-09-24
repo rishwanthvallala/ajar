@@ -511,8 +511,9 @@ export class Procs {
     }
   }
 
-  start(cmd, args, label) {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+  /** `opts` is merged into the spawn options — for a process that needs env. */
+  start(cmd, args, label, opts = {}) {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
     p.label = label;
     p.output = "";
     p.stdout.on("data", (d) => (p.output += d.toString()));

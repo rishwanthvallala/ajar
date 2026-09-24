@@ -17,7 +17,7 @@
 // Nothing here may run against a deployed relay. It starts its own.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -226,6 +226,55 @@ async function main() {
   notOk.length === 0
     ? ok(`${together.length} writes at once all completed — the bound queues rather than refuses`)
     : fail(`concurrent writes returned ${[...new Set(notOk)].join(", ")} instead of queuing`);
+
+  // ------------------------------------ the egress tunnel is bounded too
+  //
+  // Not the relay, but the same question: wisp-server.mjs capped the sockets
+  // *inside* a tunnel at 32 and did not cap tunnels, so N connections x 32 was
+  // unlimited concurrent TCP leaving this instance's address. That is the shape
+  // that gets an IP blocked rather than merely busy.
+  const WISP_PORT = 8792;
+  procs.start("node", ["deploy/wisp-server.mjs"], "wisp", {
+    env: { ...process.env, WISP_PORT: String(WISP_PORT) },
+  });
+  await sleep(1500);
+
+  const perIp = Number(
+    /MAX_TUNNELS_PER_IP = (\d+)/.exec(
+      readFileSync(new URL("../deploy/wisp-server.mjs", import.meta.url), "utf8"),
+    )[1],
+  );
+  const tunnel = () =>
+    new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${WISP_PORT}/`);
+      ws.addEventListener("open", () => resolve({ open: true, ws }));
+      ws.addEventListener("error", () => resolve({ open: false }));
+      setTimeout(() => resolve({ open: false }), 5000);
+    });
+
+  const tunnels = [];
+  let tunnelRefusedAt = null;
+  for (let i = 0; i < perIp + 2; i++) {
+    const r = await tunnel();
+    if (r.open) tunnels.push(r.ws);
+    else {
+      tunnelRefusedAt = i;
+      break;
+    }
+  }
+  tunnelRefusedAt === perIp
+    ? ok(`one address is held to ${perIp} egress tunnels`)
+    : fail(
+        `opened ${tunnels.length} tunnels against a cap of ${perIp} (refused at ${tunnelRefusedAt})`,
+      );
+
+  for (const ws of tunnels.splice(0)) ws.close();
+  await sleep(1000);
+  const reopened = await tunnel();
+  reopened.open
+    ? ok("closing a tunnel frees its slot")
+    : fail("the tunnel allowance did not come back after closing");
+  reopened.ws?.close();
 
   // ------------------------------------------- and the relay is still alive
   //

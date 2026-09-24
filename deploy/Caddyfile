@@ -123,10 +123,25 @@ code.rishwanth.dev {
 	# Same-origin keeps it allowed without widening the policy, and keeps the
 	# names a person resolves off a third party's logs. It tells us nothing we
 	# do not already see: every hostname comes past /wisp a moment later anyway.
-	handle /dns-query {
+	# Only what DoH actually is. This forwards to a public resolver on behalf of
+	# anyone who asks, so the useful question is not who is asking but how much
+	# they can make it carry: a query is a few hundred bytes, and anything
+	# arriving here with a megabyte attached is using it as something else.
+	# A rate limit belongs here too and needs the plugin — see operations.md.
+	@doh {
+		path /dns-query
+		method GET POST
+	}
+	handle @doh {
+		request_body {
+			max_size 4KB
+		}
 		reverse_proxy https://cloudflare-dns.com {
 			header_up Host cloudflare-dns.com
 		}
+	}
+	handle /dns-query {
+		respond "this endpoint answers DNS queries, nothing else" 405
 	}
 
 	@wisp path /wisp /wisp/*
