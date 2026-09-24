@@ -98,8 +98,9 @@ pub struct PtyExit {
 pub struct PtyRegistry {
     sessions: HashMap<u32, PtySession>,
     next_id: u32,
-    /// The command that actually gets spawned — the shell, or the sandbox
-    /// wrapped around it.
+    /// The shell, or the sandbox wrapped around it. The process limit goes
+    /// around this at each open, because its value depends on what the host is
+    /// running at that moment.
     launch: (String, Vec<String>),
     confined: bool,
     cargo_home: Option<std::path::PathBuf>,
@@ -118,8 +119,6 @@ impl PtyRegistry {
         withheld: Vec<String>,
     ) -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        // Limits outermost: rlimits are inherited across `exec`, so whatever
-        // the sandbox launches inherits them too.
         let (program, args) = sandbox.wrap(&shell);
         // Ids start at 1 because 0 means "this frame is JSON, not stream bytes".
         let confined = sandbox.is_confined();
@@ -136,7 +135,7 @@ impl PtyRegistry {
         Self {
             sessions: HashMap::new(),
             next_id: 1,
-            launch: limits.wrap(program, args),
+            launch: (program, args),
             confined,
             cargo_home,
             limits,
@@ -207,9 +206,16 @@ impl PtyRegistry {
             })
             .context("opening pty")?;
 
-        let (program, args) = &self.launch;
-        let mut cmd = CommandBuilder::new(program);
-        for arg in args {
+        // Limits outermost: rlimits are inherited across `exec`, so whatever
+        // the sandbox launches inherits them too.
+        let guests: Vec<u32> = self.roots().into_iter().map(|(_, pid)| pid).collect();
+        let (program, args) = self.limits.wrap(
+            self.launch.0.clone(),
+            self.launch.1.clone(),
+            crate::limits::in_use(&guests),
+        );
+        let mut cmd = CommandBuilder::new(&program);
+        for arg in &args {
             cmd.arg(arg);
         }
         cmd.cwd(&self.cwd);
