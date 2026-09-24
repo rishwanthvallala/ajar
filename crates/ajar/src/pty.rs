@@ -105,6 +105,9 @@ pub struct PtyRegistry {
     cargo_home: Option<std::path::PathBuf>,
     limits: crate::limits::Limits,
     cwd: std::path::PathBuf,
+    /// Variables removed from every guest shell's environment. See
+    /// [`crate::secrets::withheld_env`].
+    withheld: Vec<String>,
 }
 
 impl PtyRegistry {
@@ -112,6 +115,7 @@ impl PtyRegistry {
         cwd: std::path::PathBuf,
         sandbox: &crate::sandbox::Sandbox,
         limits: crate::limits::Limits,
+        withheld: Vec<String>,
     ) -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         // Limits outermost: rlimits are inherited across `exec`, so whatever
@@ -137,6 +141,7 @@ impl PtyRegistry {
             cargo_home,
             limits,
             cwd,
+            withheld,
         }
     }
 
@@ -208,6 +213,12 @@ impl PtyRegistry {
             cmd.arg(arg);
         }
         cmd.cwd(&self.cwd);
+        // The builder starts from this process's own environment, which is the
+        // host's shell — so without this, every credential the host had
+        // exported was one `env` away from a guest.
+        for name in &self.withheld {
+            cmd.env_remove(name);
+        }
         // Without this many programs assume a dumb terminal and refuse colour.
         cmd.env("TERM", "xterm-256color");
         cmd.env("AJAR", "1");

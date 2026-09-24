@@ -63,6 +63,9 @@ node scripts/smoke-encryption.mjs
 echo "── smoke: host controls ──────────────────────────────"
 node scripts/smoke-control.mjs
 
+echo "── smoke: what a guest's shell inherits ──────────────"
+node scripts/smoke-environment.mjs
+
 echo "── smoke: reconnect ──────────────────────────────────"
 node scripts/smoke-reconnect.mjs
 

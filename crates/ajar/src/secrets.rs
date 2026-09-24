@@ -149,6 +149,90 @@ pub fn scan(root: &Path, filter: &Filter) -> Vec<Finding> {
     findings
 }
 
+/// Environment variables a guest's shell does not inherit, by name.
+///
+/// A guest is given the host's toolchain, and a toolchain is configured through
+/// the environment, so the environment is passed on — minus what would let a
+/// guest act *as* the host: tokens and keys by name, a password embedded in a
+/// URL, and the variables that point at agents holding keys. Until this existed
+/// every pty inherited all of it, and `env` was the whole attack.
+///
+/// Over-matching costs a guest a variable they can ask for; under-matching
+/// hands over a credential. So this errs wide, and the host is told every name
+/// it withheld.
+pub fn withheld_env() -> Vec<String> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, value)| {
+            let name = name.into_string().ok()?;
+            withhold(&name, &value.to_string_lossy()).then_some(name)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn withhold(name: &str, value: &str) -> bool {
+    /// Agents and the files that authorise them.
+    const EXACT: &[&str] = &[
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GPG_AGENT_INFO",
+        "GNOME_KEYRING_CONTROL",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "KRB5CCNAME",
+        "DOCKER_HOST",
+        "DOCKER_CONFIG",
+        "DOCKER_CERT_PATH",
+        "KUBECONFIG",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "NETRC",
+    ];
+    /// Whole families: every AWS variable, not just the two that are keys,
+    /// because a profile name is only useful with the files it names.
+    const PREFIXES: &[&str] = &[
+        "AWS_",
+        "AZURE_",
+        "ARM_",
+        "GCP_",
+        "CLOUDSDK_",
+        "VAULT_",
+        "OP_SESSION_",
+        "OP_SERVICE_ACCOUNT",
+    ];
+    const WORDS: &[&str] = &[
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "PASSPHRASE",
+        "API_KEY",
+        "APIKEY",
+        "ACCESS_KEY",
+        "PRIVATE_KEY",
+        "CREDENTIAL",
+    ];
+    let upper = name.to_ascii_uppercase();
+    EXACT.contains(&upper.as_str())
+        || PREFIXES.iter().any(|p| upper.starts_with(p))
+        || WORDS.iter().any(|w| upper.contains(w))
+        || upper.ends_with("_KEY")
+        || upper.ends_with("_PAT")
+        || url_with_password(value)
+}
+
+/// `scheme://user:password@host…` — the shape a DATABASE_URL takes, whatever
+/// the variable happens to be called.
+fn url_with_password(value: &str) -> bool {
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    match authority.rsplit_once('@') {
+        Some((userinfo, _)) => userinfo.contains(':'),
+        None => false,
+    }
+}
+
 /// How to say it out loud, in one line.
 pub fn summarise(findings: &[Finding]) -> String {
     match findings.len() {
@@ -259,6 +343,47 @@ mod tests {
         fs::create_dir_all(dir.join("private")).unwrap();
         fs::write(dir.join("private/.env"), "TOKEN=x\n").unwrap();
         assert!(found(&dir).is_empty());
+    }
+
+    #[test]
+    fn credentials_in_the_environment_are_withheld() {
+        for (name, value) in [
+            ("AWS_SECRET_ACCESS_KEY", "x"),
+            ("AWS_PROFILE", "work"),
+            ("GITHUB_TOKEN", "ghp_x"),
+            ("STRIPE_API_KEY", "sk_x"),
+            ("OPENAI_KEY", "x"),
+            ("GITLAB_PAT", "x"),
+            ("DB_PASSWORD", "x"),
+            ("SSH_AUTH_SOCK", "/tmp/ssh-x/agent.1"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("DATABASE_URL", "postgres://app:hunter2@db:5432/app"),
+            ("REDIS", "redis://:hunter2@localhost:6379/0"),
+        ] {
+            assert!(withhold(name, value), "{name}={value} would reach a guest");
+        }
+    }
+
+    #[test]
+    fn the_toolchain_environment_is_left_alone() {
+        // Withholding these would break the thing a guest was lent the machine
+        // for, and a sandbox that breaks builds gets switched off.
+        for (name, value) in [
+            ("PATH", "/usr/bin:/bin"),
+            ("LD_LIBRARY_PATH", "/opt/lib"),
+            ("HOME", "/home/x"),
+            ("LANG", "en_GB.UTF-8"),
+            ("CARGO_HOME", "/home/x/.cargo"),
+            ("NVM_DIR", "/home/x/.nvm"),
+            ("EDITOR", "vim"),
+            ("API_URL", "https://api.example.com/v1"),
+            ("PROXY", "http://user@proxy:8080"),
+        ] {
+            assert!(
+                !withhold(name, value),
+                "{name} was withheld, which breaks work"
+            );
+        }
     }
 
     #[test]

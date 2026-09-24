@@ -92,6 +92,76 @@ pub enum Mode {
 /// The hidden subcommand the agent re-execs itself as on Linux.
 pub const CONFINE_ARG: &str = "__confine";
 
+/// The hidden subcommand that tries one unix socket and exits 0 if it
+/// connected. Run through [`Sandbox::wrap`], it answers the only question that
+/// matters about a socket: can a guest, inside the real sandbox, reach it?
+#[cfg(unix)]
+pub const REACH_ARG: &str = "__reach";
+
+/// Sockets that hold the host's identity or more. Each exists on a typical
+/// developer's machine, and each is reachable by its path whether or not the
+/// variable naming it was withheld — so they are measured, not assumed.
+/// What a socket is, and what reaching it lets somebody do.
+#[cfg(unix)]
+type Exposure = (&'static str, &'static str);
+
+#[cfg(unix)]
+fn key_holding_sockets() -> Vec<(PathBuf, Exposure)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let mut out = Vec::new();
+
+    const SSH: Exposure = (
+        "your ssh agent",
+        "they can sign in as you wherever your keys work",
+    );
+    if let Some(p) = std::env::var_os("SSH_AUTH_SOCK") {
+        out.push((PathBuf::from(p), SSH));
+    }
+
+    const DOCKER: Exposure = (
+        "the Docker socket",
+        "anyone who can reach it can mount and read anything on this machine",
+    );
+    out.push((PathBuf::from("/var/run/docker.sock"), DOCKER));
+    out.push((PathBuf::from("/run/docker.sock"), DOCKER));
+    if let Some(h) = &home {
+        out.push((h.join(".docker/run/docker.sock"), DOCKER));
+        out.push((h.join(".docker/desktop/docker.sock"), DOCKER));
+    }
+
+    const GPG: Exposure = (
+        "your gpg agent",
+        "they can sign and decrypt with your keys while it holds them unlocked",
+    );
+    let gnupg = std::env::var_os("GNUPGHOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".gnupg")));
+    if let Some(g) = gnupg {
+        out.push((g.join("S.gpg-agent"), GPG));
+    }
+    if let Some(r) = &runtime {
+        out.push((r.join("gnupg/S.gpg-agent"), GPG));
+    }
+
+    const BUS: Exposure = (
+        "your desktop session bus",
+        "it hands out saved passwords from the keyring while it is unlocked",
+    );
+    let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .ok()
+        .and_then(|a| {
+            a.split(',')
+                .find_map(|kv| kv.strip_prefix("unix:path=").map(PathBuf::from))
+        })
+        .or_else(|| runtime.as_ref().map(|r| r.join("bus")));
+    if let Some(b) = bus {
+        out.push((b, BUS));
+    }
+
+    out.into_iter().filter(|(p, _)| p.exists()).collect()
+}
+
 pub struct Sandbox {
     pub mode: Mode,
     /// Passed directly to `sandbox-exec`, so no guest-writable pathname can
@@ -151,6 +221,78 @@ impl Sandbox {
             }
             Mode::Open { why } => format!("no sandbox: {why}"),
         }
+    }
+
+    /// What this machine's sandbox cannot enforce, said before the link is.
+    pub fn gaps(&self) -> Vec<String> {
+        match &self.mode {
+            #[cfg(target_os = "linux")]
+            Mode::Confined { mechanism, .. } if *mechanism == "landlock" => linux::gaps(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Key-holding sockets a guest can connect to from inside this sandbox,
+    /// one sentence each.
+    ///
+    /// Measured by running this binary through the same wrapper a guest's shell
+    /// gets, rather than reasoned about from the rules: a rule set read on paper
+    /// cannot say whether a connect will be refused, and a warning that is wrong
+    /// in either direction is the thing this project keeps having to undo.
+    /// Withholding `SSH_AUTH_SOCK` does not hide the socket — its path sits in a
+    /// temp directory the guest can list.
+    #[cfg(unix)]
+    pub fn reachable_sockets(&self) -> Vec<String> {
+        // With no sandbox the notice already says a guest has everything.
+        if !self.is_confined() {
+            return Vec::new();
+        }
+        let Ok(me) = std::env::current_exe() else {
+            return Vec::new();
+        };
+        let mut said: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (path, (what, consequence)) in key_holding_sockets() {
+            if said.contains(&what) {
+                continue;
+            }
+            let (program, mut args) = match &self.mode {
+                // The Landlock launcher probes in its own process once it has
+                // restricted itself. Exec'ing this binary instead would fail:
+                // it is installed under the home directory, which the sandbox
+                // hides, so every socket would read as unreachable — a
+                // reassurance produced by the probe breaking.
+                Mode::Confined { mechanism, .. } if *mechanism == "landlock" => {
+                    self.wrap(REACH_ARG)
+                }
+                _ => {
+                    let (program, mut args) = self.wrap(&me.display().to_string());
+                    args.push(REACH_ARG.to_string());
+                    (program, args)
+                }
+            };
+            args.push(path.display().to_string());
+            let reached = std::process::Command::new(program)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if reached {
+                said.push(what);
+                out.push(format!(
+                    "a guest can reach {what} at {} — {consequence}",
+                    path.display()
+                ));
+            }
+        }
+        out
+    }
+
+    #[cfg(not(unix))]
+    pub fn reachable_sockets(&self) -> Vec<String> {
+        Vec::new()
     }
 
     /// Deliberately unsandboxed, with the reason recorded.
@@ -334,18 +476,47 @@ mod macos {
 pub mod linux {
     use super::*;
     use landlock::{
-        path_beneath_rules, Access, AccessFs, AccessNet, Ruleset, RulesetAttr, RulesetCreatedAttr,
-        RulesetStatus, ABI,
+        path_beneath_rules, Access, AccessFs, AccessNet, CompatLevel, Compatible, Ruleset,
+        RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, ABI,
     };
+
+    /// The newest ABI this has been written and attacked against.
+    ///
+    /// It was ABI 1 until September 2026, and that was a hole rather than a
+    /// cautious floor: ABI 1 has no notion of truncation, so `truncate(2)` —
+    /// which takes a path and needs no writable file descriptor — emptied any
+    /// file the host owned, anywhere, from a shell that could not write a byte
+    /// outside the folder. ABI 6 governs truncation and stops a guest
+    /// signalling processes outside its own terminal, which includes this agent.
+    ///
+    /// Older kernels get what they support and the summary names what is
+    /// missing. Newer ABIs are not reached for until someone has run
+    /// `scripts/linux-sandbox.sh` on a kernel that has them.
+    pub const TARGET: ABI = ABI::V6;
+
+    /// Whether the running kernel will actually enforce a ruleset built by
+    /// `build`.
+    ///
+    /// Asked as a hard requirement, and that is the whole point. The crate's
+    /// default is best effort, under which an unsupported right is dropped
+    /// without an error and `create()` still succeeds — so every one of these
+    /// probes used to answer "yes" on every kernel. A host on Linux 6.1 was told
+    /// "no outbound network" and given a shell that could reach anything.
+    fn enforced(build: impl FnOnce(Ruleset) -> Result<Ruleset, landlock::RulesetError>) -> bool {
+        build(Ruleset::default().set_compatibility(CompatLevel::HardRequirement))
+            .and_then(|r| r.create())
+            .is_ok()
+    }
 
     /// Landlock has been in the kernel since 5.13, but a distribution can
     /// leave it out of the active LSM list, in which case the syscall exists
     /// and enforces nothing. Ask for the ABI rather than assuming.
     pub fn available() -> Result<ABI, String> {
         let abi = ABI::V1;
-        match Ruleset::default().handle_access(AccessFs::from_all(abi)) {
-            Ok(_) => Ok(abi),
-            Err(e) => Err(format!("landlock is not usable on this kernel: {e}")),
+        if enforced(|r| r.handle_access(AccessFs::from_all(abi))) {
+            Ok(abi)
+        } else {
+            Err("landlock is not enabled on this kernel".into())
         }
     }
 
@@ -355,10 +526,19 @@ pub mod linux {
     /// confine the filesystem, so this is asked separately rather than
     /// refusing to sandbox at all.
     pub fn can_restrict_network() -> bool {
-        Ruleset::default()
-            .handle_access(AccessNet::ConnectTcp)
-            .and_then(|r| r.create())
-            .is_ok()
+        enforced(|r| r.handle_access(AccessNet::ConnectTcp))
+    }
+
+    /// Whether this kernel can refuse `truncate(2)` outside the grants. ABI 3,
+    /// Linux 6.2.
+    pub fn can_refuse_truncation() -> bool {
+        enforced(|r| r.handle_access(AccessFs::Truncate))
+    }
+
+    /// Whether this kernel can stop a guest signalling processes it did not
+    /// start. ABI 6, Linux 6.12.
+    pub fn can_scope_signals() -> bool {
+        enforced(|r| r.scope(Scope::Signal))
     }
 
     pub fn describe(_abi: ABI, allow_network: bool) -> Vec<String> {
@@ -376,6 +556,29 @@ pub mod linux {
                 }
             },
         ]
+    }
+
+    /// What this kernel cannot enforce, in words a host can act on.
+    ///
+    /// Kept out of the one-line summary and put where the panel wraps text:
+    /// these are the sentences that change whether somebody sends the link.
+    pub fn gaps() -> Vec<String> {
+        let mut out = Vec::new();
+        if !can_refuse_truncation() {
+            out.push(
+                "this kernel is older than 6.2, so a guest can still empty any file you own by \
+                 truncating it — outside the shared folder too"
+                    .to_string(),
+            );
+        }
+        if !can_scope_signals() {
+            out.push(
+                "this kernel is older than 6.12, so a guest can signal your other processes — \
+                 including this one, which ends the session"
+                    .to_string(),
+            );
+        }
+        out
     }
 
     fn home() -> PathBuf {
@@ -454,7 +657,10 @@ pub mod linux {
         let rest: Vec<std::ffi::OsString> = it.collect();
         let _ = network;
 
-        let abi = ABI::V1;
+        // Writable paths get every write right of the target ABI, which now
+        // includes truncation and cross-directory renames: handled but never
+        // granted anywhere else, both are refused outside these paths.
+        let abi = TARGET;
         let read = AccessFs::from_read(abi);
         let write = AccessFs::from_write(abi) | read;
         let home = home();
@@ -493,7 +699,18 @@ pub mod linux {
         // Cutting off the network means handling the access and then adding
         // no rule for it: Landlock only grants, so an unmentioned port is a
         // refused one.
-        let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
+        //
+        // Best effort, deliberately, unlike the probes above: an older kernel
+        // should still get the filesystem rules it can enforce. What it cannot
+        // is said by `gaps()` before the link is printed.
+        //
+        // Scoping means a process in this terminal cannot signal, or reach an
+        // abstract socket of, anything outside it. The cost is that a sibling
+        // terminal is outside it too, so `kill` of a server started in another
+        // tab is refused — stop it from the tab that started it.
+        let mut ruleset = Ruleset::default()
+            .handle_access(AccessFs::from_all(abi))?
+            .scope(Scope::Signal | Scope::AbstractUnixSocket)?;
         let restricting_network = !network && can_restrict_network();
         if restricting_network {
             ruleset = ruleset.handle_access(AccessNet::ConnectTcp)?;
@@ -515,6 +732,15 @@ pub mod linux {
             anyhow::bail!(
                 "--no-network needs landlock ABI 4 (linux 6.7); this kernel cannot enforce it"
             );
+        }
+
+        // The socket probe, answered from inside the ruleset a guest's shell
+        // gets rather than by a process that would first need to exec.
+        if program == REACH_ARG {
+            let reached = rest
+                .first()
+                .is_some_and(|p| std::os::unix::net::UnixStream::connect(p).is_ok());
+            std::process::exit(if reached { 0 } else { 1 });
         }
 
         let mut cmd = std::process::Command::new(&program);

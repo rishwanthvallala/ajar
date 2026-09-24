@@ -208,6 +208,19 @@ fn main() -> Result<()> {
             return sandbox::linux::confine_and_exec(args.collect());
         }
     }
+    // The socket probe: run inside the sandbox by the agent itself, before any
+    // link exists, to find out what a guest could actually connect to.
+    #[cfg(unix)]
+    {
+        let mut args = std::env::args_os();
+        let _ = args.next();
+        if args.next().as_deref() == Some(std::ffi::OsStr::new(sandbox::REACH_ARG)) {
+            let reached = args
+                .next()
+                .is_some_and(|p| std::os::unix::net::UnixStream::connect(p).is_ok());
+            std::process::exit(if reached { 0 } else { 1 });
+        }
+    }
     run()
 }
 
@@ -266,6 +279,7 @@ async fn run() -> Result<()> {
     let caps = limits::Limits::new(args.max_terminals, args.max_processes);
     let mark = checkpoint::create(&verdict.path);
     let found = secrets::scan(&verdict.path, &workspace.filter());
+    let withheld = secrets::withheld_env();
 
     let host_name = args
         .name
@@ -295,6 +309,26 @@ async fn run() -> Result<()> {
     let link = format!("{}#k={key}", client::join_url(&args.relay, &session));
     let (ui, mut actions) = Ui::start()?;
     let mut warnings = verdict.warnings.clone();
+    warnings.extend(sandbox.gaps());
+    warnings.extend(sandbox.reachable_sockets());
+    if !withheld.is_empty() {
+        // Names only. The point is that a host whose guest says "the aws cli
+        // does not work" knows why, and that nobody reading this over the
+        // host's shoulder learns anything.
+        const SHOWN: usize = 6;
+        let mut names = withheld
+            .iter()
+            .take(SHOWN)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if withheld.len() > SHOWN {
+            names.push_str(&format!(", and {} more", withheld.len() - SHOWN));
+        }
+        warnings.push(format!(
+            "withheld from guests' shells, because they look like credentials: {names}"
+        ));
+    }
     if !caps.enforces_processes() {
         // Worth saying out loud rather than leaving to the summary line: the
         // fork bomb this was meant to stop takes the machine down, and a host
@@ -351,7 +385,7 @@ async fn run() -> Result<()> {
         " · copy pending".into()
     };
     let mut host = Host {
-        ptys: PtyRegistry::new(verdict.path.clone(), &sandbox, caps),
+        ptys: PtyRegistry::new(verdict.path.clone(), &sandbox, caps, withheld),
         workspace,
         docs: Docs::new(),
         sizes: HashMap::new(),
