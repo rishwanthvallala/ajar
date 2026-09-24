@@ -92,6 +92,19 @@ export class DocSession {
     Y.applyUpdate(this.ydoc, bytes, "remote");
   }
 
+  /**
+   * Everything this document holds, as one update.
+   *
+   * For handing back after the host has been away: whatever was typed in the
+   * gap went to a host that was not there, and every later update depends on
+   * it, so the host parks those as pending and the text never reaches the
+   * file. Applying a whole state is idempotent, so resending it all costs the
+   * host nothing it already had.
+   */
+  fullState(): Uint8Array<ArrayBuffer> {
+    return Y.encodeStateAsUpdate(this.ydoc) as Uint8Array<ArrayBuffer>;
+  }
+
   applyAwareness(bytes: Uint8Array) {
     applyAwarenessUpdate(this.awareness, bytes, "remote");
   }

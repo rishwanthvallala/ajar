@@ -69,6 +69,16 @@ node scripts/smoke-environment.mjs
 echo "── smoke: reconnect ──────────────────────────────────"
 node scripts/smoke-reconnect.mjs
 
+echo "── smoke: the host's blip ────────────────────────────"
+node scripts/smoke-hostdrop.mjs
+
+if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+  echo "── ui: a host's blip, in the browser ─── skipped (AJAR_SKIP_UI=1) ──"
+else
+  echo "── ui: a host's blip, in the browser ─────────────────"
+  node scripts/check-host-drop.mjs
+fi
+
 echo "── smoke: peer sessions ──────────────────────────────"
 node scripts/smoke-peer.mjs
 

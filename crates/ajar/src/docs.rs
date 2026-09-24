@@ -159,6 +159,21 @@ impl Docs {
         Some((doc.path.clone(), doc.contents()))
     }
 
+    /// Every open document's full state, for a resend after a gap. Yjs states
+    /// are idempotent to apply, so whoever already has everything loses
+    /// nothing but the bytes.
+    pub fn states(&self) -> Vec<(u32, Vec<u8>)> {
+        self.docs.values().map(|d| (d.id, d.state())).collect()
+    }
+
+    /// Everyone with any document open.
+    pub fn readers(&self) -> HashSet<u32> {
+        self.docs
+            .values()
+            .flat_map(|d| d.readers.iter().copied())
+            .collect()
+    }
+
     /// A participant disconnected. Same as closing everything they had open.
     pub fn drop_reader(&mut self, reader: u32) -> Vec<(String, String)> {
         let ids: Vec<u32> = self.docs.keys().copied().collect();

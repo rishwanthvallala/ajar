@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ajar_proto::{Channel, Cipher, Control, Direction, Frame};
+use ajar_proto::{Channel, Cipher, Control, Direction, Frame, Participant};
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -25,8 +25,13 @@ const BACKOFF_MAX: Duration = Duration::from_secs(8);
 pub enum RelayEvent {
     /// Registered with the relay. `resumed` means the relay still had our
     /// session from before the drop, so guests never lost it.
+    ///
+    /// `participants` is who the relay says is here *now*. It is the only
+    /// account of joins and leaves that happened while we were away — those
+    /// notices were sent to a host that was not connected, and are gone.
     Connected {
         resumed: bool,
+        participants: Vec<Participant>,
     },
     Disconnected(String),
     Frame(Frame),
@@ -76,7 +81,17 @@ pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool
             if flag.load(Ordering::SeqCst) {
                 return;
             }
-            match session(&url, &hello, &cipher, &locked, &mut out_rx, &ev_tx).await {
+            match session(
+                &url,
+                &hello,
+                &cipher,
+                &locked,
+                &mut out_rx,
+                &ev_tx,
+                &mut attempt,
+            )
+            .await
+            {
                 Ok(Outcome::Closed) => {
                     let _ = ev_tx.send(RelayEvent::Disconnected("relay closed".into()));
                 }
@@ -118,6 +133,7 @@ async fn session(
     locked: &AtomicBool,
     out_rx: &mut UnboundedReceiver<Frame>,
     ev_tx: &UnboundedSender<RelayEvent>,
+    attempt: &mut u32,
 ) -> Result<Outcome> {
     let (stream, response) = tokio_tungstenite::connect_async(url)
         .await
@@ -156,14 +172,22 @@ async fn session(
         }
     };
 
-    let resumed = match welcome.parse_json::<Control>()? {
-        Control::Welcome { participants, .. } => participants.len() > 1,
+    let participants = match welcome.parse_json::<Control>()? {
+        Control::Welcome { participants, .. } => participants,
         Control::Error { code, message } => {
             return Ok(Outcome::Refused(format!("{code}: {message}")))
         }
         other => return Err(anyhow!("unexpected first message from relay: {other:?}")),
     };
-    let _ = ev_tx.send(RelayEvent::Connected { resumed });
+    // Connected, so the next drop is a fresh blip and starts from the shortest
+    // wait. Without this the count only ever grew: after a handful of drops in
+    // one long session every reconnect waited the full eight seconds, and the
+    // guests' "host away" lasted that much longer each time.
+    *attempt = 0;
+    let _ = ev_tx.send(RelayEvent::Connected {
+        resumed: participants.len() > 1,
+        participants,
+    });
 
     loop {
         tokio::select! {

@@ -413,6 +413,18 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         case "host_back":
           awayEl.hidden = true;
           offlineFiles = null;
+          // Everything said while the host was away was dropped by the relay,
+          // not queued: an introduction made in the gap, where we are
+          // looking, and — the one that matters — any typing. Say them again.
+          // The host treats a repeated name as no news, and a whole document
+          // state as nothing it did not already have.
+          conn.send(jsonFrame(Channel.Presence, TARGET_ALL, { t: "iam", name } satisfies Presence));
+          reportPresence();
+          if (editing) {
+            conn.send(
+              streamFrame(Channel.Doc, editing.docId, tagged(DocKind.Update, editing.fullState())),
+            );
+          }
           break;
         case "locked":
           lockedEl.hidden = !msg.locked;

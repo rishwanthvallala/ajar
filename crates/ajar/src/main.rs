@@ -436,7 +436,7 @@ async fn run() -> Result<()> {
             event = events.recv() => {
                 let Some(event) = event else { break };
                 match event {
-                    RelayEvent::Connected { resumed } => {
+                    RelayEvent::Connected { resumed, participants } => {
                         online = true;
                         warned_offline = false;
                         host.state.status = Status::Online;
@@ -450,11 +450,12 @@ async fn run() -> Result<()> {
                                 host.log("the relay answered — the link works now");
                             }
                         }
+                        // Before anything is resent: who is actually here. Joins
+                        // and leaves during the gap were announced to nobody.
+                        reconcile(&participants, &mut host)?;
                         if resumed {
                             host.log("reconnected — guests kept their session");
-                            // Guests missed whatever we produced while we were
-                            // away. Re-announce every terminal and replay it.
-                            announce_ptys(TARGET_ALL, &host.ptys, &host.outbound);
+                            resend_after_gap(&mut host)?;
                         }
                     }
                     RelayEvent::Disconnected(why) => {
@@ -647,17 +648,8 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
         Channel::Control => match frame.parse_json::<Control>()? {
             Control::Joined { participant } => on_join(&participant, host)?,
             Control::Left { participant_id } => {
-                let who = host
-                    .guests
-                    .remove(&participant_id)
-                    .unwrap_or_else(|| "someone".into());
-                host.sizes.remove(&participant_id);
-                host.joined_at.remove(&participant_id);
+                forget(participant_id, host);
                 broadcast_roster(host)?;
-                for (path, contents) in host.docs.drop_reader(participant_id) {
-                    write_back(&path, &contents, host);
-                }
-                host.log(format!("{who} left"));
                 reflow(host);
             }
             Control::Closed { reason } => host.log(format!("session closed: {reason}")),
@@ -817,8 +809,13 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             }
             Ok(Presence::Iam { name }) => {
                 let name = name.chars().take(32).collect::<String>();
-                host.log(format!("{name} joined"));
-                host.guests.insert(frame.target, name);
+                // A guest re-introduces itself whenever the host comes back,
+                // because an introduction made during the gap went nowhere.
+                // Only a new name is news.
+                let previous = host.guests.insert(frame.target, name.clone());
+                if previous.as_deref() != Some(name.as_str()) {
+                    host.log(format!("{name} joined"));
+                }
                 broadcast_roster(host)?;
             }
             _ => {}
@@ -1142,6 +1139,85 @@ fn flush_all_documents(host: &mut Host) {
             host.docs.mark_written(id, &contents);
         }
     }
+}
+
+/// Someone is gone: their name, their window size, and their hold on any
+/// document, which is written back if they were its last reader.
+fn forget(participant_id: u32, host: &mut Host) {
+    let who = host
+        .guests
+        .remove(&participant_id)
+        .unwrap_or_else(|| "someone".into());
+    host.sizes.remove(&participant_id);
+    host.joined_at.remove(&participant_id);
+    for (path, contents) in host.docs.drop_reader(participant_id) {
+        write_back(&path, &contents, host);
+    }
+    host.log(format!("{who} left"));
+}
+
+/// Make what we believe about the room match what the relay says is in it.
+///
+/// While the host is disconnected the relay still admits and loses guests, and
+/// tells a host that is not there. Without this, someone who left during a gap
+/// stayed in the panel for good — and so did their window size, shrinking every
+/// terminal to fit a screen nobody was looking at — and someone who arrived got
+/// no tree and no name. After a relay restart every id is new, so every old
+/// entry is gone and nobody is resent anything twice.
+fn reconcile(participants: &[Participant], host: &mut Host) -> Result<()> {
+    let here: std::collections::HashSet<u32> = participants
+        .iter()
+        .filter(|p| p.role == Role::Guest)
+        .map(|p| p.id)
+        .collect();
+    let mut gone: Vec<u32> = host
+        .guests
+        .keys()
+        .chain(host.sizes.keys())
+        .copied()
+        .chain(host.docs.readers())
+        .filter(|id| !here.contains(id))
+        .collect();
+    gone.sort_unstable();
+    gone.dedup();
+    let changed = !gone.is_empty();
+    for id in gone {
+        forget(id, host);
+    }
+    for p in participants {
+        if p.role == Role::Guest && !host.guests.contains_key(&p.id) {
+            on_join(p, host)?;
+        }
+    }
+    if changed {
+        broadcast_roster(host)?;
+        reflow(host);
+    }
+    Ok(())
+}
+
+/// Everything guests would have been sent while we were away.
+///
+/// Frames are dropped rather than queued during a disconnect, which is right
+/// for terminal output — the ring buffers replay it — and was wrong for
+/// everything else: a patch for a file made during the gap, a document update
+/// from the disk changing underneath an editor, were simply gone, and the
+/// guests carried on confidently out of step. None of these is incremental, so
+/// sending each whole again is both simple and complete.
+fn resend_after_gap(host: &mut Host) -> Result<()> {
+    let tree = host.workspace.tree();
+    send_fs(host, &tree);
+    announce_ptys(TARGET_ALL, &host.ptys, &host.outbound);
+    for (doc_id, state) in host.docs.states() {
+        host.outbound.send(Frame::stream(
+            Channel::Doc,
+            doc_id,
+            TARGET_ALL,
+            DocKind::Update.frame(&state),
+        ))?;
+    }
+    broadcast_roster(host)?;
+    Ok(())
 }
 
 /// Someone connected. The relay does not know their name, so at this point
