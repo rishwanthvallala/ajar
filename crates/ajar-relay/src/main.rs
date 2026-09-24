@@ -105,6 +105,13 @@ struct Args {
     #[arg(long, default_value_t = pad::MAX_STORE_BYTES)]
     max_store_bytes: u64,
 
+    /// Bytes one address may add to the pad store per day.
+    ///
+    /// A flag for the same reason the store ceiling is one: so a check can
+    /// reach it in a few requests rather than a quarter of a gigabyte.
+    #[arg(long, default_value_t = quota::MAX_PAD_GROWTH_PER_IP)]
+    pad_growth_per_address: u64,
+
     /// Read the caller's address from `X-Forwarded-For`.
     ///
     /// Only when something you control sets it. Left on with nothing in
@@ -125,6 +132,8 @@ struct AppState {
     /// Bounds how many pads are being streamed out at once. See
     /// [`MAX_CONCURRENT_PAD_READS`].
     reading: Arc<tokio::sync::Semaphore>,
+    /// What each address has added to the pad store today.
+    growth: Arc<quota::Growth>,
     trust_forwarded: bool,
 }
 
@@ -158,11 +167,12 @@ async fn main() -> anyhow::Result<()> {
         pads: pads.clone(),
         writing: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_WRITES)),
         reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
+        growth: Arc::new(quota::Growth::new(args.pad_growth_per_address)),
         trust_forwarded: args.trust_forwarded_for,
     };
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
-    // a week, and nothing goes wrong if a dead pad lingers an extra hour.
+    // ninety days, and nothing goes wrong if a dead pad lingers an extra hour.
     // Reads check the lease too, so nobody is ever served an expired one.
     // Blocking work — it reads every pad — so off the workers that carry
     // people's keystrokes.
@@ -177,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 };
                 for name in expired {
-                    info!(pad = %name, "expired after a week untouched; the name is free again");
+                    info!(pad = %name, "expired after 90 days untouched; the name is free again");
                 }
             }
         });
@@ -275,6 +285,9 @@ fn refuse(e: pad::Error) -> (StatusCode, String) {
         // Not the request's fault and worth retrying, which is what this status
         // means and what PAYLOAD_TOO_LARGE would wrongly deny.
         pad::Error::StoreFull => StatusCode::INSUFFICIENT_STORAGE,
+        // The caller's own daily allowance: theirs to wait out, not the server's
+        // fault, and retryable later — which is what 429 says.
+        pad::Error::OverAllowance => StatusCode::TOO_MANY_REQUESTS,
         pad::Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
@@ -308,8 +321,8 @@ async fn read_pad(
             .into_response();
     };
 
-    // The lease check reads the whole file, so it goes where blocking belongs
-    // rather than stalling a worker that is also carrying people's keystrokes.
+    // Opening, checking and renewing are filesystem calls, so they go where
+    // blocking belongs rather than stalling a worker carrying keystrokes.
     let pads = state.pads.clone();
     let Ok(opened) = tokio::task::spawn_blocking(move || pads.open_for_read(&name)).await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "reading the pad failed").into_response();
@@ -388,23 +401,31 @@ impl axum::extract::FromRequestParts<AppState> for WritePermit {
 
 async fn write_pad(
     Path(name): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     _permit: WritePermit,
     Json(body): Json<WriteBody>,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
+    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    let now = std::time::Instant::now();
+    let allowance = state.growth.remaining(caller, now);
+
     // Read, modify and rename under a lock: blocking work, kept off the workers
     // that carry every session's frames.
     let pads = state.pads.clone();
-    let seq = tokio::task::spawn_blocking(move || pads.write(&name, &body.writes))
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storing the pad failed".to_string(),
-            )
-        })?
-        .map_err(refuse)?;
-    Ok(Json(Wrote { seq }))
+    let written =
+        tokio::task::spawn_blocking(move || pads.write_within(&name, &body.writes, allowance))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storing the pad failed".to_string(),
+                )
+            })?
+            .map_err(refuse)?;
+    state.growth.charge(caller, now, written.grew);
+    Ok(Json(Wrote { seq: written.seq }))
 }
 
 /// `curl -sSf https://ajar.sh/install.sh | sh`

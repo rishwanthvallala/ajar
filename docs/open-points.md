@@ -166,7 +166,8 @@ These are scope, not defects. They are listed because "we chose this" and "we
 missed this" look identical a month later.
 
 **No accounts, no locks, no vanity names.** Everything is open to whoever has
-the link, and a folder untouched for a week is deleted. The design in
+the link, and a folder nobody opens or edits for 90 days is deleted (it was a
+week, counting only edits, until 25 September). The design in
 [`personal-tier.md`](history/personal-tier.md) — a week-long lease without an account, a
 permanent claim with one, per-account limits and some IP-based ceiling on
 anonymous locks — is designed and unbuilt. A lapsed name is free again, so an

@@ -45,9 +45,10 @@ pub const MAX_FILES: usize = 500;
 ///
 /// The per-pad cap bounds one folder; nothing bounded the sum, and pads cost
 /// nothing to create. At 25 MiB each, roughly 640 writes fill a 16 GB disk, and
-/// the seven-day lease is no help against something that takes an afternoon —
-/// a full disk stops the relay saving anything, including the pads belonging to
-/// people who were using it properly.
+/// the lease is no help against something that takes an afternoon — a full
+/// disk stops the relay saving anything, including the pads belonging to
+/// people who were using it properly. See also `quota::MAX_PAD_GROWTH_PER_IP`,
+/// which is what stops one address doing that on its own.
 ///
 /// Chosen to be survivable rather than generous: well under the free space on
 /// the box this runs on, so filling it is an error somebody sees rather than an
@@ -55,8 +56,23 @@ pub const MAX_FILES: usize = 500;
 /// competes for the disk.
 pub const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// How long an untouched pad survives. Restarted by any write.
-pub const LEASE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How long a pad survives with nobody opening or writing it.
+///
+/// Ninety days. It was seven, and seven punished the pads people share rather
+/// than the ones they abandon: a demo that is opened every day but edited once
+/// a fortnight was deleted between edits. Two things changed with it, and the
+/// length is only safe because of both: opening a pad now counts as touching it
+/// (see [`RENEW_EVERY`]), and one address can only add
+/// `quota::MAX_PAD_GROWTH_PER_IP` a day, so a long lease cannot be used to keep
+/// the store full for three months.
+pub const LEASE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+/// How stale a pad's last touch must be before a read renews it.
+///
+/// The lease is the file's modification time, so renewing is a metadata update
+/// rather than a rewrite — but it is still a write to the disk, and a busy pad
+/// is read thousands of times a day. Once a day is all the lease needs.
+pub const RENEW_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub const MAX_NAME: usize = 64;
 
@@ -153,26 +169,35 @@ impl Pad {
     pub fn bytes(&self) -> usize {
         self.files.values().map(|f| f.content.len()).sum()
     }
-
-    fn expired(&self, now_ms: u64) -> bool {
-        lease_lapsed(self.updated_ms, now_ms)
-    }
 }
 
-fn lease_lapsed(updated_ms: u64, now_ms: u64) -> bool {
-    now_ms.saturating_sub(updated_ms) > LEASE.as_millis() as u64
+/// How long ago a stored pad was last touched — written, or opened.
+///
+/// The file's modification time *is* the lease. A write renames a new file
+/// into place, which sets it; a read renews it with [`renew`]. Kept in the
+/// filesystem rather than in the document so that neither needs the pad
+/// parsed: the sweeper `stat`s each file, and a read can check and renew
+/// without loading what it is about to stream. A clock that puts the time in
+/// the future reads as touched just now, never as lapsed.
+fn idle_for(meta: &std::fs::Metadata) -> Duration {
+    meta.modified()
+        .ok()
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .unwrap_or_default()
 }
 
-/// When a stored pad was last written, read without loading it: the parse keeps
-/// `updated_ms` and skips everything else without allocating it.
-fn updated_ms(file: &std::fs::File) -> Result<u64, Error> {
-    #[derive(Deserialize)]
-    struct Lease {
-        updated_ms: u64,
+fn lapsed(meta: &std::fs::Metadata) -> bool {
+    idle_for(meta) > LEASE
+}
+
+/// Restart a pad's lease because somebody opened it — at most once a day.
+///
+/// Failure is not an error: the read goes ahead, and the pad keeps whatever
+/// lease its last write gave it.
+fn renew(file: &std::fs::File, meta: &std::fs::Metadata) {
+    if idle_for(meta) > RENEW_EVERY {
+        let _ = file.set_modified(SystemTime::now());
     }
-    serde_json::from_reader::<_, Lease>(std::io::BufReader::new(file))
-        .map(|lease| lease.updated_ms)
-        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// A stored pad opened for streaming: the file positioned just past its
@@ -183,6 +208,14 @@ fn updated_ms(file: &std::fs::File) -> Result<u64, Error> {
 pub struct Opened {
     pub file: std::fs::File,
     pub remaining: u64,
+}
+
+/// What an accepted write did: the sequence it reached, and how many bytes it
+/// added to the store — which is what the caller's address is charged.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Written {
+    pub seq: u64,
+    pub grew: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -199,6 +232,9 @@ pub enum Error {
     TooManyFiles,
     /// Every pad together is at the ceiling. Nothing to do with *this* pad.
     StoreFull,
+    /// This write would add more than the caller's address has left for the
+    /// day. See `quota::MAX_PAD_GROWTH_PER_IP`.
+    OverAllowance,
     Io(String),
 }
 
@@ -218,6 +254,13 @@ impl Error {
             // just pasted four lines and been refused should not go looking for
             // what is wrong with their four lines.
             Error::StoreFull => "this server is out of room for new pads — try again later".into(),
+            // Edits that do not grow anything still go through, so this is only
+            // ever somebody adding a great deal, and "tomorrow" is the fix.
+            Error::OverAllowance => {
+                "this address has added as much as it can for today — try again tomorrow, \
+                 or remove something first"
+                    .into()
+            }
             Error::Io(e) => format!("could not store that: {e}"),
         }
     }
@@ -390,16 +433,25 @@ impl Store {
     /// belongs to the sweeper, under the pad's lock, so that no reader can
     /// remove a pad that a write replaced after the reader looked.
     pub fn get(&self, name: &str) -> Result<Option<Pad>, Error> {
+        use std::io::Read;
+
         check_name(name)?;
-        let raw = match std::fs::read(self.pad_path(name)) {
-            Ok(raw) => raw,
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        let mut file = match std::fs::File::open(self.pad_path(name)) {
+            Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(Error::Io(e.to_string())),
+            Err(e) => return Err(io(e)),
         };
-        let pad: Pad = serde_json::from_slice(&raw).map_err(|e| Error::Io(e.to_string()))?;
         // Checked on the way out as well as by the sweeper, so a pad is never
         // served past its lease just because nothing has swept recently.
-        Ok((!pad.expired(now_ms())).then_some(pad))
+        if lapsed(&file.metadata().map_err(io)?) {
+            return Ok(None);
+        }
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw).map_err(io)?;
+        serde_json::from_slice(&raw)
+            .map(Some)
+            .map_err(|e| Error::Io(e.to_string()))
     }
 
     /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
@@ -410,12 +462,13 @@ impl Store {
     /// with nothing bounding how many ran together. Twelve concurrent reads of a
     /// 24 MiB pad grew the relay by 647 MiB, past the unit's `MemoryMax=512M`.
     ///
-    /// Here the lease is checked by a pass that parses `updated_ms` and skips
-    /// everything else without allocating it, and the file itself is what gets
-    /// sent. One descriptor serves both, so the check and the bytes are the
-    /// same version even if a write renames a new one into place meanwhile.
+    /// Here the lease is the file's modification time, so checking it — and
+    /// renewing it, since opening a pad counts as touching it — costs a `stat`
+    /// and not a parse, and the file itself is what gets sent. One descriptor
+    /// serves both, so the check and the bytes are the same version even if a
+    /// write renames a new one into place meanwhile.
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::Read;
 
         check_name(name)?;
         let io = |e: std::io::Error| Error::Io(e.to_string());
@@ -424,27 +477,49 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io(e)),
         };
+        let meta = file.metadata().map_err(io)?;
         // Lapsed reads as free, the same as `get`, and for the same reason is
         // left for the sweeper to delete.
-        if lease_lapsed(updated_ms(&file)?, now_ms()) {
+        if lapsed(&meta) {
             return Ok(None);
         }
+        renew(&file, &meta);
 
-        file.seek(SeekFrom::Start(0)).map_err(io)?;
         let mut brace = [0u8; 1];
         file.read_exact(&mut brace).map_err(io)?;
         if brace != *b"{" {
             return Err(Error::Io("a stored pad is not a JSON object".into()));
         }
-        let remaining = file.metadata().map_err(io)?.len() - 1;
-        Ok(Some(Opened { file, remaining }))
+        Ok(Some(Opened {
+            file,
+            remaining: meta.len() - 1,
+        }))
     }
 
-    /// Apply writes and removals, and return the new sequence number.
+    /// Apply writes and removals with no allowance, and return the new sequence
+    /// number. Every real write comes from an address with an allowance, so
+    /// this exists only for the tests.
+    #[cfg(test)]
+    pub fn write(&self, name: &str, writes: &[Write]) -> Result<u64, Error> {
+        self.write_within(name, writes, u64::MAX)
+            .map(|written| written.seq)
+    }
+
+    /// Apply writes and removals, refusing any that would add more than
+    /// `allowance` bytes to the store, and say what was added.
     ///
     /// Last write wins, and this is where "last" is decided: the server stamps
     /// the order because no two browsers can agree on one.
-    pub fn write(&self, name: &str, writes: &[Write]) -> Result<u64, Error> {
+    ///
+    /// Only growth is charged. An edit that leaves a pad the same size or
+    /// smaller always goes through, so somebody at their limit can still fix a
+    /// typo — or make room.
+    pub fn write_within(
+        &self,
+        name: &str,
+        writes: &[Write],
+        allowance: u64,
+    ) -> Result<Written, Error> {
         check_name(name)?;
         for w in writes {
             check_path(&w.path)?;
@@ -505,25 +580,30 @@ impl Store {
             return Err(Error::TooBig { bytes });
         }
 
-        self.save(name, &pad)?;
-        Ok(pad.seq)
+        let grew = self.save(name, &pad, allowance)?;
+        Ok(Written { seq: pad.seq, grew })
     }
 
-    fn save(&self, name: &str, pad: &Pad) -> Result<(), Error> {
+    /// Store a pad, returning how many bytes it added to the store.
+    fn save(&self, name: &str, pad: &Pad, allowance: u64) -> Result<u64, Error> {
         let body = serde_json::to_vec(pad).map_err(|e| Error::Io(e.to_string()))?;
 
         // What this write costs the store, as a delta against whatever the name
         // already occupied. Replacing a large pad with a small one has to give
-        // the difference back, or the ceiling ratchets shut on ordinary use.
+        // the difference back, or the ceiling ratchets shut on ordinary use. A
+        // lapsed pad still on disk counts as occupied: the save replaces it.
         let was = std::fs::metadata(self.pad_path(name))
             .map(|m| m.len())
             .unwrap_or(0);
         let now = body.len() as u64;
-        if now > was {
-            let after = self.used.load(Ordering::Relaxed) + (now - was);
-            if after > self.ceiling {
-                return Err(Error::StoreFull);
-            }
+        let grew = now.saturating_sub(was);
+        // The caller's own allowance first: it is what they can do something
+        // about, and it is the answer that is true when both would refuse.
+        if grew > allowance {
+            return Err(Error::OverAllowance);
+        }
+        if grew > 0 && self.used.load(Ordering::Relaxed) + grew > self.ceiling {
+            return Err(Error::StoreFull);
         }
 
         // Written beside the target and renamed over it. A half-written pad
@@ -547,7 +627,7 @@ impl Store {
         } else {
             self.used.fetch_sub(was - now, Ordering::Relaxed);
         }
-        Ok(())
+        Ok(grew)
     }
 
     /// Delete a pad whose lease has lapsed, and give its bytes back. True if it
@@ -560,17 +640,13 @@ impl Store {
     pub fn expire_if_lapsed(&self, name: &str) -> bool {
         let _guard = self.stripe(name).lock();
         let path = self.pad_path(name);
-        let Ok(file) = std::fs::File::open(&path) else {
+        let Ok(meta) = std::fs::metadata(&path) else {
             return false;
         };
-        let Ok(updated) = updated_ms(&file) else {
-            return false;
-        };
-        if !lease_lapsed(updated, now_ms()) {
+        if !lapsed(&meta) {
             return false;
         }
-        let freed = file.metadata().map(|m| m.len()).unwrap_or(0);
-        drop(file);
+        let freed = meta.len();
         if std::fs::remove_file(&path).is_err() {
             return false;
         }
@@ -1004,12 +1080,95 @@ mod tests {
         assert_eq!(s.write("p", &writes).err(), Some(Error::TooManyFiles));
     }
 
-    /// Push a stored pad past its lease by rewriting its timestamp.
+    /// Set when a stored pad was last touched, as `ago` before now.
+    fn touched(s: &Store, name: &str, ago: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(s.pad_path(name))
+            .unwrap()
+            .set_modified(SystemTime::now() - ago)
+            .unwrap();
+    }
+
+    /// Push a stored pad past its lease.
     fn age(s: &Store, name: &str) {
-        let path = s.pad_path(name);
-        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        pad.updated_ms = now_ms() - LEASE.as_millis() as u64 - 1;
-        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
+        touched(s, name, LEASE + Duration::from_secs(60));
+    }
+
+    fn idle(s: &Store, name: &str) -> Duration {
+        idle_for(&std::fs::metadata(s.pad_path(name)).unwrap())
+    }
+
+    #[test]
+    fn opening_a_pad_keeps_it_alive() {
+        // A demo opened every day and edited once a month is the pad a lease
+        // should never take. Reads count as touching it now, so it lasts as
+        // long as somebody looks — not only as long as somebody types.
+        let (s, _d) = store();
+        s.write("demo", &[put("main.py", "print(1)")]).unwrap();
+        touched(&s, "demo", LEASE - Duration::from_secs(3600));
+
+        assert!(s.open_for_read("demo").unwrap().is_some());
+        assert!(
+            idle(&s, "demo") < Duration::from_secs(60),
+            "opening it did not restart its lease: idle for {:?}",
+            idle(&s, "demo")
+        );
+    }
+
+    #[test]
+    fn a_read_renews_at_most_once_a_day() {
+        // Renewing is a write to the disk, and a busy pad is read thousands of
+        // times a day. An hour-old touch is fresh enough to leave alone.
+        let (s, _d) = store();
+        s.write("busy", &[put("a", "1")]).unwrap();
+        touched(&s, "busy", Duration::from_secs(3600));
+        s.open_for_read("busy").unwrap();
+        assert!(
+            idle(&s, "busy") > Duration::from_secs(3500),
+            "a read renewed a lease that was only an hour old"
+        );
+    }
+
+    #[test]
+    fn a_write_within_its_allowance_is_charged_what_it_added() {
+        let (s, _d) = store();
+        let first = s
+            .write_within("p", &[put("a", &"x".repeat(1000))], u64::MAX)
+            .unwrap();
+        assert_eq!(first.seq, 1);
+        assert!(first.grew > 1000, "the new pad was not charged: {first:?}");
+
+        let same = s
+            .write_within("p", &[put("a", &"y".repeat(1000))], 0)
+            .unwrap();
+        assert_eq!(same.grew, 0, "an edit that added nothing was charged");
+    }
+
+    #[test]
+    fn growth_past_the_allowance_is_refused_and_costs_nothing() {
+        let (s, _d) = store();
+        s.write("p", &[put("a", "small")]).unwrap();
+        let before = s.used();
+        assert_eq!(
+            s.write_within("p", &[put("b", &"z".repeat(4096))], 1024),
+            Err(Error::OverAllowance)
+        );
+        assert_eq!(s.used(), before, "a refused write was counted");
+        assert!(
+            !s.get("p").unwrap().unwrap().files.contains_key("b"),
+            "a refused write was saved"
+        );
+        // Shrinking always goes through: an address at its limit can make room.
+        assert!(s.write_within("p", &[remove("a")], 0).is_ok());
+    }
+
+    fn remove(path: &str) -> Write {
+        Write {
+            path: path.into(),
+            content: None,
+            encoding: Encoding::Utf8,
+        }
     }
 
     #[test]
@@ -1176,9 +1335,11 @@ mod tests {
     fn a_write_restarts_the_lease() {
         let (s, _d) = store();
         s.write("p", &[put("a", "1")]).unwrap();
-        let first = s.get("p").unwrap().unwrap().updated_ms;
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        touched(&s, "p", LEASE - Duration::from_secs(60));
         s.write("p", &[put("a", "2")]).unwrap();
-        assert!(s.get("p").unwrap().unwrap().updated_ms > first);
+        assert!(
+            idle(&s, "p") < Duration::from_secs(60),
+            "a write did not restart the lease"
+        );
     }
 }

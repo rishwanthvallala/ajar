@@ -202,6 +202,80 @@ impl Quota {
     }
 }
 
+/// Bytes one address may add to the pad store per [`GROWTH_WINDOW`], by default.
+///
+/// The per-pad cap bounds one folder and the store ceiling bounds all of them;
+/// nothing stopped one address filling the ceiling alone, 25 MiB at a time, in
+/// the few minutes 160 writes take. With a 90-day lease a store filled that way
+/// stays full for a season, so the lease could only grow once this existed.
+///
+/// 256 MiB is ten full-size pads, or tens of thousands of the scripts people
+/// actually paste, and a classroom behind one address `pip install`ing the same
+/// small package — so ordinary use never meets it. Only growth is charged: an
+/// edit that leaves a pad the same size or smaller is free.
+pub const MAX_PAD_GROWTH_PER_IP: u64 = 256 * 1024 * 1024;
+
+/// The period a [`Growth`] allowance covers.
+pub const GROWTH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How much each address has added to the pad store in its current window.
+///
+/// A window starts with an address's first write and lasts [`GROWTH_WINDOW`];
+/// the next write after it starts a fresh one. Not a sliding window: exactness
+/// at the edges buys nothing against something measured in days.
+pub struct Growth {
+    allowance: u64,
+    spent: Mutex<HashMap<IpAddr, (Instant, u64)>>,
+}
+
+impl Growth {
+    pub fn new(allowance: u64) -> Self {
+        Self {
+            allowance,
+            spent: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Bytes this address may still add in its current window.
+    pub fn remaining(&self, ip: IpAddr, now: Instant) -> u64 {
+        let spent = self.spent.lock();
+        match spent.get(&ip) {
+            Some(&(since, used)) if now.duration_since(since) < GROWTH_WINDOW => {
+                self.allowance.saturating_sub(used)
+            }
+            _ => self.allowance,
+        }
+    }
+
+    /// Record bytes an accepted write added.
+    ///
+    /// After the write rather than before it, so a refused write costs
+    /// nothing. Two writes from one address can each pass the check before
+    /// either is charged; with four write permits in the relay, that overshoot
+    /// is bounded and not worth a reservation scheme.
+    pub fn charge(&self, ip: IpAddr, now: Instant, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let mut spent = self.spent.lock();
+        let entry = spent.entry(ip).or_insert((now, 0));
+        if now.duration_since(entry.0) >= GROWTH_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 = entry.1.saturating_add(bytes);
+        // Addresses whose window has closed are not worth remembering, or this
+        // map is a slower version of the leak it exists to prevent.
+        if spent.len() > 4096 {
+            spent.retain(|_, (since, _)| now.duration_since(*since) < GROWTH_WINDOW);
+        }
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.spent.lock().len()
+    }
+}
+
 /// A held session slot. Releases when it goes out of scope, whichever way the
 /// handshake ended.
 pub struct Claim {
@@ -425,6 +499,59 @@ mod tests {
             );
         }
         assert_eq!(q.tracked(), 0, "unmetered reads left history behind");
+    }
+
+    #[test]
+    fn growth_is_bounded_per_address_per_window() {
+        let g = Growth::new(1000);
+        let now = Instant::now();
+        assert_eq!(g.remaining(ip(1), now), 1000);
+        g.charge(ip(1), now, 700);
+        assert_eq!(g.remaining(ip(1), now), 300);
+        g.charge(ip(1), now, 700);
+        assert_eq!(g.remaining(ip(1), now), 0, "overshoot must not wrap");
+        assert_eq!(
+            g.remaining(ip(2), now),
+            1000,
+            "one address's writing spent another's allowance"
+        );
+    }
+
+    #[test]
+    fn the_growth_allowance_comes_back_after_its_window() {
+        let g = Growth::new(1000);
+        let start = Instant::now();
+        g.charge(ip(1), start, 1000);
+        assert_eq!(g.remaining(ip(1), start), 0);
+        let later = start + GROWTH_WINDOW + Duration::from_secs(1);
+        assert_eq!(g.remaining(ip(1), later), 1000);
+        g.charge(ip(1), later, 10);
+        assert_eq!(
+            g.remaining(ip(1), later),
+            990,
+            "a new window started from the old one's total"
+        );
+    }
+
+    #[test]
+    fn growth_forgets_addresses_whose_window_closed() {
+        let g = Growth::new(1000);
+        let start = Instant::now();
+        for n in 0..=255u8 {
+            for m in 0..17u8 {
+                g.charge(IpAddr::from([10, m, 0, n]), start, 1);
+            }
+        }
+        let later = start + GROWTH_WINDOW + Duration::from_secs(1);
+        g.charge(ip(1), later, 1);
+        assert!(g.tracked() < 100, "{} addresses remembered", g.tracked());
+    }
+
+    #[test]
+    fn free_edits_are_not_recorded() {
+        let g = Growth::new(1000);
+        g.charge(ip(1), Instant::now(), 0);
+        assert_eq!(g.tracked(), 0);
     }
 
     #[test]

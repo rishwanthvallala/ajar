@@ -57,10 +57,9 @@ colliding on the temp path.
 
 ### Reads are streamed from the file
 
-A pad read does not load the pad. `Store::open_for_read` checks the lease with a
-parse that keeps only `updated_ms`, then hands back the open file positioned
-past its opening brace, and the handler sends `{"exists":true,` followed by the
-file. The stored document already is the response; the only difference was
+A pad read does not load the pad. `Store::open_for_read` checks the lease from
+the file's modification time, then hands back the open file positioned past its
+opening brace, and the handler sends `{"exists":true,` followed by the file. The stored document already is the response; the only difference was
 that one field. One descriptor serves the check and the bytes, so they are the
 same version even if a write renames a new file into place meanwhile.
 
@@ -90,9 +89,21 @@ reserved name fails, and adding an unreserved route fails.
 
 ### Lifetime
 
-A folder nobody writes to for a week is deleted, and **its name is free
-again**: whoever opens it next starts an empty folder there. Reads check the
-lease too, so a lapsed pad is never served while it waits for the hourly sweep.
+A folder nobody opens or writes to for **90 days** is deleted, and **its name
+is free again**: whoever opens it next starts an empty folder there. Reads check
+the lease too, so a lapsed pad is never served while it waits for the hourly
+sweep.
+
+The lease is the file's **modification time**, not a field in the document. A
+write renames a new file into place, which sets it; opening a pad renews it,
+at most once a day (`RENEW_EVERY`), with a metadata update rather than a
+rewrite. Neither path has to parse the pad, and the sweeper only `stat`s each
+file. It was seven days and counted writes only, which deleted exactly the pads
+people share — a demo opened daily and edited once a fortnight.
+
+A long lease is only safe with a per-address limit on growth, or one address
+could fill the store and keep it full for a season: see
+[security.md](security.md#what-bounds-an-anonymous-caller).
 
 Only the sweeper deletes, and it decides under the pad's lock by looking at the
 file as it is at that moment. Deciding from an earlier read and deleting by path

@@ -111,9 +111,13 @@ survive.
 and the files are stored in the clear on the server. Do not put anything
 sensitive in it.
 
-**A folder nobody edits for a week is deleted.** Its name is then free, so an
-old link opens an empty folder — or whatever somebody else has started there
-since. Keep anything you care about somewhere else too.
+**A folder nobody opens or edits for 90 days is deleted.** Opening the link
+counts, so a folder people keep visiting stays. Once one is deleted its name is
+free, so an old link opens an empty folder — or whatever somebody else has
+started there since. Keep anything you care about somewhere else too.
+
+One address can add about 256 MB a day to the server. Editing what is already
+there never counts against that — only growing it does.
 
 ## If a command hangs
 

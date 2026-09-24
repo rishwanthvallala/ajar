@@ -280,6 +280,7 @@ meets it.
 | Sessions opened per address | 8 at once, 20/min | `quota.rs` `MAX_OPEN_PER_IP` |
 | Sessions **joined** per address | 96 at once, 240/min | `quota.rs` `MAX_JOINS_PER_IP` |
 | Every pad together | 4 GB, `--max-store-bytes` | `pad.rs` `MAX_STORE_BYTES` |
+| What one address may add to the store | 256 MiB a day, growth only; `--pad-growth-per-address` | `quota.rs` `MAX_PAD_GROWTH_PER_IP` |
 | One pad write, off the wire | 51 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
 | Pad writes being read at once | 4 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
@@ -312,6 +313,14 @@ applied before was the OOM killer.
 The permit for a pad write is taken in an **extractor, not the handler**.
 Extractors that do not touch the body run first, so a request waits before
 51 MiB is pulled off the wire; taken in the handler it would bound nothing.
+
+**The store allowance counts bytes added, not pads created.** A cap on
+creations does not protect a disk: sixty pads an hour at 25 MiB each fills the
+ceiling before lunch. So each address may add 256 MiB a day — ten full pads, or
+tens of thousands of ordinary ones — and only growth is charged, so an edit in
+place is always free and an address at its limit can still make room. It is
+what made a 90-day lease affordable: without it, one address could fill the
+store in minutes and keep it full for a season.
 
 **A pad read is streamed, and that is the bound — not the count.** Reads used to
 hold the file, the parsed pad and the serialised response at once, and nothing

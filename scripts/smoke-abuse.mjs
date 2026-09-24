@@ -305,6 +305,50 @@ async function main() {
     ? ok("abandoning those reads gives the slots back")
     : fail(`a read was still refused after the held ones were abandoned: ${readAgain}`);
 
+  // ------------------------------- one address cannot fill the store alone
+  //
+  // The ceiling above bounds everybody together; nothing stopped one address
+  // reaching it by itself, 25 MiB at a time, in a few minutes. With pads now
+  // living ninety days, a store filled that way would stay full for a season.
+  // The allowance is a flag so this can reach it with a couple of megabytes;
+  // two addresses are told apart through the same forwarded header the
+  // production proxy sets.
+  const GROW_PORT = 8833;
+  procs.start(
+    "target/debug/ajar-relay",
+    [
+      "--bind", `127.0.0.1:${GROW_PORT}`,
+      "--pad-dir", join(padDir, "growth"),
+      "--trust-forwarded-for",
+      "--pad-growth-per-address", String(2 * 1024 * 1024),
+    ],
+    "relay-growth",
+  );
+  const GROW = `http://127.0.0.1:${GROW_PORT}`;
+  await waitForHealth(GROW);
+  const putAs = (address, name, content) =>
+    fetch(`${GROW}/api/pad/${name}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-forwarded-for": address },
+      body: JSON.stringify({ writes: [{ path: "a.txt", content }] }),
+    }).then((r) => r.status);
+
+  const megabyte = "g".repeat(1024 * 1024);
+  const firstGrow = await putAs("203.0.113.1", "grow-one", megabyte);
+  const secondGrow = await putAs("203.0.113.1", "grow-two", megabyte);
+  const sameSize = await putAs("203.0.113.1", "grow-one", "h".repeat(1024 * 1024));
+  const otherAddress = await putAs("203.0.113.2", "grow-three", megabyte);
+
+  firstGrow === 200 && secondGrow === 429
+    ? ok("one address is held to its daily allowance of new bytes (429 past it)")
+    : fail(`writes past the allowance returned ${firstGrow}, ${secondGrow} — expected 200, 429`);
+  sameSize === 200
+    ? ok("an edit that adds nothing still goes through for an address at its limit")
+    : fail(`an address at its limit could not even edit in place: ${sameSize}`);
+  otherAddress === 200
+    ? ok("and another address's allowance is untouched")
+    : fail(`one address's allowance refused another's write: ${otherAddress}`);
+
   // ------------------------------------ the egress tunnel is bounded too
   //
   // Not the relay, but the same question: wisp-server.mjs capped the sockets
