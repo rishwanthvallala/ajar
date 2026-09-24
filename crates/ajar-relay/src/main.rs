@@ -163,15 +163,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
     // a week, and nothing goes wrong if a dead pad lingers an extra hour.
-    // `get` checks the lease too, so nobody is ever served an expired one.
+    // Reads check the lease too, so nobody is ever served an expired one.
+    // Blocking work — it reads every pad — so off the workers that carry
+    // people's keystrokes.
     {
         let pads = pads.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
             loop {
                 tick.tick().await;
-                for name in pads.sweep() {
-                    info!(pad = %name, "entombed after its lease expired");
+                let pads = pads.clone();
+                let Ok(expired) = tokio::task::spawn_blocking(move || pads.sweep()).await else {
+                    continue;
+                };
+                for name in expired {
+                    info!(pad = %name, "expired after a week untouched; the name is free again");
                 }
             }
         });
@@ -265,7 +271,6 @@ struct Wrote {
 
 fn refuse(e: pad::Error) -> (StatusCode, String) {
     let code = match e {
-        pad::Error::Gone => StatusCode::GONE,
         pad::Error::TooBig { .. } | pad::Error::TooManyFiles => StatusCode::PAYLOAD_TOO_LARGE,
         // Not the request's fault and worth retrying, which is what this status
         // means and what PAYLOAD_TOO_LARGE would wrongly deny.

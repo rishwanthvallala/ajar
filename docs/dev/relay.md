@@ -72,8 +72,8 @@ by 647 MiB. See [security.md](security.md#what-bounds-an-anonymous-caller).
 
 A pad name becomes a path on the origin, so anything the site already serves
 must be refused: `packages`, `sw`, `index`, `public`, `dist`, `api`, `assets`
-and friends. A pad called `sw` would sit underneath `/sw.js` with no way to
-recover the name — and since **a name is never reused**, the loss is permanent.
+and friends. A pad called `sw` would sit underneath `/sw.js`, where nobody could
+ever open it — its contents stranded until the lease ran out.
 
 The test reads the routes out of `deploy/Caddyfile` and asserts each one is
 reserved. It used to say that and not do it: the list was written by hand in
@@ -90,8 +90,22 @@ reserved name fails, and adding an unreserved route fails.
 
 ### Lifetime
 
-A folder untouched for a week is deleted. **The name is never reused**, so a
-link shared in a tutorial can never later resolve to a stranger's files.
+A folder nobody writes to for a week is deleted, and **its name is free
+again**: whoever opens it next starts an empty folder there. Reads check the
+lease too, so a lapsed pad is never served while it waits for the hourly sweep.
+
+Only the sweeper deletes, and it decides under the pad's lock by looking at the
+file as it is at that moment. Deciding from an earlier read and deleting by path
+would remove whatever a write had just renamed onto that path — somebody's new
+folder.
+
+It was the opposite until September 2026: a lapse left a `<name>.tomb`, and the
+name answered 410 "will not be reused" forever, so that a link in a tutorial
+could never later show a stranger's files. The cost fell on exactly the names
+people use — `/demo` became a page that could only refuse — and the tombstones
+were an unbounded count nobody could reclaim. The trade was reversed
+deliberately: an old link now opens an empty folder, or somebody else's newer
+one. Opening the store deletes any tombstones the old policy left.
 
 ## Session shapes
 

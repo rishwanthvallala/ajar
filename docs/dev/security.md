@@ -337,7 +337,6 @@ minute.
   [operations.md](operations.md#adding-the-caddy-rate-limit-plugin).
 - **`/dns-query` request rate.** Bounded in shape and size, not in frequency.
   Same plugin.
-- **Tombstones.** One permanent 0-byte file per name ever used.
 
 ## The egress endpoint is the one thing that acts on the internet for a stranger
 

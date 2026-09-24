@@ -549,7 +549,7 @@ export class App {
         this.say("", "saved");
       } catch (e) {
         const why = e as StoreError;
-        if (why.gone || why.tooBig) {
+        if (why.tooBig) {
           this.say("error", `${why.message} — this is not being saved`);
           return;
         }

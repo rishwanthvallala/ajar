@@ -111,8 +111,9 @@ survive.
 and the files are stored in the clear on the server. Do not put anything
 sensitive in it.
 
-**A folder nobody touches for a week is deleted.** The name is never reused,
-so an old link can never quietly turn into a stranger's files.
+**A folder nobody edits for a week is deleted.** Its name is then free, so an
+old link opens an empty folder — or whatever somebody else has started there
+since. Keep anything you care about somewhere else too.
 
 ## If a command hangs
 

@@ -11,10 +11,16 @@
 //! nothing to migrate, and a pad is legible with `cat` when something is
 //! wrong. The caps are what keep that honest.
 //!
-//! **Names are never reused.** A lease that lapses deletes the *contents* and
-//! leaves a tombstone behind, so a link shared in a tutorial can never later
-//! resolve to a stranger's files. A name costs a few bytes to remember
-//! forever, which is nothing next to the class of problem it removes.
+//! **A lapsed name is free again.** A pad nobody writes to for a week is
+//! deleted, and whoever opens that name next starts an empty folder there.
+//!
+//! Until September 2026 the opposite was true: a lapse left a tombstone and the
+//! name answered 410 "will not be reused" forever. The reason was real — a link
+//! in a tutorial could later show whatever a stranger put under the same name —
+//! but the cost landed on the names people actually use: `/demo` became a page
+//! that could only refuse, permanently, and the tombstones were an
+//! ever-growing count nobody could reclaim. The trade was reversed on purpose.
+//! An old link now opens an empty folder, or somebody else's newer one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -79,8 +85,8 @@ pub const RESERVED: &[&str] = &[
     "dist",
     // The pad's egress endpoint and the DNS it resolves through, both proxied
     // by Caddy on this origin. Added after they were built and not reserved —
-    // a pad called `wisp` would have been shadowed by the route and the name
-    // lost for good, which is the exact failure this list exists to prevent.
+    // a pad called `wisp` would have been shadowed by the route, its contents
+    // unreachable, which is the exact failure this list exists to prevent.
     "wisp",
     "dns-query",
     // Kept back for things that do not exist yet, because a name cannot be
@@ -157,6 +163,18 @@ fn lease_lapsed(updated_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(updated_ms) > LEASE.as_millis() as u64
 }
 
+/// When a stored pad was last written, read without loading it: the parse keeps
+/// `updated_ms` and skips everything else without allocating it.
+fn updated_ms(file: &std::fs::File) -> Result<u64, Error> {
+    #[derive(Deserialize)]
+    struct Lease {
+        updated_ms: u64,
+    }
+    serde_json::from_reader::<_, Lease>(std::io::BufReader::new(file))
+        .map(|lease| lease.updated_ms)
+        .map_err(|e| Error::Io(e.to_string()))
+}
+
 /// A stored pad opened for streaming: the file positioned just past its
 /// opening brace, and how many bytes follow.
 ///
@@ -173,8 +191,6 @@ pub enum Error {
     BadName(&'static str),
     /// The name is ours.
     Reserved,
-    /// Held once, expired, and never coming back.
-    Gone,
     /// A path inside the pad that we will not store.
     BadPath(&'static str),
     TooBig {
@@ -191,7 +207,6 @@ impl Error {
         match self {
             Error::BadName(why) => format!("that name will not work: {why}"),
             Error::Reserved => "that name is reserved".into(),
-            Error::Gone => "this pad expired and its name will not be reused".into(),
             Error::BadPath(why) => format!("that file path will not work: {why}"),
             Error::TooBig { bytes } => format!(
                 "{:.1} MB is over the {} MB limit",
@@ -297,7 +312,7 @@ pub struct Store {
     ceiling: u64,
     /// Serialised bytes currently on disk, maintained rather than measured.
     ///
-    /// Counted once at startup and adjusted by every save and every entombment.
+    /// Counted once at startup and adjusted by every save and every expiry.
     /// The alternative is walking the directory per write, which is the cost
     /// the file-count cap exists to avoid — and the sweeper already shows what
     /// a full scan costs when it does one hourly.
@@ -320,6 +335,23 @@ impl Store {
     pub fn open(dir: impl Into<PathBuf>, ceiling: u64) -> std::io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
+
+        // `<name>.tomb` is what the old policy left for every lapsed name, and
+        // each one sealed that name for good. Nothing reads them any more;
+        // removing them is what hands `/demo` and the rest back.
+        let tombs: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "tomb"))
+            .collect();
+        let freed = tombs
+            .iter()
+            .filter(|p| std::fs::remove_file(p).is_ok())
+            .count();
+        if freed > 0 {
+            tracing::info!(freed, "cleared tombstones — those names are free again");
+        }
+
         let used = std::fs::read_dir(&dir)?
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -351,16 +383,14 @@ impl Store {
         self.dir.join(format!("{name}.json"))
     }
 
-    fn tomb_path(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{name}.tomb"))
-    }
-
-    /// Read a pad. `Ok(None)` means the name is free.
+    /// Read a pad. `Ok(None)` means the name is free — nobody has written it,
+    /// or its lease lapsed.
+    ///
+    /// An expired pad reads as free here rather than being deleted: deletion
+    /// belongs to the sweeper, under the pad's lock, so that no reader can
+    /// remove a pad that a write replaced after the reader looked.
     pub fn get(&self, name: &str) -> Result<Option<Pad>, Error> {
         check_name(name)?;
-        if self.tomb_path(name).exists() {
-            return Err(Error::Gone);
-        }
         let raw = match std::fs::read(self.pad_path(name)) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -369,11 +399,7 @@ impl Store {
         let pad: Pad = serde_json::from_slice(&raw).map_err(|e| Error::Io(e.to_string()))?;
         // Checked on the way out as well as by the sweeper, so a pad is never
         // served past its lease just because nothing has swept recently.
-        if pad.expired(now_ms()) {
-            self.entomb(name)?;
-            return Err(Error::Gone);
-        }
-        Ok(Some(pad))
+        Ok((!pad.expired(now_ms())).then_some(pad))
     }
 
     /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
@@ -392,25 +418,16 @@ impl Store {
         use std::io::{Read, Seek, SeekFrom};
 
         check_name(name)?;
-        if self.tomb_path(name).exists() {
-            return Err(Error::Gone);
-        }
         let io = |e: std::io::Error| Error::Io(e.to_string());
         let mut file = match std::fs::File::open(self.pad_path(name)) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io(e)),
         };
-
-        #[derive(Deserialize)]
-        struct Lease {
-            updated_ms: u64,
-        }
-        let lease: Lease = serde_json::from_reader(std::io::BufReader::new(&file))
-            .map_err(|e| Error::Io(e.to_string()))?;
-        if lease_lapsed(lease.updated_ms, now_ms()) {
-            self.entomb(name)?;
-            return Err(Error::Gone);
+        // Lapsed reads as free, the same as `get`, and for the same reason is
+        // left for the sweeper to delete.
+        if lease_lapsed(updated_ms(&file)?, now_ms()) {
+            return Ok(None);
         }
 
         file.seek(SeekFrom::Start(0)).map_err(io)?;
@@ -438,10 +455,8 @@ impl Store {
         // document and the alternative is losing writes.
         let _guard = self.stripe(name).lock();
 
-        if self.tomb_path(name).exists() {
-            return Err(Error::Gone);
-        }
-
+        // A lapsed pad reads as `None`, so writing to its name starts a fresh
+        // one, and the save replaces the old file rather than adding to it.
         let now = now_ms();
         let mut pad = match self.get(name)? {
             Some(pad) => pad,
@@ -535,46 +550,46 @@ impl Store {
         Ok(())
     }
 
-    /// Delete the contents, keep the name forever.
-    fn entomb(&self, name: &str) -> Result<(), Error> {
-        std::fs::write(self.tomb_path(name), b"").map_err(|e| Error::Io(e.to_string()))?;
-        let freed = std::fs::metadata(self.pad_path(name))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        match std::fs::remove_file(self.pad_path(name)) {
-            Ok(()) => {
-                self.used.fetch_sub(freed, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Io(e.to_string())),
+    /// Delete a pad whose lease has lapsed, and give its bytes back. True if it
+    /// did.
+    ///
+    /// Decided and done under the pad's lock, looking at the file as it is now.
+    /// Deciding from an earlier read and then deleting by path would remove
+    /// whatever a write had renamed onto that path in between — a fresh pad,
+    /// written by somebody who had just started using the name.
+    pub fn expire_if_lapsed(&self, name: &str) -> bool {
+        let _guard = self.stripe(name).lock();
+        let path = self.pad_path(name);
+        let Ok(file) = std::fs::File::open(&path) else {
+            return false;
+        };
+        let Ok(updated) = updated_ms(&file) else {
+            return false;
+        };
+        if !lease_lapsed(updated, now_ms()) {
+            return false;
         }
+        let freed = file.metadata().map(|m| m.len()).unwrap_or(0);
+        drop(file);
+        if std::fs::remove_file(&path).is_err() {
+            return false;
+        }
+        self.used.fetch_sub(freed, Ordering::Relaxed);
+        true
     }
 
-    /// Entomb everything past its lease. Returns the names reaped.
+    /// Delete everything past its lease, freeing the names. Returns them.
     pub fn sweep(&self) -> Vec<String> {
-        let now = now_ms();
-        let mut reaped = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return reaped;
+            return Vec::new();
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(name) = stem(&path) else { continue };
-            let Ok(raw) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(pad) = serde_json::from_slice::<Pad>(&raw) else {
-                continue;
-            };
-            if pad.expired(now) && self.entomb(&name).is_ok() {
-                reaped.push(name);
-            }
-        }
-        reaped
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+            .filter_map(|path| stem(&path))
+            .filter(|name| self.expire_if_lapsed(name))
+            .collect()
     }
 }
 
@@ -684,12 +699,7 @@ mod tests {
         let held = s.used();
         assert!(held > 1024 * 1024);
 
-        // Age it past the lease the same way the sweeper's own test does.
-        let path = s.dir.join("stale.json");
-        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        pad.updated_ms -= LEASE.as_millis() as u64 + 1;
-        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
-
+        age(&s, "stale");
         assert_eq!(s.sweep(), vec!["stale".to_string()]);
         assert!(
             s.used() < held,
@@ -876,9 +886,9 @@ mod tests {
         // A hand-written list is what this test used to be, and it drifted the
         // first time it mattered: `/wisp` and `/dns-query` were added to the
         // pad's origin and neither this list nor RESERVED heard about it, so a
-        // pad called `wisp` would have been shadowed by the route — and names
-        // are never reused, so it would have been lost for good. The property
-        // the comment claimed was never actually being checked.
+        // pad called `wisp` would have been shadowed by the route, where
+        // nobody could ever open it. The property the comment claimed was
+        // never actually being checked.
         //
         // include_str! rather than a runtime read: this fails to compile if the
         // Caddyfile moves, instead of passing vacuously.
@@ -994,41 +1004,89 @@ mod tests {
         assert_eq!(s.write("p", &writes).err(), Some(Error::TooManyFiles));
     }
 
-    #[test]
-    fn an_expired_pad_is_gone_and_its_name_never_comes_back() {
-        // The failure this prevents: a link shared in a tutorial resolving, a
-        // week later, to whatever a stranger uploaded under the same name.
-        let (s, _d) = store();
-        s.write("demowork", &[put("a", "1")]).unwrap();
-
-        // Age it past the lease by rewriting the stored timestamp.
-        let path = s.pad_path("demowork");
+    /// Push a stored pad past its lease by rewriting its timestamp.
+    fn age(s: &Store, name: &str) {
+        let path = s.pad_path(name);
         let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         pad.updated_ms = now_ms() - LEASE.as_millis() as u64 - 1;
         std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
+    }
 
-        assert_eq!(s.get("demowork").err(), Some(Error::Gone));
+    #[test]
+    fn an_expired_pad_frees_its_name() {
+        // It used to be sealed for good: a lapsed name answered 410 "will not
+        // be reused" forever, so /demo — the one name everybody reaches for —
+        // became a page that could only say no. A lapsed pad is empty now, and
+        // whoever opens the name next starts a fresh folder there.
+        let (s, _d) = store();
+        s.write("demo", &[put("old.py", "print('old')")]).unwrap();
+        age(&s, "demo");
+
+        assert!(
+            s.get("demo").unwrap().is_none(),
+            "an expired pad must read as free, not as an error"
+        );
+        assert!(s.open_for_read("demo").unwrap().is_none());
+
+        assert_eq!(s.write("demo", &[put("new.py", "print('new')")]), Ok(1));
+        let pad = s.get("demo").unwrap().unwrap();
         assert_eq!(
-            s.write("demowork", &[put("b", "2")]).err(),
-            Some(Error::Gone),
-            "a tombstoned name must not be claimable again"
+            pad.files.keys().collect::<Vec<_>>(),
+            vec!["new.py"],
+            "the old contents came back with the reused name"
         );
     }
 
     #[test]
-    fn the_sweeper_entombs_only_what_is_past_its_lease() {
+    fn the_sweeper_removes_only_what_is_past_its_lease() {
         let (s, _d) = store();
         s.write("fresh", &[put("a", "1")]).unwrap();
         s.write("stale", &[put("a", "1")]).unwrap();
-
-        let path = s.pad_path("stale");
-        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        pad.updated_ms = now_ms() - LEASE.as_millis() as u64 - 1;
-        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
+        age(&s, "stale");
 
         assert_eq!(s.sweep(), vec!["stale".to_string()]);
         assert!(s.get("fresh").unwrap().is_some());
-        assert_eq!(s.get("stale").err(), Some(Error::Gone));
+        assert!(
+            !s.pad_path("stale").exists(),
+            "the expired pad is still on disk"
+        );
+        assert!(s.get("stale").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_sweep_spares_a_pad_rewritten_since_it_was_listed() {
+        // The sweeper decides from what it read, then deletes by path — and a
+        // write can rename a fresh pad onto that path in between. It has to
+        // look again under the pad's lock, or it deletes the new one.
+        let (s, _d) = store();
+        s.write("busy", &[put("a", "1")]).unwrap();
+        age(&s, "busy");
+        s.write("busy", &[put("a", "rewritten")]).unwrap();
+
+        assert!(
+            !s.expire_if_lapsed("busy"),
+            "a pad written since it lapsed was expired anyway"
+        );
+        assert_eq!(
+            s.get("busy").unwrap().unwrap().files["a"].content,
+            "rewritten"
+        );
+    }
+
+    #[test]
+    fn tombstones_left_by_the_old_policy_are_cleared() {
+        // Every name that lapsed before this change is sealed by a 0-byte
+        // `<name>.tomb`. Opening the store frees them all, so deploying this is
+        // what gives /demo back.
+        let dir = tempdir::Dir::new();
+        std::fs::write(dir.path().join("demo.tomb"), b"").unwrap();
+        std::fs::write(dir.path().join("other.tomb"), b"").unwrap();
+
+        let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        assert!(!dir.path().join("demo.tomb").exists());
+        assert!(!dir.path().join("other.tomb").exists());
+        assert!(s.get("demo").unwrap().is_none());
+        assert_eq!(s.write("demo", &[put("main.py", "print(1)")]), Ok(1));
     }
 
     #[test]
@@ -1098,20 +1156,13 @@ mod tests {
 
     #[test]
     fn a_streamed_read_still_honours_the_lease() {
-        // Reads skip `get` now, and `get` was where an expired pad was caught
-        // on the way out. The check has to have come along.
+        // Reads skip `get`, and `get` was where an expired pad was caught on
+        // the way out. The check has to have come along: nobody is served a
+        // pad past its lease just because the sweeper has not run yet.
         let (s, _d) = store();
         s.write("stale", &[put("a", "1")]).unwrap();
-        let path = s.pad_path("stale");
-        let mut pad: Pad = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        pad.updated_ms = now_ms() - LEASE.as_millis() as u64 - 1;
-        std::fs::write(&path, serde_json::to_vec(&pad).unwrap()).unwrap();
-
-        assert!(matches!(s.open_for_read("stale"), Err(Error::Gone)));
-        assert!(
-            matches!(s.open_for_read("stale"), Err(Error::Gone)),
-            "the name must stay gone once entombed"
-        );
+        age(&s, "stale");
+        assert!(s.open_for_read("stale").unwrap().is_none());
     }
 
     #[test]

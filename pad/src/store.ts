@@ -36,12 +36,7 @@ export class StoreError extends Error {
     super(message);
   }
 
-  /** The name expired and will never be reused, so retrying is pointless. */
-  get gone(): boolean {
-    return this.status === 410;
-  }
-
-  /** Over a cap. Also permanent until the caller sends less. */
+  /** Over a cap. Permanent until the caller sends less, so not worth retrying. */
   get tooBig(): boolean {
     return this.status === 413;
   }

@@ -23,12 +23,6 @@ Both need the Caddy rate-limit plugin, which is step 5 of the hardening work
 and the only piece not done. Procedure in
 [dev/operations.md](dev/operations.md#adding-the-caddy-rate-limit-plugin).
 
-### Tombstones are never reclaimed
-
-One permanent 0-byte file per name ever used. Deliberate — a name must never be
-reused — but unbounded in count and attacker-controlled. The store ceiling
-added on 24 September bounds bytes, not names.
-
 ### Two things the September review left untested or unbounded
 
 From the 22-finding review merged as PR #3 — the findings are in
@@ -175,8 +169,9 @@ missed this" look identical a month later.
 the link, and a folder untouched for a week is deleted. The design in
 [`personal-tier.md`](history/personal-tier.md) — a week-long lease without an account, a
 permanent claim with one, per-account limits and some IP-based ceiling on
-anonymous locks — is designed and unbuilt. A name is never reused after
-expiry, so a link in a tutorial can never later resolve to a stranger's files.
+anonymous locks — is designed and unbuilt. A lapsed name is free again, so an
+old link opens an empty folder or somebody else's newer one; until 24 September
+it was sealed for good instead, which turned `/demo` into a permanent 410.
 
 **Empty folders do not survive a reload.** Directories are derived from the
 paths under them, so one with nothing inside has nothing to imply it. The tab
