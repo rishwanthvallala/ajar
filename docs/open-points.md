@@ -3,26 +3,14 @@
 *Kept as of 25 September 2026. The relay, both browser clients and the deploy
 config were deployed from `a37e97b` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
-reads, freed pad names and the 90-day lease. The agent's own fixes are not in
-anyone's hands yet — see [the first item](#the-agent-fixes-of-24-september-are-unreleased).*
+reads, freed pad names and the 90-day lease. The agent's halves — Landlock ABI
+6, the withheld environment, process headroom, reconciling after its own blip —
+shipped in v0.0.4 on 25 September. A host still on v0.0.3 has none of them
+until it reinstalls.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
 not what would be nice.
-
----
-
-## Not yet shipped
-
-### The agent fixes of 24 September are unreleased
-
-The agent reaches people only through a tagged release, and none has been cut
-since v0.0.3. Until v0.0.4 exists, every host still runs a Landlock pinned to
-ABI 1, hands its whole environment to guests, caps processes at a bare 512, and
-loses a guest's typing across its own blips — the relay and browser halves of
-those fixes are live, the agent halves are not. None of them changes the wire,
-so there is no ordering constraint: cut the release whenever it suits. See
-[dev/operations.md](dev/operations.md#releasing).
 
 ---
 
