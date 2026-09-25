@@ -108,6 +108,16 @@ before it is touched.
 | A cursor's `user.id` goes into a stylesheet unescaped — the name was fixed, the id was not. In the pad anyone with the link can send one | `web/src/editing.ts`, `pad/src/editing.ts` `drawCursors` |
 | The checkpoint leaves out untracked files, and "files changed" is measured against HEAD, so the host's own earlier edits are reported as the guest's | `checkpoint.rs` |
 
+### On a macOS host, a guest cannot run `top`
+
+`bash: /usr/bin/top: Operation not permitted`, from a guest's terminal on
+GitHub's macOS runner, found by `scripts/check-terminal.mjs` on 25 September.
+The Seatbelt profile allows every exec. It is macOS refusing to start, inside
+a `sandbox-exec` sandbox, a binary that carries system entitlements — `top`
+reads other processes. Other tools of that kind (`ps`, `lsof`) have not been
+tried and may do the same. It is the price of the sandbox rather than a rule
+of ajar's, and the check leaves `top` out on macOS rather than failing on it.
+
 ### Scoped signals refuse `kill` across terminals
 
 Each terminal is its own Landlock domain, so from Linux 6.12 a guest cannot

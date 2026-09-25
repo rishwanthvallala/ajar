@@ -210,12 +210,18 @@ async function main() {
   expect("unicode goes there and back", await printed("héllo ✓ 日本"));
 
   // ---- programs that take over the screen ----
-  for (const [command, quit, drew] of [
+  // Not top on a Mac: macOS will not start it inside the sandbox — "Operation
+  // not permitted", seen on CI — because it carries system entitlements a
+  // sandboxed process may not exec. That is the platform, not this path; it
+  // is recorded in docs/open-points.md.
+  const fullScreen = [
     ["less notes.txt", ["q"], /three/],
     ["vi notes.txt", ["Escape", "text::q!", "Enter"], /three/],
     ["nano notes.txt", ["Control+x"], /three/],
-    ["top", ["q"], /load av/i],
-  ]) {
+    ...(process.platform === "darwin" ? [] : [["top", ["q"], /load av/i]]),
+  ];
+  if (process.platform === "darwin") console.log("  note  top is not run on macOS, whose sandbox cannot start it");
+  for (const [command, quit, drew] of fullScreen) {
     await run(command); await settle(1500);
     const screen = (await rows()).join("\n");
     for (const k of quit) await (k.startsWith("text:") ? type(k.slice(5)) : press(k));
