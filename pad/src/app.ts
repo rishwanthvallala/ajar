@@ -67,6 +67,7 @@ export class App {
   private prefetched = false;
   /** The runtime has started, not merely been asked for. */
   private runtimeReady = false;
+  private shellOpening: Promise<Shell> | null = null;
   private peers: Peers | null = null;
   private busy = false;
   private missed = false;
@@ -606,7 +607,14 @@ export class App {
     if (this.prefetched) return;
     this.prefetched = true;
     prefetch();
-    void this.ensureRuntime();
+    // The shell too. With python already up, opening it — bash, then a round
+    // of setup commands — was most of what was left of the first Run: 1.0 s
+    // from the button on a return visit, measured, against 0.3 s for a second
+    // Run. A failure here is left for the Run or command that needs the shell
+    // to report, where somebody is looking.
+    void this.ensureRuntime()
+      .then(() => this.ensureShell())
+      .catch(() => {});
   }
 
   private ensureRuntime(): Promise<Runtime> {
@@ -749,11 +757,21 @@ export class App {
     // any ctrl-c, not an error case.
     if (this.shell && !this.shell.alive) this.shell = null;
     if (this.shell) return this.shell;
-    const rt = await this.ensureRuntime();
-    this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) =>
-      this.term?.write(t),
-    );
-    return this.shell;
+    // One opening at a time. The shell is now opened at load, so a Run pressed
+    // while that is still in flight would otherwise start a second bash and
+    // leave one of them orphaned.
+    this.shellOpening ??= (async () => {
+      try {
+        const rt = await this.ensureRuntime();
+        this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) =>
+          this.term?.write(t),
+        );
+        return this.shell;
+      } finally {
+        this.shellOpening = null;
+      }
+    })();
+    return this.shellOpening;
   }
 
   // ------------------------------------------------------------------- run
