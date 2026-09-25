@@ -34,6 +34,7 @@ worse than no gate, because it still reports success.
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
+| `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
 
 The browser tier is checked separately, because each run downloads the wasm
 packages and drives a real Chromium:
@@ -147,6 +148,52 @@ could never have shown the 647 MiB they used to cost.
 It is also why the suite is heavier than it looks: roughly 120 connections per
 run, which on a monitored laptop is close enough to a port scan to be worth
 knowing about. It belongs on a server or in CI.
+
+## Measuring what a person feels
+
+`scripts/perf/` measures the product the way people meet it: against the
+deployed site by default, from a key press or a click to pixels on screen. These
+are measurements, not checks — nothing fails, and they are not in the gate.
+
+```sh
+scripts/perf/network.sh                        # the floor: DNS, TCP, TLS, first byte
+node scripts/perf/ajar-session.mjs             # host start, guest join, echo, output
+AGENT=target/release/ajar node scripts/perf/ajar-session.mjs   # a local build
+COLD=0,5000 WARM=3000,3000 node scripts/perf/pad-visit.mjs     # first and return visits
+```
+
+Run them one at a time — two browsers on one machine slow each other down. Each
+prints a JSON line per result and appends it to `$OUT` when that is set. A first
+pad visit fetches every runtime file once, and production allows 30 fetches of
+each an hour per address, shared with anyone using the pad from that address, so
+keep `COLD` short; return visits cost nothing.
+
+Taken on production on 25 September, before and after the changes they drove:
+
+| What the person feels | Before | After |
+|---|---|---|
+| Pad, first visit, Run after 5 s of reading → output | 7.7–10.1 s | 1.0 s |
+| Pad, return visit, Run → output | 1.5 s | 0.5 s |
+| Pad shell, a line starting with `#` | hung until ctrl-c | finishes |
+| ajar guest, join → a shell prompt | a click on "New terminal" first | 0.35–0.55 s, no click |
+| ajar guest's first shell | three `Permission denied` lines | clean (v0.0.5) |
+
+Already fine, and left alone: ajar echo 63–94 ms at the 50th percentile against
+a floor of two ~30 ms round trips to Mumbai; host start 0.2–0.4 s; 100 000 lines
+of output 0.4–0.9 s; the guest page 0.11 MB; pad shell echo 13 ms; autosave
+0.6 s; `pip install six` 5 s.
+
+Three ways these measured the wrong thing before they were fixed:
+
+- **An echo that arrived before it was sent.** Typed lines started with a
+  letter, and the prompt already contained that letter, so the first key of
+  every line "echoed" in 5 ms. Lines now start with `#`.
+- **A hang that was not there.** The comment-line check typed its next command
+  straight after Enter, racing the line it was testing. It now asks the shell
+  whether it is idle.
+- **Results lost to a crash.** Node flushes a piped stdout asynchronously, so a
+  run that failed late took everything it had printed with it — the first
+  cold-visit numbers went that way. Results are now written synchronously.
 
 ## Checks that passed for the wrong reason
 
