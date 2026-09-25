@@ -7,7 +7,9 @@ reads, freed pad names and the 90-day lease. The fifth step, per-address limits
 in a Caddy built with the rate-limit plugin, followed on 25 September. The agent's halves — Landlock ABI
 6, the withheld environment, process headroom, reconciling after its own blip —
 shipped in v0.0.4 on 25 September. A host still on v0.0.3 has none of them
-until it reinstalls.*
+until it reinstalls. v0.0.5, the same day, lets a guest's shell source the
+toolchain setup a host's rc files name — without it every guest terminal on
+Linux opened with `Permission denied`.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
