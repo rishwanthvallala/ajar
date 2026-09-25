@@ -35,13 +35,21 @@ reflects that.
 | | macOS — Seatbelt | Linux — Landlock |
 |---|---|---|
 | Model | allow everything, then deny | grant nothing, then allow |
-| Credentials | a named list is denied | the whole home directory is invisible apart from shell config and build caches |
+| Credentials | a named list is denied | the whole home directory is invisible apart from shell config, what it sources to set up toolchains (`.cargo/env`, `.nvm`, `.pyenv` and the like), and build caches |
 | Applied by | wrapping the shell in `sandbox-exec` | re-execing the agent as a launcher that restricts itself, then becomes the shell |
 
 The difference follows from the mechanism. Landlock has no deny rules, so
 "everything except `~/.ssh`" is not expressible — which forces granting each
 top-level directory *except* the one home lives under, then handing back only
 what a shell and a toolchain need.
+
+"What a shell needs" includes what its rc files source. Until 25 September it
+did not: every guest shell on an ordinary Rust-and-Node machine opened with
+three `Permission denied` lines, for `~/.cargo/env` and nvm, and a host who
+installed Node with nvm had no `node` for guests at all. Version managers'
+install roots and PATH scripts are handed back read-only; the credentials
+beside them — `~/.npmrc` and the rest — are not, and `linux-sandbox.sh` checks
+both halves.
 
 Landlock restricts the *calling* process and is inherited across `exec`, so
 there is no way to confine a pty's shell from outside it. Hence the launcher:

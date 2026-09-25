@@ -32,7 +32,7 @@ worse than no gate, because it still reports success.
 | `scripts/smoke-hostdrop.mjs` | Cuts only the host's socket, through a proxy, and requires everything from the gap back: typing, disk changes, new files, joins and leaves |
 | `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco; and that a guest arriving to no terminals is given exactly one — needs `npm run build:ajar` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
-| `scripts/linux-sandbox.sh` | Ten attempts to escape Landlock on a real kernel, and seven controls — that ordinary work still works, and that each probe can see a success when there is one |
+| `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 
 The browser tier is checked separately, because each run downloads the wasm

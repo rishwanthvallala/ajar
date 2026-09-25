@@ -638,6 +638,23 @@ pub mod linux {
         // redirected to the guest cache, so this directory can remain read-only
         // and cannot expose credentials.toml.
         ".cargo/bin",
+        // What the rc files above source. Left out, every guest shell opened
+        // with `Permission denied` for each one — three lines of apparent
+        // breakage before the first prompt on an ordinary Rust-and-Node setup
+        // — and the tools they put on PATH were missing, so a host who
+        // installed Node with nvm had no `node` for guests at all. Each is a
+        // PATH script or a toolchain's own install root, not configuration
+        // with secrets in it; `.npmrc`, `.gem/credentials` and the like stay
+        // out. Ubuntu's stock .bashrc sources `.bash_aliases` when it exists.
+        ".cargo/env",
+        ".local/bin/env",
+        ".bash_aliases",
+        ".nvm",
+        ".pyenv",
+        ".rbenv",
+        ".asdf",
+        ".sdkman",
+        ".volta",
     ];
 
     /// Restrict this process, then become the shell.

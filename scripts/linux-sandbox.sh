@@ -47,8 +47,12 @@ BIN="$CARGO_TARGET_DIR/debug/ajar"
 # into view. That was the fixture being unrealistic, not the sandbox failing.
 WORK=$(mktemp -d "$HOME/.ajar-sandbox-test-XXXXXX")
 export HOME="$WORK/home"
-mkdir -p "$HOME/.ssh" "$HOME/project"
+mkdir -p "$HOME/.ssh" "$HOME/project" "$HOME/.cargo" "$HOME/.nvm"
 echo "PRIVATE KEY MATERIAL" > "$HOME/.ssh/id_rsa"
+# What a real .bashrc sources, and the credential that sits beside it.
+echo 'export RUSTUP_SEEN=1' > "$HOME/.cargo/env"
+echo 'export NVM_SEEN=1' > "$HOME/.nvm/nvm.sh"
+echo "//registry.npmjs.org/:_authToken=NPM TOKEN MATERIAL" > "$HOME/.npmrc"
 echo "hello" > "$HOME/project/inside.txt"
 echo "not yours" > "$HOME/outside.txt"
 
@@ -95,6 +99,16 @@ check "cannot even list the home directory" \
 check "system paths stay readable, so toolchains work" \
     "cat /etc/hostname" \
     '! printf "%s" "$out" | grep -qi "permission denied"'
+
+# Withheld, these made every guest shell open with "Permission denied" and
+# left a host's nvm-installed node off the guest's PATH.
+check "a shell can still source rustup's and nvm's setup" \
+    ". $HOME/.cargo/env && . $HOME/.nvm/nvm.sh && echo \"seen:\$RUSTUP_SEEN\$NVM_SEEN\"" \
+    'printf "%s" "$out" | grep -q "seen:11"'
+
+check "cannot read the npm token beside them" \
+    "cat $HOME/.npmrc" \
+    '! printf "%s" "$out" | grep -q "NPM TOKEN MATERIAL"'
 
 # The three ways out that actually worried me. Landlock resolves paths, so
 # none of them reach a hierarchy that was never granted.
