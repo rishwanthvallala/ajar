@@ -16,8 +16,13 @@ out="dist/caddy-linux-$arch"
 mkdir -p "$root/dist"
 
 cd "$root/deploy/caddy"
+# -buildvcs=false because this directory sits in the repository, and Go would
+# otherwise stamp the commit into the binary. Every commit then built a
+# different Caddy, so every deploy swapped it and restarted all three sites for
+# a change that touched none of them. Without the stamp the bytes depend only
+# on go.mod, go.sum and the Go release.
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOFLAGS=-mod=readonly \
-    go build -trimpath -ldflags "-s -w" -o "$root/$out" .
+    go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$root/$out" .
 
 # The plugin is the only reason this binary exists. A build that somehow lost
 # it would pass everything up to the first reload, and then fail it.
