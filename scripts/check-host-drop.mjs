@@ -104,6 +104,11 @@ async function main() {
   await page.goto(`${HTTP}/j/${session}#k=${key}`);
   await page.fill("#name", "ana");
   await page.click("#join button[type=submit]");
+  // Nobody has opened a terminal in this session, so the guest gets one
+  // without asking — arriving to "No terminals yet" was a click before
+  // anything worked.
+  await page.locator(".term .xterm").first().waitFor({ timeout: 20_000 });
+  ok("a guest arriving to no terminals is given one");
   await page.locator('.tree-row[data-path="note.txt"]').click();
   // Editable means the document is bound, not merely that text is showing.
   const lines = page.locator(".monaco-editor .view-lines");
@@ -140,6 +145,12 @@ async function main() {
   const after = await onDisk(note, "AFTER ", 6000);
   if (!after.includes("AFTER ")) fail(`typing after the host came back is stuck: ${JSON.stringify(after)}`);
   else ok("typing after the host came back reaches the file");
+
+  // The host's return re-sends the read-only state, which is what triggers
+  // the first terminal. It must not open a second.
+  const terminals = await page.locator(".term").count();
+  if (terminals !== 1) fail(`the guest has ${terminals} terminals after the host came back, not 1`);
+  else ok("and only one, even after the host came back");
 
   if (errors.length) fail(`the page threw: ${errors.join(" | ")}`);
   else ok("no page errors");

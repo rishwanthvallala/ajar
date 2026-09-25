@@ -204,6 +204,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** Set by the host. Enforced there too — this only stops us wasting bytes. */
   let readOnly = false;
   /**
+   * Whether this page has decided about opening a first terminal. Once per
+   * page: someone who closes their last terminal meant to.
+   */
+  let firstTerminalSettled = false;
+  /**
    * Files from the copy the relay keeps, used while the host is away.
    *
    * Read-only on purpose: the host is authoritative whenever it is online,
@@ -470,6 +475,15 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         readOnly = msg.read_only;
         readOnlyEl.hidden = !readOnly;
         for (const tab of tabs.values()) tab.term.options.cursorBlink = !readOnly;
+        // Arriving to "No terminals yet" meant a click before anything worked,
+        // and a shell is what most people came for. The host sends every live
+        // terminal before this message, on one ordered stream, so an empty set
+        // here means there really are none — opening one sooner could race a
+        // terminal still being announced and leave two.
+        if (!firstTerminalSettled) {
+          firstTerminalSettled = true;
+          if (tabs.size === 0 && !readOnly) requestTerminal();
+        }
       }
       return;
     }
@@ -799,10 +813,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     reportPresence();
   }
 
-  newBtn.onclick = () => {
+  function requestTerminal() {
     const { cols, rows } = probeSize();
     conn.send(jsonFrame(Channel.Pty, TARGET_ALL, { t: "open", cols, rows } satisfies Pty));
-  };
+  }
+  newBtn.onclick = requestTerminal;
 
   workspace.onLayout = () => {
     const px = codeFontPx();
