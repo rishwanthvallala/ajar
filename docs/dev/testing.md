@@ -31,6 +31,7 @@ worse than no gate, because it still reports success.
 | `scripts/smoke-sync.mjs` | Kills the host mid-session; the guest can still read the folder |
 | `scripts/smoke-reconnect.mjs` | Kills the relay mid-session; the agent returns to the same link |
 | `scripts/smoke-hostdrop.mjs` | Cuts only the host's socket, through a proxy, and requires everything from the gap back: typing, disk changes, new files, joins and leaves |
+| `scripts/check-terminal.mjs` | A guest's terminal by real key presses, through the relay to a real bash on the host: history, the editing keys, Tab, Ctrl-R, clearing, Ctrl-C, a paste, the python REPL, unicode, and less, vi, nano and top drawing and quitting. The host's shell is pinned — prompt, inputrc, locale — so what is tested is the path, not the machine's bash. `AJAR_RELAY` and `AGENT` run it against a deployment. With the client dropping one byte, ESC, twelve of its thirty fail — needs `npm run build:ajar` |
 | `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco; and that a guest arriving to no terminals is given exactly one — needs `npm run build:ajar` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
