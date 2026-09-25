@@ -36,3 +36,18 @@ jobs:
       - name: Attack the Linux sandbox
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/linux-sandbox.sh
+
+      # The rate limits live in the Caddyfile, which nothing else here reads.
+      # Built for the server too, so a plugin that stops compiling for arm64
+      # fails here rather than halfway through a deploy.
+      - uses: actions/setup-go@v5
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          go-version-file: deploy/caddy/go.mod
+          cache-dependency-path: deploy/caddy/go.sum
+      - name: Caddy's rate limits
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          deploy/caddy/build.sh
+          GOARCH=amd64 deploy/caddy/build.sh
+          deploy/caddy/check.sh

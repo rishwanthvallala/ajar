@@ -3,7 +3,8 @@
 *Kept as of 25 September 2026. The relay, both browser clients and the deploy
 config were deployed from `a37e97b` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
-reads, freed pad names and the 90-day lease. The agent's halves — Landlock ABI
+reads, freed pad names and the 90-day lease. The fifth step, per-address limits
+in a Caddy built with the rate-limit plugin, followed on 25 September. The agent's halves — Landlock ABI
 6, the withheld environment, process headroom, reconciling after its own blip —
 shipped in v0.0.4 on 25 September. A host still on v0.0.3 has none of them
 until it reinstalls.*
@@ -16,16 +17,16 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Bandwidth, and the DNS rate, both wait on one plugin
+### How many first visits an hour one address should get
 
-Every cache-cold pad visitor pulls **19 MB** of wasm, and Caddy serves it off
-disk without the relay seeing the request — so nothing in the relay can limit
-it. `/dns-query` is bounded in shape and size but not in frequency, for the
-same reason.
-
-Both need the Caddy rate-limit plugin, which is step 5 of the hardening work
-and the only piece not done. Procedure in
-[dev/operations.md](dev/operations.md#adding-the-caddy-rate-limit-plugin).
+The pad's runtime files are limited to 30 fetches each, per address, per hour
+— step 5 of the hardening work, done 25 September. That is a classroom on one
+network, and it lets a script asking for everything uncompressed draw 2.8 GB an
+hour from a single address. A week of real traffic never went above 5. Ten
+would cut the worst case to about 0.9 GB and still leave twice what has been
+seen; it would also turn away the eleventh student. It is one number in
+`deploy/Caddyfile` — reasoning in
+[dev/security.md](dev/security.md#at-the-edge).
 
 ### Two things the September review left untested or unbounded
 
@@ -256,9 +257,10 @@ a reload. It is not asserted in `wisp-check.mjs` because it does not fail there,
 it hangs, and takes every check after it. Whether this is concurrency in the
 wisp client, memory, or the SDK's worker is unknown.
 
-**Nothing rate-limits the endpoint.** `stream_limit_total` is 32 per
-connection, and there is no limit on connections. Caddy has no rate limiting
-without a plugin. A pad is anonymous, so there is nothing to attribute use to.
+**Nothing limits the bytes.** Streams, open tunnels and new tunnels are all
+bounded — 32 per tunnel, 8 open per address, 30 opened a minute — but not what
+flows through them. A pad is anonymous, so there is nothing to attribute a
+download to beyond its address.
 
 **`bind()` under the wisp policy is unmeasured.** The preview works in
 production, which is the ingress that matters, but that syscall has not been

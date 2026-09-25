@@ -93,6 +93,22 @@ VITE_WISP_URL="${AJAR_WISP_URL:-wss://code.rishwanth.dev/wisp}" \
     npm run build:pad --silent >/dev/null
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
+say "building caddy with the rate-limit plugin"
+# The packaged Caddy cannot rate-limit, and refuses the Caddyfile that does, so
+# the one the server runs is built here from the versions pinned in
+# deploy/caddy. Go is needed on this machine only.
+case "$TARGET" in
+    aarch64-*) CADDY_ARCH=arm64 ;;
+    x86_64-*) CADDY_ARCH=amd64 ;;
+    *) echo "  no Go architecture for $TARGET" >&2; exit 1 ;;
+esac
+if ! command -v go >/dev/null 2>&1; then
+    echo "  go is not installed, and the server's caddy is built from deploy/caddy" >&2
+    echo "  see docs/dev/operations.md#setting-up-a-new-machine" >&2
+    exit 1
+fi
+CADDY_BIN=$(GOARCH="$CADDY_ARCH" deploy/caddy/build.sh)
+
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"
 
 # ------------------------------------------------------------ bootstrap
@@ -200,25 +216,55 @@ SWAP
 # site answers, so nothing looks broken, and the deploy has already stopped.
 
 say "updating caddy"
+# The binary first, and only when it differs from what is there. It is checked
+# on the box before it replaces anything: a file that does not run there, or
+# runs without the plugin, never reaches /usr/local/bin.
+CADDY_SWAPPED=""
+want=$( (sha256sum "$CADDY_BIN" 2>/dev/null || shasum -a 256 "$CADDY_BIN") | cut -d' ' -f1)
+have=$(ssh "$HOST" "sha256sum /usr/local/bin/caddy 2>/dev/null | cut -d' ' -f1" || true)
+if [ "$want" != "$have" ]; then
+    scp -q "$CADDY_BIN" "$HOST:/tmp/caddy.new"
+    scp -q deploy/caddy/caddy.service.conf "$HOST:/tmp/caddy.conf"
+    ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'CADDY'
+chmod 755 /tmp/caddy.new
+/tmp/caddy.new list-modules | grep -qx http.handlers.rate_limit
+mv /tmp/caddy.new /usr/local/bin/caddy
+mkdir -p /etc/systemd/system/caddy.service.d
+mv /tmp/caddy.conf /etc/systemd/system/caddy.service.d/ajar.conf
+systemctl daemon-reload
+CADDY
+    CADDY_SWAPPED=1
+    say "caddy is now $(ssh "$HOST" '/usr/local/bin/caddy version' | cut -d' ' -f1), with the plugin"
+fi
+
 # Only the bare domain is rewritten, anchored, so a name that already carries a
 # prefix — code.rishwanth.dev — is left alone rather than becoming
 # code.<newdomain>.
 sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
     | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
 # Validated before it is loaded: a reload with a broken file leaves the old
-# config running, which looks like the deploy did nothing at all.
+# config running, which looks like the deploy did nothing at all. By the binary
+# that will run it, named by path — the packaged one at /usr/bin rejects the
+# rate limits outright.
 #
 # `validate` opens the log files named in the config, and running it as root
 # creates any that are missing owned by root — which the caddy user then cannot
 # write, so the very next reload fails on a file the validation step made. The
 # chown afterwards is not tidying; it is repairing what validating did.
-if ! ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >/dev/null 2>&1; then
+VALIDATE="$SUDO /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+if ! ssh "$HOST" "$VALIDATE" >/dev/null 2>&1; then
     echo "  the Caddyfile is not valid; nothing was reloaded" >&2
-    ssh "$HOST" "$SUDO caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >&2 || true
+    ssh "$HOST" "$VALIDATE" >&2 || true
     exit 1
 fi
 ssh "$HOST" "$SUDO chown -R caddy:caddy /var/log/caddy"
-ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
+# A new binary needs a restart. A reload would hand the new config to the old
+# process, which lacks the plugin, refuses it, and carries on with the old one.
+if [ -n "$CADDY_SWAPPED" ]; then
+    ssh "$HOST" "$SUDO systemctl restart caddy"
+else
+    ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
+fi
 
 # ---------------------------------------------------------------- check
 

@@ -286,7 +286,9 @@ meets it.
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
 | Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
-| `/dns-query` | GET/POST only, 4 KB body | `deploy/Caddyfile` |
+| Egress tunnels opened | 30 a minute per address | `deploy/Caddyfile` `pad_wisp` |
+| `/dns-query` | GET/POST only, 4 KB body, 120 a minute per address | `deploy/Caddyfile` `pad_dns` |
+| Each file of the pad's runtime | 30 fetches an hour per address | `deploy/Caddyfile` `pad_files` |
 
 Three of these need their reasoning kept, because the obvious version is wrong:
 
@@ -339,13 +341,56 @@ not metered by rate: every save in a busy pad sends every other browser to
 re-read it, and a classroom behind one address does that thousands of times a
 minute.
 
+### At the edge
+
+The pad's runtime — 106 files, about 22 MB as a browser receives it — is served by
+Caddy off disk, so the relay never sees the requests and nothing in it can
+limit them. Until 25 September nothing did: one address could pull files as
+fast as the instance's network allowed. Caddy now carries
+[`caddy-ratelimit`](operations.md#caddy-built-with-the-rate-limit-plugin), and
+three zones in the Caddyfile.
+
+**Files are limited per address *and per file*.** A first visit fetches each
+file once — measured in Caddy's own log, service worker included — and a
+returning visit fetches none, because they are immutable and cached for a year.
+So 30 fetches an hour of each file is 30 first visits an hour from one address,
+a classroom on one network. Keyed on the address alone, the same allowance
+could all be spent on one file, and one file is 61.7 MB raw. A key needs a file
+that exists, so a made-up path cannot mint one, and it is the file's cleaned
+path, so `//` or `/./` in a URL is the same file.
+
+**Measured against a week of real traffic** — 99 addresses, 18 to 25 September —
+the most any address fetched one file in an hour was 5, looked up names 4 times
+in a minute, and opened 1 egress tunnel in a minute. Every allowance is at
+least six times that.
+
+**What the worst caller still gets.** A script asking for every file
+uncompressed, 30 times an hour, draws 2.8 GB an hour from one address; asking
+the way a browser does, about 0.65 GB. Before, the ceiling was the instance's
+network. Lowering `events` in the `pad_files` zone lowers it in proportion.
+
+**A refusal is `no-store`.** The runtime's files carry `immutable` and a
+year's `max-age`, set before the limiter runs, so a refusal left with those
+headers would tell the browser to keep the refusal for a year. `handle_errors
+429` replaces them.
+
+**The plugin's metrics are off.** It labels them by key and never removes a
+label, so with them on, every address that ever visited stays in memory —
+measured at 26 series for one visit. The limiter's own state is a ring of
+`events` timestamps per key, dropped once a key has been idle for its window.
+
+`deploy/caddy/check.sh` drives all of this against a real Caddy and the
+Caddyfile that ships, and CI runs it on every push.
+
 ### Still unbounded
 
-- **Bandwidth.** 19 MB per cache-cold pad visitor, served by Caddy from disk
-  without the relay seeing it. Needs an edge rate limit — see
-  [operations.md](operations.md#adding-the-caddy-rate-limit-plugin).
-- **`/dns-query` request rate.** Bounded in shape and size, not in frequency.
-  Same plugin.
+- **Many addresses.** Every limit here is per address. A caller with a
+  thousand addresses has a thousand allowances, and nothing at this layer can
+  tell them apart from a thousand visitors.
+- **IPv6 /64s, if the server ever gets an AAAA record.** The DNS and egress
+  zones group an IPv6 /64 as one caller; the file zone cannot, because its key
+  is an address and a path, and the plugin only groups a key that is a bare
+  address. It has no IPv6 today, so this is a note for the day it does.
 
 ## The egress endpoint is the one thing that acts on the internet for a stranger
 
@@ -378,11 +423,10 @@ the endpoint relays ciphertext, so it sees hostnames and byte counts and never
 content. That is a privacy property and also a limit: it cannot inspect what is
 being downloaded, so the allowlist is the only control.
 
-**What it does not have.** Nothing rate-limits it beyond 32 streams per
-connection, and nothing limits connections. A pad is anonymous, so there is
-nothing to attribute use to and nothing to throttle against. Caddy cannot rate
-limit without a plugin. This is the known gap, recorded in
-[open-points.md](../open-points.md) rather than quietly carried.
+**What bounds it.** 32 streams inside a tunnel, 8 tunnels open per address and
+64 in all, in `wisp-server.mjs`; 30 tunnels opened a minute per address, in the
+Caddyfile. What it does not have is a limit on bytes: a pad is anonymous, so
+there is nothing to attribute a download to beyond its address.
 
 **The DNS proxy is a smaller version of the same thing.** `/dns-query` forwards
 to Cloudflare so the sandbox's DoH lookups are same-origin, which keeps them

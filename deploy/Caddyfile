@@ -87,6 +87,64 @@ code.rishwanth.dev {
 	@immutable path /assets/* /vendor/* /packages/*
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 
+	# Per-address limits on what the relay never sees — the files Caddy serves
+	# off disk, name resolution and the way out — because nothing else can
+	# bound them. Needs the plugin build in deploy/caddy; the packaged Caddy
+	# refuses this block. Measured and argued in docs/dev/security.md.
+	rate_limit {
+		# Keyed on the address *and the file*, not the address alone. A first
+		# visit fetches each file once and a returning one fetches nothing, so
+		# this is "first visits an hour" for every file at once. Keyed on the
+		# address alone, the same allowance spent on the 13.6 MB Python
+		# package in a loop would be nine times the bytes.
+		#
+		# `file` so only files that exist can make a key — any other path is
+		# the page itself — and the file's cleaned path rather than `{path}`,
+		# so `//` or `/./` in a URL cannot make a fresh budget of it.
+		zone pad_files {
+			match {
+				path /packages/* /vendor/* /assets/*
+				file {
+					root /srv/ajar/pad
+				}
+			}
+			key {remote_host}{file_match.relative}
+			events 30
+			window 1h
+		}
+		# A first visit resolves four names and `pip install` a few more.
+		zone pad_dns {
+			match {
+				path /dns-query
+			}
+			key {remote_host}
+			events 120
+			window 1m
+			ipv6_prefix 64
+		}
+		# One connection per visit. This bounds how fast they arrive; how many
+		# stay open is wisp-server.mjs's, eight per address.
+		zone pad_wisp {
+			match {
+				path /wisp /wisp/*
+			}
+			key {remote_host}
+			events 30
+			window 1m
+			ipv6_prefix 64
+		}
+		# The plugin labels its metrics by key and never deletes a label, so
+		# with them on every address that ever visits is held for good.
+		disable_metrics
+	}
+	handle_errors 429 {
+		# The `immutable` header above has already been set on a refused
+		# package. Left there, it tells the browser to keep the refusal for a
+		# year.
+		header Cache-Control "no-store"
+		respond "Too many requests from your address. Try again in a few minutes." 429
+	}
+
 	# The relay holds the durable folders and routes the peer broadcast.
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8787 {
@@ -127,7 +185,7 @@ code.rishwanth.dev {
 	# anyone who asks, so the useful question is not who is asking but how much
 	# they can make it carry: a query is a few hundred bytes, and anything
 	# arriving here with a megabyte attached is using it as something else.
-	# A rate limit belongs here too and needs the plugin — see operations.md.
+	# How often is bounded by `pad_dns` above.
 	@doh {
 		path /dns-query
 		method GET POST
