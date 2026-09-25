@@ -26,7 +26,7 @@ async function main() {
       { "index.html": "<h1>served from the sandbox</h1>\n" },
       {
         shell: PACKAGES.shell,
-        packages: [PACKAGES.coreutils, PACKAGES.python],
+        packages: [PACKAGES.python],
         network: { mode: "http" },
       },
     );

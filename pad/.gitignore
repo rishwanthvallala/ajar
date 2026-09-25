@@ -26,3 +26,7 @@ __pycache__/
 # One-off drivers written while chasing something on the live site. They are
 # scratch by construction, and one has already been committed by accident.
 scripts/.*.tmp.mjs
+
+# The package trimmer builds into the repo's own target/ when fetch-packages runs
+# it, but `cargo build` inside its folder would put one here.
+scripts/webc-trim/target/

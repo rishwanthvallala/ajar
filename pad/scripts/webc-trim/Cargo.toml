@@ -1,0 +1,16 @@
+# Rewrites a mirrored .webc without the files that can never run in the pad.
+# Run by pad/scripts/fetch-packages.mjs; see docs/dev/pad.md, "The download".
+#
+# Its own workspace, deliberately: it is needed only when the mirror is
+# refreshed, so neither the gate nor CI builds it.
+[package]
+name = "webc-trim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1"
+webc = "=12.0.1"
+
+[workspace]

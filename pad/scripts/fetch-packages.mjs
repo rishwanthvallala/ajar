@@ -27,6 +27,40 @@ const OUT = new URL("../public/packages/", import.meta.url);
 const ROOT = new URL("../dist/", import.meta.url).pathname;
 const PORT = 5201;
 
+// What can never run in the pad, taken out of the packages that ship it.
+// Measured on 25 September: 3.1 MB of python's 13.6 MB download and 13.5 MB of
+// its 61.7 MB in memory. Everything that can run stays, and the SDK accepts a
+// mirrored package whose bytes differ from the registry's. `app-check.mjs`
+// runs through the mirror and presses Run, so an SDK that stopped accepting it
+// fails there, loudly. See docs/dev/pad.md, "The download".
+const PY = "/fs/nix/store/*-python3-static-*/lib/python3.13";
+const NC = "/fs/nix/store/*-ncurses-static-*";
+const TRIM = [
+  // A second pip. ensurepip installs pip into an environment that lacks one,
+  // and this one ships pip already installed. It is a wheel — a zip — so it
+  // barely compresses: 1.7 MB of every first visit. `python -m venv` without
+  // `--without-pip` needs it, and is the one thing this costs.
+  ["--drop", `${PY}/ensurepip`],
+  // A desktop IDE, the Tk bindings and the turtle. All need Tcl/Tk, which
+  // this runtime does not have; `import tkinter` fails with or without them.
+  ["--drop", `${PY}/idlelib`],
+  ["--drop", `${PY}/tkinter`],
+  ["--drop", `${PY}/turtledemo`],
+  ["--drop", `${PY}/turtle.py`],
+  ["--drop", `${PY}/__pycache__/turtle.*`],
+  // pip's launchers for installing scripts on Windows.
+  ["--drop", `${PY}/site-packages/pip/_vendor/distlib/*.exe`],
+  // ncurses ships its terminal database twice, byte for byte. The path
+  // compiled into the interpreter is share/terminfo, so lib/ is never read.
+  ["--drop", `${NC}/lib/terminfo`],
+  // And 2,899 terminal types in the copy that is read. The pad's terminal is
+  // an xterm; these are it and what a program might still assume.
+  ["--keep-only", `${NC}/share/terminfo/*=xterm,xterm-256color,xterm-color,xterm-16color,vt100,vt102,vt220,ansi,dumb,linux,screen,screen-256color,tmux,tmux-256color`],
+];
+// In the file name, so a change to the rules is a new URL and the immutable
+// cache header stays honest.
+const TRIM_TAG = createHash("sha256").update(JSON.stringify(TRIM)).digest("hex").slice(0, 8);
+
 const TYPES = {
   ".html": "text/html", ".css": "text/css", ".json": "application/json",
   ".wasm": "application/wasm", ".js": "text/javascript", ".mjs": "text/javascript",
@@ -87,23 +121,44 @@ await mkdir(OUT, { recursive: true });
 const manifest = {};
 let total = 0;
 
+console.log("  building the trimmer…");
+const TRIMMER_DIR = new URL("./webc-trim/", import.meta.url).pathname;
+const TARGET_DIR = new URL("../../target/webc-trim/", import.meta.url).pathname;
+await run("cargo", [
+  "build", "--release", "--locked", "-q",
+  "--manifest-path", `${TRIMMER_DIR}Cargo.toml`, "--target-dir", TARGET_DIR,
+]).catch((e) => {
+  throw new Error(`building pad/scripts/webc-trim failed — is cargo installed? ${e.message}`);
+});
+const trimmer = `${TARGET_DIR}release/webc-trim`;
+
 for (const url of [...wanted].sort()) {
   // Named by the content hash the CDN already uses, so a changed package is a
-  // different file and the immutable cache header is safe.
-  const file = `${createHash("sha256").update(url).digest("hex").slice(0, 16)}.webc`;
-  const target = new URL(file, OUT);
-  manifest[url] = `/packages/${file}`;
+  // different file and the immutable cache header is safe. A trimmed one also
+  // carries the rules' hash, for the same reason.
+  const base = createHash("sha256").update(url).digest("hex").slice(0, 16);
+  const plain = `${base}.webc`;
+  const trimmed = `${base}-${TRIM_TAG}.webc`;
+  const have = async (name) => stat(new URL(name, OUT)).catch(() => null);
 
-  const already = await stat(target).catch(() => null);
-  if (already) {
-    total += already.size;
-    console.log(`  ${(already.size / 1048576).toFixed(1).padStart(6)} MB  ${file} (have it)`);
-    continue;
+  let file = (await have(trimmed)) ? trimmed : null;
+  if (!file) {
+    if (!(await have(plain))) {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      await writeFile(new URL(plain, OUT), bytes);
+      console.log(`  ${(bytes.length / 1048576).toFixed(1).padStart(6)} MB  ${plain} downloaded`);
+    }
+    // Every package goes through the rules; one they do not touch is left
+    // byte for byte as the registry published it.
+    const args = TRIM.flat();
+    const { stdout } = await run(trimmer, [new URL(plain, OUT).pathname, new URL(trimmed, OUT).pathname, ...args]);
+    file = (await have(trimmed)) ? trimmed : plain;
+    if (file === trimmed) console.log(`  ${stdout.trim().replace(/^.*: /, `${plain}: `)}`);
   }
-  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-  await writeFile(target, bytes);
-  total += bytes.length;
-  console.log(`  ${(bytes.length / 1048576).toFixed(1).padStart(6)} MB  ${file}`);
+  manifest[url] = `/packages/${file}`;
+  const size = (await have(file)).size;
+  total += size;
+  console.log(`  ${(size / 1048576).toFixed(1).padStart(6)} MB  ${file}`);
 }
 
 // Compressed once here rather than per request by Caddy.

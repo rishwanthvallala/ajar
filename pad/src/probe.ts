@@ -84,7 +84,6 @@ async function probe(c: Candidate): Promise<Result> {
     // exactly like a broken package. Testing against what the product actually
     // installs is the only environment whose results transfer.
     const shipped: string[] = [
-      PACKAGES.coreutils,
       PACKAGES.python,
       PACKAGES.grep,
       PACKAGES.sed,
@@ -92,7 +91,6 @@ async function probe(c: Candidate): Promise<Result> {
       PACKAGES.jq,
       PACKAGES.gzip,
       PACKAGES.tar,
-      PACKAGES.sqlite,
       PACKAGES.quickjs,
     ];
     const drop = new Set<string>([c.name, ...(c.without ?? [])]);

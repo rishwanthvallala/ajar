@@ -17,18 +17,23 @@ npm run check --workspace=ajar-pad
 
 ## The binary set
 
-Pinned, mirrored, and served from this origin — **124 MB raw, 18.6 MB
-compressed**, across twelve `.webc` files for eleven pinned packages and what
-they pull in. A folder that ran last week has to run this week, and a registry
+Pinned, mirrored, and served from this origin — **62 MB raw, 14.2 MB
+compressed**, across ten `.webc` files for nine pinned packages and what they
+pull in. A folder that ran last week has to run this week, and a registry
 nobody here controls cannot promise that.
 
 ```
 wasmer/bash@1.0.25           wasmer/grep@3.12.0      syrusakbary/jq@0.1.0
-sharrattj/coreutils@1.0.16   wasmer/sed@4.9.0        wasmer/gzip@1.14.0
+  └ wasmer/coreutils@1.0.25  wasmer/sed@4.9.0        wasmer/gzip@1.14.0
 python/python@3.13.20        wasmer/find@4.10.0      wasmer/tar@1.35.0
-                                                     sqlite/sqlite@0.2.2
                                                      saghul/quickjs@0.0.3
 ```
+
+coreutils is not pinned: bash depends on `wasmer/coreutils`, and pinning
+`sharrattj/coreutils` beside it — the same uutils build — downloaded both.
+`sqlite/sqlite` was dropped the same day, 25 September: it was a second copy of
+the engine python's `sqlite3` module carries, so the `sqlite3` command is gone
+and `import sqlite3` is not.
 
 Note the namespaces. `sharrattj/grep` does not exist and `wasmer/grep` does;
 the registry's search endpoint returns nothing for any query, including
@@ -90,11 +95,12 @@ them in those words, the file tree does not draw them and `ls` does not show
 them — a search should not be the one place they surface. Naming the directory
 still reaches them, exactly as a hidden one should.
 
-`sharrattj/coreutils` is uutils 0.0.7 as a multi-call binary. `sort file`
-answers `file: function/utility not found`, and so does `sort sort file` — the
-name is simply not among the functions built in. `wasmer/coreutils@1.0.25` is
-the identical build, so the newer-package move that fixed bash does nothing
-here, and `kilyanni/coreutils` (GNU 9.11) cannot be installed.
+The shipped coreutils — `wasmer/coreutils`, by way of bash — is uutils 0.0.7 as
+a multi-call binary. `sort file` answers `file: function/utility not found`, and
+so does `sort sort file` — the name is simply not among the functions built in.
+`sharrattj/coreutils`, which the pad used to pin, is the identical build, so the
+newer-package move that fixed bash does nothing here, and `kilyanni/coreutils`
+(GNU 9.11) cannot be installed.
 
 Each shim is checked against the real tool before being trusted — awk on thirty
 programs, sort on fifteen cases, tail on twelve, the boxed set on twenty-three —
@@ -365,15 +371,49 @@ ordinary, and `src/check.ts` asserts it directly.
 
 ## The download
 
-Wasmer's CDN sends `.webc` with no content encoding at all: **124 MB raw** for
-the twelve files the runtime actually fetches. From this origin, pre-compressed
-with zstd, the same set is **18.6 MB**, and an immutable cache header makes any
-later visit free.
+Wasmer's CDN sends `.webc` with no content encoding at all: **62 MB raw** for
+the ten files the runtime fetches, after trimming — 84 MB as published. From
+this origin, pre-compressed with zstd, the set is **14.2 MB**, and an immutable
+cache header makes any later visit free. (An earlier figure here, 124 MB, was
+`du` over a directory that also holds the `.zst` and `.gz` copies.)
 
-It has to be a service worker. The SDK has no registry override, its browser
-build cannot decode in-memory WEBC (`packages.load(bytes)` fails with
-`FeatureNotEnabled { "authoring" }`), and patching `fetch` would not reach the
-downloads because the SDK does them inside workers with their own globals.
+It is a service worker because the SDK has no registry override and does its
+downloads inside workers with their own globals, where patching `fetch` would
+not reach. SDK 0.11 can now load a package from bytes — `packages.load(bytes)`
+used to fail with `FeatureNotEnabled { "authoring" }` — and was measured doing
+so on 25 September, but the worker still covers everything the registry path
+fetches without the page having to.
+
+### What is in it, and what is trimmed
+
+Python is 48 MB of the 62 once trimmed, and 61.7 MB as published. Unpacked on
+25 September, the published package is:
+
+| | raw | zstd | |
+|---|---|---|---|
+| `python.wasm` | 18.1 MB | 4.6 MB | the interpreter, with every C library a module might use linked in |
+| stdlib `.pyc` | 10.2 MB | 3.0 MB | the same modules again, precompiled |
+| stdlib `.py` | 9.7 MB | 1.7 MB | |
+| pip | 5.7 MB | 1.2 MB | installed, so `pip install` works |
+| `ensurepip` | 1.8 MB | 1.7 MB | **trimmed** — a second pip, as a wheel, which barely compresses |
+| IDLE, tkinter, turtle | 3.2 MB | 0.8 MB | **trimmed** — they need Tcl/Tk, which this runtime does not have |
+| terminfo | 6.8 MB | 0.5 MB | **trimmed** — two identical copies of 2,899 terminal types; one copy, fourteen types remain |
+| tzdata, `help()` text | 3.9 MB | 0.3 MB | kept — usable, if rarely |
+
+The interpreter's 12 MB of code is roughly a third CPython, a fifth OpenSSL —
+all of it, post-quantum and legacy ciphers included — a sixth SQLite with
+full-text search, R-trees and sessions, a seventh libc, and a C++ standard
+library. That is what a static WASIX build of a general-purpose CPython costs;
+shrinking it would mean building one here, which is not worth it yet.
+
+The trimming is `pad/scripts/webc-trim`, run by `fetch-packages.mjs` with the
+rules written out in that script. It keeps the manifest and every atom byte
+for byte and rewrites only the filesystem, and a trimmed package is named with
+the rules' hash so a changed rule is a new URL. The SDK checks a package
+against the registry's hash — the strings `image hash mismatch` and
+`FailOnHashMismatch` are in it — but as shipped it runs a mirrored package whose
+bytes differ. `app-check.mjs` goes through the mirror and presses Run, so an
+SDK that stopped accepting one would fail there before it reached anybody.
 
 The URL list is **observed, not derived**: `pad/scripts/fetch-packages.mjs`
 runs the app once and records what it asks for. Asking the registry for each

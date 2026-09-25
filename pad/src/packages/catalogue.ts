@@ -126,7 +126,9 @@ export const CANDIDATES: Candidate[] = [
       { covers: "jq is present", run: "echo '{\"a\":1}' | jq -r .a", want: "1" },
       { covers: "gzip is present", run: "echo g > gz.txt && gzip gz.txt && gunzip gz.txt.gz && cat gz.txt", want: "g" },
       { covers: "tar is present", run: "mkdir -p tp && echo t > tp/f && tar cf tp.tar tp && tar tf tp.tar", match: "tp/f" },
-      { covers: "sqlite3 is present", run: "sqlite3 -batch :memory: 'select 6*7'", want: "42" },
+      // The `sqlite3` command went with sqlite/sqlite on 25 September; the
+      // engine is still python's.
+      { covers: "sqlite through python", run: "python3 -c \"import sqlite3;print(sqlite3.connect(':memory:').execute('select 6*7').fetchone()[0])\"", want: "42" },
       { covers: "qjs is present", run: "qjs -e 'console.log(1+1)'", want: "2" },
     ],
   },
@@ -227,9 +229,11 @@ export const CANDIDATES: Candidate[] = [
 
   // ---- coreutils: one check per command anyone actually types -------------
   {
+    // Shipped until 25 September. bash's own dependency, wasmer/coreutils
+    // below, is the same uutils build, and pinning this as well meant every
+    // first visit downloaded both.
     name: "sharrattj/coreutils",
     gives: "101 commands — the everyday set",
-    shipped: true,
     checks: [
       { covers: "cat", run: "printf 'x\\n' > c.txt; cat c.txt", want: "x" },
       { covers: "ls", run: "mkdir -p ld && touch ld/one; ls ld", want: "one" },
@@ -287,11 +291,13 @@ export const CANDIDATES: Candidate[] = [
   },
 
   {
-    // The same move that fixed bash: a different build of the same tool. The
-    // shipped one is uutils 0.0.7 as a multi-call binary, where `sort` prints
-    // its usage instead of sorting.
+    // The coreutils actually shipped: not pinned directly, but pulled in by
+    // wasmer/bash, whose dependency it is. It was first probed as a
+    // replacement for sharrattj/coreutils — the move that fixed bash — and is
+    // the same uutils 0.0.7, where `sort` prints its usage instead of sorting.
     name: "wasmer/coreutils",
-    gives: "coreutils 1.0.25 — a newer build than the 1.0.16 we ship",
+    gives: "coreutils 1.0.25 — the shipped set, via bash",
+    shipped: true,
     checks: [
       { covers: "cat", run: "printf 'x\\n' > c.txt; cat c.txt", want: "x" },
       { covers: "ls", run: "mkdir -p ld && touch ld/one; ls ld", want: "one" },
@@ -456,9 +462,11 @@ export const CANDIDATES: Candidate[] = [
     ],
   },
   {
+    // Shipped until 25 September. Works, but it is a second copy of the
+    // engine python's `sqlite3` module already carries, at 1.1 MB per first
+    // visit.
     name: "sqlite/sqlite",
     gives: "sqlite3",
-    shipped: true,
     checks: [
       { covers: "expression", run: "sqlite3 :memory: 'select 1+1'", want: "2" },
       { covers: "create and select", run: "sqlite3 t.db 'create table x(a);insert into x values(7);select a from x'", want: "7" },

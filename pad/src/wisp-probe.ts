@@ -31,7 +31,7 @@ async function main() {
       {},
       {
         shell: PACKAGES.shell,
-        packages: [PACKAGES.coreutils, PACKAGES.python],
+        packages: [PACKAGES.python],
         network: { mode: "wisp", url },
       },
     );

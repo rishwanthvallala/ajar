@@ -57,7 +57,10 @@ export const PACKAGES = {
   // The same upgrade fixes shell functions, which used to define fine and hang
   // when called. Both are asserted in the package probe.
   shell: "wasmer/bash@1.0.25",
-  coreutils: "sharrattj/coreutils@1.0.16",
+  // No coreutils of our own. bash depends on wasmer/coreutils (^1.0.19, so
+  // 1.0.25), and pinning sharrattj/coreutils as well meant every first visit
+  // downloaded both: 1.2 MB for a second copy of the same uutils 0.0.7 build,
+  // missing the same commands. The commands now come from bash's.
   python: "python/python@3.13.20",
   // The text-processing three. They live under `wasmer/`, not `sharrattj/`,
   // which is why an earlier search concluded they did not exist at all — the
@@ -74,7 +77,9 @@ export const PACKAGES = {
   jq: "syrusakbary/jq@0.1.0",
   gzip: "wasmer/gzip@1.14.0",
   tar: "wasmer/tar@1.35.0",
-  sqlite: "sqlite/sqlite@0.2.2",
+  // sqlite/sqlite, the `sqlite3` command, was dropped on 25 September: 1.1 MB
+  // on every first visit for a second copy of an engine python already
+  // carries. `import sqlite3` still works; the command line does not.
   quickjs: "saghul/quickjs@0.0.3",
 } as const;
 
@@ -182,7 +187,6 @@ export class Runtime {
       packages: [
         shellPkg,
         ...(install?.packages ?? [
-          PACKAGES.coreutils,
           PACKAGES.python,
           PACKAGES.grep,
           PACKAGES.sed,
@@ -190,7 +194,6 @@ export class Runtime {
           PACKAGES.jq,
           PACKAGES.gzip,
           PACKAGES.tar,
-          PACKAGES.sqlite,
           PACKAGES.quickjs,
         ]),
       ],
