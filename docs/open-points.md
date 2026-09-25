@@ -49,6 +49,14 @@ on 24 September, and it has passed every run since. Treated as
 a flake and not demonstrated to be one; if it recurs, the shell's startup time
 under load is the first suspect, since `ready()` gives it six attempts.
 
+**A first pad visit waited 114 s once, unexplained.** On 25 September, after
+the runtime was trimmed: one first visit in seven took 114 s from Run to output
+where the others took 0.5 to 3 s. Caddy's log has that visit's python download
+finishing in 2.3 s, so the wait was not in anything this origin serves — the
+SDK's lookups at registry.wasmer.io are the first suspect, and are invisible
+here. Five more first visits did not repeat it. A timeline of every request
+and console line, printed only when Run is slow, is what would settle it.
+
 **The guest-counting limits test lost its shell four times, unexplained.**
 `a_guests_own_processes_do_not_raise_their_ceiling`, on 25 September, in WSL:
 the stand-in guest's shell was missing from `/proc` for the whole five seconds
