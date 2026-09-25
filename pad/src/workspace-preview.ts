@@ -108,7 +108,7 @@ export function startWorkspacePreview(): void {
     ui.elements.presence.textContent = scenario === "disconnected" ? "offline" : "2 here";
     if (scenario === "saving") status("saving", "saving…");
     else if (scenario === "save-failure") status("error", "save failed — retrying…");
-    else if (scenario === "runtime-loading") status("loading", "fetching python, first time only…");
+    else if (scenario === "runtime-loading") status("loading", "getting python ready…");
     else if (scenario === "running") status("running", "running…");
     else if (scenario === "disconnected") status("error", "disconnected — reconnecting…");
     else status("", empty ? "new folder — nothing saved yet" : "saved");

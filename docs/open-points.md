@@ -95,7 +95,6 @@ before it is touched.
 | A stored copy over about 8 MB never reaches a guest: its header and blob are queued back to back, and the outbox refuses the second once the first makes the queue non-empty | `ws.rs` store fetch, `outbox.rs` `send` |
 | A socket that never sends `hello` is charged to no quota and has no timeout | `ws.rs` handshake |
 | The watcher's filter reads only the root `.gitignore` and `.ignore`; the scanner also honours nested ones, global excludes and `info/exclude`, so changes there reach guests until the next resync | `workspace/filter.rs` |
-| In the pad, a trailing comment, a pasted `# …` line or a syntax error swallows the end-of-command sentinel and hangs the terminal until ctrl-c | `pad/src/shell.ts` `run` |
 | A cursor's `user.id` goes into a stylesheet unescaped — the name was fixed, the id was not. In the pad anyone with the link can send one | `web/src/editing.ts`, `pad/src/editing.ts` `drawCursors` |
 | The checkpoint leaves out untracked files, and "files changed" is measured against HEAD, so the host's own earlier edits are reported as the guest's | `checkpoint.rs` |
 

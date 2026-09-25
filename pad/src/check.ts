@@ -180,6 +180,42 @@ async function main() {
   is(second.exitCode, 0, "and each reports separately");
   is(sh.busy, false, "the shell reports itself idle once a command has finished");
 
+  // Nothing typed can hide the end of a command. The sentinel rides on the
+  // command's own line, so a `#` used to comment it out and an unclosed quote
+  // or `if` left bash waiting for the rest — the terminal hung until ctrl-c.
+  // Raced against a timeout, so a hang fails here instead of stalling the check.
+  const settles = (cmd: string) =>
+    Promise.race([sh.run(cmd), new Promise<null>((r) => setTimeout(() => r(null), 10_000))]);
+  let wedged = false;
+  for (const [cmd, what] of [
+    ["# only a comment", "a line that is only a comment"],
+    ["echo kept # and a comment", "a command with a trailing comment"],
+    ['echo "unclosed', "an unclosed quote"],
+    ["if true; then", "an unfinished if"],
+  ] as const) {
+    printed = "";
+    const r = await settles(cmd);
+    is(r !== null, true, `${what} still finishes`);
+    if (r === null) {
+      wedged = true;
+      break;
+    }
+    if (cmd.startsWith("echo kept")) is(printed.includes("kept"), true, "the command before a comment runs");
+    if (cmd.startsWith('echo "')) is(r.exitCode !== 0, true, "a syntax error reports failure");
+  }
+  if (!wedged) {
+    // Wrapped in `eval`, so the wrapping has to be invisible: quotes arrive as
+    // typed, and `cd` still moves this shell rather than a subshell.
+    printed = "";
+    await sh.run(`echo 'single' "double" it\\'s`);
+    is(printed.trim(), "single double it's", "quotes reach bash as they were typed");
+    printed = "";
+    await sh.run("cd .ajar");
+    await sh.run("pwd");
+    is(printed.trim().endsWith("/.ajar"), true, "cd moves the shell itself");
+    await sh.run("cd ..");
+  }
+
   // ---- a name cannot escape the stylesheet it is written into ----
   //
   // Cursor labels put a participant's chosen name inside a CSS string, and in

@@ -329,11 +329,16 @@ export class Shell {
       // finished. On one line bash parses both before running either, and the
       // command's stdin is the terminal, where it belongs.
       //
-      // A trailing `&` is the exception: `cmd &; printf` is a syntax error,
-      // while `cmd & printf` is not.
-      const trimmed = command.trimEnd();
-      const joiner = trimmed.endsWith("&") ? " " : "; ";
-      const line = `${trimmed}${joiner}printf '\\001%s\\001' "$?"`;
+      // The command goes through `eval`, as one single-quoted word, so nothing
+      // in it can reach the sentinel. Written straight onto the line, a `#`
+      // commented the `printf` out, and an unclosed quote or `if` swallowed it
+      // into the command — either way the marker never came and the terminal
+      // hung until ctrl-c. Now the outer line always parses: a comment is an
+      // empty command, a syntax error is `eval` failing with status 2, and the
+      // sentinel follows both. `eval` runs in this shell, so `cd`, variables,
+      // aliases and a trailing `&` behave exactly as typed.
+      const quoted = `'${command.trimEnd().replaceAll("'", `'\\''`)}'`;
+      const line = `eval ${quoted}; printf '\\001%s\\001' "$?"`;
       // Without the newline. The terminal echoes CRLF where this writes LF, so
       // including it meant the two strings never matched and every command
       // after the first foreground job appeared twice.

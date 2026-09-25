@@ -65,6 +65,8 @@ export class App {
   /** Latest durable revision applied by this tab. */
   private storeSeq = 0;
   private prefetched = false;
+  /** The runtime has started, not merely been asked for. */
+  private runtimeReady = false;
   private peers: Peers | null = null;
   private busy = false;
   private missed = false;
@@ -160,6 +162,9 @@ export class App {
     this.expose();
     this.say("", pad.exists ? "" : "new folder — nothing saved yet");
     this.editor?.focus();
+    // Last, so the runtime is seeded with every file above and nothing it does
+    // competes with putting the editor on screen. See `warm`.
+    this.warm();
   }
 
   // ----------------------------------------------------------------- peers
@@ -584,12 +589,18 @@ export class App {
   // --------------------------------------------------------------- runtime
 
   /**
-   * Start fetching the runtime on the first keystroke.
+   * Fetch and start the runtime as soon as the folder is on screen.
    *
-   * Not on load: a shared link is opened to read at least as often as to run,
-   * and 60 MB is not a reasonable greeting. Not on Run either, which would put
-   * the whole download between pressing a button and seeing anything. Typing
-   * is the first honest signal of intent, and it buys most of the download.
+   * It used to wait for the first keystroke, so that someone opening a link
+   * only to read it downloaded nothing. Measured on 25 September, that made the
+   * commonest first act — pressing Run on the code as it stands — the slowest
+   * thing in the product: 7.7 to 10.1 s from the button to any output, all of
+   * it the download. Started here, it overlaps the seconds spent reading.
+   *
+   * The price is paid by every first-time visitor, readers included: 18.6 MB,
+   * once, then cached for a year. A returning visitor downloads nothing, and
+   * starting here also puts the python start — 1.5 s from cache — behind them
+   * before they reach for Run. Editing still calls this; it does nothing twice.
    */
   private warm(): void {
     if (this.prefetched) return;
@@ -622,6 +633,7 @@ export class App {
       // what makes a dev server started in the folder possible. It grants no
       // egress: `connect` is still refused. See docs/dev/networking.md.
       if (PREVIEW_ORIGIN) this.watchForServers(rt);
+      this.runtimeReady = true;
       return rt;
     })();
     return this.runtime;
@@ -766,7 +778,9 @@ export class App {
     this.el.run.disabled = true;
     this.busy = true;
     try {
-      this.say("loading", this.runtime ? "" : "fetching python, first time only…");
+      // Asked for at load now, so whether it exists says nothing about whether
+      // it is ready — only a Run pressed within the first seconds waits here.
+      this.say("loading", this.runtimeReady ? "" : "getting python ready…");
       const rt = await this.ensureRuntime();
       const sh = await this.ensureShell();
       this.console?.attach(sh);
