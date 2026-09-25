@@ -269,30 +269,38 @@ export class Console {
    * Aware of the terminal's width: a line longer than it wraps, and a repaint
    * that only returned to the start of the current row left the rows above it
    * stale — every edit to a long command smeared a copy of it up the screen.
+   *
+   * One write per keystroke, and no cursor move when typing at the end. Two
+   * writes a key was enough for a slow machine to fall behind fast typing —
+   * the UI suite read `$ pend` for `pending-command` on macOS CI.
    */
   private redraw(prefix = PROMPT, text = this.line, width = PROMPT_WIDTH): void {
     const cols = Math.max(1, this.hooks.columns?.() ?? 80);
-    const up = this.cursorRow > 0 ? `\x1b[${this.cursorRow}A` : "";
-    this.screen.write(`${up}\r\x1b[J${prefix}${text}`);
+    let out = `${this.cursorRow > 0 ? `\x1b[${this.cursorRow}A` : ""}\r\x1b[J${prefix}${text}`;
     const end = width + text.length;
     // At an exact multiple of the width xterm parks the cursor on the last
     // column rather than the next row; a space moves it on so the arithmetic
     // below holds, and is erased by the next repaint.
-    if (end > 0 && end % cols === 0) this.screen.write(" \b");
+    if (end > 0 && end % cols === 0) out += " \b";
     this.cursorRow = Math.floor(end / cols);
-    if (prefix === PROMPT) this.placeCursor();
+    if (prefix === PROMPT && this.at !== text.length) out += this.cursorMoves();
+    this.screen.write(out);
   }
 
   /** Move the cursor to character `at` of the line, from wherever it is. */
   private placeCursor(at = this.at): void {
+    this.screen.write(this.cursorMoves(at));
+  }
+
+  private cursorMoves(at = this.at): string {
     const cols = Math.max(1, this.hooks.columns?.() ?? 80);
     const target = PROMPT_WIDTH + at;
     const row = Math.floor(target / cols);
     const moves = (this.cursorRow > row ? `\x1b[${this.cursorRow - row}A` : "")
       + (row > this.cursorRow ? `\x1b[${row - this.cursorRow}B` : "")
       + `\x1b[${(target % cols) + 1}G`;
-    this.screen.write(moves);
     this.cursorRow = row;
+    return moves;
   }
 
   // ------------------------------------------------------------- history

@@ -145,8 +145,18 @@ async function checkBoots() {
     );
     await padPage.locator(".xterm-helper-textarea").focus();
     await padPage.keyboard.type("pending-command");
+    // Drawn before the resize, or this measures how fast a busy machine
+    // renders typing rather than whether a resize keeps it — macOS CI read
+    // `$ pend` here, the rest still on its way to the screen.
+    const drawn = () => padPage.waitForFunction(
+      () => /pending-command/.test(document.querySelector(".xterm-rows")?.innerText ?? ""),
+      null,
+      { timeout: 10_000 },
+    );
+    await drawn();
     await padPage.locator("#splitter").focus();
     await padPage.keyboard.press("ArrowDown");
+    await drawn().catch(() => {});
     assert.match(await padPage.locator(".xterm-rows").innerText(), /pending-command/, "Pad resize preserves terminal contents");
     assert.deepEqual(ajarErrors, []);
     assert.deepEqual(padErrors.filter((line) => line.startsWith("pageerror:")), []);
