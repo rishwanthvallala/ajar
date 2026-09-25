@@ -29,7 +29,20 @@ jobs:
       - run: npx playwright install --with-deps chromium
         working-directory: web
       # fmt, clippy -D warnings, cargo test, tsc, the UI suite, every smoke suite.
-      - run: ./scripts/check.sh
+      #
+      # On failure the end of the output also becomes an annotation. A job's
+      # log can only be read signed in, and its annotations can be read by
+      # anyone through the API — which is the difference between a macOS-only
+      # failure being diagnosable from a terminal or not.
+      - name: Run ./scripts/check.sh
+        run: |
+          set -o pipefail
+          ./scripts/check.sh 2>&1 | tee check.log || {
+            status=$?
+            tail -n 60 check.log | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { gsub(/\r/, "%0D"); print }' > tail.txt
+            echo "::error title=check.sh failed on ${{ matrix.os }}::$(cat tail.txt)"
+            exit $status
+          }
 
       # Landlock is a kernel feature, so this is the one check that genuinely
       # needs a Linux runner rather than a borrowed kernel.
