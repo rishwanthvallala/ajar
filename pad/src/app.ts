@@ -738,10 +738,14 @@ export class App {
     this.rows = term.rows;
 
     // The console owns the prompt, the echo and the line editing — bash
-    // provides none of them. It asks for a shell only when a line is entered.
-    this.console = new Console({ write: (d) => term.write(d) }, () => this.ensureShell(), () =>
-      void this.afterCommand(),
-    );
+    // provides none of them. It asks for a shell only when a line is entered,
+    // and completes against one only if it is already open.
+    this.console = new Console({ write: (d) => term.write(d) }, {
+      shellFor: () => this.ensureShell(),
+      onFinished: () => void this.afterCommand(),
+      openShell: () => (this.shell?.alive ? this.shell : null),
+      columns: () => this.cols,
+    });
     term.onData((data) => this.console?.handle(data));
     term.onResize(({ cols, rows }) => {
       this.cols = cols;

@@ -135,6 +135,8 @@ export class Shell {
    */
   private echoed = "";
   private buffer = "";
+  /** While a `query` runs, what the shell says is collected here, not shown. */
+  private captured: string | null = null;
   private waiting: ((f: Finished) => void) | null = null;
   private readonly decoder = new TextDecoder();
 
@@ -200,6 +202,9 @@ export class Shell {
       ),
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
+      // No `clear` ships in any package here, and it is the first thing
+      // people type to tidy a terminal. It only has to say two sequences.
+      `alias clear='printf "\\033[H\\033[2J\\033[3J"'`,
       // Where `pip install` puts things, and where python looks for them.
       //
       // Neither is a convenience. python's own site-packages is under a
@@ -253,7 +258,7 @@ export class Shell {
       // Everything before the marker is real output; the marker itself is
       // bookkeeping and never reaches the terminal.
       const before = this.buffer.slice(0, found.index);
-      if (before && !this.silent) this.onOutput(before);
+      if (before) this.emit(before);
       this.buffer = this.buffer.slice(found.index + found[0].length);
       // The command is over, so anything still expected as an echo is not
       // coming — holding the tail past this point would swallow real output.
@@ -273,9 +278,51 @@ export class Shell {
     const marker = this.buffer.lastIndexOf(MARK);
     const flushable = marker === -1 ? this.buffer : this.buffer.slice(0, marker);
     if (flushable) {
-      if (!this.silent) this.onOutput(flushable);
+      this.emit(flushable);
       this.buffer = this.buffer.slice(flushable.length);
     }
+  }
+
+  private emit(text: string): void {
+    if (this.captured !== null) this.captured += text;
+    else if (!this.silent) this.onOutput(text);
+  }
+
+  /**
+   * Run a command for the page's own use and hand back what it printed,
+   * without any of it reaching the screen. Nothing if a command is running.
+   */
+  async query(command: string): Promise<string> {
+    if (!this.alive || this.waiting) return "";
+    this.captured = "";
+    try {
+      await this.run(command);
+      return this.captured ?? "";
+    } finally {
+      this.captured = null;
+    }
+  }
+
+  /**
+   * What `word` could complete to, asked of bash itself so it follows the
+   * shell's own directory, aliases and builtins.
+   *
+   * Not `compgen -c`: it answers nothing here. The package commands are
+   * files in /usr/bin and /bin like anywhere else, but this filesystem gives
+   * them no execute bit, and that is what `-c` looks for. So commands are
+   * the directories' files by name, plus aliases (the shims), builtins and
+   * keywords. Directories come back with a trailing `/`, as bash shows them.
+   */
+  async complete(word: string, asCommand: boolean): Promise<string[]> {
+    const w = `'${word.replaceAll("'", `'\\''`)}'`;
+    const script = asCommand
+      ? `compgen -abk -- ${w}; compgen -f -- '/usr/bin/'${w}; compgen -f -- '/bin/'${w}`
+      : `compgen -f -- ${w} | while IFS= read -r f; do if [ -d "$f" ]; then printf '%s/\\n' "$f"; else printf '%s\\n' "$f"; fi; done`;
+    const found = (await this.query(script))
+      .split(/\r?\n/)
+      .map((s) => (asCommand ? s.replace(/^\/(usr\/)?bin\//, "") : s))
+      .filter(Boolean);
+    return [...new Set(found)].sort();
   }
 
   /**

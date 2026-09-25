@@ -44,6 +44,26 @@ zip -r backup.zip .
 Whatever a command writes appears in the folder, for you and for everyone else
 with the link.
 
+### The keys
+
+The terminal's keys are bash's:
+
+| | |
+|---|---|
+| ↑ ↓ | earlier and later commands; ↓ past the newest gives back what you were typing |
+| Tab | completes a command or a file name; a second Tab lists the choices |
+| Ctrl-R | searches earlier commands; Enter runs the match, Ctrl-G gives up |
+| Ctrl-A, Ctrl-E, Home, End | start and end of the line |
+| Ctrl-←, Ctrl-→, Alt-B, Alt-F | a word back, a word forward |
+| Ctrl-U, Ctrl-K, Ctrl-W, Ctrl-Y | cut to the start, cut to the end, cut a word, paste it back |
+| Ctrl-L, `clear` | clear the screen |
+| Ctrl-C | abandon the line, or stop a running command |
+
+Pasting several lines runs them one after another, as if typed.
+
+What does not run here is anything that takes over the whole screen — vim,
+less, top. `python3` on its own gives you its prompt, and `nano` is below.
+
 ### Running a server
 
 Start something that listens and a **Preview** button appears in the header.
