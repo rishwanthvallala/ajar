@@ -39,7 +39,13 @@ jobs:
           set -o pipefail
           ./scripts/check.sh 2>&1 | tee check.log || {
             status=$?
-            tail -n 60 check.log | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { gsub(/\r/, "%0D"); print }' > tail.txt
+            # An annotation keeps about its first 4 KB, so this is the *end*
+            # of the output — colour codes and the build's size tables out,
+            # the last 3.5 KB of what is left in.
+            sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' check.log \
+              | grep -v -E '^dist/|│ gzip|chunks are larger|dynamic import|manualChunks|chunkSizeWarningLimit|codeSplitting|^\s*$' \
+              | tail -c 3500 | sed 's/%/%25/g' \
+              | awk 'BEGIN { ORS = "%0A" } { gsub(/\r/, "%0D"); print }' > tail.txt
             echo "::error title=check.sh failed on ${{ matrix.os }}::$(cat tail.txt)"
             exit $status
           }
