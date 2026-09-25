@@ -160,11 +160,15 @@ impl Limits {
 /// Linux counts threads; macOS counts processes. Each is measured the way its
 /// kernel counts, or the headroom is wrong by the thread count of a browser.
 pub fn in_use(guest_roots: &[u32]) -> Option<u32> {
-    let tasks = user_tasks()?;
+    user_tasks().map(|tasks| outside(&tasks, guest_roots))
+}
+
+/// The tasks in one snapshot that are not under any of `guest_roots`.
+fn outside(tasks: &std::collections::HashMap<u32, (u32, u32)>, guest_roots: &[u32]) -> u32 {
     let total: u32 = tasks.values().map(|&(_, n)| n).sum();
 
     let mut children: std::collections::HashMap<u32, Vec<u32>> = Default::default();
-    for (&pid, &(ppid, _)) in &tasks {
+    for (&pid, &(ppid, _)) in tasks {
         children.entry(ppid).or_default().push(pid);
     }
     let mut guests = 0u32;
@@ -181,7 +185,7 @@ pub fn in_use(guest_roots: &[u32]) -> Option<u32> {
             stack.extend(kids);
         }
     }
-    Some(total.saturating_sub(guests))
+    total.saturating_sub(guests)
 }
 
 /// pid → (parent, tasks it holds), for every process owned by our real uid.
@@ -334,22 +338,45 @@ mod tests {
     fn a_guests_own_processes_do_not_raise_their_ceiling() {
         // Counted as the host's, a guest who filled one terminal and opened a
         // second would be handed the whole allowance again on top of it.
+        //
+        // Both counts come from one snapshot. Taken as two, anything else the
+        // user started or ended in between — a shell from a test running in
+        // parallel, a thread — landed in the difference, against a margin of
+        // exactly the three processes under test. On macOS the window is wide:
+        // each count runs `ps` twice, and the sandbox tests are starting shells
+        // alongside this one.
         let _serial = serial();
         let mut guest = Command::new("/bin/sh")
             .args(["-c", "sleep 30 & sleep 30 & wait"])
             .spawn()
             .expect("spawn a stand-in guest shell");
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let everything = in_use(&[]);
-        let without_guest = in_use(&[guest.id()]);
+        // Until both children have forked, the guest's tree is smaller than
+        // three through no fault of the counting.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let left_out = loop {
+            let Some(tasks) = user_tasks() else {
+                let _ = guest.kill();
+                let _ = guest.wait();
+                return; // Not measurable on this platform, which `wrap` accepts.
+            };
+            let n = outside(&tasks, &[]) - outside(&tasks, &[guest.id()]);
+            if n >= 3 || std::time::Instant::now() > deadline {
+                break n;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        // A shell that died early is a machine that could not fork, not a
+        // counting bug, and the failure should say which it was.
+        let fate = match guest.try_wait() {
+            Ok(Some(status)) => format!("had already exited: {status}"),
+            Ok(None) => "was still running".to_string(),
+            Err(e) => format!("could not be waited for: {e}"),
+        };
         let _ = guest.kill();
         let _ = guest.wait();
-        let (Some(everything), Some(without_guest)) = (everything, without_guest) else {
-            return; // Not measurable on this platform, which `wrap` accepts.
-        };
-        assert!(
-            everything >= without_guest + 3,
-            "the guest's shell and its two children were not left out: {everything} vs {without_guest}"
+        assert_eq!(
+            left_out, 3,
+            "the guest's shell and its two children were not left out (the shell {fate})"
         );
     }
 
@@ -359,13 +386,20 @@ mod tests {
         // fails writes the refusal out and carries on, so `||` never fires
         // and the loop looks like it simply finished. The kernel's complaint
         // is the only honest signal here.
+        //
+        // The loop runs in `/bin/sh`, not the enforcing shell. bash retries a
+        // refused fork for fifteen seconds before giving up on it. Where the
+        // kernel charges this user for tasks `/proc` cannot show — about 35
+        // under WSL, from outside the distro's pid namespace — every fork is
+        // refused from the first, and 200 of those retries stalled the gate.
+        // On Linux `/bin/sh` is dash, which gives up at the first refusal.
         let _serial = serial();
         let limits = Limits::new(DEFAULT_TERMINALS, 30);
-        let Some(shell) = limits.enforcer else {
+        if !limits.enforces_processes() {
             return;
-        };
+        }
         let (p, a) = limits.wrap(
-            shell.to_string(),
+            "/bin/sh".to_string(),
             vec![
                 "-c".into(),
                 "i=0; while [ $i -lt 200 ]; do sleep 3 & i=$((i+1)); done; wait".into(),

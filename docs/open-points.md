@@ -58,6 +58,21 @@ on 24 September, and it has passed every run since. Treated as
 a flake and not demonstrated to be one; if it recurs, the shell's startup time
 under load is the first suspect, since `ready()` gives it six attempts.
 
+**The guest-counting limits test lost its shell four times, unexplained.**
+`a_guests_own_processes_do_not_raise_their_ceiling`, on 25 September, in WSL:
+the stand-in guest's shell was missing from `/proc` for the whole five seconds
+the test waits, and none of its children outlived it. Every run with
+instrumentation added passed. The assertion now says whether the shell had
+exited, was running, or could not be waited for — the first version folded the
+last into "still running" — so a recurrence explains itself.
+
+**The process cap cannot see tasks outside the agent's pid namespace.** The
+kernel charges `RLIMIT_NPROC` to the uid across every pid namespace; `in_use`
+reads `/proc`, which shows one. Under WSL about 35 tasks for the same uid are
+invisible, and they come out of a guest's 512. Harmless at that size; an agent
+run in a container whose uid is also busy outside it would be back to the
+original bug.
+
 **A few slow readers can still make pad reads wait.** Reads are streamed from
 disk now, so they no longer cost memory, and they are held to 32 in flight per
 address and 64 in all. A handful of addresses each holding 32 unread responses
