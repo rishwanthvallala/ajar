@@ -1,7 +1,7 @@
 # Open points
 
 *Kept as of 25 September 2026. The relay, both browser clients and the deploy
-config were deployed from `a37e97b` on 24 September: four of the five hardening
+config were deployed from `5b14947` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
 reads, freed pad names and the 90-day lease. The fifth step, per-address limits
 in a Caddy built with the rate-limit plugin, followed on 25 September. The agent's halves — Landlock ABI
