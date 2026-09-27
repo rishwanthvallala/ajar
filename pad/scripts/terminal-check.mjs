@@ -138,7 +138,14 @@ try {
   await keys("ctrl-y puts back what was cut", "echo abc def", ["Control+w", "Control+a", "Control+y"], "$ defecho abc");
   await keys("ctrl-←", "echo abc def", ["Control+ArrowLeft", "text:X"], "$ echo abc Xdef");
   await keys("ctrl-→", "echo abc def", ["Home", "Control+ArrowRight", "text:X"], "$ echoX abc def");
-  await keys("alt-b", "echo abc def", ["Alt+b", "text:X"], "$ echo abc Xdef");
+  // Option is not Meta in a Mac browser, so Option-B types nothing bash can
+  // use — and making it Meta would take `@` away from keyboards that type it
+  // with Option. What a Mac hand presses is Option-←, which xterm sends as
+  // ESC b there and as ctrl-← elsewhere; both are a word back.
+  if (process.platform === "darwin") console.log("  note  alt-b is not pressed on macOS, where Option is not Meta");
+  else await keys("alt-b", "echo abc def", ["Alt+b", "text:X"], "$ echo abc Xdef");
+  await keys("alt-← (option-← on a Mac)", "echo abc def", ["Alt+ArrowLeft", "text:X"], "$ echo abc Xdef");
+  await keys("alt-→ (option-→ on a Mac)", "echo abc def", ["Home", "Alt+ArrowRight", "text:X"], "$ echoX abc def");
   await keys("backspace mid-line", "echo abcd", ["ArrowLeft", "Backspace"], "$ echo abd");
   await keys("ctrl-d deletes forward", "echo abc", ["Home", "Control+d"], "$ cho abc");
   await keys("an unknown key types nothing", "echo abc", ["F5", "PageUp", "Insert"], "$ echo abc");

@@ -54,7 +54,7 @@ The terminal's keys are bash's:
 | Tab | completes a command or a file name; a second Tab lists the choices |
 | Ctrl-R | searches earlier commands; Enter runs the match, Ctrl-G gives up |
 | Ctrl-A, Ctrl-E, Home, End | start and end of the line |
-| Ctrl-←, Ctrl-→, Alt-B, Alt-F | a word back, a word forward |
+| Ctrl-←, Ctrl-→, Alt-B, Alt-F | a word back, a word forward — on a Mac, Option-← and Option-→ |
 | Ctrl-U, Ctrl-K, Ctrl-W, Ctrl-Y | cut to the start, cut to the end, cut a word, paste it back |
 | Ctrl-L, `clear` | clear the screen |
 | Ctrl-C | abandon the line, or stop a running command — so does **Stop**, which Run becomes while anything runs |
