@@ -86,6 +86,18 @@ else
   node scripts/check-terminal.mjs
 fi
 
+# The pad's own checks lived only in `npm run check` under pad/, which nothing
+# ran, and an error Run never showed went unnoticed for two weeks. These two
+# are the ones a person would notice. Without a mirror here the packages come
+# from Wasmer's CDN, which the service worker falls back to on its own.
+if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+  echo "── ui: the pad, as a person uses it ─── skipped (AJAR_SKIP_UI=1) ──"
+else
+  echo "── ui: the pad, as a person uses it ──────────────────"
+  node pad/scripts/terminal-check.mjs
+  node pad/scripts/user-check.mjs
+fi
+
 echo "── smoke: peer sessions ──────────────────────────────"
 node scripts/smoke-peer.mjs
 
