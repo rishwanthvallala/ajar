@@ -188,6 +188,13 @@ nothing thrown**. It is vendored verbatim — see `vendor-wasmer-sdk` in
 alongside it replaces the pty with pipes, and the shell stops behaving like a
 terminal.
 
+**Even with the pty, stderr is a pipe of its own.** Only stdout is read, so
+`Shell.run` sends each command's stderr into it (`eval '…' 2>&1`). Until 27
+September nothing did, and every error went nowhere. A traceback showed as a
+bare `exit 1`, `def f(in):` looked like the pad refusing to run code, and `ls`
+of a missing folder printed nothing. `terminal-check.mjs` now checks that errors
+arrive, in order, and that a typed `2>/dev/null` still silences them.
+
 **Bash functions used to define fine and hang when called** — and that was a
 property of `sharrattj/bash@1.0.18`, not of WASIX, which this document
 previously got wrong. `wasmer/bash@1.0.25` runs them. The same upgrade fixed

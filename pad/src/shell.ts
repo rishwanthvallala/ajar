@@ -384,8 +384,18 @@ export class Shell {
       // empty command, a syntax error is `eval` failing with status 2, and the
       // sentinel follows both. `eval` runs in this shell, so `cd`, variables,
       // aliases and a trailing `&` behave exactly as typed.
+      //
+      // `2>&1` because this terminal is two pipes, not one: the SDK keeps
+      // stderr apart even with a pty attached, and only stdout is read. Every
+      // error went nowhere — a traceback was a bare "exit 1", `ls` of a
+      // missing folder said nothing — until 27 September. Joined here, errors
+      // arrive in the same stream as the output and the sentinel, so they
+      // land in order and before the prompt. Reading stderr as a second
+      // stream could not promise that. A redirect typed in the command still
+      // wins, as it would in a terminal: `2>/dev/null` silences, `>file`
+      // leaves errors on screen.
       const quoted = `'${command.trimEnd().replaceAll("'", `'\\''`)}'`;
-      const line = `eval ${quoted}; printf '\\001%s\\001' "$?"`;
+      const line = `eval ${quoted} 2>&1; printf '\\001%s\\001' "$?"`;
       // Without the newline. The terminal echoes CRLF where this writes LF, so
       // including it meant the two strings never matched and every command
       // after the first foreground job appeared twice.

@@ -206,6 +206,25 @@ try {
   await run("echo after-interrupt");
   expect("…and the shell carries on", await printed("after-interrupt"));
 
+  // ---- errors ----
+  // What a program writes to stderr is on the screen, in order with what it
+  // writes to stdout. Until 27 September none of it was: the SDK's terminal
+  // keeps the two as separate pipes, only stdout was read, and a traceback
+  // arrived as a bare "exit 1" with nothing to say what had gone wrong.
+  await run("clear");
+  await run("ls /no/such/dir");
+  expect("an error message reaches the screen", (await rows()).some((l) => l.includes("No such file or directory")), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  await run("echo one; echo two >&2; echo three");
+  const lines = (await rows()).filter(Boolean);
+  const one = lines.lastIndexOf("one");
+  expect("…in order with the rest of the output", one !== -1 && lines[one + 1] === "two" && lines[one + 2] === "three", lines.slice(-4).join(" | "));
+  await run("ls /silenced-dir 2>/dev/null");
+  expect("…and `2>/dev/null` still silences one", !(await rows()).some((l) => l.includes("silenced-dir':")), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  await run("ls /redirected-dir > listing.txt");
+  expect("…while `>file` leaves it on screen", (await rows()).some((l) => l.includes("redirected-dir") && l.includes("No such file")), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  await run(`python -c "1/0"`);
+  expect("a python traceback reaches the screen", await printed("ZeroDivisionError: division by zero"), (await rows()).filter(Boolean).slice(-2).join(" | "));
+
   // ---- Run joins history ----
   // Waits for the command Run announces, not for its output: locally the
   // stub store has no relay behind it, and the starter file is not what is
@@ -216,6 +235,16 @@ try {
   await press("ArrowUp"); await settle();
   expect("↑ after Run recalls what Run ran", /^\$ python3? "?main\.py"?$/.test(await promptLine()), await promptLine());
   await press("Control+c");
+
+  // ---- Run says why a program failed ----
+  // The case that was reported: `def encode(in):` ran as "exit 1" and nothing
+  // else, which reads as the pad being unable to run code at all.
+  await run("clear");
+  await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("def encode(in):\n    pass\n"));
+  await page.click("#run");
+  await page.waitForFunction(() => /exit 1/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 60_000 }).catch(() => {});
+  await idle();
+  expect("Run shows a syntax error's message", (await rows()).some((l) => l.includes("SyntaxError")), (await rows()).filter(Boolean).slice(-3).join(" | "));
 } catch (e) {
   fail("the run completed", String(e.message).split("\n")[0]);
 } finally {
