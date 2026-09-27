@@ -57,7 +57,9 @@ The terminal's keys are bash's:
 | Ctrl-←, Ctrl-→, Alt-B, Alt-F | a word back, a word forward |
 | Ctrl-U, Ctrl-K, Ctrl-W, Ctrl-Y | cut to the start, cut to the end, cut a word, paste it back |
 | Ctrl-L, `clear` | clear the screen |
-| Ctrl-C | abandon the line, or stop a running command |
+| Ctrl-C | abandon the line, or stop a running command — so does **Stop**, which Run becomes while anything runs |
+| Ctrl-D | end the input a program is waiting for: `input()` raises `EOFError`, `cat > notes.txt` finishes |
+| Ctrl-S | nothing to do: every change is saved as you type |
 
 Pasting several lines runs them one after another, as if typed.
 
@@ -91,8 +93,8 @@ It is not nano: no syntax highlighting, no undo, no multiple files at once. The
 editor in the main window is better for real work; this is for when your hands
 are already in the terminal.
 
-**Ctrl-C does not reach it**, or any running command — it stops the shell
-instead. `^X` is the way out.
+**Ctrl-C does nothing in it** — `^X` is the way out. The **Stop** button ends
+it, and anything it had not saved.
 
 ## Working together
 
@@ -114,8 +116,13 @@ PyPI and that is the only place a pad can reach — no `git clone`, no `curl`, n
 connecting to your own servers. Installs land in a `.deps` folder beside your
 files, so they stay after a reload and whoever opens the link has them too.
 
-Small pure-python packages are what this is for. Anything that pulls several
-dependencies at once currently stops the sandbox and you have to reload.
+Pure-python packages are what this is for: `pip install requests` takes a few
+seconds, dependencies and all. Anything that needs compiling, like `numpy`, is
+not available.
+
+**No threads.** Starting one says so with an error rather than freezing the
+program, which is what the runtime underneath does. `asyncio` and `subprocess`
+both work.
 
 A server you start can be previewed by you, but it is not reachable from
 anywhere else.
@@ -141,8 +148,12 @@ there never counts against that — only growing it does.
 
 ## If a command hangs
 
-Ctrl-C stops it. That also restarts the shell, so you will be back in the
-folder root and any variables you set are gone.
+Ctrl-C stops it, or press **Stop**. The shell carries on where it was.
+
+If Ctrl-C was not enough — bash's own `read`, or a program that ignores it —
+the shell restarts after a moment instead, so you are back in the folder root
+and any variables you set are gone. Ctrl-D, which ends a program's input, does
+the same once the program finishes.
 
 The first command is slow — that is the 19 MB arriving. After that it is
 instant, and a later visit is free.

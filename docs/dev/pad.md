@@ -213,9 +213,27 @@ underneath it is present: `os.get_terminal_size()` reports the real size,
 cursor escapes reach the terminal. `src/tools/edit.py` is an editor written
 straight against ANSI on that basis, aliased as `nano` and `edit`.
 
-It binds nothing to ctrl-c, and cannot: the page intercepts ctrl-c and tears
-the shell down before a program sees it. ctrl-x is the way out, which is nano's
-key anyway.
+It binds nothing to ctrl-c, which reaches it as a key: while the alternate
+buffer is up, the page passes ctrl-c through instead of stopping the program.
+ctrl-x is the way out, which is nano's key anyway, and Stop ends it.
+
+**ctrl-c is a signal through the pty, and bash survives it.** It used to end
+the shell, on the belief that bash could not survive an interrupt. Measured on
+27 September it does — and ending the shell never stopped the program anyway. `terminate()` and `kill()` end bash and nothing
+under it, so a python loop went on printing into the terminal a minute after
+ctrl-c. Written as `\x03` into the pty, the signal stops python in any state
+within 30 ms, and bash keeps its directory and variables. Two details are in
+`Shell.interrupt`: a program killed mid-read leaves the read pending, and it
+swallows the next line unless a newline is sent first; and a signal that lands
+on bash itself abandons the sentinel, so the shell is ended after 1.5 s if the
+command has not finished.
+
+**No threads.** The first `Thread.start()` traps in the engine ("table index
+is out of bounds") and the program hangs with no output. This is the registry's
+python exactly as published, with the mirror bypassed, so it is not the trim.
+`src/tools/sitecustomize.py` makes `start()` raise instead. pip's progress bar
+starts a thread, which is why `pip install requests` used to freeze the page:
+`PIP_PROGRESS_BAR=off` is set in the shell, and it installs in about 6 s.
 
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,

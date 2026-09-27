@@ -13,7 +13,7 @@
  * be is a full terminal for interactive programs: a shell that never echoes
  * cannot host one, so while a command runs, keys go to it raw.
  */
-import type { Shell } from "./shell";
+import type { Finished, Shell } from "./shell";
 
 const PROMPT = "\x1b[2m$\x1b[0m ";
 /** Visible width of the prompt, for placing the cursor on a wrapped line. */
@@ -36,6 +36,10 @@ export interface ConsoleHooks {
   openShell?: () => Shell | null;
   /** The terminal's width, so a line longer than it is redrawn correctly. */
   columns?: () => number;
+  /** A command started or finished, typed or Run's, so Run can become Stop. */
+  onBusy?: (busy: boolean) => void;
+  /** Whether a program has the whole screen — the alternate buffer is up. */
+  fullScreen?: () => boolean;
 }
 
 interface Search {
@@ -116,19 +120,25 @@ export class Console {
     // bash only silences it for its own input — so doing both showed every
     // keystroke twice: `ttyyppeedd` for `typed`.
     //
-    // ctrl-c ends the shell, not merely the command. Sending the byte and
-    // waiting to notice was tried twice and does not work: bash does not
-    // survive the interrupt, the output stream stays open afterwards so
-    // nothing looks wrong, and every later command hangs against a shell that
-    // cannot answer. Tearing it down here makes that deterministic instead of
-    // a race — the next command starts a new one.
+    // ctrl-c is a signal to the program, through the pty — see
+    // `Shell.interrupt` for why that replaced ending the shell.
     //
-    // ctrl-d is forwarded and does nothing: this pty has no canonical mode,
-    // so there is no EOF to send and `cat` simply reads on.
+    // ctrl-d closes the program's input. The byte alone does nothing: this pty
+    // has no canonical mode to turn it into end-of-file, so `input()` waited
+    // on and `cat > notes.txt` could never be finished. Closing stdin is a real
+    // end-of-file, and it is bash's stdin too, so bash exits once the program
+    // does and the next command starts a fresh shell — the price ctrl-c used
+    // to pay every time, now paid only here.
+    //
+    // Neither, to a full-screen program. `nano` has the terminal raw, so both
+    // are keys to it like any other — ctrl-d deletes a character — and
+    // stopping it or closing its input would throw away whatever it had not
+    // saved. The Stop button still ends it.
     if (this.running) {
-      if (data === "\x03") {
-        this.queued = "";
-        void this.interrupt();
+      const fullScreen = this.hooks.fullScreen?.() ?? false;
+      if (data === "\x03" && !fullScreen) return this.stop();
+      if (data === "\x04" && !fullScreen) {
+        void this.shell?.closeStdin().catch(() => {});
         return;
       }
       void this.shell?.type(data.replace(/\r/g, "\n"));
@@ -461,16 +471,52 @@ export class Console {
   // --------------------------------------------------------------- running
 
   /**
-   * Stop whatever is running by ending the shell it runs in.
+   * Stop whatever is running: ctrl-c, and the Stop button.
    *
-   * The pending command resolves as the process goes, so the prompt comes
-   * back on its own; the next command gets a fresh shell in the folder root.
+   * The pending command resolves as the program goes, so the prompt comes back
+   * on its own, in the same shell.
    */
-  private async interrupt(): Promise<void> {
-    const shell = this.shell;
-    this.shell = null;
-    this.screen.write("^C\r\n");
-    await shell?.close().catch(() => {});
+  stop(): void {
+    if (!this.running) return;
+    this.queued = "";
+    // Not written over a full-screen program's display.
+    if (!this.hooks.fullScreen?.()) this.screen.write("^C\r\n");
+    this.shell?.interrupt();
+  }
+
+  private setRunning(running: boolean): void {
+    if (this.running === running) return;
+    this.running = running;
+    this.hooks.onBusy?.(running);
+  }
+
+  /**
+   * Move to the start of a fresh row, unless the cursor is at one already.
+   *
+   * Output that ends without a newline — `print(x, end="")`, a progress bar —
+   * left the cursor after it, and the prompt went on the same row. Worse, the
+   * line editor redraws its row from the start, so the first key typed erased
+   * that output. zsh's trick, without its marker: a row's worth of spaces
+   * wraps onto a new row only if the cursor was not at the start of this one,
+   * and the carriage return then lands at the start either way.
+   */
+  private freshRow(): string {
+    return `${" ".repeat(Math.max(1, this.hooks.columns?.() ?? 80))}\r`;
+  }
+
+  /** What a finished command leaves on screen before the next prompt. */
+  private finish(finished: Finished | null): void {
+    // A full-screen program that was stopped never got to put the screen
+    // back, and the prompt would land inside its display. Whatever raised the
+    // alternate buffer is over now, so it comes down, cursor showing.
+    if (this.hooks.fullScreen?.()) this.screen.write("\x1b[?1049l\x1b[?25h");
+    // An interrupted program's status is the signal's — this runtime reports
+    // 27 — and says nothing a ^C has not already said. bash shows none either.
+    if (finished && finished.exitCode !== 0 && !finished.interrupted) {
+      this.screen.write(`${this.freshRow()}\x1b[31mexit ${finished.exitCode}\x1b[0m\r\n`);
+    }
+    this.screen.write(`${this.freshRow()}${PROMPT}`);
+    this.cursorRow = 0;
   }
 
   private async submit(): Promise<void> {
@@ -489,19 +535,20 @@ export class Console {
     }
     this.remember(command);
 
-    this.running = true;
+    this.setRunning(true);
     // Said once, the first time something waits: a prompt that has vanished
     // and a program waiting for input look exactly the same from here.
     if (!this.warned) {
       this.warned = true;
       this.screen.write("\x1b[2m(ctrl-c stops a running command)\x1b[0m\r\n");
     }
+    let finished: Finished | null = null;
     try {
-      // A shell that has exited is replaced rather than reused. Interrupting
-      // a command takes bash with it here, so this is the normal path after a
-      // ctrl-c — and a fresh shell starts in the folder root with none of the
-      // previous one's variables, which is worth saying rather than letting
-      // somebody discover their `cd` was forgotten.
+      // A shell that has exited is replaced rather than reused — after a
+      // ctrl-d, or a ctrl-c that had to end it — and a fresh shell starts in
+      // the folder root with none of the previous one's variables, which is
+      // worth saying rather than letting somebody discover their `cd` was
+      // forgotten.
       if (this.shell && !this.shell.alive) this.shell = null;
       if (!this.shell && this.started) {
         this.screen.write(
@@ -515,14 +562,12 @@ export class Console {
         }
         this.shell = await this.hooks.shellFor();
       }
-      const { exitCode } = await this.shell.run(command);
-      if (exitCode !== 0) this.screen.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
+      finished = await this.shell.run(command);
     } catch (e) {
-      this.screen.write(`\x1b[31m${(e as Error).message}\x1b[0m\r\n`);
+      this.screen.write(`${this.freshRow()}\x1b[31m${(e as Error).message}\x1b[0m\r\n`);
     } finally {
-      this.running = false;
-      this.screen.write(PROMPT);
-      this.cursorRow = 0;
+      this.setRunning(false);
+      this.finish(finished);
     }
     // After the prompt is back, so a slow sync never delays the next command.
     this.hooks.onFinished();
@@ -539,7 +584,7 @@ export class Console {
 
   /** Echo a command the page is running on the user's behalf. */
   announce(command: string): void {
-    this.running = true;
+    this.setRunning(true);
     // In history too: the button is a shortcut for typing it, so ↑ should
     // find it like anything typed.
     this.remember(command);
@@ -547,11 +592,10 @@ export class Console {
     this.cursorRow = 0;
   }
 
-  /** Redraw the prompt after something else wrote to the screen. */
-  resume(): void {
-    this.running = false;
-    this.screen.write(PROMPT);
-    this.cursorRow = 0;
+  /** The prompt again after a command the page ran, with how it ended. */
+  resume(finished: Finished | null = null): void {
+    this.setRunning(false);
+    this.finish(finished);
     if (this.line) this.redraw();
     this.drainQueued();
   }

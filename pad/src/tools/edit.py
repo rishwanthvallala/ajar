@@ -15,10 +15,10 @@ The primitives were checked before a line of this was written:
 
 ## One constraint worth knowing
 
-**ctrl-c never arrives.** The page intercepts it and tears the shell down,
-because a shell that survives an interrupt here does not exist — see
-`console.ts`. So ctrl-x is the only way out, which is nano's key anyway, and
-nothing in here is bound to ctrl-c.
+**ctrl-c is only a key here.** While a program has the whole screen the page
+passes it through rather than stopping anything — see `console.ts` — and
+nothing in here is bound to it. ctrl-x is the way out, which is nano's key
+anyway; the page's Stop button is the way out of anything.
 
 Keys follow nano, because `nano` is what people type. What is not implemented
 is absent rather than approximated: there is no syntax highlighting, no undo,
@@ -78,6 +78,11 @@ def read_key():
     waiting for the rest, which is why nothing here is bound to it.
     """
     ch = sys.stdin.read(1)
+    # End of input: the terminal has gone. Read as "no key", it was a loop
+    # that repainted the screen as fast as it could, forever, over whatever
+    # came after — which is what the page's Stop left behind.
+    if ch == "":
+        raise EOFError
     if ch != ESC:
         return ch
     a = sys.stdin.read(1)
@@ -319,7 +324,11 @@ def main(argv):
     if not sys.stdin.isatty():
         sys.stderr.write("edit: needs a terminal\n")
         return 2
-    return Editor(paths[0] if paths else None).run()
+    try:
+        return Editor(paths[0] if paths else None).run()
+    except EOFError:
+        # The terminal went away; there is nobody left to ask about saving.
+        return 1
 
 
 if __name__ == "__main__":

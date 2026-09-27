@@ -31,6 +31,7 @@ import SORT_PY from "./tools/sort.py?raw";
 import TAIL_PY from "./tools/tail.py?raw";
 import BOX_PY from "./tools/box.py?raw";
 import EDIT_PY from "./tools/edit.py?raw";
+import SITE_PY from "./tools/sitecustomize.py?raw";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
@@ -104,6 +105,12 @@ export const BOX = ".ajar/box.py";
  */
 export const EDIT = ".ajar/edit.py";
 
+/**
+ * What every python imports first, from a directory of its own on PYTHONPATH
+ * so none of the tools beside it can be imported by accident.
+ */
+export const SITE = ".ajar/site/sitecustomize.py";
+
 /** Where pip installs, inside the folder rather than the interpreter. */
 export const DEPS = ".deps";
 export const EDITORS = ["nano", "edit"] as const;
@@ -117,6 +124,8 @@ const DONE = /(\d+)/;
 
 export interface Finished {
   exitCode: number;
+  /** Ended by `interrupt()`, so its status is the signal's, not the program's. */
+  interrupted?: boolean;
 }
 
 export class Shell {
@@ -138,6 +147,10 @@ export class Shell {
   /** While a `query` runs, what the shell says is collected here, not shown. */
   private captured: string | null = null;
   private waiting: ((f: Finished) => void) | null = null;
+  /** Set by `interrupt()` until the command it interrupted is over. */
+  private interrupted = false;
+  /** Set by `close()`; nothing this shell says afterwards is shown. */
+  private closed = false;
   private readonly decoder = new TextDecoder();
 
   private constructor(
@@ -192,6 +205,7 @@ export class Shell {
     }
     await rt.write(BOX, BOX_PY);
     await rt.write(EDIT, EDIT_PY);
+    await rt.write(SITE, SITE_PY);
 
     // One `run` for every alias rather than one each: each is a round trip
     // through the pty, and fourteen of them is a visible pause before the
@@ -214,7 +228,17 @@ export class Shell {
       // folder instead, which is somewhere real — so it survives a reload,
       // it syncs, and whoever opens the link has it too.
       `export PIP_TARGET=/workspace/${DEPS}`,
-      `export PYTHONPATH=/workspace/${DEPS}`,
+      `export PYTHONPATH=/workspace/${DEPS}:/workspace/${SITE.slice(0, SITE.lastIndexOf("/"))}`,
+      // No progress bar, because drawing one starts a thread — see
+      // tools/sitecustomize.py. Measured on production on 27 September:
+      // `pip install requests` froze the page for good with it, and finished
+      // in 6 s without it — the same freeze the user guide put down to
+      // installing several dependencies at once.
+      //
+      // And no warning about running as root, or check for a newer pip: the
+      // first is true of every install here and says nothing, the second is a
+      // network request and a notice on every one.
+      "export PIP_PROGRESS_BAR=off PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1",
     ];
     await shell.run(aliases.join("; "));
 
@@ -246,7 +270,7 @@ export class Shell {
     this.alive = false;
     const waiting = this.waiting;
     this.waiting = null;
-    waiting?.({ exitCode: 130 });
+    waiting?.({ exitCode: 130, interrupted: this.interrupted });
   }
 
   private absorb(text: string): void {
@@ -265,7 +289,13 @@ export class Shell {
       this.echoed = "";
       const done = this.waiting;
       this.waiting = null;
-      done?.({ exitCode: Number(found[1]) });
+      const interrupted = this.interrupted;
+      if (interrupted) {
+        this.interrupted = false;
+        // Before anything else is written: see `interrupt()`.
+        void this.proc.stdin!.write("\n").catch(() => {});
+      }
+      done?.({ exitCode: Number(found[1]), interrupted });
     }
     // Only a partial marker is held back, which would otherwise render as a
     // control character for an instant.
@@ -284,6 +314,7 @@ export class Shell {
   }
 
   private emit(text: string): void {
+    if (this.closed) return;
     if (this.captured !== null) this.captured += text;
     else if (!this.silent) this.onOutput(text);
   }
@@ -408,6 +439,40 @@ export class Shell {
   }
 
   /**
+   * Stop the command in the foreground the way a terminal does: ctrl-c
+   * through the pty, which signals the program and leaves bash standing.
+   *
+   * This used to end the shell instead, and that never stopped anything but
+   * bash. Measured on 27 September: after `terminate()` or `kill()`, a python
+   * loop was still printing into the terminal a minute later, and one that did
+   * not print went on burning a core unseen. The signal stopped every program
+   * tried within 30 ms — a pure spin, `time.sleep`, `input()`, a print loop,
+   * `cat`, `sleep` — and bash kept its directory and variables.
+   *
+   * A program killed in the middle of reading leaves its read pending on the
+   * terminal, and that read takes the next line written: the command after a
+   * ctrl-c at `input()` was swallowed and never ran. So once the interrupted
+   * command is over, one newline goes first, to be taken instead — harmless to
+   * bash when nothing was reading.
+   *
+   * When the signal lands on bash itself, in a builtin such as `read` or a
+   * `while` loop, bash abandons the whole line, sentinel included, and nothing
+   * would ever say the command ended. Anything still running after a second
+   * and a half is ended the old way, with the shell. That is clean for bash's
+   * own builtins; a program that took no notice of the signal — `nano`, which
+   * has the terminal raw — outlives it, and `close()` stops listening to it.
+   */
+  interrupt(): void {
+    const waiting = this.waiting;
+    if (!waiting || !this.alive || this.interrupted) return;
+    this.interrupted = true;
+    this.proc.stdin!.write("\x03").catch(() => {});
+    setTimeout(() => {
+      if (this.waiting === waiting) this.close().catch(() => {});
+    }, 1500);
+  }
+
+  /**
    * Raw bytes straight to the shell, bypassing the sentinel.
    *
    * For the one thing a line editor cannot express: an interrupt has to reach
@@ -430,7 +495,16 @@ export class Shell {
     this.proc.resizeTerminal(columns, rows);
   }
 
+  /**
+   * End the shell, and stop listening to it.
+   *
+   * `terminate()` ends bash and not what bash started, and whatever it leaves
+   * behind still writes into this shell's output: a stopped `nano` repainted
+   * itself over the fresh prompt for as long as the page was open. By the time
+   * this is called the page has moved on, so none of it is shown.
+   */
   close(): Promise<void> {
+    this.closed = true;
     return this.proc.terminate();
   }
 }

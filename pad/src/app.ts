@@ -14,7 +14,7 @@ import { DocSession } from "./editing";
 import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
-import { Shell } from "./shell";
+import { Shell, type Finished } from "./shell";
 import { Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
@@ -70,6 +70,8 @@ export class App {
   private shellOpening: Promise<Shell> | null = null;
   private peers: Peers | null = null;
   private busy = false;
+  /** When Run was last pressed, so a double-click is not also a Stop. */
+  private runPressed = 0;
   private missed = false;
   /** Models edited since the last save. */
   private dirty = new Set<string>();
@@ -435,8 +437,28 @@ export class App {
     // so the wait is invisible rather than blank.
     void this.attach(path, model);
     this.renderFiles();
-    this.el.run.disabled = interpreterFor(path) === null;
-    this.el.run.title = this.el.run.disabled ? `nothing here runs a ${path.split(".").pop()} file` : "";
+    this.paintRun();
+  }
+
+  /**
+   * Run, or Stop while anything is running — Run's own command or one typed.
+   *
+   * There was no way to stop a program but ctrl-c in the terminal, which
+   * nobody who has only ever pressed Run knows; `while True:` left the button
+   * greyed out with nothing to press. And a typed command left Run enabled, so
+   * pressing it answered "a command is already running".
+   */
+  private paintRun(): void {
+    const running = this.console?.busy ?? false;
+    const runnable = interpreterFor(this.active) !== null;
+    this.el.run.querySelector("span")!.textContent = running ? "Stop" : "Run";
+    this.el.run.querySelector("path")?.setAttribute("d", running ? "M4.5 4.5h7v7h-7z" : "M5 3.5l7 4.5-7 4.5V3.5Z");
+    this.el.run.disabled = !running && (this.busy || !runnable);
+    this.el.run.title = running
+      ? "Stop what is running (ctrl-c)"
+      : runnable
+        ? "Run this file (⌘⏎)"
+        : `nothing here runs a ${this.active.split(".").pop()} file`;
   }
 
   /**
@@ -745,6 +767,8 @@ export class App {
       onFinished: () => void this.afterCommand(),
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
+      onBusy: () => this.paintRun(),
+      fullScreen: () => term.buffer.active.type === "alternate",
     });
     term.onData((data) => this.console?.handle(data));
     term.onResize(({ cols, rows }) => {
@@ -756,9 +780,9 @@ export class App {
   }
 
   private async ensureShell(): Promise<Shell> {
-    // A shell that has exited cannot be reused. Interrupting a command takes
-    // bash down with it in this runtime, so this is the ordinary path after
-    // any ctrl-c, not an error case.
+    // A shell that has exited cannot be reused. ctrl-d ends it, as does a
+    // ctrl-c that a signal could not answer, so this is an ordinary path, not
+    // an error case.
     if (this.shell && !this.shell.alive) this.shell = null;
     if (this.shell) return this.shell;
     // One opening at a time. The shell is now opened at load, so a Run pressed
@@ -781,7 +805,12 @@ export class App {
   // ------------------------------------------------------------------- run
 
   private wire(): void {
-    this.el.run.onclick = () => void this.run();
+    this.el.run.onclick = () => {
+      if (!this.console?.busy) return void this.run();
+      // Run becomes Stop as soon as the program starts, so the second click
+      // of a double-click would stop what the first one started.
+      if (performance.now() - this.runPressed > 500) this.console.stop();
+    };
     this.el.share.onclick = () => void this.share();
     this.el.preview.onclick = () => void this.togglePreview();
     this.el.backToEditor.onclick = () => void this.togglePreview();
@@ -790,15 +819,25 @@ export class App {
         e.preventDefault();
         void this.run();
       }
+      // The reflex after typing code, and here it opened the browser's "Save
+      // page as" dialog over the editor. There is nothing to do: every change
+      // is saved as it is typed.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        this.say("", "no need — changes save as you type");
+      }
     }, { signal: this.events.signal });
   }
 
   private async run(): Promise<void> {
     const program = interpreterFor(this.active);
-    if (!program || this.el.run.disabled) return;
+    // Not over a command already running, typed or not: the button is Stop
+    // then, and ⌘⏎ is ignored rather than answered with an error.
+    if (!program || this.busy || this.console?.busy) return;
 
-    this.el.run.disabled = true;
     this.busy = true;
+    this.runPressed = performance.now();
+    this.paintRun();
     try {
       // Asked for at load now, so whether it exists says nothing about whether
       // it is ready — only a Run pressed within the first seconds waits here.
@@ -814,26 +853,33 @@ export class App {
       for (const [path, model] of this.models) await rt.write(path, model.getValue());
 
       this.say("running", "running…");
-      const command = `${program} ${JSON.stringify(this.active)}`;
+      // From the folder root, where the file tree's paths are, wherever the
+      // terminal has been. A `cd sub` typed earlier made Run answer "can't open
+      // file '/workspace/sub/main.py'". A subshell, so the terminal stays where
+      // it was put; and only when it is needed, so the usual command is the
+      // one a person would type. /workspace is the folder — see runtime.ts.
+      const plain = `${program} ${JSON.stringify(this.active)}`;
+      const here = (await sh.query("pwd")).trim();
+      const command = !here || here === "/workspace" ? plain : `(cd /workspace && ${plain})`;
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
       this.console?.announce(command);
-      let exitCode: number;
+      let finished: Finished | null = null;
       try {
-        ({ exitCode } = await sh.run(command));
-        if (exitCode !== 0) this.term?.write(`\x1b[31mexit ${exitCode}\x1b[0m\r\n`);
+        finished = await sh.run(command);
       } finally {
-        this.console?.resume();
+        this.console?.resume(finished);
       }
 
       this.say("saving", "saving…");
       await this.publish(rt);
-      this.say("", exitCode === 0 ? "done" : `exited ${exitCode}`);
+      const { exitCode, interrupted } = finished;
+      this.say("", exitCode === 0 ? "done" : interrupted ? "stopped" : `exited ${exitCode}`);
     } catch (e) {
       this.say("error", (e as Error).message);
     } finally {
       this.busy = false;
-      this.el.run.disabled = interpreterFor(this.active) === null;
+      this.paintRun();
       // A change that arrived mid-run was put off rather than dropped.
       if (this.missed) {
         this.missed = false;
