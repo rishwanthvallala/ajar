@@ -17,20 +17,26 @@ npm run check --workspace=ajar-pad
 
 ## The binary set
 
-Pinned, mirrored, and served from this origin — **62 MB raw, 14.2 MB
+Pinned, mirrored, and served from this origin — **66.5 MB raw, 15.1 MB
 compressed**, across ten `.webc` files for nine pinned packages and what they
 pull in. A folder that ran last week has to run this week, and a registry
 nobody here controls cannot promise that.
 
 ```
 wasmer/bash@1.0.25           wasmer/grep@3.12.0      syrusakbary/jq@0.1.0
-  └ wasmer/coreutils@1.0.25  wasmer/sed@4.9.0        wasmer/gzip@1.14.0
+  └ wasmer/coreutils@1.0.27  wasmer/sed@4.9.0        wasmer/gzip@1.14.0
 python/python@3.13.20        wasmer/find@4.10.0      wasmer/tar@1.35.0
                                                      saghul/quickjs@0.0.3
 ```
 
-coreutils is not pinned: bash depends on `wasmer/coreutils`, and pinning
-`sharrattj/coreutils` beside it — the same uutils build — downloaded both.
+A version without `=` is a range: `wasmer/bash@1.0.25` means 1.0.25 or any
+later 1.x. Everything in `runtime.ts` is pinned with `=` now, and coreutils —
+bash's dependency, which no list of packages can pin, because bash resolves
+its own range — is pinned in `public/sw.js`, by answering the SDK's registry
+query with one version. Until 28 September it floated, and a coreutils
+release on Wasmer's side changed what every visitor ran. It is 1.0.27, not
+the smaller 1.0.25, because with 1.0.25 the browser check hangs every time.
+Listing `sharrattj/coreutils` beside bash, an earlier attempt, downloaded both.
 `sqlite/sqlite` was dropped the same day, 25 September: it was a second copy of
 the engine python's `sqlite3` module carries, so the `sqlite3` command is gone
 and `import sqlite3` is not.

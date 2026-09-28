@@ -566,6 +566,10 @@ try {
       swStats.intercepted,
       "and every one of them is served from this origin",
     );
+    // The pin works by rewriting a registry answer whose shape the SDK
+    // chooses. If that shape changes, the pin quietly stops applying and the
+    // dependency floats again; this is what notices.
+    is(swStats.pinned > 0, true, "bash's coreutils resolved through the pin in sw.js");
   }
 
 } catch (e) {

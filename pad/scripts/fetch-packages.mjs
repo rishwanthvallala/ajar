@@ -66,13 +66,15 @@ const TYPES = {
   ".wasm": "application/wasm", ".js": "text/javascript", ".mjs": "text/javascript",
 };
 
-// Served without the service worker's mirror, so the run reaches the CDN and
-// every URL it wants is visible.
+// Served without the mirror, so the run reaches the CDN and every URL it wants
+// is visible — but with the service worker, whose pins decide which version of
+// a dependency is wanted. Recorded without it, the mirror held whatever the
+// registry offered that day, and the page, pinned, asked for something else.
 const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
-  if (path === "/sw.js" || path.startsWith("/packages/")) {
+  if (path.startsWith("/packages/")) {
     res.statusCode = 404;
     return res.end("not while recording");
   }

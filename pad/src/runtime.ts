@@ -45,6 +45,15 @@ declare const __SDK_URL__: string;
  * Which versions are available is part of the product rather than an
  * implementation detail — a folder that ran last week has to run this week.
  *
+ * `=` is what pins. A bare version is a range: `wasmer/coreutils@1.0.25`
+ * resolves to 1.0.27, the newest 1.x, which is how every one of these used to
+ * float — measured on 28 September by asking for 1.0.25 and watching 1.0.27
+ * arrive. They only matched because each was still its package's newest.
+ *
+ * A dependency one of these brings in is not named here, and naming it does
+ * not help: bash's coreutils is resolved from bash's own range whatever else
+ * is installed. That pin is in `public/sw.js`.
+ *
  * Every one of these is a version the registry actually publishes. An invented
  * one fails at sandbox construction with a registry error, which is a long way
  * from the line that guessed it.
@@ -56,31 +65,31 @@ export const PACKAGES = {
   // variables. Backticks were unaffected, which is why it went unnoticed.
   // The same upgrade fixes shell functions, which used to define fine and hang
   // when called. Both are asserted in the package probe.
-  shell: "wasmer/bash@1.0.25",
+  shell: "wasmer/bash@=1.0.25",
   // No coreutils of our own. bash depends on wasmer/coreutils (^1.0.19, so
   // 1.0.25), and pinning sharrattj/coreutils as well meant every first visit
   // downloaded both: 1.2 MB for a second copy of the same uutils 0.0.7 build,
   // missing the same commands. The commands now come from bash's.
-  python: "python/python@3.13.20",
+  python: "python/python@=3.13.20",
   // The text-processing three. They live under `wasmer/`, not `sharrattj/`,
   // which is why an earlier search concluded they did not exist at all — the
   // registry's own search returns nothing for any query, including `python`,
   // so a namespace guess is the only way to find anything.
-  grep: "wasmer/grep@3.12.0",
-  sed: "wasmer/sed@4.9.0",
-  find: "wasmer/find@4.10.0",
+  grep: "wasmer/grep@=3.12.0",
+  sed: "wasmer/sed@=4.9.0",
+  find: "wasmer/find@=4.10.0",
   // Five more, 8.7 MB raw between them against a 71 MB baseline. Each was
   // installed and exercised against its documented behaviour before being
   // added — see the probe catalogue. The heavy ones that also work (node at
   // 74 MB, php at 82, git at 85, clang at 104) are each a first-load decision
   // of their own and are deliberately not here.
-  jq: "syrusakbary/jq@0.1.0",
-  gzip: "wasmer/gzip@1.14.0",
-  tar: "wasmer/tar@1.35.0",
+  jq: "syrusakbary/jq@=0.1.0",
+  gzip: "wasmer/gzip@=1.14.0",
+  tar: "wasmer/tar@=1.35.0",
   // sqlite/sqlite, the `sqlite3` command, was dropped on 25 September: 1.1 MB
   // on every first visit for a second copy of an engine python already
   // carries. `import sqlite3` still works; the command line does not.
-  quickjs: "saghul/quickjs@0.0.3",
+  quickjs: "saghul/quickjs@=0.0.3",
 } as const;
 
 /** Extension to the command that runs it. Anything absent is not runnable. */

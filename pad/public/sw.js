@@ -36,17 +36,74 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+/**
+ * The one version a dependency may resolve to.
+ *
+ * A package names what it depends on as a range — bash asks for
+ * `wasmer/coreutils@^1.0.19` — and the SDK takes the newest version the
+ * registry lists in it. So when Wasmer published coreutils 1.0.26 and 1.0.27,
+ * every visitor moved to 1.0.27 without a deploy, from Wasmer's CDN because
+ * the mirror had never seen it. The next release would have done the same.
+ *
+ * The packages the page asks for are pinned in runtime.ts with `=`. A
+ * dependency cannot be pinned there — bash resolves its own range whatever
+ * else is installed — so it is pinned here, where the SDK asks the registry
+ * which versions exist: the answer lists only this one. Changing a version
+ * here means running fetch-packages.mjs, which records through this worker.
+ *
+ * 1.0.27 and not the 1.0.25 it replaced, though that was 1.2 MB on the wire
+ * against 2.8. Measured on 28 September: with 1.0.25 the browser check hung
+ * on a python command near its end in 11 runs out of 11; with 1.0.27, and the
+ * same worker passing every answer through, it finished in all 7.
+ */
+const PINS = {
+  "wasmer/coreutils": "1.0.27",
+};
+const REGISTRY = "https://registry.wasmer.io/graphql";
+
+/** The registry's answer, with a pinned package's other versions left out. */
+async function pinned(request) {
+  let name = null;
+  try {
+    name = /getPackage\(name: "([^"]+)"\)/.exec(JSON.parse(await request.clone().text()).query)?.[1] ?? null;
+  } catch {
+    // Not a query this knows how to read; pass it through untouched.
+  }
+  const res = await fetch(request);
+  const version = name && PINS[name];
+  if (!version || !res.ok) return res;
+  const body = await res.clone().json().catch(() => null);
+  const versions = body?.data?.getPackage?.versions;
+  if (!Array.isArray(versions)) return res;
+  const kept = versions.filter((v) => v.version === version);
+  // A pin the registry no longer has would leave nothing to resolve. Floating
+  // is worse than pinned and better than broken, and app-check says so.
+  if (kept.length === 0) return res;
+  body.data.getPackage.versions = kept;
+  pinnedCount += 1;
+  return new Response(JSON.stringify(body), {
+    status: res.status,
+    statusText: res.statusText,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 let intercepted = 0;
 let mirrored = 0;
+let pinnedCount = 0;
 
 self.addEventListener("message", (event) => {
   if (event.data === "stats") {
-    event.source?.postMessage({ intercepted, mirrored });
+    event.source?.postMessage({ intercepted, mirrored, pinned: pinnedCount });
   }
 });
 
 self.addEventListener("fetch", (event) => {
   const url = event.request.url;
+  if (url === REGISTRY && event.request.method === "POST") {
+    event.respondWith(pinned(event.request));
+    return;
+  }
   if (!url.startsWith("https://cdn.wasmer.io/")) return;
   intercepted += 1;
   event.respondWith(
