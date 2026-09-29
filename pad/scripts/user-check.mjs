@@ -170,6 +170,17 @@ try {
   await typed("wc -l < notes.txt");
   expect("cat > notes.txt ends with ctrl-d, and the file has what was typed", await shows(/(^|\n)[ \u00a0]*2[ \u00a0]*(\n|$)/), await tail());
 
+  // The prompt `python` gives on its own, which opened with a warning about a
+  // missing terminfo database before it would take anything.
+  await clear();
+  await type("python");
+  const prompted2 = await shows(/>>>/, 20_000);
+  await page.keyboard.type("6 * 7"); await page.keyboard.press("Enter");
+  const answered = await shows(/(^|\n)[  ]*42[  ]*(\n|$)/, 5000);
+  await page.keyboard.type("exit()"); await page.keyboard.press("Enter");
+  const left = await idle(10_000);
+  expect("python on its own is a prompt that answers, with no warning first", prompted2 && answered && left && !(await shows(/pyrepl|terminfo/, 200)), await tail(3));
+
   // ---- stopping ----
   section = "stopping";
   await typed("export KEPT=yes");

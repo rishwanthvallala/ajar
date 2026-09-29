@@ -239,6 +239,12 @@ export class Shell {
       // first is true of every install here and says nothing, the second is a
       // network request and a notice on every one.
       "export PIP_PROGRESS_BAR=off PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1",
+      // Python 3.13's new prompt needs a terminfo database this runtime does
+      // not find, so `python` on its own opened with "warning: can't use
+      // pyrepl: setupterm: could not find terminfo database" and then used
+      // the basic prompt anyway. Asked for directly, the basic prompt comes
+      // without the warning.
+      "export PYTHON_BASIC_REPL=1",
     ];
     await shell.run(aliases.join("; "));
 
