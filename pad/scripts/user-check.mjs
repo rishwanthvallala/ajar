@@ -320,6 +320,10 @@ try {
   // ---- the network (a deployment only) ----
   section = "the network (a deployment only)";
   if (LIVE) {
+    // Back to a file Run can run. `idle` waits for the Run button as well as
+    // the shell, and the deletion above left a .json open, whose Run stays
+    // off: pip finished in seconds and this waited out its whole 150.
+    await open("main.py");
     await clear();
     const t1 = Date.now();
     const installed = await typed("pip install requests", 150_000);
