@@ -66,6 +66,15 @@ const rows = async () => (await page.evaluate(() => document.querySelector("#ter
 /** The line the prompt is on, as drawn: the last row starting with "$". */
 const promptLine = async () => (await rows()).filter((l) => l.startsWith("$")).at(-1) ?? "";
 const printed = async (text) => (await rows()).some((l) => l.trim() === text);
+/**
+ * Printed, or printed within a few seconds. The command being over is not the
+ * output being drawn: the terminal paints on its next frame, and a macOS CI
+ * runner once looked in between and found `165` not there yet.
+ */
+const shown = (text, ms = 5000) => page.waitForFunction(
+  (t) => (document.querySelector("#terminal .xterm-rows")?.innerText ?? "").split("\n").some((l) => l.replace(/ /g, " ").trim() === t),
+  text, { timeout: ms },
+).then(() => true, () => false);
 const idle = () => page.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 60_000 });
 const settle = (ms = 250) => page.waitForTimeout(ms);
 const type = (text) => page.keyboard.type(text, { delay: 15 });
@@ -103,7 +112,7 @@ try {
   // The runtime starts at load; the first command waits for it.
   await page.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 240_000 });
   await run("echo ready");
-  expect("a typed command runs", await printed("ready"));
+  expect("a typed command runs", await shown("ready"));
 
   // ---- history ----
   await run("echo first");
@@ -124,7 +133,7 @@ try {
   expect("ctrl-c starts history over from the newest", (await promptLine()) === "$ echo second", await promptLine());
   await press("ArrowLeft"); await press("ArrowLeft"); await type("X");
   await press("Enter"); await settle(150); await idle();
-  expect("a recalled line edits and runs", await printed("secoXnd"), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  expect("a recalled line edits and runs", await shown("secoXnd"), (await rows()).filter(Boolean).slice(-2).join(" | "));
 
   // ---- editing keys ----
   await keys("Home", "echo abc", ["Home", "text:X"], "$ Xecho abc");
@@ -189,7 +198,7 @@ try {
   await paste("echo paste-one\necho paste-two\n");
   await page.waitForFunction(() => (document.querySelector("#terminal .xterm-rows")?.innerText ?? "").includes("paste-two\n"), null, { timeout: 20_000 }).catch(() => {});
   await idle(); await settle(300);
-  expect("a two-line paste runs both, in order", (await printed("paste-one")) && (await printed("paste-two")), (await rows()).filter(Boolean).slice(-5).join(" | "));
+  expect("a two-line paste runs both, in order", (await shown("paste-one")) && (await shown("paste-two")), (await rows()).filter(Boolean).slice(-5).join(" | "));
   expect("…without \"already running\"", !(await rows()).some((l) => l.includes("already running")));
   await paste("echo no-newline");
   await settle();
@@ -203,7 +212,7 @@ try {
   for (let i = 0; i < 5; i++) await press("Backspace");
   await type(" | wc -c");
   await press("Enter"); await settle(150); await idle();
-  expect("a line longer than the terminal edits and runs", await printed("165"), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  expect("a line longer than the terminal edits and runs", await shown("165"), (await rows()).filter(Boolean).slice(-2).join(" | "));
   expect("…and leaves no copies of itself up the screen", (await rows()).filter((l) => l.startsWith("$ printf")).length === 1, `${(await rows()).filter((l) => l.startsWith("$ printf")).length} copies`);
 
   // ---- ctrl-c ----
@@ -211,7 +220,7 @@ try {
   await press("Control+c");
   expect("ctrl-c stops a running command", await idle().then(() => true, () => false));
   await run("echo after-interrupt");
-  expect("…and the shell carries on", await printed("after-interrupt"));
+  expect("…and the shell carries on", await shown("after-interrupt"));
 
   // ---- errors ----
   // What a program writes to stderr is on the screen, in order with what it
@@ -230,7 +239,7 @@ try {
   await run("ls /redirected-dir > listing.txt");
   expect("…while `>file` leaves it on screen", (await rows()).some((l) => l.includes("redirected-dir") && l.includes("No such file")), (await rows()).filter(Boolean).slice(-2).join(" | "));
   await run(`python -c "1/0"`);
-  expect("a python traceback reaches the screen", await printed("ZeroDivisionError: division by zero"), (await rows()).filter(Boolean).slice(-2).join(" | "));
+  expect("a python traceback reaches the screen", await shown("ZeroDivisionError: division by zero"), (await rows()).filter(Boolean).slice(-2).join(" | "));
 
   // ---- Run joins history ----
   // Waits for the command Run announces, not for its output: locally the

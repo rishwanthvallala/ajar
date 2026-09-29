@@ -222,7 +222,14 @@ async function main() {
   ];
   if (process.platform === "darwin") console.log("  note  top is not run on macOS, whose sandbox cannot start it");
   for (const [command, quit, drew] of fullScreen) {
-    await run(command); await settle(1500);
+    // Until it has drawn, not for a fixed time: 1.5 s was enough everywhere
+    // but a busy CI runner, where vi once had not drawn yet.
+    await run(command);
+    await page.waitForFunction(
+      (src) => new RegExp(src, "i").test(document.querySelector(".xterm-rows")?.innerText ?? ""),
+      drew.source, { timeout: 10_000 },
+    ).catch(() => {});
+    await settle(300);
     const screen = (await rows()).join("\n");
     for (const k of quit) await (k.startsWith("text:") ? type(k.slice(5)) : press(k));
     await settle(1000);
