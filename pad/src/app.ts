@@ -10,8 +10,9 @@ import type * as Monaco from "monaco-editor";
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 
 import { Console } from "./console";
-import { DocSession } from "./editing";
+import { colourFor, DocSession } from "./editing";
 import { FileTree } from "./files";
+import { languageFor } from "./languages";
 import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
@@ -172,15 +173,42 @@ export class App {
 
   // ----------------------------------------------------------------- peers
 
+  /**
+   * Who is here, as a dot each in the colour of their cursor.
+   *
+   * Cursors used to carry a label — "guest 3" — which read as a rank or a
+   * count and meant nothing a person could use. The colour is what connects a
+   * cursor to a person, so it is all either one shows now, and this is where
+   * the colours are explained: yours ringed, everyone else's beside it.
+   * Nothing is drawn when you are alone.
+   */
+  private renderPresence(others: number[]): void {
+    const el = this.el.presence;
+    el.replaceChildren();
+    if (others.length === 0) return;
+    for (const id of [this.me, ...others]) {
+      const dot = document.createElement("span");
+      dot.className = id === this.me ? "person-dot you" : "person-dot";
+      dot.style.background = colourFor(id);
+      dot.title = id === this.me ? "you — this is the colour others see" : "someone else here";
+      el.append(dot);
+    }
+    el.append(`${others.length + 1} here`);
+  }
+
   private joinPeers(): void {
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
     this.peers = new Peers(url, this.name, {
       onMoved: () => void this.refresh(),
-      onPresence: (others, id) => {
-        this.el.presence.textContent = others === 0 ? "" : `${others + 1} here`;
+      onPresence: (_others, id) => {
+        const renamed = id !== null && id !== this.me;
+        if (id !== null) this.me = id;
+        this.renderPresence(id === null ? [] : (this.peers?.otherIds ?? []));
         if (id === null) return;
-        this.me = id;
         this.whoami = `guest ${id}`;
+        if (renamed) for (const doc of this.docs.values()) doc.setUser({ id, name: this.whoami });
+        const present = new Set([id, ...(this.peers?.otherIds ?? [])]);
+        for (const doc of this.docs.values()) doc.keepOnly(present);
         // Every open document asks for state again.
         //
         // A dropped socket loses whatever updates were in flight, and nothing
@@ -364,7 +392,12 @@ export class App {
   // ---------------------------------------------------------------- editor
 
   private async openEditor(): Promise<void> {
-    const monaco = await import("monaco-editor/esm/vs/editor/editor.api");
+    const [monaco] = await Promise.all([
+      import("monaco-editor/esm/vs/editor/editor.api"),
+      // Colours, and the editor features that come with them — see
+      // monaco-languages.ts.
+      import("./monaco-languages"),
+    ]);
     // Monaco asks for workers by language. Only the plain editor worker can
     // run here, so every request gets that one — the language services are not
     // bundled and could not start anyway.
@@ -375,6 +408,14 @@ export class App {
       },
     };
     this.monaco = monaco;
+    // Monaco cancels its own work when a file is switched or closed, and one
+    // of the standard editor features lets that rejection go unhandled — an
+    // uncaught "Canceled" with a stack inside Monaco's dispose. Monaco treats
+    // cancellation as expected everywhere else; so does this, and only that.
+    addEventListener("unhandledrejection", (e) => {
+      const reason = e.reason as { name?: string; message?: string } | undefined;
+      if (reason?.name === "Canceled" && reason.message === "Canceled") e.preventDefault();
+    }, { signal: this.events.signal });
     // Exposed so the browser checks can drive the editor the way a person
     // would. Monaco's own API, not a hook invented for testing.
     (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
@@ -400,7 +441,7 @@ export class App {
       if (existing.getValue() !== content) existing.setValue(content);
       return;
     }
-    const language = path.endsWith(".py") ? "python" : path.endsWith(".json") ? "json" : "plaintext";
+    const language = languageFor(this.monaco.languages.getLanguages(), path);
     const model = this.monaco.editor.createModel(content, language);
     // Per model, not on the editor. `onDidChangeModelContent` fires only for
     // whichever model is attached right now, so a change to any other file —
@@ -525,9 +566,46 @@ export class App {
       },
       onNewFile: (dir) => this.addFile(dir),
       onNewFolder: (dir) => this.addFolder(dir),
+      onDelete: (path) => void this.deleteFile(path),
     });
     this.tree.render([...this.models.keys()], this.active);
     this.ui?.setFileCount(this.models.size);
+  }
+
+  /**
+   * Delete a file, for everyone with the link.
+   *
+   * The same way `rm` in the terminal does it: gone from the sandbox, and the
+   * diff that follows every command publishes the removal and tells the other
+   * browsers, which drop it on their next read. The editor's copy goes first —
+   * publishing writes every open file back into the sandbox before it
+   * compares, and would put this one straight back.
+   */
+  private async deleteFile(path: string): Promise<void> {
+    if (this.models.size <= 1) {
+      this.say("error", "a folder keeps at least one file");
+      return;
+    }
+    if (this.busy || this.console?.busy) {
+      this.say("error", "wait for what is running to finish");
+      return;
+    }
+    if (!confirm(`Delete ${path}? It goes for everyone with the link.`)) return;
+    try {
+      const rt = await this.ensureRuntime();
+      // Onto another file before this one's model is disposed under the editor.
+      if (this.active === path) this.show([...this.models.keys()].filter((p) => p !== path).sort()[0]!);
+      this.dirty.delete(path);
+      this.closeDoc(path);
+      this.models.get(path)?.dispose();
+      this.models.delete(path);
+      await rt.remove(path);
+      this.renderFiles();
+      await this.publish(rt);
+      this.say("", `deleted ${path}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    }
   }
 
 

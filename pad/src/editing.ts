@@ -143,6 +143,33 @@ export class DocSession {
     Y.applyUpdate(this.ydoc, bytes, "remote");
   }
 
+  /**
+   * Who this browser is now. The relay issues a new id on every reconnect,
+   * and the id is the colour: without this a document opened before a
+   * reconnect went on showing everyone else the old one.
+   */
+  setUser(user: { id: number; name: string }) {
+    this.awareness.setLocalStateField("user", user);
+  }
+
+  /**
+   * Drop the cursors of people no longer here.
+   *
+   * A closed tab never says goodbye to the document, and Yjs keeps a silent
+   * peer's cursor for thirty seconds, so someone who had left went on showing
+   * a cursor, in a colour no dot in the header had any more. The relay knows
+   * at once who has left; this takes its word for it.
+   */
+  keepOnly(present: Set<number>) {
+    const gone: number[] = [];
+    for (const [clientId, state] of this.awareness.getStates()) {
+      if (clientId === this.awareness.clientID) continue;
+      const user = (state as { user?: { id: number } }).user;
+      if (user && !present.has(user.id)) gone.push(clientId);
+    }
+    if (gone.length) removeAwarenessStates(this.awareness, gone, "remote");
+  }
+
   applyAwareness(bytes: Uint8Array) {
     applyAwarenessUpdate(this.awareness, bytes, "remote");
   }
@@ -249,7 +276,10 @@ export class DocSession {
       rules.push(
         `.${cls}-caret { border-left: 2px solid ${colour}; margin-left: -1px; }`,
         `.${cls}-selection { background: ${colour}33; }`,
-        `.${cls}-label::after { content: "${cssString(user.name)}"; background: ${colour}; }`,
+        // A dot on the caret in the person's colour, and no name. The name was
+        // "guest 3", which read as a count or a rank; the colour is matched to
+        // a person by the dots beside the presence count instead.
+        `.${cls}-label::after { content: ""; background: ${colour}; }`,
       );
 
       const total = model.getValueLength();

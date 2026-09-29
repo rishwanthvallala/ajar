@@ -63,7 +63,10 @@ const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-"
 const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1280, height: 800 } });
 const page = context.pages()[0] ?? (await context.newPage());
 const pageErrors = [];
-page.on("pageerror", (e) => pageErrors.push(e.message));
+// Which part of the run a page error came from, and where in the page, so
+// "Canceled" alone is never all there is to go on.
+let section = "loading";
+page.on("pageerror", (e) => pageErrors.push(`${section}: ${e.message} ${(e.stack ?? "").split("\n").slice(1, 4).map((l) => l.trim()).join(" < ")}`));
 let answer = null;
 page.on("dialog", (d) => (answer === null ? d.dismiss() : d.accept(answer)));
 
@@ -129,6 +132,7 @@ try {
   await idle();
 
   // ---- mistakes ----
+  section = "mistakes";
   await clear();
   await run("x = 1\ndef f(in):\n    pass\n");
   expect("a syntax error says what and where", (await shows(/line 2/)) && (await shows(/SyntaxError: invalid syntax/)), await tail());
@@ -143,6 +147,7 @@ try {
   expect("starting a thread is an error that says why, not a hang", await shows(/threads cannot start in the pad/), await tail(2));
 
   // ---- input ----
+  section = "input";
   await clear();
   await run("name = input('Your name: ')\nprint(f'Hello, {name}!')\n", { wait: false });
   const prompted = await shows(/Your name:/, 20_000);
@@ -163,9 +168,10 @@ try {
   await page.keyboard.press("Control+d");
   await idle(10_000);
   await typed("wc -l < notes.txt");
-  expect("cat > notes.txt ends with ctrl-d, and the file has what was typed", (await rows()).some((l) => l.trim() === "2"), await tail());
+  expect("cat > notes.txt ends with ctrl-d, and the file has what was typed", await shows(/(^|\n)[ \u00a0]*2[ \u00a0]*(\n|$)/), await tail());
 
   // ---- stopping ----
+  section = "stopping";
   await typed("export KEPT=yes");
   await clear();
   await run("i = 0\nwhile True:\n    i += 1\n    print(i)\n", { wait: false });
@@ -217,6 +223,7 @@ try {
   expect("ctrl-c and ctrl-d are only keys in nano, and Stop gets out of it", survived && leftEditor, `editing=${editing} survived=${survived} left=${leftEditor}: ${await tail(2)}`);
 
   // ---- the screen ----
+  section = "the screen";
   await clear();
   await run("print('no newline here', end='')\n");
   await focus(); await page.keyboard.type("echo typing"); await wait(300);
@@ -225,7 +232,7 @@ try {
   await page.keyboard.press("Control+c");
   await clear();
   await run("import sys\nprint('partial', end='')\nsys.exit(4)\n");
-  expect("…and exit 4 goes on a row of its own", (await rows()).some((l) => l.trim() === "exit 4"), await tail());
+  expect("…and exit 4 goes on a row of its own", await shows(/(^|\n)[ \u00a0]*exit 4[ \u00a0]*(\n|$)/), await tail());
   await clear();
   await run("import time\nfor i in range(0, 101, 10):\n    print(f'\\r{i}%', end='', flush=True)\n    time.sleep(0.03)\nprint()\n");
   expect("a \\r progress bar redraws one row", (await rows()).filter((l) => l.includes("%")).length === 1 && (await shows(/100%/)), await tail());
@@ -235,6 +242,7 @@ try {
   expect("20,000 lines in under 15 s", (await shows(/line 19999/)) && Date.now() - t0 < 15_000, `${Date.now() - t0} ms`);
 
   // ---- files ----
+  section = "files";
   await clear();
   await typed("mkdir -p elsewhere && cd elsewhere");
   await run("import os\nprint('cwd is', os.getcwd())\n");
@@ -252,7 +260,43 @@ try {
   const inTree = await page.waitForFunction(() => [...document.querySelectorAll("#files *")].some((e) => e.textContent.trim() === "out.txt"), null, { timeout: 5000 }).then(() => true, () => false);
   expect("a file the program writes appears in the tree", inTree);
 
+  // ---- the editor ----
+  section = "the editor";
+  // Colour, which the pad had none of: every file was plain text, Python too.
+  await open("main.py");
+  await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("def greet(who):\n    # say hello\n    return f'hi {who}' + str(42)\n"));
+  const kinds = () => page.evaluate(() => new Set([...document.querySelectorAll(".monaco-editor .view-lines span[class^='mtk']")].map((s) => s.className)).size);
+  // The tokenizer arrives a moment after the text, on its first use.
+  await page.waitForFunction(
+    () => new Set([...document.querySelectorAll(".monaco-editor .view-lines span[class^='mtk']")].map((s) => s.className)).size >= 4,
+    null, { timeout: 10_000 },
+  ).catch(() => {});
+  const tokens = await kinds();
+  expect("python is coloured, not plain text", tokens >= 4, `${tokens} kinds of token`);
+  const language = async (name) => {
+    await newFile(name, "x");
+    const id = await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLanguageId());
+    return id;
+  };
+  const langs = { "page.html": await language("page.html"), "data.json": await language("data.json"), "notes.md": await language("notes.md"), "run.sh": await language("run.sh") };
+  expect("html, json, markdown and shell each get their colours", JSON.stringify(langs) === JSON.stringify({ "page.html": "html", "data.json": "javascript", "notes.md": "markdown", "run.sh": "shell" }), JSON.stringify(langs));
+  await page.locator(".monaco-editor textarea").first().focus();
+  await page.keyboard.press("ControlOrMeta+f");
+  expect("ctrl-f opens find", await page.waitForSelector(".monaco-editor .find-widget.visible", { timeout: 5000 }).then(() => true, () => false));
+  await page.keyboard.press("Escape");
+
+  // ---- deleting from the tree ----
+  section = "deleting from the tree";
+  answer = "yes";
+  await page.hover('#files .file-row:has(.row.file:text-is("run.sh"))');
+  await page.click('#files .file-row:has(.row.file:text-is("run.sh")) .delete');
+  answer = null;
+  const deleted = await page.waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "run.sh"), null, { timeout: 10_000 }).then(() => true, () => false);
+  await typed("ls run.sh 2>&1 | tail -1");
+  expect("the delete button removes a file from the tree and the folder", deleted && (await shows(/No such file/)), await tail(2));
+
   // ---- keys ----
+  section = "keys";
   await page.evaluate(() => {
     window.__saved = null;
     addEventListener("keydown", (e) => { if (e.key === "s") setTimeout(() => { window.__saved = e.defaultPrevented; }, 0); });
@@ -263,6 +307,7 @@ try {
   expect("ctrl-s is not the browser's Save page dialog", (await page.evaluate(() => window.__saved)) === true, `status "${await status()}"`);
 
   // ---- the network (a deployment only) ----
+  section = "the network (a deployment only)";
   if (LIVE) {
     await clear();
     const t1 = Date.now();

@@ -16,8 +16,13 @@ if nobody took it.
 
 ## What you can do
 
-Make files and folders, edit them, and run shell commands. There are about
-140, and these are the ones people reach for:
+Make files and folders, edit them, and run shell commands. The bin icon beside
+a file deletes it — for everyone with the link. The editor colours Python and
+over thirty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
+YAML, SQL, shell, Java, C and C++, Go, Rust and more), and Ctrl-F finds and
+replaces.
+
+There are about 140 shell commands, and these are the ones people reach for:
 
 ```sh
 ls cat cp mv rm mkdir touch head tail wc sort uniq cut tr tee seq echo printf
@@ -98,8 +103,9 @@ it, and anything it had not saved.
 
 ## Working together
 
-Send the link and you are both in the same folder. You will see how many
-people are here.
+Send the link and you are both in the same folder. The top right shows a dot
+for each person here, yours ringed, and each person's cursor in the editor is
+the colour of their dot.
 
 Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for

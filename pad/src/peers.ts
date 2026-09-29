@@ -108,6 +108,10 @@ export class Peers {
    */
   private pending: Frame[] = [];
   private others = new Set<number>();
+  /** Everyone else on this link, by participant id — which is also their colour. */
+  get otherIds(): number[] {
+    return [...this.others].sort((a, b) => a - b);
+  }
   private closed = false;
   private attempt = 0;
   /** Doc frames in and out, for the browser checks. */

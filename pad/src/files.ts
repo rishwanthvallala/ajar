@@ -16,6 +16,7 @@ export interface TreeEvents {
   onOpen: (path: string) => void;
   onNewFile: (inDirectory: string) => void;
   onNewFolder: (inDirectory: string) => void;
+  onDelete: (path: string) => void;
 }
 
 interface Node {
@@ -57,6 +58,7 @@ const ICONS = {
   newFile: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 1.5v4M9.5 3.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   newFolder: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2a1 1 0 0 1 .7.3l1 1a1 1 0 0 0 .7.3h2.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2 4.5v8A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M12.5 2.5v4M10.5 4.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   chevron: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  trash: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.6 9a1.5 1.5 0 0 0 1.5 1.4h3.8a1.5 1.5 0 0 0 1.5-1.4L12 4M6.5 6.5v5M9.5 6.5v5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 } as const;
 
 export class FileTree {
@@ -146,7 +148,14 @@ export class FileTree {
         row.append(child.name);
         row.dataset.path = child.path;
         row.onclick = () => this.events.onOpen(child.path);
-        into.append(row);
+        // Beside the row rather than in it: a button cannot contain a button,
+        // and the row's text stays the file's name alone.
+        const wrap = document.createElement("div");
+        wrap.className = "file-row";
+        const del = this.iconButton("trash", `Delete ${child.path}`, () => this.events.onDelete(child.path));
+        del.classList.add("delete");
+        wrap.append(row, del);
+        into.append(wrap);
       }
     }
   }

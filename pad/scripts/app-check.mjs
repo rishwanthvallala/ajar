@@ -243,6 +243,12 @@ try {
     { timeout: 20_000 },
   );
   ok("each browser is told how many others are here");
+  const dots = await second.evaluate(() => ({
+    all: document.querySelectorAll("#presence .person-dot").length,
+    you: document.querySelectorAll("#presence .person-dot.you").length,
+    colours: new Set([...document.querySelectorAll("#presence .person-dot")].map((d) => getComputedStyle(d).backgroundColor)).size,
+  }));
+  is(JSON.stringify(dots), JSON.stringify({ all: 2, you: 1, colours: 2 }), "each person is a dot in their own colour, yours marked");
 
   // The second browser writes a file only it could have produced. Checking for
   // out.csv here would prove nothing — the first page made one itself a moment
@@ -356,6 +362,28 @@ try {
     { timeout: 20_000 },
   );
 
+  // The other person's cursor: their colour, and no name — the label used to
+  // read "guest 3". The colour has to be the one their dot in the header has,
+  // or nothing on screen says whose cursor it is.
+  await page.waitForSelector(".monaco-editor .remote-caret", { timeout: 20_000 }).catch(() => {});
+  const cursor = await page.evaluate(() => {
+    const caret = document.querySelector(".monaco-editor .remote-caret");
+    const label = document.querySelector(".monaco-editor .remote-label");
+    return {
+      seen: Boolean(caret),
+      carets: document.querySelectorAll(".monaco-editor .remote-caret").length,
+      text: label ? getComputedStyle(label, "::after").content : null,
+      colour: caret ? getComputedStyle(caret).borderLeftColor : null,
+      dots: [...document.querySelectorAll("#presence .person-dot:not(.you)")].map((d) => getComputedStyle(d).backgroundColor),
+    };
+  });
+  is(cursor.seen, true, "the other person's cursor shows");
+  // The browser that left a minute ago had this file open too. Its cursor
+  // stayed for thirty seconds after it went, until the relay's word counted.
+  is(cursor.carets, 1, "and only theirs: nobody who has left still has a cursor");
+  is(cursor.text === "none" || cursor.text === '""', true, `and it carries no name (content ${cursor.text})`);
+  is(cursor.dots.includes(cursor.colour), true, `and its colour is their dot's (${cursor.colour} in ${cursor.dots})`);
+
   const afterTurns = await Promise.all([textOf(page), textOf(third)]);
   if (afterTurns.every((t) => t.includes("FIRST-LINE") && t.includes("SECOND-LINE"))) {
     ok("taking turns, both people's work survives in both browsers");
@@ -375,6 +403,18 @@ try {
   } else {
     fail(`typing at once diverged:\n       ${JSON.stringify(one)}\n       ${JSON.stringify(two)}`);
   }
+
+  // ---- deleting a file from the tree ----
+  // For everyone: gone from the other browser's tree and from the server.
+  page.once("dialog", (d) => d.accept());
+  await page.hover('#files .file-row:has(.row.file:text-is("out.csv"))');
+  await page.click('#files .file-row:has(.row.file:text-is("out.csv")) .delete');
+  const goneThere = await third
+    .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 20_000 })
+    .then(() => true, () => false);
+  is(goneThere, true, "a file deleted in one browser leaves the other's tree");
+  const afterDelete = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
+  is("out.csv" in afterDelete.files, false, "and the server's copy of the folder");
 
   await third.close();
 

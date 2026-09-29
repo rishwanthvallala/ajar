@@ -9,7 +9,12 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .status[data-status="running"] { color: var(--accent); }
 .pad-shell .status[data-status="error"] { color: var(--hard); }
 .pad-shell .status[data-status=""] + * { color: inherit; }
-.pad-shell .presence { color: var(--accent); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.pad-shell .presence { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.pad-shell .person-dot { width: 0.625rem; height: 0.625rem; border-radius: 50%; flex: none; }
+.pad-shell .person-dot.you { box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 2.5px var(--ink-2); margin-right: 0.15rem; }
+.pad-shell .person-dot:last-of-type { margin-right: 0.2rem; }
+/* The caret's marker: a dot in the person's colour, with no name in it. */
+.pad-shell .remote-label::after { top: -3px; left: -3px; width: 6px; height: 6px; padding: 0; border-radius: 50%; }
 
 .pad-shell .pad-action {
   display: inline-flex; align-items: center; gap: 0.35rem; flex: none;
@@ -44,6 +49,15 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .row .chev svg { width: 0.6875rem; height: 0.6875rem; transition: transform 120ms; }
 .pad-shell .row.dir.open .chev svg { transform: rotate(90deg); }
 .pad-shell .row.dir { color: var(--ink-2); }
+/* A file's row and its delete button, side by side: a button cannot hold one. */
+.pad-shell .file-row { position: relative; display: flex; align-items: center; }
+.pad-shell .file-row > .row { flex: 1; min-width: 0; }
+.pad-shell .file-row > .delete { position: absolute; right: 0.3rem; opacity: 0; padding: 0.2rem; }
+.pad-shell .file-row > .delete svg { width: 0.8125rem; height: 0.8125rem; }
+.pad-shell .file-row:hover > .delete, .pad-shell .file-row > .delete:focus-visible { opacity: 1; }
+.pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }
+/* No hover to reveal it on a touch screen, so it is always there. */
+@media (hover: none) { .pad-shell .file-row > .delete { opacity: 0.7; } }
 
 .pad-shell #viewer { position: relative; display: block; overflow: hidden; }
 .pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }
