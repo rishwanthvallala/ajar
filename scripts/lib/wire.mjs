@@ -481,7 +481,16 @@ export class Guest {
         // Swallowed. Go round again.
       }
     }
-    throw new Error(`terminal ${pty} never became ready`);
+    // What it showed, so a recurrence explains itself. smoke-editing failed
+    // here once, on 24 September, with nothing more than this line to go on.
+    const shown = (this.ptys.get(pty) ?? "")
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+      .slice(-300);
+    throw new Error(
+      `terminal ${pty} never became ready after ${attempts} tries; ` +
+        `${this.ptys.has(pty) ? `it showed ${JSON.stringify(shown)}` : "it was never opened"}`,
+    );
   }
 
   async waitUntil(fn, what, timeoutMs = 15_000) {

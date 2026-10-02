@@ -10,9 +10,17 @@
 // visit. ORIGIN points at another deployment; PROFILE moves the profile.
 //
 // Budget: a first visit fetches every runtime file once, and production allows
-// 30 fetches of each file an hour per address — spent by everyone behind that
+// 100 fetches of each file an hour per address — spent by everyone behind that
 // address, including whoever uses the pad from it. Keep COLD short. Return
 // visits fetch nothing and cost nothing.
+//
+// A Run slower than SLOW_RUN_MS prints the visit's timeline: every request —
+// the service worker's included — with when it started, finished or failed,
+// and every console line. One first visit in seven took 114 s on 25 September
+// with nothing to say why; the runtime also asks registry.wasmer.io where
+// each package is on every start, which nothing here mirrors and which failed
+// intermittently on 2 October, so that is the first thing to look for.
+const SLOW_RUN_MS = Number(process.env.SLOW_RUN_MS ?? 15_000);
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,10 +37,18 @@ const idle = (page) => page.waitForFunction(() => window.__pad?.shellBusy() === 
 async function visit(label, readMs, { fresh, pip, interact }) {
   if (fresh) rmSync(PROFILE, { recursive: true, force: true });
   const out = { harness: "pad-visit", label, read_before_run_ms: readMs, cached: !fresh && existsSync(PROFILE) };
+  let timeline = [];
   const context = await chromium.launchPersistentContext(PROFILE, { headless: true });
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     const landed = performance.now();
+    timeline = [];
+    const at = () => ms(landed);
+    const short = (u) => u.replace(/^https?:\/\/([^/]+)/, "$1").slice(0, 90);
+    context.on("request", (r) => timeline.push(`${at()} -> ${r.serviceWorker() ? "sw " : ""}${r.method()} ${short(r.url())}`));
+    context.on("requestfinished", async (r) => timeline.push(`${at()} <- ${(await r.response())?.status() ?? "?"} ${short(r.url())}`));
+    context.on("requestfailed", (r) => timeline.push(`${at()} !! ${r.failure()?.errorText ?? "failed"} ${short(r.url())}`));
+    page.on("console", (m) => timeline.push(`${at()} console.${m.type()} ${m.text().slice(0, 160)}`));
     await page.goto(`${ORIGIN}/`, { waitUntil: "commit" });
     await page.locator(".monaco-editor").waitFor({ timeout: 30_000 });
     out.editor_visible_ms = ms(landed);
@@ -45,6 +61,10 @@ async function visit(label, readMs, { fresh, pip, interact }) {
       null, { timeout: 240_000, polling: "raf" });
     out.run_to_output_ms = ms(run);
     out.landing_to_output_ms = ms(landed);
+    if (out.run_to_output_ms > SLOW_RUN_MS) {
+      console.error(`  ${label}: Run took ${out.run_to_output_ms} ms — the timeline, in ms from landing:`);
+      for (const line of timeline) console.error(`    ${line}`);
+    }
     await idle(page);
 
     if (pip) {
@@ -132,6 +152,8 @@ async function visit(label, readMs, { fresh, pip, interact }) {
     }
   } catch (e) {
     out.error = String(e.message).split("\n")[0];
+    console.error(`  ${label}: ${out.error} — the timeline, in ms from landing:`);
+    for (const line of timeline) console.error(`    ${line}`);
   } finally {
     await context.close();
   }
