@@ -75,9 +75,9 @@ they are running, and what it costs.
 
 | Key | What it does |
 |---|---|
-| `k` | Disconnect a guest |
+| `k` | Disconnect a guest — type the number beside their name, then Enter |
 | `x` | Lock the session — nobody new can join, people already in stay |
-| `l` | Read-only — guests can look, not type |
+| `l` | Read-only — guests can look, not type in a terminal or edit a file |
 | `d` | Stop keeping the offline copy, and forget the one already stored |
 | `q` | Close — ends every terminal and kills the link |
 

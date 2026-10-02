@@ -34,7 +34,7 @@ use tracing::{debug, warn};
 use crate::client::{RelayEvent, RelayHandle};
 use crate::docs::Docs;
 use crate::pty::{PtyExit, PtyOutput, PtyRegistry};
-use crate::ui::{Action, GuestRow, Status, Ui};
+use crate::ui::{Action, GuestRow, KickStep, Status, Ui};
 use crate::usage::Sampler;
 use crate::workspace::{FsEvent, Workspace, MAX_ENTRIES};
 
@@ -502,31 +502,35 @@ async fn run() -> Result<()> {
             }
             action = actions.recv() => {
                 let Some(action) = action else { continue };
+                match host.state.kick_step(&action) {
+                    KickStep::Chosen(id) => {
+                        if let Some(name) = host.guests.get(&id).cloned() {
+                            let _ = host.outbound.send(Frame::json(
+                                Channel::Control,
+                                TARGET_ALL,
+                                &Control::Kick { participant_id: id },
+                            )?);
+                            host.log(format!("kicked {name}"));
+                        } else {
+                            host.log(format!("nobody here is {id}"));
+                        }
+                        host.ui.draw(&host.state)?;
+                        continue;
+                    }
+                    KickStep::Pending => {
+                        host.ui.draw(&host.state)?;
+                        continue;
+                    }
+                    KickStep::Ignored => {}
+                }
                 match action {
                     Action::Quit => {
                         host.state.status = Status::Closing;
                         host.ui.draw(&host.state)?;
                         break;
                     }
-                    Action::Kick(0) => {
-                        // First press: ask which one, rather than guessing.
-                        host.state.kicking = true;
-                    }
-                    Action::Kick(id) => {
-                        if host.state.kicking {
-                            host.state.kicking = false;
-                            if let Some(name) = host.guests.get(&id).cloned() {
-                                let _ = host.outbound.send(Frame::json(
-                                    Channel::Control,
-                                    TARGET_ALL,
-                                    &Control::Kick { participant_id: id },
-                                )?);
-                                host.log(format!("kicked {name}"));
-                            } else {
-                                host.log(format!("nobody here is {id}"));
-                            }
-                        }
-                    }
+                    // Only ever meaningful inside "kick which one?".
+                    Action::Kick | Action::Digit(_) | Action::Confirm | Action::Erase => {}
                     Action::ToggleLock => {
                         let locked = !host.state.locked;
                         host.state.locked = locked;
@@ -573,12 +577,12 @@ async fn run() -> Result<()> {
                             &Pty::ReadOnly { read_only },
                         )?);
                         host.log(if read_only {
-                            "terminals are read-only — guests can watch"
+                            "read-only — guests can watch, not type or edit"
                         } else {
-                            "terminals accept input again"
+                            "guests can type and edit again"
                         });
                     }
-                    Action::Redraw => host.state.kicking = false,
+                    Action::Redraw => {}
                 }
                 host.ui.draw(&host.state)?;
             }

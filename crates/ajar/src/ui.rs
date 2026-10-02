@@ -87,8 +87,8 @@ pub struct State {
     pub guests: Vec<GuestRow>,
     pub terminals: Vec<TerminalRow>,
     activity: Vec<String>,
-    /// Set while awaiting a digit for "kick which one?".
-    pub kicking: bool,
+    /// The number typed so far for "kick which one?", while it is being asked.
+    pub kicking: Option<String>,
 }
 
 impl State {
@@ -117,7 +117,7 @@ impl State {
             guests: Vec::new(),
             terminals: Vec::new(),
             activity: Vec::new(),
-            kicking: false,
+            kicking: None,
         }
     }
 
@@ -127,13 +127,73 @@ impl State {
             self.activity.remove(0);
         }
     }
+
+    /// One key's part in "kick which one?".
+    ///
+    /// The number is typed and then confirmed with Enter. It used to be one
+    /// keypress, acted on at once, so only guests numbered 1 to 9 could be
+    /// kicked — and ids are never reused, every reconnect burns one, so a
+    /// long session soon had guests the panel could not reach.
+    pub fn kick_step(&mut self, action: &Action) -> KickStep {
+        let Some(typed) = self.kicking.as_mut() else {
+            if *action == Action::Kick {
+                self.kicking = Some(String::new());
+                return KickStep::Pending;
+            }
+            return KickStep::Ignored;
+        };
+        match action {
+            Action::Digit(d) => {
+                // A u32 has ten digits; anything longer is not anyone.
+                if typed.len() < 10 {
+                    typed.extend(char::from_digit(*d, 10));
+                }
+                KickStep::Pending
+            }
+            Action::Erase => {
+                typed.pop();
+                KickStep::Pending
+            }
+            Action::Confirm => match self.kicking.take().unwrap_or_default().parse() {
+                Ok(id) => KickStep::Chosen(id),
+                Err(_) => KickStep::Pending,
+            },
+            // Quitting still quits.
+            Action::Quit => {
+                self.kicking = None;
+                KickStep::Ignored
+            }
+            // Anything else cancels, and does nothing else: a stray key in
+            // the middle of choosing someone must not lock the room.
+            _ => {
+                self.kicking = None;
+                KickStep::Pending
+            }
+        }
+    }
+}
+
+/// What a key did to "kick which one?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KickStep {
+    /// Not part of a kick; the key means what it usually does.
+    Ignored,
+    /// The question was asked, answered in part, or cancelled.
+    Pending,
+    /// Enter, on this number.
+    Chosen(u32),
 }
 
 /// What the panel asks the agent to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Quit,
-    Kick(u32),
+    /// Ask which guest to remove.
+    Kick,
+    /// A digit, for the number of the guest being kicked.
+    Digit(u32),
+    Confirm,
+    Erase,
     /// Seal the room: nobody new gets in.
     ToggleLock,
     /// Guests can watch the terminals but not type into them.
@@ -254,13 +314,13 @@ fn interpret(key: KeyEvent) -> Option<Action> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(Action::Quit),
         (KeyCode::Char('q'), _) => Some(Action::Quit),
-        (KeyCode::Char('k'), _) => Some(Action::Kick(0)),
+        (KeyCode::Char('k'), _) => Some(Action::Kick),
         (KeyCode::Char('x'), _) => Some(Action::ToggleLock),
         (KeyCode::Char('l'), _) => Some(Action::ToggleReadOnly),
         (KeyCode::Char('d'), _) => Some(Action::ToggleSync),
-        (KeyCode::Char(c), _) if c.is_ascii_digit() => {
-            Some(Action::Kick(c.to_digit(10).unwrap_or(0)))
-        }
+        (KeyCode::Char(c), _) if c.is_ascii_digit() => c.to_digit(10).map(Action::Digit),
+        (KeyCode::Enter, _) => Some(Action::Confirm),
+        (KeyCode::Backspace, _) => Some(Action::Erase),
         _ => Some(Action::Redraw),
     }
 }
@@ -440,9 +500,9 @@ fn activity(f: &mut Frame, area: Rect, state: &State) {
 }
 
 fn keys(f: &mut Frame, area: Rect, state: &State) {
-    let text = if state.kicking {
+    let text = if let Some(typed) = &state.kicking {
         Line::from(Span::styled(
-            " kick which? press the number beside their name, or any other key to cancel",
+            format!(" kick which? type the number beside their name, then Enter — any other key cancels: {typed}_"),
             Style::new().fg(Color::Yellow),
         ))
     } else {
@@ -514,7 +574,7 @@ mod tests {
         // The panel prints [k] [x] [l] [q]. A key that is drawn but does
         // nothing is worse than one that is not drawn at all.
         for (key, expected) in [
-            ('k', Action::Kick(0)),
+            ('k', Action::Kick),
             ('x', Action::ToggleLock),
             ('l', Action::ToggleReadOnly),
             ('d', Action::ToggleSync),
@@ -525,10 +585,78 @@ mod tests {
         }
     }
 
+    fn state() -> State {
+        State::new(
+            "p".into(),
+            "/p".into(),
+            0,
+            "s".into(),
+            true,
+            "l".into(),
+            vec![],
+        )
+    }
+
+    fn keys(state: &mut State, typed: &str) -> Vec<KickStep> {
+        typed
+            .chars()
+            .map(|c| {
+                let code = match c {
+                    '\n' => KeyCode::Enter,
+                    '\x08' => KeyCode::Backspace,
+                    c => KeyCode::Char(c),
+                };
+                let action = interpret(KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+                state.kick_step(&action)
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_digit_selects_a_participant() {
-        let three = KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE);
-        assert_eq!(interpret(three), Some(Action::Kick(3)));
+    fn a_guest_numbered_over_nine_can_be_kicked() {
+        // It was one keypress, acted on at once: guest 12 was unreachable.
+        let mut s = state();
+        assert_eq!(keys(&mut s, "k12\n").last(), Some(&KickStep::Chosen(12)));
+        assert_eq!(s.kicking, None);
+    }
+
+    #[test]
+    fn a_digit_can_be_taken_back() {
+        let mut s = state();
+        assert_eq!(
+            keys(&mut s, "k15\x083\n").last(),
+            Some(&KickStep::Chosen(13))
+        );
+    }
+
+    #[test]
+    fn any_other_key_cancels_without_acting() {
+        let mut s = state();
+        // `x` would lock the room; mid-question it only cancels.
+        assert_eq!(keys(&mut s, "k1x"), vec![KickStep::Pending; 3]);
+        assert_eq!(s.kicking, None);
+        assert_eq!(
+            keys(&mut s, "\n"),
+            vec![KickStep::Ignored],
+            "Enter after a cancel kicks nobody"
+        );
+    }
+
+    #[test]
+    fn digits_alone_kick_nobody() {
+        let mut s = state();
+        assert_eq!(
+            keys(&mut s, "3\n"),
+            vec![KickStep::Ignored, KickStep::Ignored]
+        );
+    }
+
+    #[test]
+    fn quitting_still_quits_mid_question() {
+        let mut s = state();
+        keys(&mut s, "k1");
+        assert_eq!(s.kick_step(&Action::Quit), KickStep::Ignored);
+        assert_eq!(s.kicking, None);
     }
 
     #[test]
