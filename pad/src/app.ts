@@ -92,12 +92,6 @@ export class App {
   private awaiting = new Map<string, (answered: boolean) => void>();
   /** Store writes from this tab are strictly ordered. */
   private writeChain: Promise<void> = Promise.resolve();
-  /**
-   * Other people's changes on their way into the sandbox. A publish waits for
-   * them: its diff would otherwise read a file deleted elsewhere, and not yet
-   * removed here, as one a command has just made.
-   */
-  private sandboxSync: Promise<void> = Promise.resolve();
   /** This browser's participant id and name, as cursors are labelled. */
   private me = 1;
   private whoami = "someone";
@@ -254,9 +248,15 @@ export class App {
       return;
     }
     if (pad.seq <= this.storeSeq) return;
+    // Only a runtime that is already up is written to here. One still starting
+    // is not waited for: this used to wait, so a browser still downloading its
+    // runtime — a first visit, for a while — showed nobody else's new or
+    // deleted files until it arrived. On 2 October a file deleted in one
+    // browser stayed in another's tree past app-check's twenty seconds, for as
+    // long as one package took to come from the CDN. ensureRuntime writes in
+    // whatever changed meanwhile before anything can use the sandbox.
+    const rt = this.runtimeReady ? await this.runtime : null;
     const incoming = knownFrom(pad.files);
-    const changed: string[] = [];
-    const removed: string[] = [];
 
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
@@ -264,8 +264,11 @@ export class App {
       // A file with a live document is owned by the CRDT, which already has
       // every keystroke. Writing the store's copy over it would undo whatever
       // has been typed since that copy was saved.
-      if (!this.docs.has(path)) this.setFile(path, content);
-      changed.push(path);
+      const doc = this.docs.get(path);
+      if (!doc) this.setFile(path, content);
+      // The sandbox too, or the next run uses the version this browser had
+      // before the change arrived.
+      if (rt) await rt.write(path, doc?.contents() ?? content);
     }
     for (const path of this.known.keys()) {
       if (incoming.has(path)) continue;
@@ -273,7 +276,7 @@ export class App {
       this.closeDoc(path);
       this.models.get(path)?.dispose();
       this.models.delete(path);
-      removed.push(path);
+      if (rt) await rt.remove(path).catch(() => {});
     }
     this.applyingRemote = false;
     this.known = incoming;
@@ -283,32 +286,6 @@ export class App {
       if (first) this.show(first);
     }
     this.renderFiles();
-
-    // The sandbox too, or the next run uses the version this browser had
-    // before the change arrived — but after the screen, not before it. This
-    // used to wait for the runtime first, so a visitor whose runtime was still
-    // downloading saw nobody else's changes until it arrived: on 2 October a
-    // file deleted in one browser stayed in another's tree past the check's
-    // twenty seconds, for as long as one package took to come from the CDN.
-    //
-    // Read when it is written, not now: a runtime still starting took its
-    // snapshot before this change, and two refreshes queued behind it must not
-    // land the older copy last.
-    const runtime = this.runtime;
-    if (runtime && (changed.length > 0 || removed.length > 0)) {
-      this.sandboxSync = this.sandboxSync
-        .then(async () => {
-          const rt = await runtime;
-          for (const path of changed) {
-            const content = this.docs.get(path)?.contents() ?? this.models.get(path)?.getValue();
-            if (content !== undefined) await rt.write(path, content);
-          }
-          for (const path of removed) {
-            if (!this.models.has(path)) await rt.remove(path).catch(() => {});
-          }
-        })
-        .catch(() => {});
-    }
   }
 
   // -------------------------------------------------------------- documents
@@ -789,10 +766,37 @@ export class App {
       // what makes a dev server started in the folder possible. It grants no
       // egress: `connect` is still refused. See docs/dev/networking.md.
       if (PREVIEW_ORIGIN) this.watchForServers(rt);
-      this.runtimeReady = true;
+      await this.catchUp(rt, files);
       return rt;
     })();
     return this.runtime;
+  }
+
+  /**
+   * Write in what changed while the runtime was starting, then call it ready.
+   *
+   * The sandbox was seeded from a snapshot, and a download can take a while.
+   * Other people's changes kept arriving meanwhile, and `refresh` puts them
+   * on screen without writing them here, since nothing here could take them.
+   * So they are written now, before anything can run against the sandbox —
+   * a command waits for this. Repeated until a pass finds nothing new, and
+   * marked ready in the same step as that last look, so a change cannot land
+   * between the two and be left out.
+   */
+  private async catchUp(rt: Runtime, seeded: Record<string, string>): Promise<void> {
+    let applied = seeded;
+    for (;;) {
+      const now = seedFiles(this.known, this.models, this.docs);
+      const writes = Object.entries(now).filter(([path, text]) => applied[path] !== text);
+      const removals = Object.keys(applied).filter((path) => !(path in now));
+      if (writes.length === 0 && removals.length === 0) {
+        this.runtimeReady = true;
+        return;
+      }
+      for (const [path, text] of writes) await rt.write(path, text);
+      for (const path of removals) await rt.remove(path).catch(() => {});
+      applied = now;
+    }
   }
 
   /**
@@ -1032,7 +1036,6 @@ export class App {
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
     return this.queueWrite(async () => {
-      await this.sandboxSync;
       await this.flushModels(rt);
       const { changes, next } = await diff(rt, this.known);
       if (changes.length === 0) return;

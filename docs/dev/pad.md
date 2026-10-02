@@ -358,15 +358,15 @@ stream a file is on without being told.
 **Everything else** goes through the store: a peer broadcasts only that
 something *moved*, and everyone re-reads.
 
-The re-read changes the editor and the file tree at once, and the sandbox when
-the runtime is ready. Until 2 October it waited for the runtime first, so a
-browser still downloading one — a first visit, for a while — showed nobody
-else's new or deleted files until it arrived. The sandbox writes queue behind a
-runtime still starting (it took its snapshot before the change) and read the
-current text when they run, and a publish waits for them: its diff would
-otherwise take a file deleted elsewhere, still in this sandbox, for one a
-command just made. `app-check.mjs` holds one browser's packages back and
-deletes a file under it.
+The re-read changes the editor and the file tree at once. It writes into the
+sandbox only when the runtime is already up; until 2 October it waited for a
+runtime still starting, so a browser still downloading one — a first visit,
+for a while — showed nobody else's new or deleted files until it arrived. A
+runtime that arrives late was seeded from an older snapshot, so before it is
+ready `catchUp` writes in whatever changed since, looking again until a pass
+finds nothing, and marks it ready in that same step. No command can run before
+then, so nothing is written into a sandbox mid-command. `app-check.mjs` holds
+one browser's packages back and deletes a file under it.
 
 ### Seeding a document is the subtle part
 

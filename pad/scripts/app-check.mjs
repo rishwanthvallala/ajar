@@ -342,15 +342,18 @@ try {
   // agree, because a CRDT promises convergence and not that two people
   // inserting at the same spot stay tidy: they interleave, in any editor
   // built this way, and asserting otherwise is asserting the wrong thing.
+  // `__pad` appears only once the page's terminal has loaded, which can trail
+  // the editor on the live site. Read unguarded, a wait threw on its first try
+  // instead of waiting — one run in two against production on 2 October.
   const textOf = (tab) =>
-    tab.evaluate(() => window.__pad.text(window.__pad.active()) ?? "");
+    tab.evaluate(() => window.__pad?.text(window.__pad.active()) ?? "");
 
   // Taking turns.
   await page.click(".monaco-editor .view-lines");
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.type("FIRST-LINE\n");
   await third.waitForFunction(
-    () => (window.__pad.text(window.__pad.active()) ?? "").includes("FIRST-LINE"),
+    () => (window.__pad?.text(window.__pad.active()) ?? "").includes("FIRST-LINE"),
     { timeout: 20_000 },
   );
 
@@ -358,7 +361,7 @@ try {
   await third.keyboard.press("ControlOrMeta+End");
   await third.keyboard.type("SECOND-LINE\n");
   await page.waitForFunction(
-    () => (window.__pad.text(window.__pad.active()) ?? "").includes("SECOND-LINE"),
+    () => (window.__pad?.text(window.__pad.active()) ?? "").includes("SECOND-LINE"),
     { timeout: 20_000 },
   );
 
@@ -410,23 +413,35 @@ try {
   // Including a browser whose runtime is still downloading, which is every
   // first visit for a while. Its tree used to wait for the runtime before
   // taking anyone else's change; on 2 October that was one slow package from
-  // the CDN, and this check failed for it. Held back here on purpose.
+  // the CDN, and this check failed for it. Held back here on purpose: 25 s,
+  // so the delete lands while it waits and the old code — which showed it
+  // only once the runtime came — misses the 15 s allowed below. Not much
+  // longer: held 40 s, the SDK gave up on the packages and never started.
   const loading = await browser.newPage();
   await loading.context().route(/\/packages\/.*\.webc/, async (route) => {
-    await new Promise((r) => setTimeout(r, 120_000));
+    await new Promise((r) => setTimeout(r, 25_000));
     await route.continue().catch(() => {});
   });
   await loading.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await loading.waitForFunction(() => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 30_000 });
-  const gone = (tab) => tab
-    .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 20_000 })
+  const gone = (tab, timeout) => tab
+    .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout })
     .then(() => true, () => false);
   page.once("dialog", (d) => d.accept());
   await page.hover('#files .file-row:has(.row.file:text-is("out.csv"))');
   await page.click('#files .file-row:has(.row.file:text-is("out.csv")) .delete');
-  const [goneThere, goneWhileLoading] = await Promise.all([gone(third), gone(loading)]);
+  const [goneThere, goneWhileLoading] = await Promise.all([gone(third, 20_000), gone(loading, 15_000)]);
   is(goneThere, true, "a file deleted in one browser leaves the other's tree");
   is(goneWhileLoading, true, "and the tree of one whose runtime is still downloading");
+  // Its sandbox was seeded before the delete. When the runtime arrives, the
+  // file has to be gone from there too, or its next run brings it back.
+  await loading.click("#terminal");
+  await loading.keyboard.type("ls\n");
+  const listed = await loading
+    .waitForFunction(() => /main\.py/.test(document.getElementById("terminal")?.textContent ?? ""), null, { timeout: 120_000 })
+    .then(() => loading.evaluate(() => document.getElementById("terminal")?.textContent ?? ""), () => null);
+  if (listed === null || listed.includes("out.csv")) results.push(`note: its terminal ${JSON.stringify(listed?.slice(-300) ?? "never listed")}`);
+  is(listed !== null && !listed.includes("out.csv"), true, "and its sandbox, once that runtime arrives");
   const afterDelete = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is("out.csv" in afterDelete.files, false, "and the server's copy of the folder");
 
@@ -488,7 +503,7 @@ try {
   // terminal, which `cat` was echoing back anyway, so it passed while `cat`
   // was still running and everything typed after it was going nowhere.
   await page.keyboard.press("Control+c");
-  await page.waitForFunction(() => window.__pad.shellBusy() === false, { timeout: 20_000 });
+  await page.waitForFunction(() => window.__pad?.shellBusy() === false, { timeout: 20_000 });
   ok("ctrl-c stops a command that is waiting for input");
 
   await page.keyboard.type("echo still-works > after-cat.txt\n");
