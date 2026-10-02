@@ -4,12 +4,19 @@
 //! meant to edit it. So before the link exists, take a note of where things
 //! stood, and on the way out say plainly what changed and how to undo it.
 //!
-//! `git stash create` is the right primitive: it builds a commit object from
-//! the working tree without touching the working tree. `git stash` would
-//! disturb what the host is looking at, which is rude at the exact moment
-//! they are deciding whether to trust this.
+//! The checkpoint is a commit object built from the working tree through a
+//! temporary index, so neither the host's index nor their files are touched —
+//! `git stash` would disturb what the host is looking at, which is rude at the
+//! exact moment they are deciding whether to trust this. Through an index of
+//! its own rather than `git stash create`, which it used to be: that leaves out
+//! untracked files, so a new file the host had not committed yet could be
+//! rewritten by a guest with no way back. Ignored files stay out either way.
+//!
+//! What changed is measured against that commit, not against HEAD. Against
+//! HEAD, every edit the host made before sharing was reported on the way out
+//! as something that changed during the session.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,9 +28,10 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
-    /// What to run to get back here. Restores tracked files only — anything a
-    /// guest newly created stays, because deleting unknown files on someone's
-    /// behalf is not a favour.
+    /// What to run to get back here. Puts back every file the checkpoint holds
+    /// — tracked or not, as long as it was not ignored — and leaves anything a
+    /// guest newly created, because deleting unknown files on someone's behalf
+    /// is not a favour.
     pub fn restore_command(&self) -> String {
         format!(
             "git restore --source={} --worktree -- .",
@@ -33,11 +41,11 @@ impl Checkpoint {
 }
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .ok()?;
+    run(Command::new("git").args(args).current_dir(root))
+}
+
+fn run(cmd: &mut Command) -> Option<String> {
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -50,6 +58,35 @@ pub fn is_repo(root: &Path) -> bool {
     git(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
 }
 
+/// The working tree as a tree object — tracked and untracked files, ignored
+/// ones left out — written through an index of its own.
+///
+/// The real index is copied in first when there is one, so `add` only has to
+/// hash what changed rather than every file in the repository.
+fn tree_of(root: &Path) -> Option<String> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let index: PathBuf = std::env::temp_dir().join(format!(
+        "ajar-index-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    if let Some(real) = git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    ) {
+        let _ = std::fs::copy(real, &index);
+    }
+    let with_index = |args: &[&str]| {
+        run(Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_INDEX_FILE", &index))
+    };
+    let tree = with_index(&["add", "-A", "--", "."]).and_then(|_| with_index(&["write-tree"]));
+    let _ = std::fs::remove_file(&index);
+    tree.filter(|t| !t.is_empty())
+}
+
 /// Capture the working tree. `None` when this is not a repository, or git
 /// isn't installed — both of which the caller should say out loud rather than
 /// paper over.
@@ -57,31 +94,63 @@ pub fn create(root: &Path) -> Option<Checkpoint> {
     if !is_repo(root) {
         return None;
     }
-    // Empty when the tree is clean: nothing to stash, so HEAD is the mark.
-    match git(root, &["stash", "create"]) {
-        Some(sha) if !sha.is_empty() => Some(Checkpoint {
-            commit: sha,
-            had_changes: true,
-        }),
-        _ => git(root, &["rev-parse", "HEAD"])
-            .filter(|s| !s.is_empty())
-            .map(|commit| Checkpoint {
-                commit,
+    let tree = tree_of(root)?;
+    let head = git(root, &["rev-parse", "--verify", "-q", "HEAD"]).filter(|h| !h.is_empty());
+    // Nothing differs from HEAD: HEAD is the mark.
+    if let Some(head) = &head {
+        if git(root, &["rev-parse", "HEAD^{tree}"]).as_deref() == Some(tree.as_str()) {
+            return Some(Checkpoint {
+                commit: head.clone(),
                 had_changes: false,
-            }),
+            });
+        }
     }
+    let mut args = vec![
+        "commit-tree",
+        tree.as_str(),
+        "-m",
+        "ajar: the folder before sharing",
+    ];
+    if let Some(head) = &head {
+        args.extend(["-p", head.as_str()]);
+    }
+    // A name of its own, so a machine with no git identity configured can
+    // still make one. It is a commit nothing points to; only the sha matters.
+    let commit = run(Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "ajar")
+        .env("GIT_AUTHOR_EMAIL", "ajar@localhost")
+        .env("GIT_COMMITTER_NAME", "ajar")
+        .env("GIT_COMMITTER_EMAIL", "ajar@localhost"))?;
+    Some(Checkpoint {
+        commit,
+        had_changes: true,
+    })
 }
 
-/// Paths that differ from the checkpoint, as `git status` sees them.
-pub fn changed_since(root: &Path) -> Vec<String> {
-    let Some(out) = git(root, &["status", "--porcelain"]) else {
+/// Paths that differ from the checkpoint: edited, created or deleted since.
+pub fn changed_since(root: &Path, since: &Checkpoint) -> Vec<String> {
+    let Some(now) = tree_of(root) else {
         return Vec::new();
     };
-    out.lines()
-        .filter_map(|line| line.get(3..))
-        // Renames arrive as `old -> new`; the destination is what exists now.
-        .map(|p| p.rsplit(" -> ").next().unwrap_or(p).trim().to_string())
+    // NUL-separated, so a path with a space or a quote comes out as written.
+    let Some(out) = git(
+        root,
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            &since.commit,
+            &now,
+        ],
+    ) else {
+        return Vec::new();
+    };
+    out.split('\0')
         .filter(|p| !p.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
@@ -119,7 +188,7 @@ mod tests {
         let c = create(&dir).expect("a repo should always checkpoint");
         assert!(!c.had_changes);
         assert_eq!(c.commit, git(&dir, &["rev-parse", "HEAD"]).unwrap());
-        assert!(changed_since(&dir).is_empty());
+        assert!(changed_since(&dir, &c).is_empty());
     }
 
     #[test]
@@ -136,7 +205,10 @@ mod tests {
             "edited by the host\n",
             "creating a checkpoint disturbed the working tree"
         );
-        assert_eq!(changed_since(&dir), vec!["a.txt".to_string()]);
+        assert!(
+            changed_since(&dir, &c).is_empty(),
+            "the host's own edit, made before sharing, is not something that changed"
+        );
     }
 
     #[test]
@@ -147,7 +219,7 @@ mod tests {
 
         // A guest rewrites the file.
         fs::write(dir.join("a.txt"), "guest was here\n").unwrap();
-        assert_eq!(changed_since(&dir), vec!["a.txt".to_string()]);
+        assert_eq!(changed_since(&dir, &c), vec!["a.txt".to_string()]);
 
         // The command we print has to actually work.
         let out = Command::new("sh")
@@ -178,9 +250,10 @@ mod tests {
         fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-qm", "second"]).unwrap();
+        let c = create(&dir).expect("checkpoint");
         fs::write(dir.join("src/main.rs"), "fn main() { changed(); }\n").unwrap();
 
-        let changed = changed_since(&dir);
+        let changed = changed_since(&dir, &c);
         assert_eq!(
             changed,
             vec!["src/main.rs".to_string()],
@@ -191,8 +264,59 @@ mod tests {
     #[test]
     fn untracked_files_are_reported_too() {
         let Some(dir) = repo("untracked") else { return };
+        let c = create(&dir).expect("checkpoint");
         fs::write(dir.join("guest-left-this.txt"), "hi\n").unwrap();
-        assert_eq!(changed_since(&dir), vec!["guest-left-this.txt".to_string()]);
+        fs::remove_file(dir.join("a.txt")).unwrap();
+        assert_eq!(
+            changed_since(&dir, &c),
+            vec!["a.txt".to_string(), "guest-left-this.txt".to_string()],
+            "a file made and a file deleted are both changes"
+        );
+    }
+
+    #[test]
+    fn an_uncommitted_new_file_can_be_put_back() {
+        // The host's new file, never added. `git stash create` left these
+        // out, so a guest's rewrite of one had no way back.
+        let Some(dir) = repo("new-file") else { return };
+        fs::write(dir.join("notes.txt"), "the host's notes\n").unwrap();
+        let c = create(&dir).expect("checkpoint");
+        assert!(c.had_changes);
+        fs::write(dir.join("notes.txt"), "overwritten by a guest\n").unwrap();
+        assert_eq!(changed_since(&dir, &c), vec!["notes.txt".to_string()]);
+
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(c.restore_command())
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "the host's notes\n"
+        );
+        // And the index is the host's own: the new file is still untracked.
+        assert_eq!(
+            git(&dir, &["status", "--porcelain"]).unwrap(),
+            "?? notes.txt"
+        );
+    }
+
+    #[test]
+    fn ignored_files_stay_out() {
+        let Some(dir) = repo("ignored") else { return };
+        fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        git(&dir, &["add", ".gitignore"]).unwrap();
+        git(&dir, &["commit", "-qm", "ignore"]).unwrap();
+        let c = create(&dir).expect("checkpoint");
+        fs::create_dir_all(dir.join("build")).unwrap();
+        fs::write(dir.join("build/out.o"), "x").unwrap();
+        assert!(changed_since(&dir, &c).is_empty());
     }
 
     #[test]

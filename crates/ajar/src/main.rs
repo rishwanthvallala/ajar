@@ -1403,7 +1403,7 @@ fn reflow(host: &mut Host) {
 /// What changed while the door was open, and how to put it back.
 fn farewell(root: &Path, mark: Option<&checkpoint::Checkpoint>) {
     let Some(mark) = mark else { return };
-    let changed = checkpoint::changed_since(root);
+    let changed = checkpoint::changed_since(root, mark);
     if changed.is_empty() {
         println!("  nothing in the folder changed.\n");
         return;
