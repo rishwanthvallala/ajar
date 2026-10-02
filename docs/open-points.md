@@ -11,6 +11,11 @@ until it reinstalls. v0.0.5, the same day, lets a guest's shell source the
 toolchain setup a host's rc files name — without it every guest terminal on
 Linux opened with `Permission denied`.*
 
+*On 2–3 October every item here that code could close was closed — see
+[the list at the end](#closed-on-23-october). The agent's share of that reaches
+hosts with the release after v0.0.5; the relay, both clients and Caddy deploy
+as usual.*
+
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
 not what would be nice.
@@ -19,32 +24,38 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Two things the September review left untested or unbounded
+### Unexplained once, and now able to explain themselves
+
+**`smoke-editing` failed once.** *Terminal 1 never became ready*, on 24
+September, and it has passed every run since. If it recurs, `ready()` now says
+what the terminal showed, or that it was never opened; the shell's startup
+under load is still the first suspect.
+
+**A first pad visit waited 114 s once.** On 25 September one first visit in
+seven took 114 s from Run to output, with the python download done in 2.3 s.
+`scripts/perf/pad-visit.mjs` now prints every request and console line for a
+Run slower than 15 s or one that never finishes. The suspect is below.
+
+### The pad's runtime cannot start without registry.wasmer.io
+
+Only the packages' bytes are mirrored. On every start the runtime asks
+`registry.wasmer.io` where each package is — ten lookups, one after another,
+about three seconds of a cold Run — and nothing here holds those answers. On 2
+October they failed intermittently from one network: three local runs in eight
+stopped at `unable to load package wasmer/bash … Could not fetch
+registry.wasmer.io/graphql`, always on the coreutils lookup, and one first visit
+to production never answered Run in four minutes. When one fails the terminal
+says so and Run never does.
+
+The answers for pinned packages do not change, so they can be mirrored like the
+bytes: `fetch-packages.mjs` records them and the service worker serves them,
+falling through to the registry only for what it has not seen. Not done yet.
+
+### Still unbounded or unexplained
 
 From the 22-finding review merged as PR #3 — the findings are in
 [code-review-2026-09-16.md](code-review-2026-09-16.md) and what was done about
 each in [code-review-fixes-2026-09-16.md](code-review-fixes-2026-09-16.md).
-Both of the below were implemented; neither is finished.
-
-**The relay's control-frame refusal has no test.** Guests and peers can no
-longer originate a control frame after the handshake — forwarding malformed
-cleartext control used to terminate the host — but nothing exercises it. The
-end-to-end smokes only ever have the *host* send control frames, so a
-regression here would pass the gate. Seven relay tests came with that work;
-this is not one of them.
-
-**`smoke-editing` failed once, unexplained.** *Terminal 1 never became ready*,
-on 24 September, and it has passed every run since. Treated as
-a flake and not demonstrated to be one; if it recurs, the shell's startup time
-under load is the first suspect, since `ready()` gives it six attempts.
-
-**A first pad visit waited 114 s once, unexplained.** On 25 September, after
-the runtime was trimmed: one first visit in seven took 114 s from Run to output
-where the others took 0.5 to 3 s. Caddy's log has that visit's python download
-finishing in 2.3 s, so the wait was not in anything this origin serves — the
-SDK's lookups at registry.wasmer.io are the first suspect, and are invisible
-here. Five more first visits did not repeat it. A timeline of every request
-and console line, printed only when Run is slow, is what would settle it.
 
 **The guest-counting limits test lost its shell four times, unexplained.**
 `a_guests_own_processes_do_not_raise_their_ceiling`, on 25 September, in WSL:
@@ -61,68 +72,25 @@ invisible, and they come out of a guest's 512. Harmless at that size; an agent
 run in a container whose uid is also busy outside it would be back to the
 original bug.
 
-**A few slow readers can still make pad reads wait.** Reads are streamed from
-disk now, so they no longer cost memory, and they are held to 32 in flight per
-address and 64 in all. A handful of addresses each holding 32 unread responses
-fill the 64, and everyone else waits ten seconds and is told the server is busy.
-That is an availability problem for the pad rather than a threat to the relay,
-and it is the same shape a slow uploader already has against the four write
-permits. A deadline on a response still being sent would close it.
+**Readers that keep asking can still fill the pad's read slots.** A reader that
+*stops* is closed by the kernel after a minute now (`TCP_USER_TIMEOUT`), which
+frees its slots. Two addresses that open 32 large reads each and re-open them as
+they are closed can still keep the 64 busy; that is a rate problem the per-address
+limit bounds rather than a stall, and the same shape a slow uploader has against
+the four write permits.
 
-### The sandbox still lets a guest reach key-holding sockets
+### On Linux the sandbox still lets a guest reach key-holding sockets
 
-The environment variables are withheld now, but the sockets they named are
-still reachable by path: an ssh agent in a temp directory a guest can list, the
-gpg agent and the session bus under `/run/user`, Docker's socket. The agent
+The environment variables are withheld, but the sockets they named are still
+reachable by path on Linux: an ssh agent in a temp directory a guest can list,
+the gpg agent and the session bus under `/run/user`, Docker's socket. The agent
 measures each through the real sandbox and warns about every one a guest can
-reach — so the host is told — but nothing refuses them yet.
+reach, so the host is told. **macOS refuses them since 2 October** — Seatbelt
+`network-outbound` denials, verified on a Mac against a real listener.
 
 | | What would refuse them |
 |---|---|
 | Linux | Landlock ABI 9 (`ResolveUnix`, Linux 7.1). Not reached for until `linux-sandbox.sh` has run on a kernel that has it |
-| macOS | Seatbelt `network-outbound` denials on those paths. Needs writing and verifying on a Mac; nothing here can run one |
-
-### Found reading the code on 24 September, not fixed yet
-
-Each is from reading, not from a failing check, and each wants one written
-before it is touched.
-
-| | Where |
-|---|---|
-| The panel's kick takes one digit, and ids are never reused — every reconnect burns one — so a guest numbered 10 or more cannot be kicked | `ui.rs` `interpret` |
-| Read-only covers terminals only: document edits are applied and written to disk regardless | `main.rs` doc channel, `web/src/main.ts` `startEditing` |
-| A stored copy over about 8 MB never reaches a guest: its header and blob are queued back to back, and the outbox refuses the second once the first makes the queue non-empty | `ws.rs` store fetch, `outbox.rs` `send` |
-| A socket that never sends `hello` is charged to no quota and has no timeout | `ws.rs` handshake |
-| The watcher's filter reads only the root `.gitignore` and `.ignore`; the scanner also honours nested ones, global excludes and `info/exclude`, so changes there reach guests until the next resync | `workspace/filter.rs` |
-| A cursor's `user.id` goes into a stylesheet unescaped — the name was fixed, the id was not. In the pad anyone with the link can send one | `web/src/editing.ts`, `pad/src/editing.ts` `drawCursors` |
-| The checkpoint leaves out untracked files, and "files changed" is measured against HEAD, so the host's own earlier edits are reported as the guest's | `checkpoint.rs` |
-
-### A macOS guest can read the host's shell history
-
-Found 2 October while fixing the `vi` failure below, and not demonstrated end
-to end — it follows from the profile. macOS reads the home directory through a
-**deny**-list, so anything not named is readable; Linux uses an allow-list and
-is not affected. `~/.zsh_history`, `~/.bash_history` and the REPL histories
-(`.python_history`, `.psql_history`, `.node_repl_history`) are not named, and
-they routinely hold tokens passed as arguments. The agent tells a macOS host
-"ssh, cloud and browser credentials unreadable"; this is a credential-bearing
-file that list misses.
-
-Not simply added to the deny-list, because a shell that cannot read its own
-history file may say so at every prompt — that wants checking on a real host
-before it ships, the way `.viminfo` was.
-
-### A pad newcomer whose room answers slowly seeds its own copy
-
-When a file opens and somebody else has it open, the pad asks for their
-document and waits 600 ms. An answer later than that — a distant relay, a
-slow network — and the newcomer seeds from the stored copy instead. If the
-room's document has moved on from it, the two are the case
-[dev/pad.md](dev/pad.md#seeding-a-document-is-the-subtle-part) describes:
-seeded under the same client id with different text, they exchange updates
-and ignore each other. Found on 2 October while fixing the blank file on
-open, by reading the code — not reproduced. A longer wait, or seeding under
-an id a later answer can supersede, would close it.
 
 ### On a macOS host, a guest cannot run `top`
 
@@ -344,3 +312,26 @@ the check fail is the only habit that has reliably caught them, and it has one
 failure mode of its own worth knowing — a revert that does not compile leaves
 the previous build in place, and the check then measures the fix it was meant
 to be deprived of. See [dev/testing.md](dev/testing.md).
+
+---
+
+## Closed on 2–3 October
+
+Each with a check that fails without it, revert-tested.
+
+| | Commit |
+|---|---|
+| Read-only covered terminals only; a guest's edit to a file was applied, broadcast and written to disk | `d52f69d` |
+| A cursor's id went into a stylesheet unescaped — `1 {} body { display: none }` blanked the page | `8ffe031` |
+| A socket that never sent hello had no deadline and no quota | `456e4a6` |
+| A stored copy over 8 MB never reached a guest — header and blob were judged separately | `456e4a6` |
+| The relay's refusal of guest control frames had no test | `456e4a6` |
+| The panel's kick took one digit, so guests numbered 10 or more could not be removed | `ef117b8` |
+| The checkpoint left out untracked files, and "files changed" counted the host's own earlier edits | `a8f138e` |
+| The watcher read only the root's ignore files; nested ones, `info/exclude` and global excludes reached guests | `178ab36` |
+| A macOS guest could read the host's shell and REPL history | `9bc7b84` |
+| A macOS guest could use the host's ssh agent, gpg agent and Docker | `9bc7b84` |
+| A pad newcomer whose room answered in over 600 ms seeded a second, diverging document | `d4198ad` |
+| A few stalled readers could hold every pad read slot | `749f33e` |
+| A pad file went blank while its document arrived, and typing then landed wherever the merge put it | `ab9a5cd` |
+| Caddy's 30 first visits an hour per address turned away the thirty-first person on one network | `2de0243` |

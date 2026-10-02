@@ -8,12 +8,15 @@ and it is the only authority in a hosted session.
 Two things run **before** the link is minted, because both are about what the
 host is agreeing to before anyone can arrive.
 
-**A checkpoint.** `git stash create` builds a commit object from the working
-tree *without touching the working tree* — plain `git stash` would disturb
-what the host is looking at, at the exact moment they are deciding whether to
-trust this. On the way out the agent says what changed and how to undo it. It
-restores tracked files only; anything a guest newly created stays put, because
-deleting unknown files on someone's behalf is not a favour.
+**A checkpoint.** A commit object built from the working tree through a
+temporary index, *without touching the working tree or the host's index* —
+plain `git stash` would disturb what the host is looking at, at the exact moment
+they are deciding whether to trust this. Untracked files are in it, ignored ones
+are not; until 2 October it was `git stash create`, which leaves untracked files
+out. On the way out the agent says what changed since the checkpoint — not since
+HEAD, which counted the host's own earlier edits — and how to undo it. Undoing
+puts back every file the checkpoint holds; anything a guest newly created stays
+put, because deleting unknown files on someone's behalf is not a favour.
 
 **A credential scan.** See [security.md](security.md#the-credential-scan-is-a-warning-not-a-boundary).
 
