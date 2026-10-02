@@ -404,8 +404,17 @@ found on 2 October and all in `app.ts`'s `readyDoc`, `attach` and `onDoc`:
 
 `app-check.mjs` slows one browser's relay by 400 ms, types the moment the
 editor appears, and checks the file never blanks and the line stays where it
-was typed. Slower than the 600 ms the pad allows for an answer is the second
-attempt above — two seeded documents ignoring each other — and is still open.
+was typed.
+
+And it no longer gives up after 600 ms. A newcomer whose room answered more
+slowly seeded the stored copy beside a document that had moved on from it —
+the second attempt above, two documents ignoring each other; in the check, the
+newcomer's copy of a line the room had added came out twice. Now a browser
+asked for a file it does not have open answers `DOC_NONE`, and the newcomer
+seeds only once everyone present has said so or left; otherwise it waits, up
+to five seconds, for whoever does have it. The check slows one browser's relay
+by 1.5 s and compares the whole text on both sides — a check of each side's
+lines alone passed against the 600 ms wait.
 
 ### Seeding the sandbox is a separate problem, with the same shape
 

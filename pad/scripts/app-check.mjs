@@ -156,7 +156,14 @@ const page = await browser.newPage();
 // would not load or a runtime that never starts, far from the cause — on
 // 2 October an hour of runs against production went on reading those as bugs.
 let limited = 0;
-const watchLimits = (tab) => tab.context().on("response", (r) => { if (r.status() === 429) limited += 1; });
+// Every other browser this opens, by name, so a failure can say what each one
+// was showing — the first page's screen alone said nothing about why the
+// second's Run never finished.
+const tabs = new Map();
+const watchLimits = (tab, name) => {
+  tab.context().on("response", (r) => { if (r.status() === 429) limited += 1; });
+  if (name) tabs.set(name, tab);
+};
 watchLimits(page);
 
 // Where the bulk actually came from. The mirror is the whole point of the
@@ -237,7 +244,7 @@ try {
 
   // The whole point of a link: someone else opens it and the work is there.
   const second = await browser.newPage();
-  watchLimits(second);
+  watchLimits(second, "second");
   await second.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await second.waitForSelector(".monaco-editor", { timeout: 30_000 });
   await second.waitForFunction(
@@ -297,7 +304,7 @@ try {
   // was a command, so two people could sit in one folder editing the same
   // file and never see a word of each other's work.
   const third = await browser.newPage();
-  watchLimits(third);
+  watchLimits(third, "third");
   await third.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await third.waitForSelector(".monaco-editor", { timeout: 30_000 });
 
@@ -428,7 +435,7 @@ try {
   // into every time rather than by luck — by 400 ms, inside the 600 ms the pad
   // gives somebody to answer; slower than that is a different problem.
   const late = await browser.newPage();
-  watchLimits(late);
+  watchLimits(late, "late");
   await late.routeWebSocket(/\/ws$/, (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((m) => server.send(m));
@@ -462,6 +469,65 @@ try {
   is(keptThere, true, "and reaches the other browser");
   await late.close();
 
+  // ---- a room that answers slowly ----
+  // Slower than the 600 ms the pad used to give it, the newcomer stopped
+  // waiting and seeded the stored copy. Seeding is safe only when the room's
+  // document is that same text; a file the room seeded and then added to and
+  // saved is not, and the two documents went on ignoring each other. It waits
+  // for an answer now, and seeds only once everyone present has said they do
+  // not have the file. (main.py cannot show this: it was replaced wholesale
+  // above, so nothing of the room's seed is left to disagree with.)
+  await page.click("#terminal");
+  await page.keyboard.type("echo seeded-by-the-room > notes.txt\n");
+  await page.waitForFunction(() => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.txt"), null, { timeout: 30_000 });
+  await page.click('#files .row.file:text-is("notes.txt")');
+  await page.waitForFunction(() => window.__pad?.active() === "notes.txt", null, { timeout: 10_000 });
+  await new Promise((r) => setTimeout(r, 1500));
+  await page.click(".monaco-editor .view-lines");
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type("added-by-the-room\n");
+  // On the server, not just "saved" on screen — that can be an earlier save,
+  // and a stored copy without the added line is the room's own seed, which is
+  // exactly the case where seeding happens to be safe.
+  for (let i = 0; i < 40; i++) {
+    const stored = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
+    if (stored.files["notes.txt"]?.content.includes("added-by-the-room")) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  const slow = await browser.newPage();
+  watchLimits(slow, "slow");
+  await slow.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((m) => server.send(m));
+    server.onMessage((m) => setTimeout(() => ws.send(m), 1500));
+  });
+  await slow.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await slow.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  await slow.click('#files .row.file:text-is("notes.txt")');
+  // Who is here, then the document, each 1.5 s late — and room to spare.
+  await new Promise((r) => setTimeout(r, 7000));
+  await slow.click(".monaco-editor .view-lines");
+  await slow.keyboard.press("ControlOrMeta+End");
+  await slow.keyboard.type("from-the-slow-one\n");
+  await page.click(".monaco-editor .view-lines");
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type("to-the-slow-one\n");
+  const reaches = (tab, t) => tab
+    .waitForFunction((t) => (window.__pad?.text("notes.txt") ?? "").includes(t), t, { timeout: 20_000 })
+    .then(() => true, () => false);
+  const [there, here] = await Promise.all([reaches(page, "from-the-slow-one"), reaches(slow, "to-the-slow-one")]);
+  // The same text on both sides, not only each other's lines.
+  await new Promise((r) => setTimeout(r, 1500));
+  const textIn = (tab) => tab.evaluate(() => window.__pad?.text("notes.txt") ?? "");
+  const [roomText, newcomerText] = await Promise.all([textIn(page), textIn(slow)]);
+  const converged = there && here && roomText === newcomerText;
+  if (!converged) results.push(`note: room ${JSON.stringify(roomText.slice(0, 120))} newcomer ${JSON.stringify(newcomerText.slice(0, 120))}`);
+  is(converged, true, `a room that answers slowly still ends up with one document${there ? "" : " — the room never got the newcomer's line"}${here ? "" : " — the newcomer never got the room's"}`);
+  await slow.close();
+  // Back to the file the rest of this check works in.
+  await page.click('#files .row.file:text-is("main.py")');
+
   // ---- deleting a file from the tree ----
   // For everyone: gone from the other browser's tree and from the server.
   //
@@ -473,7 +539,7 @@ try {
   // only once the runtime came — misses the 15 s allowed below. Not much
   // longer: held 40 s, the SDK gave up on the packages and never started.
   const loading = await browser.newPage();
-  watchLimits(loading);
+  watchLimits(loading, "loading");
   await loading.context().route(/\/packages\/.*\.webc/, async (route) => {
     await new Promise((r) => setTimeout(r, 25_000));
     await route.continue().catch(() => {});
@@ -712,6 +778,14 @@ try {
     results.push(`note: status=${JSON.stringify(seen.status)} files=${JSON.stringify(seen.files)}`);
     results.push(`note: terminal=${JSON.stringify(seen.terminal)}`);
   } catch {}
+  for (const [who, tab] of tabs) {
+    if (tab.isClosed()) continue;
+    const other = await tab.evaluate(() => ({
+      status: document.getElementById("status")?.textContent,
+      terminal: (document.getElementById("terminal")?.textContent ?? "").slice(-200),
+    })).catch(() => null);
+    if (other) results.push(`note: ${who}: status=${JSON.stringify(other.status)} terminal=${JSON.stringify(other.terminal)}`);
+  }
 }
 
 {

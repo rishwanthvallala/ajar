@@ -14,13 +14,20 @@ import { carryOver } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
 import { FileTree } from "./files";
-import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
+import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
 import { Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
 import type { PadWorkspace } from "./workspace";
+
+/**
+ * The longest a newcomer waits for the room to send a file's document. Most
+ * waits end long before, when everyone present has answered; this is for a
+ * browser that never will.
+ */
+const DOC_ANSWER_WAIT = 5000;
 
 const STARTER = `# Paste over this, or start typing.
 import csv
@@ -98,6 +105,8 @@ export class App {
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
   private awaiting = new Map<string, (answered: boolean) => void>();
+  /** For each of those, who has not answered yet. */
+  private unanswered = new Map<string, Set<number>>();
   /** Store writes from this tab are strictly ordered. */
   private writeChain: Promise<void> = Promise.resolve();
   /** This browser's participant id and name, as cursors are labelled. */
@@ -218,6 +227,11 @@ export class App {
         if (renamed) for (const doc of this.docs.values()) doc.setUser({ id, name: this.whoami });
         const present = new Set([id, ...(this.peers?.otherIds ?? [])]);
         for (const doc of this.docs.values()) doc.keepOnly(present);
+        // Somebody who left will never answer a question about a file.
+        for (const [path, waiting] of this.unanswered) {
+          for (const who of [...waiting]) if (!present.has(who)) waiting.delete(who);
+          if (waiting.size === 0) this.awaiting.get(path)?.(false);
+        }
         // Every open document asks for state again.
         //
         // A dropped socket loses whatever updates were in flight, and nothing
@@ -231,7 +245,7 @@ export class App {
         // folder to recover every nudge that may have been missed offline.
         void this.refresh();
       },
-      onDoc: (stream, kind, bytes) => this.onDoc(stream, kind, bytes),
+      onDoc: (stream, kind, bytes, from) => this.onDoc(stream, kind, bytes, from),
     });
     this.peers.connect();
   }
@@ -361,12 +375,22 @@ export class App {
     // and two seeding *different* text produce conflicting ones under the same
     // ids — which Yjs discards as already known. The result is two documents
     // that exchange updates and silently ignore each other.
+    //
+    // Seeded only once everyone here has said they do not have it open. It
+    // used to be after 600 ms whatever had been said, and an answer slower than
+    // that — a distant relay, a slow network — left this browser seeding the
+    // stored copy beside a room whose document had moved on: two documents
+    // that ignore each other. Now the wait ends when the last person present
+    // says DOC_NONE, or leaves, and a browser that never says it — one from
+    // before it existed — costs the full wait, which is safe.
+    this.unanswered.set(path, new Set(this.peers.otherIds));
     this.peers.doc(stream, DOC_WANT, doc.stateVector());
     const answered = await new Promise<boolean>((resolve) => {
       this.awaiting.set(path, resolve);
-      setTimeout(() => resolve(false), 600);
+      setTimeout(() => resolve(false), DOC_ANSWER_WAIT);
     });
     this.awaiting.delete(path);
+    this.unanswered.delete(path);
     // Nobody answered, so nobody else has it open and the stored copy is safe.
     if (!answered) doc.seed(stored);
     return doc;
@@ -392,16 +416,28 @@ export class App {
     this.shownUnbound.delete(path);
     this.byStream.delete(streamFor(path));
     this.awaiting.delete(path);
+    this.unanswered.delete(path);
     doc.destroy();
   }
 
-  private onDoc(stream: number, kind: number, bytes: Uint8Array): void {
+  private onDoc(stream: number, kind: number, bytes: Uint8Array, from: number): void {
     const path = this.byStream.get(stream);
-    // A document nobody here has open. The folder still converges: whoever is
-    // editing it saves, and the nudge that follows brings the text over.
-    if (!path) return;
-    const doc = this.docs.get(path);
-    if (!doc) return;
+    const doc = path ? this.docs.get(path) : undefined;
+    // A document nobody here has open — or one this browser is itself still
+    // waiting for, which is nothing to give. The folder still converges:
+    // whoever is editing it saves, and the nudge that follows brings the text
+    // over. Asked about it, say so, so the asker need not wait for us.
+    if (!path || !doc || (kind === DOC_WANT && !doc.hasState)) {
+      if (kind === DOC_WANT) this.peers?.doc(stream, DOC_NONE, new Uint8Array());
+      return;
+    }
+
+    if (kind === DOC_NONE) {
+      const waiting = this.unanswered.get(path);
+      waiting?.delete(from);
+      if (waiting?.size === 0) this.awaiting.get(path)?.(false);
+      return;
+    }
 
     if (kind === DOC_UPDATE) {
       doc.applyUpdate(bytes);

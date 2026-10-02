@@ -39,6 +39,12 @@ export const DOC_UPDATE = 0x01;
 export const DOC_AWARENESS = 0x02;
 /** A newcomer's state vector: "this is what I have, send me the rest." */
 export const DOC_WANT = 0x03;
+/**
+ * The answer to a `DOC_WANT` from someone without that file open: there is
+ * nothing here to send. It lets the asker stop waiting for this browser
+ * rather than for a deadline — see `App.openDoc`.
+ */
+export const DOC_NONE = 0x04;
 
 /**
  * Which stream a file's updates travel on.
@@ -91,7 +97,8 @@ export interface PeerEvents {
   /** How many other browsers are on this link, this one not counted. */
   onPresence: (others: number, id: number | null) => void;
   /** A document update, awareness change, or request for state. */
-  onDoc: (stream: number, kind: number, bytes: Uint8Array) => void;
+  /** `from` is the sender's participant id, which the relay makes it stamp. */
+  onDoc: (stream: number, kind: number, bytes: Uint8Array, from: number) => void;
 }
 
 export class Peers {
@@ -217,7 +224,7 @@ export class Peers {
     }
     if (f.channel === CH_DOC && f.payload.length > 0) {
       this.counts.docIn += 1;
-      this.events.onDoc(f.streamId, f.payload[0]!, f.payload.subarray(1));
+      this.events.onDoc(f.streamId, f.payload[0]!, f.payload.subarray(1), f.target);
     }
   }
 
