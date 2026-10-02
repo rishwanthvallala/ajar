@@ -5,6 +5,7 @@
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
 import { interpreterFor, Runtime } from "./runtime";
+import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { cssString } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
@@ -249,6 +250,37 @@ async function main() {
 
     sheet.remove();
     is(cssString("plain name"), "plain name", "an ordinary name is left alone");
+  }
+
+  // ---- CSV and TSV colours ----
+  //
+  // Each line as its coloured runs: `c1=` is the second column's colour, `d=`
+  // a delimiter. What matters is that a column keeps its colour across quotes,
+  // commas inside them, and line breaks inside them.
+  {
+    const START = new DelimitedState(0, false);
+    const runs = (line: string, state = START, delimiter = ",") => {
+      const { tokens, endState } = tokenizeLine(line, state, delimiter, "csv");
+      const parts = tokens.map((t, i) => {
+        const text = line.slice(t.startIndex, tokens[i + 1]?.startIndex ?? line.length);
+        return `${t.scopes.startsWith("delimiter") ? "d" : `c${/column(\d+)/.exec(t.scopes)?.[1]}`}=${text}`;
+      });
+      return { runs: parts.join(" "), endState };
+    };
+    is(runs('1,"Smith, J",x').runs, 'c0=1 d=, c1="Smith, J" d=, c2=x', "a comma inside quotes is part of the field");
+    is(runs('"said ""hi""",b').runs, 'c0="said ""hi""" d=, c1=b', "a doubled quote does not end the field");
+    const open = runs('2,"multi');
+    is(open.runs, 'c0=2 d=, c1="multi', "a quoted field left open");
+    is(open.endState.equals(new DelimitedState(1, true)), true, "carries its column to the next line");
+    const closed = runs('line",z', open.endState);
+    is(closed.runs, 'c1=line" d=, c2=z', "which continues it in the same colour");
+    is(closed.endState.equals(START), true, "and the line after starts at the first column again");
+    is(runs("a,,c").runs, "c0=a d=,, c2=c", "an empty field still counts as a column");
+    const stray = runs('3,5" screen,y');
+    is(stray.runs, 'c0=3 d=, c1=5" screen d=, c2=y', "a quote in the middle of a field is a character");
+    is(stray.endState.equals(START), true, "and opens nothing");
+    is(runs("a\tb, c", START, "\t").runs, "c0=a d=\t c1=b, c", "TSV splits on tabs, and a comma is text");
+    is(runs("a,b,c,d,e,f,g,h,i").runs.split(" ").at(-1), "c0=i", "colours cycle after eight columns");
   }
 
   // ---- the text-processing tools ----

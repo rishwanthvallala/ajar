@@ -116,11 +116,14 @@ export class PadWorkspace {
     this.elements.preview.classList.toggle("on", open);
     this.elements.backToEditor.hidden = !open;
     this.shell.el("viewer-pane").setAttribute("aria-label", open ? "Server preview" : "Editor");
+    this.shell.el("highlight-toggle").hidden = open;
     this.shell.el("viewer-title").textContent = open ? "Server preview" : this.elements.editor.dataset.active ?? "No file selected";
     this.shell.requestLayout();
   }
 
   fileSelected() { return this.shell.fileSelected(); }
   onLayout(callback: () => void) { this.shell.onLayout = callback; }
+  get highlight() { return this.shell.highlight; }
+  onHighlightChange(callback: (on: boolean) => void) { this.shell.onHighlightChange = callback; }
   dispose() { this.shell.dispose(); }
 }

@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Workspace, type LayoutStorage } from "./workspace";
 import { FileTree } from "./tree";
 import { codeFontPx } from "./scale";
+import { isDark, onThemeChange } from "@ajar/workspace-ui/theme";
 import type { Entry } from "./proto";
 
 const files: Record<string, string> = {
@@ -69,8 +70,7 @@ export function renderPreview(app: HTMLElement): () => void {
     const terminals: { term: Terminal; fit: FitAddon; el: HTMLElement; button: HTMLButtonElement }[] = [];
     let active = 0;
     let split = false;
-    const dark = matchMedia("(prefers-color-scheme: dark)");
-    const terminalTheme = () => dark.matches ? { background: "#161a22", foreground: "#e7eaf0" } : { background: "#ffffff", foreground: "#13171e" };
+    const terminalTheme = () => isDark() ? { background: "#161a22", foreground: "#e7eaf0" } : { background: "#ffffff", foreground: "#13171e" };
     let frame = 0;
     function layout() {
       if (disposed) return;
@@ -114,12 +114,12 @@ export function renderPreview(app: HTMLElement): () => void {
     workspace.el<HTMLButtonElement>("split").disabled = disconnected;
     if (scenario !== "empty") { addTerminal(); void open("src/main.ts"); }
     workspace.onLayout = layout;
-    const themeChanged = () => terminals.forEach(t => { t.term.options.theme = terminalTheme(); });
-    dark.addEventListener("change", themeChanged);
+    const themeEvents = new AbortController();
+    onThemeChange(() => terminals.forEach(t => { t.term.options.theme = terminalTheme(); }), themeEvents.signal);
     unmount = () => {
       disposed = true; ++request; cancelAnimationFrame(frame);
       unbind?.dispose(); tree.dispose(); workspace.dispose(); terminals.forEach(t => t.term.dispose());
-      dark.removeEventListener("change", themeChanged);
+      themeEvents.abort();
     };
   }
   mount();

@@ -9,7 +9,8 @@ export class Workspace extends WorkspaceShell {
 
   constructor(app: HTMLElement, title: string, storage?: LayoutStorage | null) {
     super(app, { title, storage, preferencePrefix: "ajar" });
-    this.editor = new EditorPane(this.shell);
+    this.editor = new EditorPane(this.shell, () => this.highlight);
+    this.onHighlightChange = () => this.editor.viewer?.highlightChanged();
   }
 
   override dispose() {
@@ -26,7 +27,10 @@ export class EditorPane {
   private loading: Promise<Viewer> | null = null;
   private disposed = false;
 
-  constructor(private root: HTMLElement) {}
+  constructor(
+    private root: HTMLElement,
+    private highlight: () => boolean = () => true,
+  ) {}
 
   private el(id: string) { return this.root.querySelector<HTMLElement>(`#${id}`)!; }
 
@@ -42,7 +46,7 @@ export class EditorPane {
     this.el("viewer-title").title = path;
     this.el("close-file").hidden = false;
     try {
-      this.loading ??= import("./viewer").then(({ Viewer }) => new Viewer(this.el("viewer"), this.el("viewer-title")));
+      this.loading ??= import("./viewer").then(({ Viewer }) => new Viewer(this.el("viewer"), this.el("viewer-title"), this.highlight));
       const viewer = await this.loading;
       if (this.disposed) { viewer.dispose(); return null; }
       this.viewer = viewer;

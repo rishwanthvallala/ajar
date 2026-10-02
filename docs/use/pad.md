@@ -18,9 +18,14 @@ if nobody took it.
 
 Make files and folders, edit them, and run shell commands. The bin icon beside
 a file deletes it — for everyone with the link. The editor colours Python and
-over thirty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
-YAML, SQL, shell, Java, C and C++, Go, Rust and more), and Ctrl-F finds and
-replaces.
+over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
+YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
+CSV or TSV in its own colour, and Ctrl-F finds and replaces.
+
+**Colours** above the editor turns the colouring off, for every file, and
+shows plain text. The button at the end of the top bar picks the theme: System
+(follow the device), Light, or Dark. Both are remembered by your browser, not
+shared with the people you sent the link to.
 
 There are about 140 shell commands, and these are the ones people reach for:
 

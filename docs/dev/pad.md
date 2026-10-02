@@ -400,6 +400,33 @@ untestable from the outside: three separate attempts to catch the bug through
 a driven browser all passed against the broken code. As a pure function it is
 ordinary, and `src/check.ts` asserts it directly.
 
+## Colours, and what they cost
+
+Measured on 2 October in headless Chromium against the built pad, with the pad
+API answered in-page. Open is navigation to first painted line; a keystroke is
+an edit to the next frame; tokenizing is Monaco forced through the whole file —
+the work it otherwise does in idle time.
+
+| File | Open | Keystroke p50 / max | Whole-file tokenizing |
+|---|---:|---:|---:|
+| python, 100k lines, 5.2 MB | 2237 ms | 17 / 18 ms | 631 ms |
+| the same as plain text | 2183 ms | 17 / 19 ms | 0 |
+| python, 290k lines, 15.7 MB | 2387 ms | 17 / 38 ms | 1853 ms |
+| the same as plain text | 2369 ms | 17 / 18 ms | 0 |
+| csv, 100k rows, 9.5 MB | 2275 ms | 17 / 21 ms | — |
+| the same as plain text | 2248 ms | 16 / 20 ms | 0 |
+
+Colouring does not make a long file slow to open or to type in. Its cost is
+CPU spent in idle frames. The CSV tokenizer on its own takes about 250 ms per
+100k rows, timed in Node. Monaco stops tokenizing by itself at 20 MB or 300k
+lines, so the pad adds no limit of its own. **Colours** in the editor header
+switches it off for anyone who wants that anyway.
+
+Not measured yet, and the likelier cost in a long shared file: every remote
+document update writes the whole file into the sandbox (`app.ts`, the
+`DOC_UPDATE` branch of the doc handler), and every pause in typing saves the
+whole file.
+
 ## The download
 
 Wasmer's CDN sends `.webc` with no content encoding at all: **62 MB raw** for

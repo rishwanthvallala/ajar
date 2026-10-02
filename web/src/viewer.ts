@@ -6,6 +6,7 @@
 // comes from the basic-languages contribution and needs no worker at all.
 import * as monaco from "monaco-editor/editor/editor.api";
 import "monaco-editor/basic-languages/monaco.contribution";
+import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 import { codeFontPx } from "./scale";
 // monaco-editor 0.56 exposes workers through its exports map, which rewrites
 // `./editor/…` to `./esm/vs/editor/…`. Importing the esm path directly
@@ -27,69 +28,10 @@ self.MonacoEnvironment = {
   getWorker: () => new editorWorker(),
 };
 
-const BY_EXTENSION: Record<string, string> = {
-  ts: "typescript",
-  tsx: "typescript",
-  mts: "typescript",
-  js: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  // Monaco has no Monarch tokenizer for JSON — it ships a full language
-  // service instead, whose worker cannot run here. JSON is a subset of a
-  // JavaScript object literal, so the JS tokenizer colours it correctly;
-  // what is lost is validation, which nothing else has either until
-  // language servers land.
-  json: "javascript",
-  html: "html",
-  css: "css",
-  scss: "scss",
-  md: "markdown",
-  rs: "rust",
-  py: "python",
-  go: "go",
-  rb: "ruby",
-  java: "java",
-  kt: "kotlin",
-  swift: "swift",
-  c: "c",
-  h: "c",
-  cc: "cpp",
-  cpp: "cpp",
-  hpp: "cpp",
-  cs: "csharp",
-  php: "php",
-  sh: "shell",
-  bash: "shell",
-  zsh: "shell",
-  fish: "shell",
-  sql: "sql",
-  yml: "yaml",
-  yaml: "yaml",
-  toml: "ini",
-  ini: "ini",
-  xml: "xml",
-  dockerfile: "dockerfile",
-};
-
-const BY_FILENAME: Record<string, string> = {
-  Dockerfile: "dockerfile",
-  Makefile: "makefile",
-  ".gitignore": "plaintext",
-  "Cargo.lock": "ini",
-};
-
-export function languageFor(path: string): string {
-  const name = path.split("/").pop() ?? path;
-  if (BY_FILENAME[name]) return BY_FILENAME[name];
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return "plaintext";
-  return BY_EXTENSION[name.slice(dot + 1).toLowerCase()] ?? "plaintext";
-}
-
-function theme(): string {
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "vs-dark" : "vs";
-}
+// Once, as this module loads: CSV and TSV, which Monaco has no tokenizer for,
+// and the editor's light and dark themes with their column colours.
+registerDelimited(monaco.languages);
+defineEditorThemes(monaco.editor);
 
 export class Viewer {
   private editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -99,10 +41,21 @@ export class Viewer {
   constructor(
     private host: HTMLElement,
     private titleEl: HTMLElement,
+    /** Whether the workspace has syntax colours switched on. */
+    private highlight: () => boolean = () => true,
   ) {
-    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-      monaco.editor.setTheme(theme());
-    }, { signal: this.events.signal });
+    onThemeChange(() => monaco.editor.setTheme(editorTheme()), this.events.signal);
+  }
+
+  /** The file's language, or plain text while colours are switched off. */
+  private languageOf(path: string): string {
+    return this.highlight() ? languageFor(monaco.languages.getLanguages(), path) : "plaintext";
+  }
+
+  /** Colours switched on or off: the open file follows at once. */
+  highlightChanged() {
+    const model = this.editor?.getModel();
+    if (model && this.path) monaco.editor.setModelLanguage(model, this.languageOf(this.path));
   }
 
   /** The file whose content we're waiting for or showing. */
@@ -131,13 +84,13 @@ export class Viewer {
     // A slow read for a file the user has already navigated away from.
     if (path !== this.path) return;
 
-    const model = monaco.editor.createModel(text, languageFor(path));
+    const model = monaco.editor.createModel(text, this.languageOf(path));
     if (!this.editor) {
       this.editor = monaco.editor.create(this.host, {
         model,
         readOnly,
         automaticLayout: true,
-        theme: theme(),
+        theme: editorTheme(),
         fontSize: codeFontPx(),
         minimap: { enabled: false },
         scrollBeyondLastLine: false,

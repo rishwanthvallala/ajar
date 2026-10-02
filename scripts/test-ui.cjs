@@ -167,6 +167,123 @@ async function checkBoots() {
 }
 
 /**
+ * The built pad's editor, with a folder served from here: what each kind of
+ * file is coloured as, when the CSV tokenizer arrives, the Colours switch, and
+ * the theme reaching Monaco. The fixture preview cannot answer any of it — it
+ * has no Monaco.
+ */
+async function checkPadEditor() {
+  const { chromium } = webRequire("playwright");
+  const browser = await chromium.launch({
+    channel: process.platform === "win32" ? "msedge" : undefined,
+    headless: true,
+  });
+  const serve = async (page, files) => {
+    const body = JSON.stringify({
+      exists: true,
+      seq: 1,
+      files: Object.fromEntries(Object.entries(files).map(([path, content]) => [path, { content, encoding: "utf8", seq: 1 }])),
+    });
+    await page.route("**/api/pad/**", (route) => route.fulfill({ status: 200, contentType: "application/json", body }));
+  };
+  const kinds = (page) => page.evaluate(() => new Set([...document.querySelectorAll(".monaco-editor .view-lines span[class^='mtk']")].map((s) => s.className)).size);
+  const atLeast = (page, n) => page.waitForFunction(
+    (n) => new Set([...document.querySelectorAll(".monaco-editor .view-lines span[class^='mtk']")].map((s) => s.className)).size >= n,
+    n,
+    { timeout: 10_000 },
+  ).catch(() => {});
+  const language = (page) => page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLanguageId());
+  const open = async (page, name) => {
+    await page.locator(`#files .row.file:text-is("${name}")`).click();
+    await page.waitForFunction((name) => document.querySelector("#viewer-title")?.textContent === name, name);
+  };
+  try {
+    const context = await browser.newContext();
+    const errors = [];
+
+    // No table in the folder: the tokenizer for one is never fetched.
+    const plain = await context.newPage();
+    const plainRequests = [];
+    plain.on("pageerror", (error) => errors.push(error.message));
+    plain.on("request", (request) => plainRequests.push(request.url()));
+    await serve(plain, { "main.py": "def f(x):\n    return x + 1  # one more\n" });
+    await plain.goto("http://127.0.0.1:5175/ui-editor-plain");
+    await plain.locator(".monaco-editor").waitFor();
+    await atLeast(plain, 4);
+    assert((await kinds(plain)) >= 4, "python is coloured");
+    assert(!plainRequests.some((url) => /delimited-tokens/.test(url)), "a folder with no CSV never fetches the CSV tokenizer");
+    await plain.close();
+
+    const page = await context.newPage();
+    const requests = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => requests.push(request.url()));
+    await serve(page, {
+      "data.csv": 'id,name,city\n1,"Lee, A",Oslo\n2,Kim,"Lima\nPeru"\n',
+      "table.tsv": "id\tname\n1\tLee\n",
+      "core.clj": "(defn add [a b] (+ a b))\n",
+      "rows.jsonl": '{"id": 1, "ok": true}\n',
+      "main.py": "print(1)\n",
+    });
+    await page.goto("http://127.0.0.1:5175/ui-editor-folder");
+    await page.locator(".monaco-editor").waitFor();
+    assert(requests.some((url) => /delimited-tokens/.test(url)), "a CSV in the folder fetches the CSV tokenizer");
+    await open(page, "data.csv");
+    await atLeast(page, 4);
+    assert.equal(await language(page), "csv");
+    assert((await kinds(page)) >= 4, `CSV columns are coloured apart: ${await kinds(page)} kinds of token`);
+    const languages = {};
+    for (const name of ["table.tsv", "core.clj", "rows.jsonl"]) {
+      await open(page, name);
+      languages[name] = await language(page);
+    }
+    assert.deepEqual(languages, { "table.tsv": "tsv", "core.clj": "clojure", "rows.jsonl": "javascript" }, "each file gets its language");
+
+    // Off is plain text for every file, and survives a reload.
+    await open(page, "data.csv");
+    await page.locator("#highlight-toggle").click();
+    assert.equal(await page.locator("#highlight-toggle").getAttribute("aria-pressed"), "false");
+    assert.deepEqual(
+      await page.evaluate(() => [...new Set(window.monaco.editor.getModels().map((m) => m.getLanguageId()))]),
+      ["plaintext"],
+      "Colours off makes every file plain text",
+    );
+    await page.reload();
+    await page.locator(".monaco-editor").waitFor();
+    await page.waitForFunction(() => window.monaco?.editor.getEditors()[0]?.getModel());
+    assert.equal(await page.evaluate(() => localStorage.getItem("pad.highlight")), "off");
+    assert.equal(await language(page), "plaintext", "Colours stays off across a reload");
+    await page.locator("#highlight-toggle").click();
+    assert.equal(await language(page), "csv", "Colours on restores the language");
+
+    // Dark, chosen on a light OS, reaches the editor and the terminal.
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.locator(".xterm").waitFor({ state: "attached" });
+    const surface = () => page.evaluate(() => ({
+      editorDark: document.querySelector(".monaco-editor").classList.contains("vs-dark"),
+      terminal: getComputedStyle(document.querySelector(".xterm-viewport")).backgroundColor,
+    }));
+    const before = await surface();
+    await page.locator("#theme-toggle").click();
+    await page.locator("#theme-toggle").click();
+    assert.equal(await page.locator("#theme-toggle").getAttribute("aria-label"), "Theme: Dark");
+    const after = await surface();
+    assert.deepEqual([before.editorDark, after.editorDark], [false, true], "Dark reaches Monaco");
+    assert.notEqual(after.terminal, before.terminal, "Dark reaches the terminal");
+    await page.reload();
+    await page.locator(".monaco-editor").waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark", "the theme survives a reload");
+    assert.equal(await page.evaluate(() => document.querySelector(".monaco-editor").classList.contains("vs-dark")), true);
+    await page.evaluate(() => { localStorage.removeItem("pad.theme"); localStorage.removeItem("pad.highlight"); });
+
+    assert.deepEqual(errors, []);
+    console.log("Pad editor: languages, the CSV tokenizer on demand, Colours, and the theme.");
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
  * Both halves of this suite drive a real browser, and the layout half spawns
  * its own. Deciding here — before any server starts — is the only place a
  * missing browser can be reported as one clear message rather than a stack
@@ -219,6 +336,7 @@ async function main() {
     PAD_PRODUCTION_URL: "http://127.0.0.1:5175",
   });
   await checkBoots();
+  await checkPadEditor();
 }
 
 main()

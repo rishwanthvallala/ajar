@@ -1,9 +1,11 @@
 /**
- * The formats the editor colours — see languages.ts.
+ * The formats the editor colours — see @ajar/workspace-ui's languages.ts.
  *
  * Each import only registers a language: its name, extensions, and a loader
  * for the tokenizer, which is fetched the first time a file needs it. The list
- * is what people paste into a shared editor, not all eighty Monaco knows.
+ * is what people paste into a shared editor, not all eighty Monaco knows; the
+ * registrations are small, so it leans generous. CSV and TSV, which Monaco has
+ * no tokenizer for, come from @ajar/workspace-ui's delimited.ts.
  *
  * Registering any language also loads Monaco's standard editor features —
  * find and replace, comment toggling, bracket matching, folding — which the
@@ -45,3 +47,20 @@ import "monaco-editor/esm/vs/basic-languages/objective-c/objective-c.contributio
 import "monaco-editor/esm/vs/basic-languages/elixir/elixir.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/protobuf/protobuf.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/hcl/hcl.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/clojure/clojure.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/coffee/coffee.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/fsharp/fsharp.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/handlebars/handlebars.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/liquid/liquid.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/mdx/mdx.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/pascal/pascal.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/pug/pug.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/razor/razor.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/restructuredtext/restructuredtext.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/scheme/scheme.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/solidity/solidity.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/systemverilog/systemverilog.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/tcl/tcl.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/twig/twig.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/vb/vb.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/wgsl/wgsl.contribution.js";

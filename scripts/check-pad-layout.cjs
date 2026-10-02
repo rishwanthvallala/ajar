@@ -91,11 +91,37 @@ async function main() {
     }
     assert.notEqual(themeColors[0], themeColors[1], "Pad applies the shared light and dark themes");
 
+    // The OS is dark here. Light must win over it, Dark match it, and System
+    // hand the choice back.
+    const chosen = async () => {
+      await settled(page);
+      return page.evaluate(() => ({
+        attr: document.documentElement.dataset.theme ?? null,
+        label: document.querySelector("#theme-toggle").getAttribute("aria-label"),
+        shell: getComputedStyle(document.querySelector(".shell")).backgroundColor,
+      }));
+    };
+    assert.deepEqual(await chosen(), { attr: null, label: "Theme: System", shell: themeColors[1] }, "Pad theme starts on System");
+    await page.locator("#theme-toggle").click();
+    assert.deepEqual(await chosen(), { attr: "light", label: "Theme: Light", shell: themeColors[0] }, "Light beats a dark OS");
+    await page.locator("#theme-toggle").click();
+    assert.deepEqual(await chosen(), { attr: "dark", label: "Theme: Dark", shell: themeColors[1] });
+    assert.equal(await page.evaluate(() => window.__padPreview.preferences.get("pad.theme")), "dark", "the choice is kept with the layout");
+    assert.equal(await page.evaluate(() => localStorage.getItem("pad.theme")), null, "fixture does not write the live theme");
+    await page.locator("#theme-toggle").click();
+    assert.deepEqual(await chosen(), { attr: null, label: "Theme: System", shell: themeColors[1] }, "System hands back to the OS");
+    await page.locator("#preview-scenario").selectOption("running");
+    await page.locator("#preview").click();
+    assert.equal(await page.locator("#highlight-toggle").isHidden(), true, "Colours is not offered over a server preview");
+    await page.locator("#back-to-editor").click();
+    assert.equal(await page.locator("#highlight-toggle").isVisible(), true);
+    await page.locator("#preview-scenario").selectOption("populated");
+
     for (const [width, height] of [[1440, 900], [1024, 768], [768, 1024], [390, 844]]) {
       await page.setViewportSize({ width, height });
       await settled(page);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Pad has no page overflow at ${width}`);
-      for (const id of ["side-toggle", "run", "share", "splitter"]) {
+      for (const id of ["side-toggle", "theme-toggle", "run", "share", "splitter"]) {
         const bounds = await box(`#${id}`);
         assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y + bounds.height <= height + 1, `${id} reachable at ${width}`);
       }
@@ -116,7 +142,7 @@ async function main() {
     await page.evaluate(() => { document.documentElement.style.fontSize = "20px"; });
     await settled(page);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Pad fits a 200%-equivalent viewport with larger text");
-    for (const id of ["side-toggle", "run", "share", "splitter"]) {
+    for (const id of ["side-toggle", "theme-toggle", "run", "share", "splitter"]) {
       const bounds = await box(`#${id}`);
       assert(bounds && bounds.x + bounds.width <= 721 && bounds.y + bounds.height <= 451, `${id} fits with larger text`);
     }

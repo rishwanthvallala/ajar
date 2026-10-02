@@ -14,8 +14,11 @@
   --mono: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
 }
 
+/* Dark twice, because CSS cannot name one block from two places: once for a
+   system that prefers it and nobody chose light, once for choosing dark.
+   theme.ts sets the attribute; with none, the system decides. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #0f1218;
     --surface: #161a22;
@@ -29,4 +32,19 @@
     --warn: #dca84e;
     --hard: #e5745f;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1218;
+  --surface: #161a22;
+  --surface-2: #1d222c;
+  --ink: #e7eaf0;
+  --ink-2: #b4bcc8;
+  --muted: #8a94a2;
+  --rule: #262c37;
+  --accent: #8ca6ff;
+  --ok: #55bc8d;
+  --warn: #dca84e;
+  --hard: #e5745f;
 }

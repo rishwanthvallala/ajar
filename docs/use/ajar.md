@@ -90,6 +90,11 @@ Open terminals, browse the file tree, open files, and edit them. Two people
 can type in the same file at once, and edits survive a terminal rewriting the
 file underneath them.
 
+Files are coloured by language — about eighty of them, plus CSV and TSV with
+each column in its own colour. **Colours** above the editor switches that off
+for plain text. The button at the end of the top bar picks the theme: System
+(follow the device), Light, or Dark. Each guest's browser keeps its own choice.
+
 If your laptop sleeps or your wifi drops, guests keep a read-only view of the
 files rather than losing the session. When you come back, everything resumes —
 the terminals never stopped running.

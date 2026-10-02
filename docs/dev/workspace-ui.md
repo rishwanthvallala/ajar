@@ -58,6 +58,36 @@ an explicit **Back to editor** control. The iframe still uses the separately
 configured preview origin. Hidden preview content is asserted to occupy no row
 at boot.
 
+## Theme, languages and the Colours switch — 2 October 2026
+
+The shell also owns two preferences, kept with the layout ones under the same
+prefix: `ajar.theme` / `pad.theme` (`system`, `light` or `dark`) and
+`ajar.highlight` / `pad.highlight` (`on` or `off`).
+
+- **Theme.** `src/theme.ts` sets `data-theme` on `<html>` for a chosen theme
+  and removes it for System; `theme.css` holds the dark tokens twice — under
+  `prefers-color-scheme` when the attribute is not `light`, and under
+  `[data-theme="dark"]`. Each product's `main.ts` calls `applyStoredTheme()`
+  first thing, because both CSPs forbid an inline head script. Monaco and
+  xterm follow through `onThemeChange()`; Monaco uses `ajar-light` /
+  `ajar-dark`, which are `vs` / `vs-dark` plus the CSV column colours. The one
+  other stylesheet rule that reads `prefers-color-scheme` — dark text on
+  ajar's accent buttons, in `web/src/style.css` — honours the attribute the
+  same way.
+- **Languages.** `src/languages.ts` is the one `languageFor`, read from Monaco's
+  registry. Ajar's viewer had its own 25-extension map until this change.
+  `src/delimited.ts` registers `csv` and `tsv`; `delimited-tokens.ts` is fetched
+  on first use, like Monaco's own tokenizers.
+- **Colours off** sets every model to `plaintext`, which stops tokenizing
+  rather than hiding colours. The shell renders the button and calls
+  `onHighlightChange`; each product re-languages its own models.
+
+Checked by `scripts/test-ui.cjs`: both layout suites cycle the theme, and
+`checkPadEditor` drives the built pad's Monaco — languages, the CSV chunk
+fetched only when a folder has a CSV, Colours across a reload, and Dark
+reaching Monaco and xterm. The tokenizer's edge cases are in
+`pad/src/check.ts`.
+
 ## Development previews
 
 ```sh

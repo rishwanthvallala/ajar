@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { applyStoredTheme, isDark, onThemeChange } from "@ajar/workspace-ui/theme";
 import "@ajar/workspace-ui/theme.css";
 import "./style.css";
 import "@ajar/workspace-ui/workspace.css";
@@ -35,6 +36,7 @@ import {
   PROTOCOL_VERSION,
 } from "./proto";
 
+applyStoredTheme("ajar");
 
 const app = document.getElementById("app")!;
 
@@ -307,11 +309,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The pane a tab click lands in. */
   let focused = 0;
   const active = () => panes[focused] ?? null;
-  const colorScheme = matchMedia("(prefers-color-scheme: dark)");
-  const updateTerminalTheme = () => {
+  const themeEvents = new AbortController();
+  onThemeChange(() => {
     for (const tab of tabs.values()) tab.term.options.theme = terminalTheme();
-  };
-  colorScheme.addEventListener("change", updateTerminalTheme);
+  }, themeEvents.signal);
 
   const conn = new Connection({
     session,
@@ -834,7 +835,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     disposed = true;
     tree.dispose();
     workspace.dispose();
-    colorScheme.removeEventListener("change", updateTerminalTheme);
+    themeEvents.abort();
     for (const tab of tabs.values()) tab.term.dispose();
     tabs.clear();
     window.removeEventListener("pagehide", dispose);
@@ -859,8 +860,7 @@ function probeSize(): { cols: number; rows: number } {
 }
 
 function terminalTheme() {
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  return dark
+  return isDark()
     ? { background: "#12151b", foreground: "#e7eaf0", cursor: "#8ca6ff" }
     : { background: "#ffffff", foreground: "#13171e", cursor: "#2447c9" };
 }

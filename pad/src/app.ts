@@ -8,11 +8,11 @@
 import type * as Monaco from "monaco-editor";
 
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
+import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
 import { FileTree } from "./files";
-import { languageFor } from "./languages";
 import { DOC_AWARENESS, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
@@ -118,6 +118,7 @@ export class App {
       this.editor?.layout();
       this.term?.fit();
     });
+    this.ui?.onHighlightChange(() => this.relanguage());
   }
 
   /** Exposed for the browser checks, which need to see what synced. */
@@ -419,18 +420,19 @@ export class App {
     // Exposed so the browser checks can drive the editor the way a person
     // would. Monaco's own API, not a hook invented for testing.
     (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
-    const color = matchMedia("(prefers-color-scheme: dark)");
+    registerDelimited(monaco.languages);
+    defineEditorThemes(monaco.editor);
     this.editor = monaco.editor.create(this.el.editor, {
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: this.codeFontPx(),
       scrollBeyondLastLine: false,
-      theme: color.matches ? "vs-dark" : "vs",
+      theme: editorTheme(),
     });
-    color.addEventListener("change", () => {
-      monaco.editor.setTheme(color.matches ? "vs-dark" : "vs");
+    onThemeChange(() => {
+      monaco.editor.setTheme(editorTheme());
       this.editor?.updateOptions({ fontSize: this.codeFontPx() });
-    });
+    }, this.events.signal);
     this.editor.onDidChangeModelContent(() => this.warm());
   }
 
@@ -441,8 +443,7 @@ export class App {
       if (existing.getValue() !== content) existing.setValue(content);
       return;
     }
-    const language = languageFor(this.monaco.languages.getLanguages(), path);
-    const model = this.monaco.editor.createModel(content, language);
+    const model = this.monaco.editor.createModel(content, this.languageOf(path));
     // Per model, not on the editor. `onDidChangeModelContent` fires only for
     // whichever model is attached right now, so a change to any other file —
     // including one arriving from the shell — would never be noticed.
@@ -462,6 +463,23 @@ export class App {
     });
     this.models.set(path, model);
     if (!this.active) this.show(path);
+  }
+
+  /** The file's language, or plain text while colours are switched off. */
+  private languageOf(path: string): string {
+    if (!this.monaco || this.ui?.highlight === false) return "plaintext";
+    return languageFor(this.monaco.languages.getLanguages(), path);
+  }
+
+  /**
+   * Colours switched on or off, for every file at once.
+   *
+   * Plain text rather than a theme with no colours in it: plain text is what
+   * stops the tokenizer running at all.
+   */
+  private relanguage(): void {
+    if (!this.monaco) return;
+    for (const [path, model] of this.models) this.monaco.editor.setModelLanguage(model, this.languageOf(path));
   }
 
   private show(path: string): void {
@@ -811,7 +829,6 @@ export class App {
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
     await import("@xterm/xterm/css/xterm.css");
-    const color = matchMedia("(prefers-color-scheme: dark)");
     const terminalTheme = () => {
       const style = getComputedStyle(document.documentElement);
       return {
@@ -828,11 +845,11 @@ export class App {
     term.loadAddon(fit);
     term.open(this.el.terminal);
     fit.fit();
-    color.addEventListener("change", () => {
+    onThemeChange(() => {
       term.options.theme = terminalTheme();
       term.options.fontSize = Math.max(11, this.codeFontPx() - 1);
       fit.fit();
-    }, { signal: this.events.signal });
+    }, this.events.signal);
     this.term = { write: (s) => term.write(s), fit: () => fit.fit(), dispose: () => term.dispose() };
     this.cols = term.cols;
     this.rows = term.rows;

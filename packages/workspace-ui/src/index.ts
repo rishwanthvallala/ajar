@@ -1,3 +1,9 @@
+import { applyTheme, parseTheme, THEME_CHOICES, type ThemeChoice } from "./theme";
+
+export { applyStoredTheme, defineEditorThemes, editorTheme, isDark, onThemeChange, type ThemeChoice } from "./theme";
+export { languageFor, type Language } from "./languages";
+export { registerDelimited } from "./delimited";
+
 export type LayoutStorage = Pick<Storage, "getItem" | "setItem">;
 
 export interface WorkspaceShellOptions {
@@ -8,6 +14,12 @@ export interface WorkspaceShellOptions {
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const THEME: Record<ThemeChoice, { label: string; icon: string }> = {
+  system: { label: "System", icon: `<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11Z" fill="currentColor"/>` },
+  light: { label: "Light", icon: `<circle cx="8" cy="8" r="2.75" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>` },
+  dark: { label: "Dark", icon: `<path d="M13 9.6A5.5 5.5 0 1 1 6.4 3a4.4 4.4 0 0 0 6.6 6.6Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>` },
+};
 
 /** Shared workspace structure and responsive layout. Product code owns data and embedded tools. */
 export class WorkspaceShell {
@@ -24,7 +36,11 @@ export class WorkspaceShell {
   private frame = 0;
   private disposed = false;
   private drag: { el: HTMLElement; id: number; axis: "x" | "y" } | null = null;
+  private theme: ThemeChoice = "system";
+  private colours = true;
   onLayout = () => {};
+  /** Syntax colours switched on or off. The product re-languages its editor models. */
+  onHighlightChange = (_on: boolean) => {};
 
   constructor(app: HTMLElement, options: WorkspaceShellOptions) {
     const terminalActions = options.terminalActions === false ? "" : `<button class="new" id="new-terminal">New terminal</button><button class="split" id="split" aria-label="Split terminal" aria-pressed="false">Split</button>`;
@@ -39,6 +55,7 @@ export class WorkspaceShell {
           <span class="badge" id="readonly" hidden>read-only</span>
           <span class="people" id="people" aria-label="Participants"></span>
           <div class="workspace-actions" id="workspace-actions"></div>
+          <button class="theme-toggle" id="theme-toggle"></button>
         </header>
         <div class="away" id="away" role="status" hidden></div>
         <div class="body">
@@ -50,7 +67,7 @@ export class WorkspaceShell {
           <div class="sidebar-splitter" id="sidebar-splitter" role="separator" aria-orientation="vertical" aria-label="Resize file sidebar" tabindex="0"></div>
           <div class="main">
             <section class="viewer" id="viewer-pane" aria-label="Editor">
-              <div class="viewer-head"><span class="region-label">Editor</span><span id="viewer-title">No file selected</span><div class="editor-actions" id="editor-actions"></div><button class="close-file" id="close-file" aria-label="Close file" hidden>Close</button></div>
+              <div class="viewer-head"><span class="region-label">Editor</span><span id="viewer-title">No file selected</span><div class="editor-actions" id="editor-actions"></div><button class="highlight-toggle" id="highlight-toggle"></button><button class="close-file" id="close-file" aria-label="Close file" hidden>Close</button></div>
               <div class="editor-content">
                 <div class="editor-empty" id="editor-empty" tabindex="-1"><span class="empty-symbol" aria-hidden="true">{ }</span><strong>Select a file to start</strong><p>Open a file from Files to view or edit it.</p><button class="quiet-button" id="browse-files">Browse files</button></div>
                 <div class="viewer-body" id="viewer" tabindex="-1" hidden></div>
@@ -74,7 +91,24 @@ export class WorkspaceShell {
     this.hidden = this.read("sidebar") === "hidden";
     this.width = this.number("sidebarWidth", 15, 0, Infinity);
     this.split = this.number("split", 0.6, 0, 1);
+    this.theme = parseTheme(this.read("theme"));
+    applyTheme(this.theme);
+    this.renderTheme();
+    this.colours = this.read("highlight") !== "off";
+    this.renderColours();
     const signal = this.events.signal;
+    this.el("theme-toggle").addEventListener("click", () => {
+      this.theme = THEME_CHOICES[(THEME_CHOICES.indexOf(this.theme) + 1) % THEME_CHOICES.length]!;
+      this.write("theme", this.theme);
+      applyTheme(this.theme);
+      this.renderTheme();
+    }, { signal });
+    this.el("highlight-toggle").addEventListener("click", () => {
+      this.colours = !this.colours;
+      this.write("highlight", this.colours ? "on" : "off");
+      this.renderColours();
+      this.onHighlightChange(this.colours);
+    }, { signal });
     this.el("side-toggle").addEventListener("click", () => {
       if (this.narrow.matches) this.setDrawer(!this.drawer);
       else { this.hidden = !this.hidden; this.write("sidebar", this.hidden ? "hidden" : "shown"); this.arrange(); }
@@ -100,6 +134,22 @@ export class WorkspaceShell {
   }
 
   el<T extends HTMLElement = HTMLElement>(id: string): T { return this.shell.querySelector<T>(`#${id}`)!; }
+  /** Whether files are coloured by their language, or all shown as plain text. */
+  get highlight() { return this.colours; }
+  private renderTheme() {
+    const button = this.el("theme-toggle");
+    const next = THEME_CHOICES[(THEME_CHOICES.indexOf(this.theme) + 1) % THEME_CHOICES.length]!;
+    button.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${THEME[this.theme].icon}</svg>`;
+    button.setAttribute("aria-label", `Theme: ${THEME[this.theme].label}`);
+    button.title = `Theme: ${THEME[this.theme].label} — switch to ${THEME[next].label}`;
+    button.dataset.theme = this.theme;
+  }
+  private renderColours() {
+    const button = this.el("highlight-toggle");
+    button.textContent = "Colours";
+    button.setAttribute("aria-pressed", String(this.colours));
+    button.title = this.colours ? "Syntax colours on — show plain text" : "Syntax colours off — colour by language";
+  }
   requestLayout() { this.schedule(); }
   private key(name: string) { return `${this.prefix}.${name}`; }
   private read(name: string) { try { return this.storage?.getItem(this.key(name)) ?? null; } catch { return null; } }

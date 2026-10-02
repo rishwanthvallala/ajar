@@ -47,6 +47,58 @@ async function main() {
   await page.keyboard.press('ArrowUp'); await settled();
   assert((await box('#viewer-pane')).height < oldEditor.height);
 
+  // The theme: System, then Light, then Dark, then System again — on the page,
+  // the editor and the terminal at once. A choice beats the OS; System follows it.
+  const themed = async () => {
+    await settled();
+    return page.evaluate(() => ({
+      attr: document.documentElement.dataset.theme ?? null,
+      label: document.querySelector('#theme-toggle').getAttribute('aria-label'),
+      shell: getComputedStyle(document.querySelector('.shell')).backgroundColor,
+      editorDark: document.querySelector('.monaco-editor').classList.contains('vs-dark'),
+      // xterm 6 paints its theme here; .xterm-viewport stays black.
+      terminal: getComputedStyle(document.querySelector('.xterm-scrollable-element')).backgroundColor,
+    }));
+  };
+  await page.emulateMedia({ colorScheme: 'light' });
+  const system = await themed();
+  assert.deepEqual([system.attr, system.label, system.editorDark], [null, 'Theme: System', false], 'theme starts on System');
+  await page.locator('#theme-toggle').click();
+  const light = await themed();
+  assert.deepEqual([light.attr, light.label, light.editorDark], ['light', 'Theme: Light', false]);
+  await page.locator('#theme-toggle').click();
+  const dark = await themed();
+  assert.deepEqual([dark.attr, dark.label, dark.editorDark], ['dark', 'Theme: Dark', true], 'Dark reaches the editor');
+  assert.notEqual(dark.shell, light.shell, 'Dark changes the page colours');
+  assert.notEqual(dark.terminal, light.terminal, 'Dark reaches the terminal');
+  await page.emulateMedia({ colorScheme: 'light' });
+  assert.equal((await themed()).editorDark, true, 'a chosen theme beats the OS');
+  await page.locator('#theme-toggle').click();
+  assert.deepEqual([(await themed()).attr, (await themed()).editorDark], [null, false], 'System follows a light OS');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const followed = await themed();
+  assert.equal(followed.editorDark, true, 'System follows the OS turning dark');
+  assert.equal(followed.shell, dark.shell, 'System dark is the same dark');
+  await page.emulateMedia({ colorScheme: 'light' }); await settled();
+  assert.equal(await page.evaluate(() => localStorage.getItem('ajar.theme')), null, 'preview does not write the live theme');
+
+  // Colours off is plain text; on is the file's language again.
+  const tokenKinds = () => page.evaluate(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size);
+  await page.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= 3);
+  assert.equal(await page.locator('#highlight-toggle').getAttribute('aria-pressed'), 'true');
+  await page.locator('#highlight-toggle').click();
+  await page.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size === 1).catch(() => {});
+  assert.equal(await tokenKinds(), 1, 'Colours off shows plain text');
+  assert.equal(await page.locator('#highlight-toggle').getAttribute('aria-pressed'), 'false');
+  await page.getByRole('button', { name: 'src/main.ts', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/main.ts');
+  await settled();
+  assert.equal(await tokenKinds(), 1, 'a file opened while Colours is off is plain text too');
+  await page.locator('#highlight-toggle').click();
+  await page.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= 3);
+  await page.getByRole('button', { name: 'src/greet.ts', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/greet.ts');
+
   for (const [width, height] of [[1440, 900], [1024, 768], [640, 360], [390, 844]]) {
     await page.setViewportSize({ width, height }); await settled();
     await page.evaluate(() => {
@@ -56,7 +108,7 @@ async function main() {
     });
     await settled();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no page overflow at ${width}`);
-    for (const id of ['side-toggle', 'close-file', 'new-terminal', 'split']) {
+    for (const id of ['side-toggle', 'theme-toggle', 'highlight-toggle', 'close-file', 'new-terminal', 'split']) {
       const bounds = await box(`#${id}`);
       assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y + bounds.height <= height, `${id} reachable at ${width}`);
     }
@@ -107,6 +159,32 @@ async function main() {
   assert(!lazyRequests.some(url => /\/src\/viewer\.ts|monaco-editor/.test(url)), 'empty editor does not load Monaco');
   await lazyPage.close();
 
+  // A table and a language ajar used to show as plain text. The CSV tokenizer
+  // is fetched when a CSV is opened, not before.
+  const tablePage = await browser.newPage();
+  const tableRequests = [];
+  tablePage.on('pageerror', error => errors.push(error.message));
+  tablePage.on('request', request => tableRequests.push(request.url()));
+  await tablePage.route('**/src/workspace-preview.ts*', async route => {
+    const response = await route.fetch();
+    const extra = JSON.stringify({ 'data.csv': 'id,name,city\n1,"Lee, A",Oslo\n2,Kim,Lima\n', 'script.lua': 'local n = 42 -- answer\nprint("n", n)\n' });
+    const body = (await response.text()).replace('"src/main.ts":', `${extra.slice(1, -1)}, "src/main.ts":`);
+    await route.fulfill({ response, body });
+  });
+  await tablePage.goto(`${base}/?preview=workspace`);
+  await tablePage.locator('.monaco-editor').waitFor();
+  const tableKinds = () => tablePage.evaluate(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size);
+  await tablePage.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= 3);
+  assert(!tableRequests.some(url => /delimited-tokens/.test(url)), 'no CSV tokenizer before a CSV is opened');
+  for (const [file, kinds] of [['script.lua', 3], ['data.csv', 4]]) {
+    await tablePage.getByRole('button', { name: file, exact: true }).click();
+    await tablePage.waitForFunction(name => document.querySelector('#viewer-title')?.textContent === name, file);
+    await tablePage.waitForFunction(n => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= n, kinds, { timeout: 10_000 }).catch(() => {});
+    assert((await tableKinds()) >= kinds, `${file} is coloured: ${await tableKinds()} kinds of token`);
+  }
+  assert(tableRequests.some(url => /delimited-tokens/.test(url)), 'the CSV tokenizer arrives with the first CSV');
+  await tablePage.close();
+
   // Exercise the shared controller with actual storage restoration/failure.
   await page.evaluate(async () => {
     const { Workspace } = await import('/src/workspace.ts');
@@ -138,7 +216,7 @@ async function main() {
       await zoomPage.locator('#preview-scenario').selectOption(state);
       await zoomPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       assert(await zoomPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '200%-equivalent layout has no horizontal overflow');
-      for (const id of ['side-toggle', 'new-terminal', 'split']) {
+      for (const id of ['side-toggle', 'theme-toggle', 'new-terminal', 'split']) {
         const rect = await zoomPage.locator(`#${id}`).boundingBox();
         assert(rect && rect.x + rect.width <= 721 && rect.y + rect.height <= 450, `${id} fits zoomed layout`);
       }

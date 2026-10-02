@@ -66,9 +66,14 @@
 .shell .splitter:focus-visible, .shell .sidebar-splitter:focus-visible { outline-offset: -2px; }
 .shell .terminals { grid-row: 3; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .shell .terminal-actions { margin-left: auto; display: flex; flex: none; gap: 0.4rem; }
-.shell .side-toggle, .shell .quiet-button, .shell .close-file, .shell .new, .shell .split, .shell #drawer-close {
+.shell .side-toggle, .shell .quiet-button, .shell .close-file, .shell .new, .shell .split, .shell #drawer-close, .shell .theme-toggle, .shell .highlight-toggle {
   flex: none; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); padding: 0.35rem 0.65rem; font-size: 0.75rem; line-height: 1.4; cursor: pointer;
 }
+.shell .theme-toggle { display: inline-flex; align-items: center; padding: 0.35rem 0.45rem; }
+.shell .theme-toggle svg { width: 0.875rem; height: 1.05rem; }
+.shell .highlight-toggle { border-color: transparent; }
+.shell .highlight-toggle[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
+.shell .theme-toggle:hover, .shell .highlight-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .shell .close-file { border-color: transparent; }
 .shell .side-toggle[aria-expanded="true"], .shell .split[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .shell .new:hover:not(:disabled), .shell .quiet-button:hover, .shell .close-file:hover { border-color: var(--accent); color: var(--accent); }
