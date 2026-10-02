@@ -32,6 +32,14 @@ reflects that.
 
 ### Two mechanisms, and Linux is the stricter one
 
+**The difference has consequences beyond credentials.** Linux withholds the
+whole home directory and names what to allow; macOS allows it and names what to
+deny. So anything nobody thought to list is hidden from a Linux guest and
+visible to a macOS one. Two have surfaced: `~/.viminfo`, now denied, whose
+absence from the list made `vi` fail to quit for guests on any Mac that had used
+vim; and shell history, not yet denied — see
+[open-points.md](../open-points.md#a-macos-guest-can-read-the-hosts-shell-history).
+
 | | macOS — Seatbelt | Linux — Landlock |
 |---|---|---|
 | Model | allow everything, then deny | grant nothing, then allow |

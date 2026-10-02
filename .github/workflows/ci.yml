@@ -28,6 +28,17 @@ jobs:
       # a check that skips in the one place it has to run is not a check.
       - run: npx playwright install --with-deps chromium
         working-directory: web
+      # A real Mac has a vim history; a fresh runner does not, and that is the
+      # one difference that hid a bug from this job. Vim only fails to quit
+      # inside the sandbox when ~/.viminfo already exists — it reads the file,
+      # then cannot write the merged copy into a read-only home. With no file it
+      # fails silently, so every Mac that had ever used vim showed guests E138
+      # while this runner stayed green. One line puts the runner on the same
+      # path as the people using it.
+      - name: Give the runner a vim history, as a real Mac has
+        if: matrix.os == 'macos-latest'
+        run: printf '# seeded by CI\n' > ~/.viminfo
+
       # fmt, clippy -D warnings, cargo test, tsc, the UI suite, every smoke suite.
       #
       # On failure the end of the output also becomes an annotation. A job's

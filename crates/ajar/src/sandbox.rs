@@ -74,6 +74,18 @@ const SECRET_FILES: &[&str] = &[
     ".pypirc",
     ".git-credentials",
     ".cargo/credentials.toml",
+    // Vim's history, marks and registers — and registers hold whatever the host
+    // last yanked, which is how a token gets copied from one file to another.
+    //
+    // It is here for a second reason, found before the first. A guest quitting
+    // vim on any host that has ever used vim got `E138: Can't write viminfo
+    // file` and a prompt for ENTER: vim reads the file, then fails to write the
+    // merged copy beside it, because the home directory is not writable. With
+    // no file to read it fails silently instead, which is why CI's fresh runners
+    // never saw it and every real Mac did. Unreadable, it is no file at all, so
+    // vim takes the silent path — tightening the sandbox was the fix, not
+    // loosening it.
+    ".viminfo",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -896,6 +908,35 @@ mod tests {
         assert!(
             out.contains("Operation not permitted") || out.contains("No such file"),
             "expected a refusal or an absent directory, got: {out}"
+        );
+    }
+
+    #[test]
+    fn vim_history_is_unreadable() {
+        // Two reasons, in the order they were found. A guest quitting vim on a
+        // host with a ~/.viminfo got E138 and a prompt for ENTER — vim read the
+        // file, then could not write the merged copy into a read-only home. And
+        // the file holds registers, which hold whatever the host last yanked.
+        //
+        // Unlike `credentials_are_unreadable`, this one makes sure the file
+        // exists. CI's runners have no ~/.viminfo, so reading only what is
+        // really there would pass on CI whether or not it is covered — which is
+        // exactly how the E138 bug got past CI in the first place. Removed
+        // afterwards only if it was made here, so a host's own history is never
+        // touched.
+        let f = fixture("viminfo", true);
+        let viminfo = PathBuf::from(std::env::var("HOME").unwrap()).join(".viminfo");
+        let made_here = !viminfo.exists();
+        if made_here {
+            fs::write(&viminfo, "# ajar test viminfo\n").unwrap();
+        }
+        let (ok, out) = run(&f, &format!("cat {} 2>&1", viminfo.display()));
+        if made_here {
+            let _ = fs::remove_file(&viminfo);
+        }
+        assert!(
+            !ok && out.contains("Operation not permitted"),
+            "a guest could read the host's vim history: {out}"
         );
     }
 

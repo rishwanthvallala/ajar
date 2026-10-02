@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 25 September 2026. The relay, both browser clients and the deploy
+*Kept as of 2 October 2026. The relay, both browser clients and the deploy
 config were deployed from `5b14947` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
 reads, freed pad names and the 90-day lease. The fifth step, per-address limits
@@ -107,6 +107,21 @@ before it is touched.
 | The watcher's filter reads only the root `.gitignore` and `.ignore`; the scanner also honours nested ones, global excludes and `info/exclude`, so changes there reach guests until the next resync | `workspace/filter.rs` |
 | A cursor's `user.id` goes into a stylesheet unescaped — the name was fixed, the id was not. In the pad anyone with the link can send one | `web/src/editing.ts`, `pad/src/editing.ts` `drawCursors` |
 | The checkpoint leaves out untracked files, and "files changed" is measured against HEAD, so the host's own earlier edits are reported as the guest's | `checkpoint.rs` |
+
+### A macOS guest can read the host's shell history
+
+Found 2 October while fixing the `vi` failure below, and not demonstrated end
+to end — it follows from the profile. macOS reads the home directory through a
+**deny**-list, so anything not named is readable; Linux uses an allow-list and
+is not affected. `~/.zsh_history`, `~/.bash_history` and the REPL histories
+(`.python_history`, `.psql_history`, `.node_repl_history`) are not named, and
+they routinely hold tokens passed as arguments. The agent tells a macOS host
+"ssh, cloud and browser credentials unreadable"; this is a credential-bearing
+file that list misses.
+
+Not simply added to the deny-list, because a shell that cannot read its own
+history file may say so at every prompt — that wants checking on a real host
+before it ships, the way `.viminfo` was.
 
 ### On a macOS host, a guest cannot run `top`
 
