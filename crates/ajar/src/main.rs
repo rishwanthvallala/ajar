@@ -748,6 +748,15 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             };
             match kind {
                 DocKind::Update => {
+                    // Read-only covers the files as well as the terminals.
+                    // It used to stop at keystrokes: a guest's edit to an
+                    // open file was applied, passed on to everyone and
+                    // written to disk regardless. Dropped here, at the one
+                    // place every edit passes, so a client that ignores the
+                    // flag gains nothing — the same rule as the terminals.
+                    if host.state.read_only {
+                        return Ok(());
+                    }
                     if let Err(e) = host.docs.apply(frame.stream_id, body) {
                         warn!("update for document {} rejected: {e}", frame.stream_id);
                         return Ok(());

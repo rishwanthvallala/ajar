@@ -349,6 +349,25 @@ async function checkSession() {
   wire.send(frame(5, Buffer.concat([Buffer.from([1]), Buffer.from(Y.encodeStateAsUpdate(doc))]), 11));
   await page.locator('.monaco-editor').waitFor();
   await page.waitForFunction(() => document.querySelector('.view-lines')?.textContent?.includes('answer'));
+  // Read-only reaches the editor as well as the terminals. The host drops a
+  // guest's edits while it is on, so the editor must not take keystrokes the
+  // file will not keep.
+  const edits = () => sent.filter(m => m.channel === 5 && m.stream === 11 && m.bytes?.[0] === 1).length;
+  const lines = () => page.locator('.view-lines').textContent();
+  wire.send(frame(2, { t: 'read_only', read_only: true }));
+  await page.waitForFunction(() => document.getElementById('readonly')?.hidden === false);
+  const editsBefore = edits();
+  await page.locator('.monaco-editor .view-lines').click();
+  await page.keyboard.type('xyz');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert(!(await lines()).includes('xyz'), 'a read-only file does not take typing');
+  assert.equal(edits(), editsBefore, 'and sends no edit');
+  wire.send(frame(2, { t: 'read_only', read_only: false }));
+  await page.waitForFunction(() => document.getElementById('readonly')?.hidden === true);
+  await page.locator('.monaco-editor .view-lines').click();
+  await page.keyboard.type('qq');
+  await page.waitForFunction(() => document.querySelector('.view-lines')?.textContent?.includes('qq'));
+  assert(edits() > editsBefore, 'editing resumes when read-only ends');
   await page.getByRole('button', { name: 'New terminal', exact: true }).click();
   await page.locator('.xterm').waitFor();
   await page.getByRole('button', { name: 'Close file', exact: true }).click();

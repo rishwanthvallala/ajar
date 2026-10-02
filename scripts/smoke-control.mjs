@@ -7,12 +7,16 @@
 //
 //   node scripts/smoke-control.mjs
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   CH_CONTROL,
+  CH_DOC,
+  DOC_UPDATE,
+  encode,
   fail,
   finish,
   Guest,
@@ -30,6 +34,35 @@ const WS = `ws://127.0.0.1:${PORT}/ws`;
 
 const procs = new Procs();
 let workdir;
+
+const Y = createRequire(new URL("../web/package.json", import.meta.url))("yjs");
+
+/** Open a file for editing as a guest, the way the browser does, and hold its document. */
+async function openDoc(guest, path) {
+  const ydoc = new Y.Doc();
+  const early = [];
+  let id = null;
+  guest.onDoc = (streamId, kind, body) => {
+    if (kind !== DOC_UPDATE) return;
+    if (id === null) early.push([streamId, body]);
+    else if (streamId === id) Y.applyUpdate(ydoc, body, "remote");
+  };
+  guest.send(json(CH_DOC, { t: "open", path }));
+  await guest.waitUntil((g) => g.docMessages.some((m) => m.t === "opened" && m.path === path), `${path} to open`);
+  id = guest.docMessages.find((m) => m.t === "opened" && m.path === path).doc_id;
+  for (const [streamId, body] of early) if (streamId === id) Y.applyUpdate(ydoc, body, "remote");
+  await sleep(300);
+  return {
+    id,
+    text: () => ydoc.getText("content").toString(),
+    type(at, what) {
+      const before = Y.encodeStateVector(ydoc);
+      ydoc.getText("content").insert(at, what);
+      const update = Y.encodeStateAsUpdate(ydoc, before);
+      guest.send(encode({ channel: CH_DOC, streamId: id, payload: Uint8Array.from([DOC_UPDATE, ...update]) }));
+    },
+  };
+}
 
 const strip = (s) =>
   s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
@@ -74,6 +107,24 @@ async function main() {
     }
     if (!sawFlag()) fail("no read-only notice reached the guest");
     else ok("the guest is told the terminals are read-only");
+
+    // And the files. Read-only used to stop at the terminals: an edit to an
+    // open file was applied, passed on to everyone and written to disk.
+    const doc = await openDoc(g, "a.txt");
+    doc.type(0, "EDITED-WHILE-READ-ONLY\n");
+    await sleep(800);
+    g.send(json(CH_DOC, { t: "close", doc_id: doc.id }));
+    await sleep(800);
+    const other = new Guest(WS, session, "other", key);
+    await other.connect();
+    const seen = (await openDoc(other, "a.txt")).text();
+    const disk = await readFile(join(workdir, "a.txt"), "utf8");
+    if (seen !== "hi\n" || disk !== "hi\n") {
+      fail(`a read-only file took an edit: another guest sees ${JSON.stringify(seen)}, the disk has ${JSON.stringify(disk)}`);
+    } else {
+      ok("read-only files drop guest edits at the host — nobody else sees them, and the disk keeps its copy");
+    }
+    other.close();
     g.close();
     procs.kill(agent, "SIGINT");
     await sleep(400);

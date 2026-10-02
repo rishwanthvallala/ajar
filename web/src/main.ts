@@ -476,6 +476,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         readOnly = msg.read_only;
         readOnlyEl.hidden = !readOnly;
         for (const tab of tabs.values()) tab.term.options.cursorBlink = !readOnly;
+        // The host drops edits while this is on; the editor says so by not
+        // taking them, rather than letting someone type into a file that
+        // will not keep it.
+        if (editing) workspace.editor.viewer?.setReadOnly(readOnly);
         // Arriving to "No terminals yet" meant a click before anything worked,
         // and a shell is what most people came for. The host sends every live
         // terminal before this message, on one ordered stream, so an empty set
@@ -763,11 +767,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (resume) reconnectingDocument = null;
 
     // The model has to exist before the document can drive it.
-    v.show(path, doc.ytext.toString(), false, false);
+    v.show(path, doc.ytext.toString(), false, readOnly);
     const handles = v.handles;
     if (!handles) return;
     detach = doc.bind(handles.editor, handles.model);
-    v.setReadOnly(false);
+    v.setReadOnly(readOnly);
     if (focusSelectedFile) { workspace.editor.focus(); focusSelectedFile = false; }
   }
 
