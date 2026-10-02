@@ -116,6 +116,35 @@ impl Outbox {
         }
     }
 
+    /// Queue frames that only mean anything together, judged as one.
+    ///
+    /// The stored copy is a small header and then the sealed blob, and `send`
+    /// called twice judged the blob as accumulation behind the header — so a
+    /// copy over about 8 MB was refused and the guest asking for it was cut
+    /// off. As a unit they get the same allowance one frame does: whatever its
+    /// size, onto an empty queue.
+    pub fn send_all(&self, frames: Vec<Vec<u8>>) -> Result<(), Overflowed> {
+        if self.closed.load(Ordering::Acquire) || self.draining.load(Ordering::Acquire) {
+            return Err(Overflowed);
+        }
+        let total = frames.iter().map(Vec::len).sum::<usize>();
+        let queued = self.queued.load(Ordering::Relaxed);
+        if queued > 0 && queued.saturating_add(total) > MAX_QUEUED_BYTES {
+            self.shut();
+            return Err(Overflowed);
+        }
+        for bytes in frames {
+            self.queued.fetch_add(bytes.len(), Ordering::Relaxed);
+            if let Err(e) = self.inner.try_send(bytes) {
+                self.queued
+                    .fetch_sub(e.into_inner().len(), Ordering::Relaxed);
+                self.shut();
+                return Err(Overflowed);
+            }
+        }
+        Ok(())
+    }
+
     fn shut(&self) {
         self.closed.store(true, Ordering::Release);
         self.wake.notify_waiters();
@@ -188,6 +217,30 @@ impl Drain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_header_and_its_oversized_blob_go_out_together() {
+        // The stored copy: a few bytes of header, then a blob over the
+        // budget. Sent one at a time the blob was refused.
+        let (tx, mut rx) = channel();
+        let blob = vec![7u8; MAX_QUEUED_BYTES + 1024];
+        tx.send_all(vec![b"header".to_vec(), blob.clone()]).unwrap();
+        assert_eq!(rx.next().await.as_deref(), Some(b"header".as_slice()));
+        assert_eq!(rx.next().await.map(|b| b.len()), Some(blob.len()));
+    }
+
+    #[tokio::test]
+    async fn a_unit_behind_a_backlog_is_still_accumulation() {
+        let (tx, _rx) = channel();
+        tx.send(vec![0u8; 1024]).unwrap();
+        let blob = vec![7u8; MAX_QUEUED_BYTES];
+        assert_eq!(tx.send_all(vec![b"header".to_vec(), blob]), Err(Overflowed));
+        assert_eq!(
+            tx.send(b"after".to_vec()),
+            Err(Overflowed),
+            "the connection is finished"
+        );
+    }
 
     #[tokio::test]
     async fn ordinary_traffic_passes_straight_through() {

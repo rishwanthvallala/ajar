@@ -15,6 +15,8 @@ import { join } from "node:path";
 import {
   CH_CONTROL,
   CH_DOC,
+  CH_STORE,
+  SNAPSHOT_STREAM,
   DOC_UPDATE,
   encode,
   fail,
@@ -177,6 +179,73 @@ async function main() {
     again.close();
     early.close();
     host.close();
+  }
+
+  // ---- what the relay refuses on the host's behalf --------------------
+  // Spoken as raw protocol, the way a hostile client would.
+  {
+    const session = "control-relay-test";
+    const host = new Guest(WS, session, "hosty");
+    host.role = "host";
+    await host.connect();
+    const guest = new Guest(WS, session, "guesty");
+    await guest.connect();
+    await sleep(200);
+
+    // A guest may not originate control after the handshake. Forwarding
+    // malformed cleartext control used to terminate the host, and nothing
+    // here ever sent one as a guest.
+    const before = host.control.length;
+    guest.send(json(CH_CONTROL, { t: "closed", reason: "SENT-BY-A-GUEST" }));
+    guest.send(json(CH_CONTROL, { t: "lock", locked: true }));
+    guest.send(encode({ channel: CH_CONTROL, payload: new TextEncoder().encode("{not json") }));
+    await sleep(500);
+    const reached = host.control.slice(before).filter((m) => m.t !== "joined" && m.t !== "left");
+    if (reached.length > 0) fail(`a guest's control frame reached the host: ${JSON.stringify(reached)}`);
+    else ok("a guest's control frames never reach the host");
+    const after = new Guest(WS, session, "after");
+    await after.connect().then(
+      () => ok("and its lock was not applied"),
+      (e) => fail(`a guest locked the session: ${e}`),
+    );
+    after.close();
+
+    // The stored copy, over the outbox's 8 MB. Its header and blob were
+    // queued one at a time, the blob judged as a backlog behind the header,
+    // and the guest asking for it was cut off instead of answered.
+    const blob = new Uint8Array(9 * 1024 * 1024).fill(42);
+    host.send(json(CH_STORE, { t: "offer", bytes: blob.length, files: 1 }));
+    await host.waitUntil((h) => h.store.some((m) => m.t === "accepted"), "the offer to be accepted");
+    host.send(encode({ channel: CH_STORE, streamId: SNAPSHOT_STREAM, payload: blob }));
+    await sleep(500);
+    guest.send(json(CH_STORE, { t: "fetch" }));
+    const got = await guest
+      .waitUntil((g) => g.snapshot?.length === blob.length, "the stored copy", 15_000)
+      .then(() => true, () => false);
+    if (!got) fail(`a ${blob.length}-byte stored copy never reached the guest (got ${guest.snapshot?.length ?? "nothing"})`);
+    else ok("a stored copy over 8 MB reaches a guest whole");
+
+    guest.close();
+    host.close();
+  }
+
+  // ---- a socket that never says hello ----------------------------------
+  // It is charged to no quota until it does, so without a deadline it was
+  // free to hold open for good.
+  {
+    const silent = new WebSocket(WS);
+    await new Promise((resolve, reject) => {
+      silent.onopen = resolve;
+      silent.onerror = () => reject(new Error("could not open a socket"));
+    });
+    const opened = Date.now();
+    const closedAfter = await new Promise((resolve) => {
+      silent.onclose = () => resolve(Date.now() - opened);
+      setTimeout(() => resolve(null), 20_000);
+    });
+    if (closedAfter === null) fail("a socket that never said hello was still open after 20 s");
+    else ok(`a socket that never says hello is closed (after ${Math.round(closedAfter / 1000)} s)`);
+    if (silent.readyState === WebSocket.OPEN) silent.close();
   }
 
   finish(procs, "the host's controls do what the panel says they do");

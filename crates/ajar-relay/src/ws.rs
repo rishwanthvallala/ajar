@@ -16,6 +16,14 @@ use crate::quota::Kind;
 use crate::quota::Quota;
 use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYTES};
 
+/// How long a socket may stay open without saying hello.
+///
+/// The quota is charged for a connection only once its hello says what it
+/// is, so until then it costs nothing — and with no deadline, a socket that
+/// never sent one stayed open for good. Ten seconds is far longer than any
+/// client takes; the browser sends its hello the moment the socket opens.
+pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn handle(
     socket: WebSocket,
     registry: Arc<Registry>,
@@ -53,9 +61,14 @@ pub async fn handle(
         }};
     }
 
-    let hello = match next_frame(&mut stream).await {
-        Some(f) => f,
-        None => {
+    let hello = match tokio::time::timeout(HELLO_TIMEOUT, next_frame(&mut stream)).await {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            writer.abort();
+            return;
+        }
+        Err(_) => {
+            debug!(%caller, "no hello within {HELLO_TIMEOUT:?}; closing");
             writer.abort();
             return;
         }
@@ -232,18 +245,26 @@ pub async fn handle(
                     if matches!(frame.parse_json::<Store>(), Ok(Store::Fetch)) {
                         match registry.snapshot(&session_id) {
                             Some((sealed, files)) => {
-                                send_json(
-                                    &tx,
+                                // Header and blob as one unit, or a copy over
+                                // the outbox's 8 MB never arrived — see
+                                // `Outbox::send_all`.
+                                let header = Frame::json(
                                     Channel::Store,
+                                    TARGET_ALL,
                                     &Store::Snapshot {
                                         bytes: sealed.len() as u64,
                                         files,
                                     },
                                 );
-                                let _ = tx.send(
-                                    Frame::stream(Channel::Store, SNAPSHOT_STREAM, me.id, sealed)
-                                        .encode(),
-                                );
+                                if let Ok(header) = header {
+                                    let blob = Frame::stream(
+                                        Channel::Store,
+                                        SNAPSHOT_STREAM,
+                                        me.id,
+                                        sealed,
+                                    );
+                                    let _ = tx.send_all(vec![header.encode(), blob.encode()]);
+                                }
                             }
                             None => send_json(&tx, Channel::Store, &Store::Empty),
                         }
