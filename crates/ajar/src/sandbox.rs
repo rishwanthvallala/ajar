@@ -65,6 +65,9 @@ const SECRET_DIRS: &[&str] = &[
     "Library/Keychains",
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Firefox",
+    // Per-session shell history, which Terminal.app turns on by default.
+    ".zsh_sessions",
+    ".bash_sessions",
 ];
 
 #[cfg(target_os = "macos")]
@@ -86,7 +89,63 @@ const SECRET_FILES: &[&str] = &[
     // vim takes the silent path — tightening the sandbox was the fix, not
     // loosening it.
     ".viminfo",
+    // Shell and REPL history: commands as typed, tokens passed as arguments
+    // included. Checked on a real Mac on 2 October before adding them, since a
+    // shell that cannot read its history might complain at every prompt. It is
+    // the other way round, as with vim: zsh can read it but not lock it in a
+    // home it cannot write, and says so on starting and on leaving; unreadable,
+    // it is no file and zsh says nothing. bash and python say nothing either
+    // way.
+    ".zsh_history",
+    ".zhistory",
+    ".bash_history",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+    ".sqlite_history",
+    ".irb_history",
+    ".rediscli_history",
+    ".local/share/fish/fish_history",
 ];
+
+/// Sockets that act as the host — anything that connects is the host, to
+/// whatever the socket serves. Refused even with the network on: they are not
+/// the network, they are the host's identity.
+///
+/// Paths, not variables. Withholding `SSH_AUTH_SOCK` never hid the agent: the
+/// guest can list `/private/tmp` and find it. Until 2 October the agent only
+/// measured these and warned; this refuses them.
+#[cfg(target_os = "macos")]
+fn identity_sockets(home: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::env::var_os("SSH_AUTH_SOCK")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    // Docker Desktop, and the common alternatives to it.
+    out.push(PathBuf::from("/var/run/docker.sock"));
+    for rel in [
+        ".docker/run/docker.sock",
+        ".docker/desktop/docker.sock",
+        ".colima/default/docker.sock",
+        ".orbstack/run/docker.sock",
+        ".rd/docker.sock",
+    ] {
+        out.push(home.join(rel));
+    }
+    let gnupg = std::env::var_os("GNUPGHOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".gnupg"));
+    for name in [
+        "S.gpg-agent",
+        "S.gpg-agent.ssh",
+        "S.gpg-agent.extra",
+        "S.gpg-agent.browser",
+    ] {
+        out.push(gnupg.join(name));
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -465,6 +524,33 @@ mod macos {
             let p = home.join(file);
             let _ = writeln!(sbpl, "  (literal {})", quote(&p.display().to_string()));
         }
+        // A history file moved by HISTFILE is the same history.
+        if let Some(h) = std::env::var_os("HISTFILE") {
+            let _ = writeln!(
+                sbpl,
+                "  (literal {})",
+                quote(&PathBuf::from(h).display().to_string())
+            );
+        }
+        sbpl.push_str(")\n");
+
+        // ---- sockets that act as the host --------------------------------
+        sbpl.push_str("\n;; sockets that act as the host, refused with the\n");
+        sbpl.push_str(";; network on as well\n(deny network-outbound\n");
+        // launchd's ssh agent, wherever this login put it. Seatbelt matches
+        // the resolved path, so /tmp is written as /private/tmp.
+        sbpl.push_str(
+            "  (remote unix-socket (path-regex #\"^/private/tmp/com\\.apple\\.launchd\\.[^/]+/Listeners$\"))\n",
+        );
+        for path in identity_sockets(&home) {
+            for form in both_forms(&path) {
+                let _ = writeln!(
+                    sbpl,
+                    "  (remote unix-socket (path-literal {}))",
+                    quote(&form)
+                );
+            }
+        }
         sbpl.push_str(")\n");
 
         if !allow_network {
@@ -473,7 +559,8 @@ mod macos {
 
         let allows = vec![
             "writes confined to the shared folder, temp and build caches".to_string(),
-            "ssh, cloud and browser credentials unreadable".to_string(),
+            "credentials and shell history unreadable; the ssh, gpg and Docker sockets refused"
+                .to_string(),
             if allow_network {
                 "network allowed".to_string()
             } else {
@@ -938,6 +1025,79 @@ mod tests {
             !ok && out.contains("Operation not permitted"),
             "a guest could read the host's vim history: {out}"
         );
+    }
+
+    #[test]
+    fn shell_history_is_unreadable() {
+        // Commands as typed, tokens passed as arguments among them. Made to
+        // exist first, as for vim: a runner with no history would pass
+        // whether or not it is covered. Removed only if made here.
+        let f = fixture("history", true);
+        let history = PathBuf::from(std::env::var("HOME").unwrap()).join(".zsh_history");
+        let made_here = !history.exists();
+        if made_here {
+            fs::write(&history, ": 0:0;export TOKEN=not-for-guests\n").unwrap();
+        }
+        let (ok, out) = run(&f, &format!("cat {} 2>&1", history.display()));
+        if made_here {
+            let _ = fs::remove_file(&history);
+        }
+        assert!(
+            !ok && out.contains("Operation not permitted"),
+            "a guest could read the host's shell history: {out}"
+        );
+    }
+
+    #[test]
+    fn the_ssh_agent_is_out_of_reach() {
+        // Where launchd puts every login's agent, so this holds whether or not
+        // SSH_AUTH_SOCK names it. A socket elsewhere in temp is the control:
+        // it must connect, or a refusal would prove nothing about the rule.
+        use std::os::unix::net::UnixListener;
+        let tag = std::process::id();
+        let agent_dir = PathBuf::from(format!("/private/tmp/com.apple.launchd.ajar-test-{tag}"));
+        let _ = fs::remove_dir_all(&agent_dir);
+        fs::create_dir_all(&agent_dir).unwrap();
+        let agent = agent_dir.join("Listeners");
+        let control = PathBuf::from(format!("/private/tmp/ajar-test-control-{tag}.sock"));
+        let _ = fs::remove_file(&control);
+        let listeners = [
+            UnixListener::bind(&agent).unwrap(),
+            UnixListener::bind(&control).unwrap(),
+        ];
+        for l in listeners {
+            std::thread::spawn(move || {
+                for c in l.incoming() {
+                    drop(c)
+                }
+            });
+        }
+
+        let f = fixture("ssh-agent", true);
+        let reach = |p: &Path| run(&f, &format!("nc -U -w1 {} </dev/null", p.display())).0;
+        let (agent_reached, control_reached) = (reach(&agent), reach(&control));
+        let _ = fs::remove_dir_all(&agent_dir);
+        let _ = fs::remove_file(&control);
+        assert!(
+            control_reached,
+            "the probe could not reach an ordinary socket, so it proves nothing"
+        );
+        assert!(!agent_reached, "a guest could connect to the ssh agent");
+    }
+
+    #[test]
+    fn the_docker_and_gpg_sockets_are_named() {
+        // Not exercised end to end — that would mean making sockets in the
+        // host's own ~/.docker and ~/.gnupg — so the rules are checked to be
+        // there, in the form the agent socket's test shows Seatbelt honours.
+        let f = fixture("named-sockets", true);
+        let profile = f.sandbox.profile.as_deref().unwrap();
+        for name in ["docker.sock", "S.gpg-agent", "S.gpg-agent.ssh"] {
+            assert!(
+                profile.contains(&format!("{name}\"))")),
+                "no refusal for {name} in the profile"
+            );
+        }
     }
 
     #[test]

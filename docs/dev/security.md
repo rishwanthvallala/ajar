@@ -14,9 +14,9 @@ restricted rather than the environment replaced.
 | | |
 |---|---|
 | Writes | Confined to the shared folder, temp, and build caches — truncation included, from Linux 6.2 |
-| Credentials | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, keychains and browser profiles unreadable |
+| Credentials | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, keychains, browser profiles and shell and REPL history unreadable |
 | Environment | Variables that look like credentials, and the ones naming key agents, are withheld from a guest's shell. The host is told which, by name |
-| Key-holding sockets | ssh and gpg agents, Docker, the desktop session bus: **measured**, and the host warned about each one a guest can reach. Not yet refused — see below |
+| Key-holding sockets | ssh and gpg agents and Docker: **refused** on macOS since 2 October. On Linux, and for the session bus, **measured**, and the host warned about each one a guest can reach — see below |
 | Other processes | A guest cannot signal anything outside its own terminal, the agent included — from Linux 6.12 |
 | Everything else | Readable, so compilers and language servers still work |
 | Network | Allowed by default. `--no-network` cuts it — Seatbelt on macOS, Landlock `ConnectTcp` on Linux. On a kernel older than 6.7 it **refuses to start** rather than pretend |
@@ -35,10 +35,13 @@ reflects that.
 **The difference has consequences beyond credentials.** Linux withholds the
 whole home directory and names what to allow; macOS allows it and names what to
 deny. So anything nobody thought to list is hidden from a Linux guest and
-visible to a macOS one. Two have surfaced: `~/.viminfo`, now denied, whose
+visible to a macOS one. Two have surfaced, both now denied: `~/.viminfo`, whose
 absence from the list made `vi` fail to quit for guests on any Mac that had used
-vim; and shell history, not yet denied — see
-[open-points.md](../open-points.md#a-macos-guest-can-read-the-hosts-shell-history).
+vim; and shell and REPL history, which holds tokens passed as arguments. Each
+was checked on a real Mac before being added, because a tool that cannot read
+its own file may complain about it — and both times the tool was *quieter* for
+it: vim and zsh read the file, fail to write or lock it in a home they cannot
+write, and say so; with no file to read they say nothing.
 
 | | macOS — Seatbelt | Linux — Landlock |
 |---|---|---|
@@ -111,9 +114,13 @@ costs a guest a variable they can ask for and under-matching hands over a key.
 
 Withholding the *variable* does not hide the *socket*. An ssh agent listens in
 a temp directory the guest can list; Docker, gpg and the session bus sit at
-well-known paths. Refusing them needs Landlock ABI 9 (Linux 7.1) or Seatbelt
-rules that have not been written and verified on a Mac yet. So for now the
-agent **measures** instead of claiming: for each socket that exists it runs
+well-known paths. On macOS they are refused, since 2 October: the profile denies
+`network-outbound` to each by path — launchd's ssh agents by pattern, so a
+withheld `SSH_AUTH_SOCK` cannot hide one, and the Docker and gpg sockets by
+name — with the network on as well. Verified on a Mac with a real listener at
+a launchd-shaped path, against a control socket that must still connect.
+Refusing them on Linux needs Landlock ABI 9 (Linux 7.1). So the agent
+**measures** as well as refusing: for each socket that exists it runs
 itself through the real sandbox (`__reach`) and tries to connect, and warns
 about exactly the ones that answered. `smoke-environment.mjs` checks the
 warning against what a guest can actually do, in both directions.
