@@ -96,6 +96,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "socket2",
  "tokio",
  "tokio-util",
  "tower-http",

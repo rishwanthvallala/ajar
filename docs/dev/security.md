@@ -308,6 +308,7 @@ meets it.
 | Pad writes being read at once | 4 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
 | Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
+| A peer that stops reading | Closed by the kernel after 60 s of sent data going unacknowledged (`TCP_USER_TIMEOUT`, Linux), which ends the stream and frees its read slots | `main.rs` `STALLED_PEER` |
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
 | Egress tunnels opened | 30 a minute per address | `deploy/Caddyfile` `pad_wisp` |
 | `/dns-query` | GET/POST only, 4 KB body, 120 a minute per address | `deploy/Caddyfile` `pad_dns` |

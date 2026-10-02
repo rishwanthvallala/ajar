@@ -68,6 +68,18 @@ const _: () = assert!(MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES < 256 * 1024
 /// one slow reader cannot hold them all.
 const MAX_CONCURRENT_PAD_READS: usize = 64;
 
+/// How long data sent to a peer may sit unacknowledged — because it has
+/// stopped reading — before the kernel closes the connection.
+///
+/// A pad read holds its slots until its last byte is sent, and nothing in the
+/// response can notice a reader that has stopped: the server stops pulling the
+/// body when it cannot write, so a deadline inside it never runs. A handful
+/// of readers that opened large pads and stopped reading held every slot,
+/// and everyone else waited ten seconds to be told the server was busy. The
+/// kernel can see it — see `give_up_on_stalled_peers`. A minute is longer than
+/// any connection that is merely slow goes without draining anything.
+const STALLED_PEER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// How long a read waits for a slot before being told the server is busy.
 /// Queuing is right for a moment's contention; a queue with no end is how a
 /// few slow readers turn into requests that simply never answer.
@@ -240,7 +252,10 @@ async fn main() -> anyhow::Result<()> {
         info!("serving web client from {dir}");
     }
 
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    use axum::serve::ListenerExt;
+    let listener = tokio::net::TcpListener::bind(args.bind)
+        .await?
+        .tap_io(|tcp| give_up_on_stalled_peers(tcp, STALLED_PEER));
     info!("relay listening on {}", args.bind);
     // `into_make_service_with_connect_info` so the quota can see who is
     // calling. Behind a proxy every connection is the proxy, which is why
@@ -255,6 +270,21 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Have the kernel close a connection whose peer has stopped reading.
+///
+/// `TCP_USER_TIMEOUT` bounds how long sent data may stay unacknowledged *or*
+/// unsent behind a zero window — a reader that has stopped. Closing the
+/// socket ends whatever was being streamed to it, and with it the slots it
+/// held. Linux only; elsewhere the relay is a development build.
+fn give_up_on_stalled_peers(tcp: &tokio::net::TcpStream, after: std::time::Duration) {
+    #[cfg(target_os = "linux")]
+    if let Err(e) = socket2::SockRef::from(tcp).set_tcp_user_timeout(Some(after)) {
+        tracing::warn!("could not set TCP_USER_TIMEOUT: {e}");
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (tcp, after);
 }
 
 /// What the browser gets when it opens a name.
@@ -540,6 +570,30 @@ async fn upgrade(
 #[cfg(test)]
 mod tests {
     use super::caller_ip;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_peer_that_stops_reading_is_cut_off() {
+        // Connected and silent: never reads a byte. Without the option the
+        // server's writes would park once the buffers fill, for good.
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = std::net::TcpStream::connect(addr).unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        super::give_up_on_stalled_peers(&server, std::time::Duration::from_secs(2));
+        let chunk = vec![0u8; 64 * 1024];
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if let Err(e) = server.write_all(&chunk).await {
+                    return e;
+                }
+            }
+        })
+        .await;
+        let error = outcome.expect("writes to a peer that stopped reading never failed");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+    }
     use axum::http::HeaderMap;
     use std::net::IpAddr;
 
