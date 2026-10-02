@@ -324,6 +324,17 @@ And a third: verify a fix in *isolation*. An injected error meant to prove the
 ajar boot check worked was caught by a different suite running first, which
 said nothing about the check under test.
 
+Two more about where a check can run at all. `vite preview` serves the pad
+*without* the cross-origin isolation headers — `pad/vite.config.ts` sets them
+in `configureServer`, which only the dev server runs — so the runtime never
+starts there: a Run that never finishes, which is not the code. Anything that
+needs Run goes through a harness that sets them (`app-check.mjs`,
+`browser-check.mjs`). And `deploy/caddy/check.sh` is Linux-only, but on a Mac
+it runs in a container against the arm64 build:
+`podman run --rm -v "$PWD":/src -w /src -e CADDY=dist/caddy-linux-arm64
+docker.io/library/rust:slim bash -c 'apt-get update -qq && apt-get install -y
+-qq curl && deploy/caddy/check.sh'`.
+
 And a fourth, about Playwright: `waitForFunction(fn, arg, options)` takes the
 function's argument *second*. Twenty-four waits in the pad's harnesses passed
 `{ timeout: 180_000 }` there, so it became the argument and every one waited
