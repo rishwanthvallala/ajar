@@ -4,7 +4,7 @@
  * Node cannot run these — the python package fails wasm validation there — so
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
-import { interpreterFor, Runtime } from "./runtime";
+import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { cssString } from "./editing";
 import { Shell } from "./shell";
@@ -27,6 +27,13 @@ const is = (actual: unknown, expected: unknown, m: string) =>
 async function main() {
   is(globalThis.crossOriginIsolated, true, "the document is cross-origin isolated");
   is(typeof SharedArrayBuffer !== "undefined", true, "SharedArrayBuffer is available");
+  // The packages from this origin, the way a visitor gets them. Without the
+  // worker every run fetched them from Wasmer's CDN instead — python is 62 MB
+  // there, uncompressed — and on 2 October that download stalled for minutes
+  // at a time from one network, so three runs in a row hung at the runtime's
+  // start and never reached anything after it. A package the mirror lacks
+  // still comes from the CDN, as it would for a visitor.
+  is(await mirrorPackages(), true, "the package mirror's worker controls the page");
 
   // What the sandbox is seeded with. These run before the runtime because a
   // wrong answer here is invisible afterwards: the sandbox comes up with every
