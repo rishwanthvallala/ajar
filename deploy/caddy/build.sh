@@ -26,10 +26,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOFLAGS=-mod=readonly \
 
 # The plugin is the only reason this binary exists. A build that somehow lost
 # it would pass everything up to the first reload, and then fail it.
-if [ "$arch" = "$(go env GOHOSTARCH)" ]; then
-    "$root/$out" list-modules | grep -qx http.handlers.rate_limit || {
-        echo "built $out without the rate_limit module" >&2
-        exit 1
-    }
+#
+# The build info names every module compiled in, and reading it needs no
+# running binary, so this holds on any machine. Comparing the architecture
+# alone was not enough: an Apple-silicon Mac is arm64 like the server, tried to
+# run a Linux binary, and reported the failure as a missing plugin. Where the
+# binary can run, Caddy is also asked whether the module registered.
+lost() {
+    echo "built $out without the rate_limit module" >&2
+    exit 1
+}
+go version -m "$root/$out" | grep -Eq '^[[:space:]]*dep[[:space:]]+github\.com/mholt/caddy-ratelimit[[:space:]]' || lost
+if [ "linux/$arch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+    "$root/$out" list-modules | grep -qx http.handlers.rate_limit || lost
 fi
 echo "$out"
