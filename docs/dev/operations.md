@@ -69,6 +69,19 @@ start.
 Content-Type and does not know that extension; it needs `precompressed zstd
 gzip`.
 
+**A stale wasm mirror shipped without complaint.** `pad/public/packages` is
+not in git, so each machine has its own, and the deploy checks only that one
+exists. On 2 October one from 14 September went out: python untrimmed and
+bash's coreutils missing, so every visitor fetched that from Wasmer's CDN.
+After a package or trim change, or on a machine that has not deployed for a
+while, refresh it before deploying — `npm run build:pad && node
+pad/scripts/fetch-packages.mjs` — and after, `app-check.mjs` against the live
+site must report every package served from this origin.
+
+**The Caddy build checked its plugin by running a Linux binary.** It compared
+only the architecture, so on an Apple-silicon Mac it tried, failed, and
+reported the plugin missing. It reads the build info now.
+
 **`{ : < /dev/tty; }` in `run.sh`** killed the script silently on dash. `:` is
 a POSIX special built-in, so a redirect error exits the shell.
 
