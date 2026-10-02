@@ -383,6 +383,30 @@ Three attempts, and the first two are instructive:
   only when nobody answers. Which requires the relay to have said who is here
   first.
 
+Waiting for that answer left three ways to lose what the screen showed, all
+found on 2 October and all in `app.ts`'s `readyDoc`, `attach` and `onDoc`:
+
+- **The wait ended on any update.** A newcomer hears other people's traffic
+  about a file before the answer to its own request — the diffs they swap
+  whenever somebody joins, a keystroke — and an update it cannot use leaves
+  the text empty. It bound that, and the open file went blank until the real
+  answer came. The wait now ends only when the document `hasState`: some
+  history, and nothing pending.
+- **The first file was bound twice.** Opening a folder shows it from
+  `setFile` and again from `start`, and the second call was handed the
+  document while the first was still waiting for it. Every caller now shares
+  one wait.
+- **Binding replaces the editor's text with the document's.** The editor
+  shows the stored copy meanwhile, so it can be typed into, and that typing
+  went with it. `pad/src/carry.ts` turns it into one edit, made again after
+  binding so it reaches everybody and is saved; it lands where the text
+  around it still matches, and never removes anything somebody else wrote.
+
+`app-check.mjs` slows one browser's relay by 400 ms, types the moment the
+editor appears, and checks the file never blanks and the line stays where it
+was typed. Slower than the 600 ms the pad allows for an answer is the second
+attempt above — two seeded documents ignoring each other — and is still open.
+
 ### Seeding the sandbox is a separate problem, with the same shape
 
 The document seeding above is about the *room*. Seeding the **sandbox** is

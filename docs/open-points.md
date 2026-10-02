@@ -112,6 +112,18 @@ Not simply added to the deny-list, because a shell that cannot read its own
 history file may say so at every prompt — that wants checking on a real host
 before it ships, the way `.viminfo` was.
 
+### A pad newcomer whose room answers slowly seeds its own copy
+
+When a file opens and somebody else has it open, the pad asks for their
+document and waits 600 ms. An answer later than that — a distant relay, a
+slow network — and the newcomer seeds from the stored copy instead. If the
+room's document has moved on from it, the two are the case
+[dev/pad.md](dev/pad.md#seeding-a-document-is-the-subtle-part) describes:
+seeded under the same client id with different text, they exchange updates
+and ignore each other. Found on 2 October while fixing the blank file on
+open, by reading the code — not reproduced. A longer wait, or seeding under
+an id a later answer can supersede, would close it.
+
 ### On a macOS host, a guest cannot run `top`
 
 `bash: /usr/bin/top: Operation not permitted`, from a guest's terminal on

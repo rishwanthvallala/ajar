@@ -6,6 +6,7 @@
  */
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
+import { carryOver } from "./carry";
 import { cssString } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
@@ -257,6 +258,25 @@ async function main() {
 
     sheet.remove();
     is(cssString("plain name"), "plain name", "an ordinary name is left alone");
+  }
+
+  // ---- typing before a document arrives ----
+  //
+  // Each case as the text it leaves: the document with the carried-over edit
+  // applied. What was typed has to survive, where it was typed, and nobody
+  // else's work may go with it.
+  {
+    const after = (shown: string, typed: string, doc: string) => {
+      const e = carryOver(shown, typed, doc);
+      return e ? doc.slice(0, e.at) + e.insert + doc.slice(e.at + e.remove) : doc;
+    };
+    is(carryOver("a\nb\n", "a\nb\n", "a\nb\n"), null, "nothing typed, nothing to carry");
+    is(after("a\nb\n", "a\nb\nc\n", "a\nb\n"), "a\nb\nc\n", "a line typed at the end is kept");
+    is(after("abcdef", "abcXYdef", "abcdef"), "abcXYdef", "and in the middle, in place");
+    is(after("hello world", "hello there", "hello world"), "hello there", "and a word replaced");
+    is(after("one\ntwo\n", "one\ntwo\nmine\n", "theirs\none\ntwo\n"), "theirs\none\ntwo\nmine\n", "somebody's line above it stays, and it lands after the text it followed");
+    is(after("x = 1\ny = 2\n", "x = 1\nz = 0\ny = 2\n", "x = 1\ny = 2\ntheirs\n"), "x = 1\nz = 0\ny = 2\ntheirs\n", "somebody's line below it stays too");
+    is(after("keep this", "keep", "keep that"), "keep that", "a deletion over text somebody changed removes none of theirs");
   }
 
   // ---- CSV and TSV colours ----

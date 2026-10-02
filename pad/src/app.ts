@@ -10,6 +10,7 @@ import type * as Monaco from "monaco-editor";
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
+import { carryOver } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
 import { FileTree } from "./files";
@@ -86,6 +87,13 @@ export class App {
    * CRDTs; the interesting state is whatever is on somebody's screen.
    */
   private docs = new Map<string, DocSession>();
+  /** Each document's wait for its state, shared by everybody who asks. */
+  private docReady = new Map<string, Promise<DocSession>>();
+  /**
+   * What a file's editor showed when it opened, until its document is bound —
+   * so typing in between can be carried over rather than replaced.
+   */
+  private shownUnbound = new Map<string, string>();
   private byStream = new Map<number, string>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
@@ -298,11 +306,23 @@ export class App {
    * text are two different insertions to a CRDT, and the merge produces it
    * twice. So a newcomer asks for state instead, and only falls back to the
    * store when nobody answers.
+   *
+   * One wait per document, however many ask. Opening a folder shows its
+   * first file twice, and the second used to be handed the document while the
+   * first was still waiting for it — bound empty, so the open file went blank
+   * until somebody answered, and anything typed meanwhile was merged into
+   * that blank document wherever the merge put it.
    */
-  private async readyDoc(path: string): Promise<DocSession> {
-    const existing = this.docs.get(path);
-    if (existing) return existing;
+  private readyDoc(path: string): Promise<DocSession> {
+    let ready = this.docReady.get(path);
+    if (!ready) {
+      ready = this.openDoc(path);
+      this.docReady.set(path, ready);
+    }
+    return ready;
+  }
 
+  private async openDoc(path: string): Promise<DocSession> {
     const stream = streamFor(path);
     const doc = new DocSession(stream, path, { id: this.me, name: this.whoami }, (kind, bytes) => {
       this.peers?.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes);
@@ -368,6 +388,8 @@ export class App {
       this.unbind = null;
     }
     this.docs.delete(path);
+    this.docReady.delete(path);
+    this.shownUnbound.delete(path);
     this.byStream.delete(streamFor(path));
     this.awaiting.delete(path);
     doc.destroy();
@@ -383,8 +405,11 @@ export class App {
 
     if (kind === DOC_UPDATE) {
       doc.applyUpdate(bytes);
-      // Whoever was waiting for state has it now.
-      this.awaiting.get(path)?.(true);
+      // Whoever was waiting for state has it now — if this was state. Any
+      // update used to count, so a newcomer bound the empty document it had
+      // after other people's traffic, and its open file went blank until the
+      // real answer came.
+      if (doc.hasState) this.awaiting.get(path)?.(true);
       // The document is also the source executed by the sandbox. Keeping only
       // Monaco current lets the next harmless command publish stale runtime
       // bytes over somebody else's edit.
@@ -576,11 +601,30 @@ export class App {
 
 
   private async attach(path: string, model: Monaco.editor.ITextModel): Promise<void> {
+    // Kept until the document is bound, so a click away and back still knows
+    // what the file looked like before anything was typed.
+    if (!this.shownUnbound.has(path)) this.shownUnbound.set(path, model.getValue());
     const doc = await this.readyDoc(path);
     // Somebody may have clicked another file while this was waiting.
     if (this.active !== path || !this.editor || !this.monaco) return;
+    const shown = this.shownUnbound.get(path) ?? model.getValue();
+    this.shownUnbound.delete(path);
+    const typed = model.getValue();
     this.unbind?.();
+    // Binding puts the document's text in the editor, over whatever was typed
+    // while it was on its way. That typing goes back in as an ordinary edit,
+    // so it reaches everybody and is saved like any other.
     this.unbind = doc.bind(this.monaco, this.editor, model);
+    const edit = carryOver(shown, typed, model.getValue());
+    if (!edit) return;
+    const from = model.getPositionAt(edit.at);
+    const to = model.getPositionAt(edit.at + edit.remove);
+    model.pushEditOperations(
+      [],
+      [{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: edit.insert }],
+      () => null,
+    );
+    this.editor.setPosition(model.getPositionAt(edit.at + edit.insert.length));
   }
 
   private renderFiles(): void {

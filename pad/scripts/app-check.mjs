@@ -417,6 +417,51 @@ try {
     fail(`typing at once diverged:\n       ${JSON.stringify(one)}\n       ${JSON.stringify(two)}`);
   }
 
+  // ---- typing the moment a file opens ----
+  // The editor shows the stored copy straight away, and the shared document
+  // binds once the relay has said who is here and somebody has sent it. Until
+  // 2 October the folder's first file was bound twice, the second time to the
+  // document while it was still empty, and any update about the file ended
+  // the wait — so the file went blank while it waited, and what was typed
+  // then was merged in wherever the merge put it.
+  // The relay's answers are slowed here so the wait is long enough to type
+  // into every time rather than by luck — by 400 ms, inside the 600 ms the pad
+  // gives somebody to answer; slower than that is a different problem.
+  const late = await browser.newPage();
+  watchLimits(late);
+  await late.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((m) => server.send(m));
+    server.onMessage((m) => setTimeout(() => ws.send(m), 400));
+  });
+  await late.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await late.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const EARLY = "typed-before-the-room-answered";
+  await late.click(".monaco-editor .view-lines");
+  await late.keyboard.press("ControlOrMeta+End");
+  await late.keyboard.type(`\n# ${EARLY}\n`);
+  // While the document is on its way, the file stays on screen.
+  const blank = [];
+  for (let i = 0; i < 10; i++) {
+    const text = await late.evaluate(() => window.monaco.editor.getEditors()[0].getValue());
+    if (!text.includes("SECOND-LINE")) blank.push(JSON.stringify(text.slice(0, 40)));
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  is(blank.length, 0, `the file stays on screen while its document is on its way${blank.length ? ` — showed ${blank[0]}` : ""}`);
+  // Two slowed answers — who is here, then the document — and room to spare.
+  await new Promise((r) => setTimeout(r, 6000));
+  const keptHere = await textOf(late);
+  is(
+    keptHere.includes(EARLY) && keptHere.indexOf(EARLY) > keptHere.lastIndexOf("SECOND-LINE"),
+    true,
+    `typing the moment a file opens is kept, where it was typed${keptHere.includes(EARLY) ? "" : " — it was lost"}`,
+  );
+  const keptThere = await page
+    .waitForFunction((t) => (window.__pad?.text(window.__pad.active()) ?? "").includes(t), EARLY, { timeout: 20_000 })
+    .then(() => true, () => false);
+  is(keptThere, true, "and reaches the other browser");
+  await late.close();
+
   // ---- deleting a file from the tree ----
   // For everyone: gone from the other browser's tree and from the server.
   //

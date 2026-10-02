@@ -144,6 +144,18 @@ export class DocSession {
   }
 
   /**
+   * Whether this holds somebody's document yet, rather than an update it
+   * could do nothing with. A newcomer hears other people's traffic about a
+   * file — the diffs they swap whenever somebody joins, a keystroke — before
+   * the answer to its own request: a fragment whose history it has not seen
+   * waits as pending, an empty diff adds nothing, and either way the text is
+   * still empty.
+   */
+  get hasState(): boolean {
+    return this.ydoc.store.clients.size > 0 && this.ydoc.store.pendingStructs === null;
+  }
+
+  /**
    * Who this browser is now. The relay issues a new id on every reconnect,
    * and the id is the colour: without this a document opened before a
    * reconnect went on showing everyone else the old one.
