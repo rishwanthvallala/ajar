@@ -406,16 +406,31 @@ try {
 
   // ---- deleting a file from the tree ----
   // For everyone: gone from the other browser's tree and from the server.
+  //
+  // Including a browser whose runtime is still downloading, which is every
+  // first visit for a while. Its tree used to wait for the runtime before
+  // taking anyone else's change; on 2 October that was one slow package from
+  // the CDN, and this check failed for it. Held back here on purpose.
+  const loading = await browser.newPage();
+  await loading.context().route(/\/packages\/.*\.webc/, async (route) => {
+    await new Promise((r) => setTimeout(r, 120_000));
+    await route.continue().catch(() => {});
+  });
+  await loading.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await loading.waitForFunction(() => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 30_000 });
+  const gone = (tab) => tab
+    .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 20_000 })
+    .then(() => true, () => false);
   page.once("dialog", (d) => d.accept());
   await page.hover('#files .file-row:has(.row.file:text-is("out.csv"))');
   await page.click('#files .file-row:has(.row.file:text-is("out.csv")) .delete');
-  const goneThere = await third
-    .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout: 20_000 })
-    .then(() => true, () => false);
+  const [goneThere, goneWhileLoading] = await Promise.all([gone(third), gone(loading)]);
   is(goneThere, true, "a file deleted in one browser leaves the other's tree");
+  is(goneWhileLoading, true, "and the tree of one whose runtime is still downloading");
   const afterDelete = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is("out.csv" in afterDelete.files, false, "and the server's copy of the folder");
 
+  await loading.close();
   await third.close();
 
   // ---- typing into the shell, which is the thing it is for ----
