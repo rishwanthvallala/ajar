@@ -731,18 +731,24 @@ export class App {
     this.saveTimer = null;
     const paths = [...this.dirty];
     this.dirty.clear();
-    const changes = paths
-      .map((path) => ({
-        path,
-        // The document is the truth for a file somebody has open; the model
-        // mirrors it, and reading the mirror is a race with the next update.
-        content: this.docs.get(path)?.contents() ?? this.models.get(path)?.getValue(),
-      }))
-      .filter((c): c is { path: string; content: string } => c.content !== undefined)
-      .filter((c) => this.known.get(c.path) !== c.content);
-    if (changes.length === 0) return;
 
+    // What changed is worked out in its turn in the write queue, against
+    // `known` as the writes ahead of it left it. It used to be worked out
+    // first: a Run's publish still writing when this timer fired left
+    // `known` stale, so the same text was saved again after it and the
+    // status said "saved" over the run's "exited 3" — what made a check flaky
+    // on CI's macOS runner on 2 October.
     return this.queueWrite(async () => {
+      const changes = paths
+        .map((path) => ({
+          path,
+          // The document is the truth for a file somebody has open; the model
+          // mirrors it, and reading the mirror is a race with the next update.
+          content: this.docs.get(path)?.contents() ?? this.models.get(path)?.getValue(),
+        }))
+        .filter((c): c is { path: string; content: string } => c.content !== undefined)
+        .filter((c) => this.known.get(c.path) !== c.content);
+      if (changes.length === 0) return;
       try {
         const seq = await this.store.write(this.name, changes);
         this.storeSeq = Math.max(this.storeSeq, seq);

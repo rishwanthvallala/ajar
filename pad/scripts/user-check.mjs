@@ -142,6 +142,19 @@ try {
   await clear();
   await run("import sys\nsys.exit(3)\n");
   expect("sys.exit(3) shows exit 3", (await shows(/exit 3/)) && (await status()) === "exited 3", `${await tail()} / ${await status()}`);
+  // And it stays. The save that follows an edit worked out what had changed
+  // before the Run's own write had finished, saved the same text again after
+  // it, and said "saved" over "exited 3" — flaky on CI's macOS runner on 2
+  // October. Writes are slowed here so it lands every time.
+  await context.route("**/api/pad/**", async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 700));
+    await route.continue();
+  });
+  await clear();
+  await run("import sys\nsys.exit(4)\n");
+  await wait(2000);
+  expect("a save after Run leaves its result on the status line", (await status()) === "exited 4", await status());
+  await context.unroute("**/api/pad/**");
   await clear();
   await run("import threading\nthreading.Thread(target=print).start()\n", { ms: 15_000 });
   expect("starting a thread is an error that says why, not a hang", await shows(/threads cannot start in the pad/), await tail(2));
