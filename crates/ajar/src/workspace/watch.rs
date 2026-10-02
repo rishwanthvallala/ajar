@@ -60,6 +60,8 @@ pub fn spawn(filter: Arc<Filter>) -> Result<(RecommendedWatcher, UnboundedReceiv
             return;
         }
         for path in event.paths {
+            // An ignore file changed: read it again before deciding anything.
+            for_watcher.changed(&path);
             // The watcher and the scanner must agree, or an install into an
             // ignored directory floods everyone with churn they never saw.
             let is_dir = path.is_dir();
