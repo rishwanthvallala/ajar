@@ -304,7 +304,7 @@ meets it.
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
 | Egress tunnels opened | 30 a minute per address | `deploy/Caddyfile` `pad_wisp` |
 | `/dns-query` | GET/POST only, 4 KB body, 120 a minute per address | `deploy/Caddyfile` `pad_dns` |
-| Each file of the pad's runtime | 30 fetches an hour per address | `deploy/Caddyfile` `pad_files` |
+| Each file of the pad's runtime | 100 fetches an hour per address | `deploy/Caddyfile` `pad_files` |
 
 Three of these need their reasoning kept, because the obvious version is wrong:
 
@@ -369,8 +369,9 @@ three zones in the Caddyfile.
 **Files are limited per address *and per file*.** A first visit fetches each
 file once — measured in Caddy's own log, service worker included — and a
 returning visit fetches none, because they are immutable and cached for a year.
-So 30 fetches an hour of each file is 30 first visits an hour from one address,
-a classroom on one network. Keyed on the address alone, the same allowance
+So 100 fetches an hour of each file is 100 first visits an hour from one
+address — a workshop on one network, all at once if it likes. It was 30 until
+2 October, which turned away the thirty-first person behind one address. Keyed on the address alone, the same allowance
 could all be spent on one file, and one file is 61.7 MB raw. A key needs a file
 that exists, so a made-up path cannot mint one, and it is the file's cleaned
 path, so `//` or `/./` in a URL is the same file.
@@ -378,12 +379,21 @@ path, so `//` or `/./` in a URL is the same file.
 **Measured against a week of real traffic** — 99 addresses, 18 to 25 September —
 the most any address fetched one file in an hour was 5, looked up names 4 times
 in a minute, and opened 1 egress tunnel in a minute. Every allowance is at
-least six times that.
+least six times that; the files' is twenty.
 
-**What the worst caller still gets.** A script asking for every file
-uncompressed, 30 times an hour, draws 2.8 GB an hour from one address; asking
-the way a browser does, about 0.65 GB. Before, the ceiling was the instance's
-network. Lowering `events` in the `pad_files` zone lowers it in proportion.
+**What the worst caller still gets.** A visit is 161 files: 80 MB raw, 19 MB
+the way a browser asks. A script asking for every file uncompressed, 100 times
+an hour, draws 8.0 GB an hour from one address; asking the way a browser does,
+1.9 GB. Before any limit, the ceiling was the instance's network. Lowering
+`events` in the `pad_files` zone lowers it in proportion.
+
+**Why an hour and not a minute.** 30 a minute was considered: it is 1,800 an
+hour, more than any group on one network, and 144 GB an hour for one script —
+86 GB of it from the Python package alone. The account runs on credits, and
+spent, they close it ([operations](operations.md#the-aws-account-and-what-it-can-cost)).
+The window is also memory: the plugin holds a ring of `events` timestamps, 24
+bytes each, for every address and file it has seen within the window — about
+250 KB for each address that visits, at 100 for an hour.
 
 **A refusal is `no-store`.** The runtime's files carry `immutable` and a
 year's `max-age`, set before the limiter runs, so a refusal left with those

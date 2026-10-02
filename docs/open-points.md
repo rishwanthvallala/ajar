@@ -19,17 +19,6 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### How many first visits an hour one address should get
-
-The pad's runtime files are limited to 30 fetches each, per address, per hour
-— step 5 of the hardening work, done 25 September. That is a classroom on one
-network, and it lets a script asking for everything uncompressed draw 2.8 GB an
-hour from a single address. A week of real traffic never went above 5. Ten
-would cut the worst case to about 0.9 GB and still leave twice what has been
-seen; it would also turn away the eleventh student. It is one number in
-`deploy/Caddyfile` — reasoning in
-[dev/security.md](dev/security.md#at-the-edge).
-
 ### Two things the September review left untested or unbounded
 
 From the 22-finding review merged as PR #3 — the findings are in

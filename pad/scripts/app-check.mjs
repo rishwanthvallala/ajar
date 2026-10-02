@@ -151,7 +151,7 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage();
 
-// The live site limits each file to 30 fetches an hour per address, and every
+// The live site limits each file to 100 fetches an hour per address, and every
 // browser here is a first visit. A refused file surfaces as a module that
 // would not load or a runtime that never starts, far from the cause — on
 // 2 October an hour of runs against production went on reading those as bugs.

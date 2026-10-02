@@ -167,9 +167,10 @@ COLD=0,5000 WARM=3000,3000 node scripts/perf/pad-visit.mjs     # first and retur
 
 Run them one at a time — two browsers on one machine slow each other down. Each
 prints a JSON line per result and appends it to `$OUT` when that is set. A first
-pad visit fetches every runtime file once, and production allows 30 fetches of
-each an hour per address, shared with anyone using the pad from that address, so
-keep `COLD` short; return visits cost nothing.
+pad visit fetches every runtime file once, and production allows 100 fetches
+of each an hour per address, shared with anyone using the pad from that address,
+so keep `COLD` short; return visits cost nothing. `app-check.mjs` against the live
+site is about five first visits a run.
 
 Taken on production on 25 September, before and after the changes they drove:
 
