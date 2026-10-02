@@ -30,9 +30,9 @@ async function main() {
   // The packages from this origin, the way a visitor gets them. Without the
   // worker every run fetched them from Wasmer's CDN instead — python is 62 MB
   // there, uncompressed — and on 2 October that download stalled for minutes
-  // at a time from one network, so three runs in a row hung at the runtime's
-  // start and never reached anything after it. A package the mirror lacks
-  // still comes from the CDN, as it would for a visitor.
+  // at a time from one network, so three runs in a row ran out of time at the
+  // runtime's start and never reached anything after it. A package the mirror
+  // lacks still comes from the CDN, as it would for a visitor.
   is(await mirrorPackages(), true, "the package mirror's worker controls the page");
 
   // What the sandbox is seeded with. These run before the runtime because a

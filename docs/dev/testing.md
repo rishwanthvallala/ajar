@@ -323,6 +323,14 @@ And a third: verify a fix in *isolation*. An injected error meant to prove the
 ajar boot check worked was caught by a different suite running first, which
 said nothing about the check under test.
 
+And a fourth, about Playwright: `waitForFunction(fn, arg, options)` takes the
+function's argument *second*. Twenty-four waits in the pad's harnesses passed
+`{ timeout: 180_000 }` there, so it became the argument and every one waited
+the default 30 s. Locally that was enough. Against the live site a fresh
+browser's first Run sometimes is not, which read as a flaky check, and the
+browser check's whole-page wait was 30 s rather than three minutes — part of
+why it "hung" when the CDN was slow. Pass `null` as the argument.
+
 ## Dogfooding
 
 `scripts/dogfood.mjs` shares this repository through ajar and works in it —

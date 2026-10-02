@@ -92,7 +92,7 @@ page.on("requestfailed", (r) => noise.push(`request failed: ${r.url().slice(-60)
 let timedOut = false;
 await page.goto(`http://127.0.0.1:${PORT}/check.html`, { waitUntil: "domcontentloaded" });
 await page
-  .waitForFunction(() => (window.__results ?? []).includes("DONE"), { timeout: 180_000 })
+  .waitForFunction(() => (window.__results ?? []).includes("DONE"), null, { timeout: 180_000 })
   .catch(() => { timedOut = true; });
 
 const results = await page.evaluate(() => window.__results ?? []);

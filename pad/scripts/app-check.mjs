@@ -151,6 +151,14 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage();
 
+// The live site limits each file to 30 fetches an hour per address, and every
+// browser here is a first visit. A refused file surfaces as a module that
+// would not load or a runtime that never starts, far from the cause — on
+// 2 October an hour of runs against production went on reading those as bugs.
+let limited = 0;
+const watchLimits = (tab) => tab.context().on("response", (r) => { if (r.status() === 429) limited += 1; });
+watchLimits(page);
+
 // Where the bulk actually came from. The mirror is the whole point of the
 // service worker, and "it still works" would pass just as well without it.
 const bytesFrom = { cdn: 0, mirror: 0 };
@@ -189,7 +197,7 @@ try {
   }
 
   // Landing on the bare site puts you in a folder without asking.
-  await page.waitForFunction(() => location.pathname.length > 1, { timeout: 15_000 });
+  await page.waitForFunction(() => location.pathname.length > 1, null, { timeout: 15_000 });
   const name = await page.evaluate(() => location.pathname.slice(1));
   is(/^[a-z]+-[a-z]+-\d{4}$/.test(name), true, `a bare visit mints a name (${name})`);
 
@@ -204,20 +212,20 @@ try {
   await page.click("#run");
   await page.waitForFunction(
     () => document.getElementById("terminal")?.textContent?.includes("wrote 10 rows"),
-    { timeout: 180_000 },
+    null, { timeout: 180_000 },
   );
   ok("pressing Run prints the script's output");
 
   // The file the script made joins the folder, on screen and on the server.
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("a file the script wrote appears in the folder");
 
   await page.waitForFunction(
     () => document.getElementById("status")?.textContent === "done",
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   const stored = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is(stored.exists, true, "the folder was saved to the server");
@@ -229,18 +237,19 @@ try {
 
   // The whole point of a link: someone else opens it and the work is there.
   const second = await browser.newPage();
+  watchLimits(second);
   await second.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await second.waitForSelector(".monaco-editor", { timeout: 30_000 });
   await second.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   ok("opening the link again finds the work, generated files and all");
 
   // ---- two browsers on one link ----
   await second.waitForFunction(
     () => document.getElementById("presence")?.textContent?.includes("2 here"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   ok("each browser is told how many others are here");
   const dots = await second.evaluate(() => ({
@@ -261,7 +270,7 @@ try {
   await second.click("#run");
   await second.waitForFunction(
     () => document.getElementById("status")?.textContent === "done",
-    { timeout: 180_000 },
+    null, { timeout: 180_000 },
   );
 
   // A nudge crossed the relay and the first page re-read the folder.
@@ -270,14 +279,14 @@ try {
       [...document.querySelectorAll("#files .file")].some(
         (b) => b.textContent === "only-from-the-second.txt",
       ),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("a change made in one browser reaches the other");
 
   await second.close();
   await page.waitForFunction(
     () => !document.getElementById("presence")?.textContent?.includes("2 here"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   ok("and leaving is noticed too");
 
@@ -288,6 +297,7 @@ try {
   // was a command, so two people could sit in one folder editing the same
   // file and never see a word of each other's work.
   const third = await browser.newPage();
+  watchLimits(third);
   await third.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await third.waitForSelector(".monaco-editor", { timeout: 30_000 });
 
@@ -326,7 +336,7 @@ try {
   // racing it.
   await page.waitForFunction(
     () => document.getElementById("status")?.textContent === "saved",
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   const savedPad = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is(
@@ -354,7 +364,7 @@ try {
   await page.keyboard.type("FIRST-LINE\n");
   await third.waitForFunction(
     () => (window.__pad?.text(window.__pad.active()) ?? "").includes("FIRST-LINE"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
 
   await third.click(".monaco-editor .view-lines");
@@ -362,7 +372,7 @@ try {
   await third.keyboard.type("SECOND-LINE\n");
   await page.waitForFunction(
     () => (window.__pad?.text(window.__pad.active()) ?? "").includes("SECOND-LINE"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
 
   // The other person's cursor: their colour, and no name — the label used to
@@ -418,6 +428,7 @@ try {
   // only once the runtime came — misses the 15 s allowed below. Not much
   // longer: held 40 s, the SDK gave up on the packages and never started.
   const loading = await browser.newPage();
+  watchLimits(loading);
   await loading.context().route(/\/packages\/.*\.webc/, async (route) => {
     await new Promise((r) => setTimeout(r, 25_000));
     await route.continue().catch(() => {});
@@ -453,20 +464,20 @@ try {
   await page.keyboard.type("echo typed-by-hand > hand.txt\n");
   await page.waitForFunction(
     () => (document.getElementById("terminal")?.textContent ?? "").includes("typed-by-hand"),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("what you type appears on screen — the page echoes it, bash will not");
 
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "hand.txt"),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("a file made by a typed command joins the folder");
 
   await page.keyboard.type("cat hand.txt\n");
   await page.waitForFunction(
     () => ((document.getElementById("terminal")?.textContent ?? "").match(/typed-by-hand/g) ?? []).length >= 2,
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("cat works, and so does everything else bash can reach");
 
@@ -491,7 +502,7 @@ try {
     () =>
       ((document.getElementById("terminal")?.textContent ?? "").match(/typed-into-cat/g) ?? [])
         .length >= 2,
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   ok("what you type reaches a running command, and it answers");
 
@@ -503,13 +514,13 @@ try {
   // terminal, which `cat` was echoing back anyway, so it passed while `cat`
   // was still running and everything typed after it was going nowhere.
   await page.keyboard.press("Control+c");
-  await page.waitForFunction(() => window.__pad?.shellBusy() === false, { timeout: 20_000 });
+  await page.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 20_000 });
   ok("ctrl-c stops a command that is waiting for input");
 
   await page.keyboard.type("echo still-works > after-cat.txt\n");
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .row.file")].some((r) => r.textContent?.includes("after-cat.txt")),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("and the shell runs commands again afterwards");
 
@@ -518,7 +529,7 @@ try {
   await page.click('#files button[aria-label="New file"]');
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.py"),
-    { timeout: 15_000 },
+    null, { timeout: 15_000 },
   );
   ok("you can make a new file");
 
@@ -528,12 +539,12 @@ try {
   await page.keyboard.type("mkdir -p data && echo 1,2 > data/rows.csv\n");
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .row.dir")].some((r) => r.textContent?.includes("data")),
-    { timeout: 30_000 },
+    null, { timeout: 30_000 },
   );
   ok("a folder made in the shell appears as a folder");
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .row.file")].some((r) => r.textContent?.includes("rows.csv")),
-    { timeout: 15_000 },
+    null, { timeout: 15_000 },
   );
   ok("and the file inside it is nested under it");
 
@@ -603,7 +614,7 @@ try {
   await page.keyboard.type("echo after-editor\n");
   await page.waitForFunction(
     () => (document.getElementById("terminal")?.textContent ?? "").includes("after-editor"),
-    { timeout: 20_000 },
+    null, { timeout: 20_000 },
   );
   ok("the same shell still runs commands afterwards");
 
@@ -678,6 +689,9 @@ if (!LIVE) {
   await rm(padDir, { recursive: true, force: true });
 }
 
+if (limited > 0) {
+  results.push(`note: ${limited} requests refused with 429 — this address has used its hourly allowance on the live site; wait an hour and run it again`);
+}
 for (const line of results) console.log(`  ${line}`);
 const failed = results.filter((l) => l.startsWith("FAIL"));
 console.log(failed.length ? `\n  ${failed.length} failed\n` : "\n  the loop works\n");

@@ -158,7 +158,7 @@ await page.locator(".xterm").first().click();
 
 await page.keyboard.type("echo warm\n");
 await page.waitForFunction(() => (document.querySelector(".xterm-screen")?.innerText ?? "").includes("warm"),
-  { timeout: 300_000 });
+  null, { timeout: 300_000 });
 await page.waitForTimeout(5000);
 
 (await page.locator("#preview").isHidden())
