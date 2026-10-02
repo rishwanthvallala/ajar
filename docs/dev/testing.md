@@ -201,7 +201,7 @@ Three ways these measured the wrong thing before they were fixed:
 
 ## Checks that passed for the wrong reason
 
-Twenty-one so far, and they are the most transferable lesson in this repository.
+Twenty-four so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -228,6 +228,9 @@ passing evidence by accident.**
 | A busy host still lets a guest fork | First draft: `sh -c 'echo …'` as the shell's last command is exec'd rather than forked, and `echo` is a builtin, so nothing forked and it passed against the bug |
 | Someone who joined during a host's blip got a tree | "The mirrored tree is non-empty" — satisfied by a *patch* for a file somebody else saved meanwhile, with no tree ever sent |
 | Capability probes under Landlock | Built at the crate's default best-effort level, where an unsupported right is silently dropped and `create()` succeeds anyway. Every probe said yes on every kernel |
+| A pad newcomer seeding beside a slow room | It checked each side had the other's line; two documents ignoring each other's history still both take a line typed at the end. Then it compared whole texts, but read the stored copy before the room's save had landed — the one case where seeding is safe |
+| A cursor id writing the stylesheet | It looked for any `display: none` in a style element, and the page's own stylesheets have those |
+| A pad Run's status | It read the status once, straight after Run; a save landing a moment later overwrote it only on a fast machine, so the check passed locally and failed on CI |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service

@@ -78,6 +78,14 @@ while, refresh it before deploying — `npm run build:pad && node
 pad/scripts/fetch-packages.mjs` — and after, `app-check.mjs` against the live
 site must report every package served from this origin.
 
+**The SSM tunnel dropped at "updating caddy", twice in a row, on 3 October** —
+`Timeout, server … not responding` — after everything before it had worked.
+The relay is swapped and restarted in the shipping step, so by then it already
+was; only the Caddy comparison, the Caddyfile reload and the final check were
+skipped. Confirm the relay from outside rather than by ssh: a WebSocket to
+`/ws` that never says hello is closed after ten seconds by any relay from
+v0.0.6 on, and the live asset hashes say whether the clients went out.
+
 **The Caddy build checked its plugin by running a Linux binary.** It compared
 only the architecture, so on an Apple-silicon Mac it tried, failed, and
 reported the plugin missing. It reads the build info now.
