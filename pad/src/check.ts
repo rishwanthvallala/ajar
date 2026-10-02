@@ -7,7 +7,7 @@
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { carryOver } from "./carry";
-import { cssString } from "./editing";
+import { cssString, participantId } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
 import { seedFiles } from "./seed";
@@ -259,6 +259,15 @@ async function main() {
     sheet.remove();
     is(cssString("plain name"), "plain name", "an ordinary name is left alone");
   }
+
+  // A cursor's id goes into a stylesheet and a class name, and it comes from
+  // another browser. Only the relay's integers count as one.
+  is(participantId(3), 3, "a participant id is a non-negative integer");
+  is(participantId(0), 0, "zero included");
+  is(participantId("3 { } body { display: none } .x"), null, "a string is not an id, however it reads");
+  is(participantId(-1), null, "nor a negative number");
+  is(participantId(1.5), null, "nor a fraction");
+  is(participantId(Number.NaN), null, "nor NaN");
 
   // ---- typing before a document arrives ----
   //

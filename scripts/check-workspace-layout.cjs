@@ -368,6 +368,27 @@ async function checkSession() {
   await page.keyboard.type('qq');
   await page.waitForFunction(() => document.querySelector('.view-lines')?.textContent?.includes('qq'));
   assert(edits() > editsBefore, 'editing resumes when read-only ends');
+  // Other people's cursors arrive as their own awareness state, unchecked. An
+  // id is written into a stylesheet, so one that is not a number must draw
+  // nothing — not rewrite the page — and an honest cursor beside it still draws.
+  const { Awareness, encodeAwarenessUpdate } = webRequire('y-protocols/awareness');
+  const cursorFrom = (user) => {
+    const d = new Y.Doc(), a = new Awareness(d);
+    a.setLocalState({ user, cursor: { index: 0, length: 0 } });
+    const bytes = encodeAwarenessUpdate(a, [d.clientID]);
+    // Awareness runs an interval until destroyed, which keeps node alive
+    // after everything else has finished — the run printed "passed" and hung.
+    a.destroy(); d.destroy();
+    return frame(5, Buffer.concat([Buffer.from([2]), Buffer.from(bytes)]), 11);
+  };
+  wire.send(cursorFrom({ id: '7-caret {} body { display: none } .x', name: 'mallory' }));
+  wire.send(cursorFrom({ id: 9, name: 7 }));
+  await page.waitForFunction(() => document.querySelector('.remote-9-caret'), null, { timeout: 5000 }).catch(() => {});
+  assert.notEqual(await page.evaluate(() => getComputedStyle(document.body).display), 'none', 'a cursor id cannot write the stylesheet');
+  // The attacker's own text, not any `display: none` — the page's stylesheets
+  // have those legitimately.
+  assert(!(await page.evaluate(() => [...document.querySelectorAll('style')].some(s => s.textContent.includes('body { display: none }')))), 'nothing of it reached a style element');
+  assert(await page.locator('.remote-9-caret').count() > 0, 'an honest cursor beside it still draws, whatever its name');
   await page.getByRole('button', { name: 'New terminal', exact: true }).click();
   await page.locator('.xterm').waitFor();
   await page.getByRole('button', { name: 'Close file', exact: true }).click();

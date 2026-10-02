@@ -31,6 +31,18 @@ export function colourFor(id: number): string {
   return COLOURS[id % COLOURS.length] ?? COLOURS[0]!;
 }
 
+/**
+ * A participant id from somebody else's awareness state, or null.
+ *
+ * Everything in that state comes from another browser, unchecked, and the id
+ * is written into a stylesheet and a class name — `1 { } body { display: none }`
+ * was accepted as one. The relay issues non-negative integers, so nothing else
+ * is an id.
+ */
+export function participantId(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 
 /**
  * A name, safe to drop inside a CSS string.
@@ -279,12 +291,14 @@ export class DocSession {
 
     for (const [clientId, state] of this.awareness.getStates()) {
       if (clientId === this.awareness.clientID) continue;
-      const user = (state as { user?: { id: number; name: string } }).user;
-      const cursor = (state as { cursor?: { index: number; length: number } }).cursor;
-      if (!user || !cursor) continue;
+      const user = (state as { user?: { id: unknown; name: unknown } }).user;
+      const cursor = (state as { cursor?: { index: unknown; length: unknown } }).cursor;
+      const id = participantId(user?.id);
+      if (id === null || typeof cursor?.index !== "number" || typeof cursor.length !== "number") continue;
+      if (!Number.isFinite(cursor.index) || !Number.isFinite(cursor.length)) continue;
 
-      const colour = colourFor(user.id);
-      const cls = `remote-${user.id}`;
+      const colour = colourFor(id);
+      const cls = `remote-${id}`;
       rules.push(
         `.${cls}-caret { border-left: 2px solid ${colour}; margin-left: -1px; }`,
         `.${cls}-selection { background: ${colour}33; }`,
