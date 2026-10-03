@@ -277,6 +277,20 @@ it took to get there.
 
 ## Designed, not started
 
+**Accounts and pad links** — owned pads with three-word names, view and edit
+links, a dashboard, Google and GitHub sign-in. Designed in
+[dev/accounts.md](dev/accounts.md), not built. Deferred from its v1 on purpose:
+
+- **Suggestions.** A viewer submits their local changes against the version
+  they saw; the owner reviews a diff and accepts or rejects. Accepting is a
+  three-way merge per file — the CRDT cannot help, because the change was made
+  offline. Suggesting should need an account; anonymous suggestions are a spam
+  channel.
+- **Requesting edit access.** Lighter than suggestions, but it needs somewhere
+  to tell the owner: a dashboard inbox, or email.
+- **Encrypted private pads,** so that "only people with a view link" is
+  something the server cannot read rather than something it enforces.
+
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of

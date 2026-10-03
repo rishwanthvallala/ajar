@@ -16,6 +16,7 @@ are touching.
 | [agent.md](agent.md) | The agent: terminals, the file tree, editing, the offline copy |
 | [relay.md](relay.md) | The relay: sessions, backpressure, the durable pad store |
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
+| [accounts.md](accounts.md) | Accounts and pad links — designed, not built: three-word names, view and edit links, the dashboard, sign-in, storage |
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share, the bundle measurements behind it, and what was deliberately not shared |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
