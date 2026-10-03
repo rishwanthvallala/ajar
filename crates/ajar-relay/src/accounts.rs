@@ -28,7 +28,7 @@ pub const MAX_BYTES_PER_ACCOUNT: u64 = 100 * 1024 * 1024;
 
 /// What one account may hold. Flags on the relay, so the numbers can move
 /// without a release and the checks can reach them without writing 100 MB.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Limits {
     pub pads: usize,
     pub bytes: u64,
@@ -44,6 +44,8 @@ impl Default for Limits {
 }
 /// How long a sign-in lasts.
 const SESSION_DAYS: i64 = 30;
+/// The same, for the cookie that carries it.
+pub const SESSION_SECS: u64 = SESSION_DAYS as u64 * 24 * 60 * 60;
 
 static WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     include_str!("words.txt")
@@ -502,6 +504,25 @@ impl Accounts {
     /// A new link to an owned pad. Viewer and editor are the only roles a link
     /// can carry.
     pub fn new_link(&self, owner: i64, name: &str, role: Role) -> Result<Link, AccountError> {
+        self.make_link(owner, name, role, false)
+    }
+
+    /// A new link of one kind, with every other link of that kind revoked in
+    /// the same transaction — what Reset does. Every one, not only those the
+    /// dashboard shows: a link whose sealed code can no longer be opened (a
+    /// lost key) is left off the dashboard but still works, and must still be
+    /// possible to stop.
+    pub fn replace_link(&self, owner: i64, name: &str, role: Role) -> Result<Link, AccountError> {
+        self.make_link(owner, name, role, true)
+    }
+
+    fn make_link(
+        &self,
+        owner: i64,
+        name: &str,
+        role: Role,
+        replace: bool,
+    ) -> Result<Link, AccountError> {
         self.owned(owner, name)?;
         let role = if role == Role::Editor {
             Role::Editor
@@ -509,13 +530,22 @@ impl Accounts {
             Role::Viewer
         };
         let code = new_secret();
-        let db = self.db.lock();
+        let mut db = self.db.lock();
+        let db = db.transaction()?;
+        if replace {
+            db.execute(
+                "UPDATE links SET revoked = ?1 WHERE pad = ?2 AND role = ?3 AND revoked IS NULL",
+                params![now(), name, role_str(role)],
+            )?;
+        }
         db.execute(
             "INSERT INTO links (pad, role, code_hash, code_sealed, label, created) VALUES (?1, ?2, ?3, ?4, '', ?5)",
             params![name, role_str(role), hash(&code), self.seal(&code), now()],
         )?;
+        let id = db.last_insert_rowid();
+        db.commit()?;
         Ok(Link {
-            id: db.last_insert_rowid(),
+            id,
             role,
             label: String::new(),
             code,
@@ -871,6 +901,67 @@ mod tests {
         // Unlocking brings the same links back.
         a.set_access(me, &pad.name, View::Link, Edit::Code).unwrap();
         assert_eq!(a.access(&pad.name, None, Some(&edit)).role, Role::Editor);
+    }
+
+    #[test]
+    fn reset_stops_every_link_of_its_kind_even_ones_it_cannot_show() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let pad = a.create_pad(me, &|_| false).unwrap();
+        a.set_access(me, &pad.name, View::Code, Edit::Code).unwrap();
+        let first = pad
+            .links
+            .iter()
+            .find(|l| l.role == Role::Editor)
+            .unwrap()
+            .clone();
+        let second = a.new_link(me, &pad.name, Role::Editor).unwrap();
+        let view = pad
+            .links
+            .iter()
+            .find(|l| l.role == Role::Viewer)
+            .unwrap()
+            .clone();
+        // A link whose sealed copy cannot be opened — a lost key — is not
+        // listed, but its code still works until something revokes it.
+        a.db.lock()
+            .execute(
+                "UPDATE links SET code_sealed = x'00' WHERE id = ?1",
+                params![second.id],
+            )
+            .unwrap();
+        assert!(a
+            .pad_of(me, &pad.name)
+            .unwrap()
+            .links
+            .iter()
+            .all(|l| l.id != second.id));
+        assert_eq!(
+            a.access(&pad.name, None, Some(&second.code)).role,
+            Role::Editor
+        );
+
+        let fresh = a.replace_link(me, &pad.name, Role::Editor).unwrap();
+        assert_eq!(
+            a.access(&pad.name, None, Some(&first.code)).role,
+            Role::None
+        );
+        assert_eq!(
+            a.access(&pad.name, None, Some(&second.code)).role,
+            Role::None
+        );
+        assert_eq!(
+            a.access(&pad.name, None, Some(&fresh.code)).role,
+            Role::Editor
+        );
+        assert_eq!(
+            a.access(&pad.name, None, Some(&view.code)).role,
+            Role::Viewer,
+            "links of the other kind are untouched"
+        );
+        assert!(a
+            .replace_link(person(&a, "2"), &pad.name, Role::Editor)
+            .is_err());
     }
 
     #[test]

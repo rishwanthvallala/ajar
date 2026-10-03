@@ -275,11 +275,33 @@ it took to get there.
 
 ---
 
+### Accounts
+
+Built on 4 October — [dev/accounts.md](dev/accounts.md#as-built). What is
+still open in it:
+
+- **Sign-in is off in production until the OAuth apps exist.** Making a Google
+  and a GitHub app and putting their ids and secrets in `/etc/ajar/relay.env`
+  is a step for the owner of those accounts: [how](dev/operations.md#signing-in).
+  Until then the dashboard says sign-in is not set up, and nothing else
+  changes.
+- **The accounts database is not backed up.** It lives on the box alone.
+  Litestream to S3 is the plan, which needs a bucket and credentials on the
+  AWS account, and must leave `accounts.key` behind — the database and the key
+  together are every edit link.
+- **No way to delete an account**, from the dashboard or otherwise. The
+  design says its pads go with it.
+- **Google and GitHub are two accounts** for one person until linking is built.
+- **No takedown tooling.** Taking a pad down for abuse, or banning an account,
+  means editing the database by hand.
+- **Viewers are counted in the presence dots** like anybody else; whether
+  editors should see them apart is undecided.
+- **An anonymous pad cannot be moved into an account.** Its maker copies the
+  files into a new pad of theirs by hand.
+
 ## Designed, not started
 
-**Accounts and pad links** — owned pads with three-word names, view and edit
-links, a dashboard, Google and GitHub sign-in. Designed in
-[dev/accounts.md](dev/accounts.md), not built. Deferred from its v1 on purpose:
+**Further on accounts.** Deferred from its v1 on purpose:
 
 - **Suggestions.** A viewer submits their local changes against the version
   they saw; the owner reviews a diff and accepts or rejects. Accepting is a

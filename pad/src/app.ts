@@ -10,6 +10,7 @@ import type * as Monaco from "monaco-editor";
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
+import { type Access, account, AccountError, codeFor, OPEN } from "./access";
 import { carryOver } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
@@ -17,7 +18,8 @@ import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
-import { Store, StoreError, type Pad } from "./store";
+import { openShare } from "./share";
+import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
 import type { PadWorkspace } from "./workspace";
@@ -28,6 +30,12 @@ import type { PadWorkspace } from "./workspace";
  * browser that never will.
  */
 const DOC_ANSWER_WAIT = 5000;
+
+/**
+ * How long a viewer's document may sit with updates it cannot place before it
+ * is thrown away and asked for again. See `onDoc`.
+ */
+const STUCK_WAIT = 1500;
 
 const STARTER = `# Paste over this, or start typing.
 import csv
@@ -42,6 +50,11 @@ print(f"wrote {len(rows)} rows to out.csv")
 `;
 
 type Status = "" | "loading" | "running" | "saving" | "error";
+
+export interface AppHooks {
+  /** The pad is not this browser's to see, now or any more. */
+  onPrivate?: () => void;
+}
 
 /**
  * The origin that serves the sandbox's HTTP responses.
@@ -112,6 +125,20 @@ export class App {
   /** This browser's participant id and name, as cursors are labelled. */
   private me = 1;
   private whoami = "someone";
+  /** Who this browser is to the pad, as the store last said. */
+  private access: Access = OPEN;
+  /**
+   * A viewer's own copies: files changed in this tab — edited, made by a
+   * command, or deleted. Each is detached from the pad, so the pad's later
+   * changes to it stop arriving and never fight what was typed.
+   */
+  private local = new Set<string>();
+  /** A viewer allowed to edit since, with local changes that would be lost. */
+  private promoted = false;
+  /** Set once the page is torn down — by leaving, or by being refused. */
+  private disposed = false;
+  /** Documents with updates they could not place, and when to give up on them. */
+  private stuck = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly name: string,
@@ -130,6 +157,7 @@ export class App {
       title: HTMLElement;
     },
     private readonly ui?: PadWorkspace,
+    private readonly hooks: AppHooks = {},
   ) {
     this.ui?.onLayout(() => {
       this.editor?.layout();
@@ -148,6 +176,8 @@ export class App {
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
       shellBusy: () => this.console?.busy ?? false,
+      role: () => this.access.role,
+      local: () => [...this.local].sort(),
     };
   }
 
@@ -159,9 +189,11 @@ export class App {
     try {
       pad = await this.store.read(this.name);
     } catch (e) {
+      if (e instanceof StoreError && e.refused) return this.hooks.onPrivate?.();
       this.say("error", (e as Error).message);
       return;
     }
+    this.adopt(pad.access);
 
     const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
     this.known = knownFrom(pad.files);
@@ -169,6 +201,8 @@ export class App {
 
     this.joinPeers();
     await this.openEditor();
+    // Turned away while the editor loaded: there is no page to fill any more.
+    if (this.disposed) return;
     if (files.length === 0) {
       // A folder nobody has written to opens with something runnable in it, so
       // the first thing a visitor can do is press Run and watch it work.
@@ -181,8 +215,9 @@ export class App {
     this.renderFiles();
     this.wire();
     await this.openTerminal();
+    if (this.disposed) return;
     this.expose();
-    this.say("", pad.exists ? "" : "new folder — nothing saved yet");
+    this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
     this.editor?.focus();
     // Last, so the runtime is seeded with every file above and nothing it does
     // competes with putting the editor on screen. See `warm`.
@@ -246,7 +281,8 @@ export class App {
         void this.refresh();
       },
       onDoc: (stream, kind, bytes, from) => this.onDoc(stream, kind, bytes, from),
-    });
+      onRefused: () => this.hooks.onPrivate?.(),
+    }, () => codeFor(this.name));
     this.peers.connect();
   }
 
@@ -266,9 +302,14 @@ export class App {
     let pad: Pad;
     try {
       pad = await this.store.read(this.name);
-    } catch {
+    } catch (e) {
+      if (e instanceof StoreError && e.refused) this.hooks.onPrivate?.();
       return;
     }
+    // Who may do what can change while the page is open: the owner locked
+    // editing, revoked a link, or opened it up. The relay closes the room
+    // when that happens, and this read follows the reconnect.
+    this.adopt(pad.access);
     if (pad.seq <= this.storeSeq) return;
     // Only a runtime that is already up is written to here. One still starting
     // is not waited for: this used to wait, so a browser still downloading its
@@ -283,6 +324,8 @@ export class App {
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
+      // A viewer's own copy keeps what they made of it.
+      if (this.local.has(path)) continue;
       // A file with a live document is owned by the CRDT, which already has
       // every keystroke. Writing the store's copy over it would undo whatever
       // has been typed since that copy was saved.
@@ -293,7 +336,7 @@ export class App {
       if (rt) await rt.write(path, doc?.contents() ?? content);
     }
     for (const path of this.known.keys()) {
-      if (incoming.has(path)) continue;
+      if (incoming.has(path) || this.local.has(path)) continue;
       this.dirty.delete(path);
       this.closeDoc(path);
       this.models.get(path)?.dispose();
@@ -339,6 +382,14 @@ export class App {
   private async openDoc(path: string): Promise<DocSession> {
     const stream = streamFor(path);
     const doc = new DocSession(stream, path, { id: this.me, name: this.whoami }, (kind, bytes) => {
+      // A viewer's typing makes the file their own copy, there and then. The
+      // relay would drop the update anyway; sending it would only leave this
+      // document ahead of everyone else's, and the next update from the room
+      // merged into it.
+      if (this.viewer) {
+        if (kind === "update") queueMicrotask(() => this.detach(path));
+        return;
+      }
       this.peers?.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes);
       // Local changes only — the document returns early on anything applied
       // from somebody else — which makes this the right place to decide that
@@ -417,6 +468,8 @@ export class App {
     this.byStream.delete(streamFor(path));
     this.awaiting.delete(path);
     this.unanswered.delete(path);
+    clearTimeout(this.stuck.get(path));
+    this.stuck.delete(path);
     doc.destroy();
   }
 
@@ -427,7 +480,11 @@ export class App {
     // waiting for, which is nothing to give. The folder still converges:
     // whoever is editing it saves, and the nudge that follows brings the text
     // over. Asked about it, say so, so the asker need not wait for us.
-    if (!path || !doc || (kind === DOC_WANT && !doc.hasState)) {
+    //
+    // A viewer always says so. What it holds is not its to give — the relay
+    // drops anything else a viewer sends — and an editor arriving must not
+    // wait out the deadline for an answer that cannot come.
+    if (!path || !doc || (kind === DOC_WANT && (!doc.hasState || this.viewer))) {
       if (kind === DOC_WANT) this.peers?.doc(stream, DOC_NONE, new Uint8Array());
       return;
     }
@@ -441,6 +498,7 @@ export class App {
 
     if (kind === DOC_UPDATE) {
       doc.applyUpdate(bytes);
+      if (this.viewer) this.unstick(path, doc);
       // Whoever was waiting for state has it now — if this was state. Any
       // update used to count, so a newcomer bound the empty document it had
       // after other people's traffic, and its open file went blank until the
@@ -527,6 +585,7 @@ export class App {
       // once for every keystroke anybody else typed.
       if (this.docs.has(path)) return;
       this.dirty.add(path);
+      if (this.viewer) return this.markLocal(path);
       this.saveSoon();
     });
     this.models.set(path, model);
@@ -565,6 +624,7 @@ export class App {
     void this.attach(path, model);
     this.renderFiles();
     this.paintRun();
+    this.paintBanner();
   }
 
   /**
@@ -599,6 +659,7 @@ export class App {
     const name = this.askFor("New file", "untitled.py", inDirectory);
     if (!name) return;
     if (this.models.has(name)) return this.show(name);
+    if (this.viewer) this.local.add(name);
     this.setFile(name, "");
     this.show(name);
     // Into the sandbox too, so `python notes.py` works without pressing Run
@@ -637,6 +698,8 @@ export class App {
 
 
   private async attach(path: string, model: Monaco.editor.ITextModel): Promise<void> {
+    // A viewer's own copy has no live document: that is what makes it theirs.
+    if (this.local.has(path)) return;
     // Kept until the document is bound, so a click away and back still knows
     // what the file looked like before anything was typed.
     if (!this.shownUnbound.has(path)) this.shownUnbound.set(path, model.getValue());
@@ -673,7 +736,7 @@ export class App {
       onNewFolder: (dir) => this.addFolder(dir),
       onDelete: (path) => void this.deleteFile(path),
     });
-    this.tree.render([...this.models.keys()], this.active);
+    this.tree.render([...this.models.keys()], this.active, this.local);
     this.ui?.setFileCount(this.models.size);
   }
 
@@ -695,7 +758,8 @@ export class App {
       this.say("error", "wait for what is running to finish");
       return;
     }
-    if (!confirm(`Delete ${path}? It goes for everyone with the link.`)) return;
+    const where = this.viewer ? "Only in this tab — the pad keeps it." : "It goes for everyone with the link.";
+    if (!confirm(`Delete ${path}? ${where}`)) return;
     try {
       const rt = await this.ensureRuntime();
       // Onto another file before this one's model is disposed under the editor.
@@ -723,6 +787,7 @@ export class App {
    * the other person already has it.
    */
   private saveSoon(): void {
+    if (this.viewer) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => void this.saveEdits(), 500);
   }
@@ -770,6 +835,13 @@ export class App {
           this.say("error", `${why.message} — this is not being saved`);
           return;
         }
+        // Not this browser's to change any more. Re-reading says what it is
+        // now; retrying would be refused for as long as the page is open.
+        if (why.refused) {
+          this.say("error", why.message);
+          void this.refresh();
+          return;
+        }
         for (const p of paths) this.dirty.add(p);
         this.say("error", why.message);
         this.saveSoon();
@@ -793,9 +865,26 @@ export class App {
    */
   private async flushModels(rt: Runtime): Promise<void> {
     for (const path of this.dirty) {
-      const model = this.models.get(path);
-      if (model) await rt.write(path, model.getValue());
+      const text = this.current(path);
+      if (text !== undefined) await rt.write(path, text);
     }
+  }
+
+  /**
+   * A file's text as it stands: its live document's when it has one with
+   * state, its model's otherwise.
+   *
+   * Not the model alone. Only the file on screen is bound to its document;
+   * one somebody else is typing in while this browser looks at another keeps
+   * the model it had when it was last shown. Run wrote models into the
+   * sandbox, so it put that older text back, and the publish after it saved
+   * the older text over the newer — and to a viewer it looked like a change
+   * of their own.
+   */
+  private current(path: string): string | undefined {
+    const doc = this.docs.get(path);
+    if (doc?.hasState) return doc.contents();
+    return this.models.get(path)?.getValue();
   }
 
   // --------------------------------------------------------------- runtime
@@ -1027,6 +1116,11 @@ export class App {
       if (performance.now() - this.runPressed > 500) this.console.stop();
     };
     this.el.share.onclick = () => void this.share();
+    // A viewer's changes exist nowhere but this tab. Browsers write their own
+    // words on this prompt; the banner has already said what they would lose.
+    addEventListener("beforeunload", (e) => {
+      if (this.viewer && this.local.size > 0) e.preventDefault();
+    }, { signal: this.events.signal });
     this.el.preview.onclick = () => void this.togglePreview();
     this.el.backToEditor.onclick = () => void this.togglePreview();
     addEventListener("keydown", (e) => {
@@ -1065,7 +1159,7 @@ export class App {
       // sandbox holds the file. They are not the same thing, and running
       // without this executes the previous version — the code on screen
       // correct, the output wrong, and nothing to suggest why.
-      for (const [path, model] of this.models) await rt.write(path, model.getValue());
+      for (const path of this.models.keys()) await rt.write(path, this.current(path)!);
 
       this.say("running", "running…");
       // From the folder root, where the file tree's paths are, wherever the
@@ -1121,6 +1215,7 @@ export class App {
 
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
+    if (this.viewer) return this.keepLocally(rt);
     return this.queueWrite(async () => {
       await this.flushModels(rt);
       const { changes, next } = await diff(rt, this.known);
@@ -1143,6 +1238,14 @@ export class App {
   }
 
   private async share(): Promise<void> {
+    if (this.access.account) {
+      return openShare({
+        name: this.name,
+        access: this.access,
+        code: codeFor(this.name),
+        say: (text, error) => this.say(error ? "error" : "", text),
+      });
+    }
     const url = `${location.origin}/${this.name}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -1150,6 +1253,240 @@ export class App {
     } catch {
       this.say("", url);
     }
+  }
+
+  // ---------------------------------------------------------------- roles
+
+  private get viewer(): boolean {
+    return this.access.role === "viewer";
+  }
+
+  /**
+   * Take on what the store says this browser is to the pad.
+   *
+   * A viewer made an editor keeps viewing while they have local changes:
+   * switching would start saving their own copies into the pad behind their
+   * back. They are told, and a reload makes the switch.
+   */
+  private adopt(next: Access | undefined): void {
+    const access = next ?? OPEN;
+    const same =
+      access.role === this.access.role &&
+      access.view === this.access.view &&
+      access.edit === this.access.edit &&
+      access.account === this.access.account;
+    if (same) return;
+    if (this.viewer && access.role !== "viewer" && this.local.size > 0) {
+      this.promoted = true;
+      this.access = { ...access, role: "viewer" };
+    } else {
+      this.promoted = false;
+      this.access = access;
+    }
+    if (this.viewer && this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.ui?.setViewOnly(this.viewer);
+    this.el.share.title = this.access.account ? "Share this pad" : "Copy the link";
+    this.paintBanner();
+  }
+
+  /** A file a viewer has changed becomes theirs: no live document any more. */
+  private detach(path: string): void {
+    if (!this.viewer) return;
+    this.closeDoc(path);
+    this.dirty.add(path);
+    this.markLocal(path);
+  }
+
+  private markLocal(path: string): void {
+    if (this.local.has(path)) return;
+    this.local.add(path);
+    this.renderFiles();
+    this.paintBanner();
+  }
+
+  /**
+   * A viewer's document holding updates it cannot place.
+   *
+   * It happens when every editor who shared its history has left and the
+   * next one to arrive starts the document again from the stored copy: the
+   * viewer answered DOC_NONE, as it must, and now holds a history nobody
+   * else does, so nothing that arrives fits. Given a moment to settle, it is
+   * thrown away and asked for again, and the room's current one comes back.
+   */
+  private unstick(path: string, doc: DocSession): void {
+    if (!doc.stuck) {
+      clearTimeout(this.stuck.get(path));
+      this.stuck.delete(path);
+      return;
+    }
+    if (this.stuck.has(path)) return;
+    this.stuck.set(
+      path,
+      setTimeout(() => {
+        this.stuck.delete(path);
+        if (this.docs.get(path) !== doc || !doc.stuck) return;
+        this.closeDoc(path);
+        if (this.active === path) this.show(path);
+      }, STUCK_WAIT),
+    );
+  }
+
+  /**
+   * What a viewer's command changed, kept in this tab.
+   *
+   * The same comparison an editor's publish makes, minus the store: the
+   * sandbox against the stored folder. A file that differs only because the
+   * room has typed since the last save is not the viewer's change — its live
+   * document says so — and stays live.
+   */
+  private async keepLocally(rt: Runtime): Promise<void> {
+    await this.flushModels(rt);
+    const { changes } = await diff(rt, this.known);
+    this.applyingRemote = true;
+    try {
+      for (const change of changes) {
+        const doc = this.docs.get(change.path);
+        if (doc && change.content === doc.contents()) continue;
+        if (this.local.has(change.path) && this.models.get(change.path)?.getValue() === change.content) continue;
+        this.closeDoc(change.path);
+        this.local.add(change.path);
+        if (change.content === null) {
+          if (this.active === change.path) {
+            const other = [...this.models.keys()].filter((p) => p !== change.path).sort()[0];
+            if (other) this.show(other);
+          }
+          this.models.get(change.path)?.dispose();
+          this.models.delete(change.path);
+        } else {
+          this.setFile(change.path, change.content);
+        }
+      }
+    } finally {
+      this.applyingRemote = false;
+    }
+    this.renderFiles();
+    this.paintBanner();
+  }
+
+  /** Throw away a viewer's copy of a file and go back to the pad's. */
+  private async discard(path: string): Promise<void> {
+    if (!this.local.has(path)) return;
+    this.local.delete(path);
+    this.dirty.delete(path);
+    const stored = this.known.get(path);
+    const rt = this.runtimeReady ? await this.runtime : null;
+    this.applyingRemote = true;
+    try {
+      if (stored === undefined) {
+        // Made here and never in the pad: going back to the pad's is deleting it.
+        const other = [...this.models.keys()].filter((p) => p !== path).sort()[0];
+        if (this.active === path && other) this.show(other);
+        this.models.get(path)?.dispose();
+        this.models.delete(path);
+        await rt?.remove(path).catch(() => {});
+      } else {
+        this.setFile(path, stored);
+        await rt?.write(path, stored);
+      }
+    } finally {
+      this.applyingRemote = false;
+    }
+    // Showing it again joins the room's live document, which may be ahead of
+    // the stored copy just put back.
+    if (this.models.has(path)) this.show(path);
+    this.renderFiles();
+    this.paintBanner();
+    this.say("", `back to the pad's ${path}`);
+  }
+
+  /**
+   * Make a new pad of what a viewer has here: the pad as it stands, with
+   * their changes on top. Theirs if they are signed in, and an open one —
+   * anyone with its link edits — if not.
+   */
+  private async saveCopy(): Promise<void> {
+    this.say("saving", "making your copy…");
+    try {
+      const pad = await this.store.read(this.name);
+      const files = new Map<string, Change>();
+      for (const [path, f] of Object.entries(pad.files)) files.set(path, { path, content: f.content, encoding: f.encoding });
+      // Live documents are ahead of the stored copy.
+      for (const [path, doc] of this.docs) if (doc.hasState) files.set(path, { path, content: doc.contents() });
+      for (const path of this.local) {
+        const model = this.models.get(path);
+        if (model) files.set(path, { path, content: model.getValue() });
+        else files.delete(path);
+      }
+      if (files.size === 0) throw new Error("there is nothing here to copy");
+
+      const target = await this.newPadName();
+      if (!target) return this.say("", "");
+      await this.store.write(target, [...files.values()]);
+      // Nothing is left behind now, so leaving needs no warning.
+      this.local.clear();
+      location.assign(`/${target}`);
+    } catch (e) {
+      this.say("error", `could not make your copy: ${(e as Error).message}`);
+    }
+  }
+
+  /** A pad of your own if you are signed in; otherwise a fresh open one. */
+  private async newPadName(): Promise<string | null> {
+    const me = await account.me().catch(() => null);
+    if (me?.user) {
+      try {
+        return (await account.create()).name;
+      } catch (e) {
+        if (!(e instanceof AccountError && e.status === 507)) throw e;
+        if (!confirm(`${e.message}.\n\nMake an open pad instead? Anyone with its link can edit it.`)) return null;
+      }
+    }
+    // Minted here, as every anonymous name is — so checked, because writing
+    // into somebody else's open pad would add these files to theirs.
+    for (let i = 0; i < 5; i++) {
+      const name = mintName();
+      if (!(await this.store.read(name)).exists) return name;
+    }
+    throw new Error("could not find a free name — try again");
+  }
+
+  /** What a viewer can do instead, always on screen. */
+  private paintBanner(): void {
+    if (!this.ui) return;
+    if (!this.viewer) return this.ui.setBanner(null);
+    const bar = document.createElement("div");
+    bar.className = "viewing";
+    const text = document.createElement("span");
+    text.className = "viewing-text";
+    const actions = document.createElement("span");
+    actions.className = "viewing-actions";
+    const button = (label: string, onClick: () => void, primary = false) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `quiet-button${primary ? " primary" : ""}`;
+      b.textContent = label;
+      b.onclick = onClick;
+      return b;
+    };
+    if (this.local.has(this.active) && this.models.has(this.active)) {
+      text.textContent = `You're editing your own copy of ${this.active}. Changes to it from the pad no longer arrive.`;
+      actions.append(button("Discard my changes", () => void this.discard(this.active)));
+    } else if (this.local.size > 0) {
+      const n = this.local.size;
+      text.textContent = `Viewing — ${n} local ${n === 1 ? "change" : "changes"}, kept in this tab only.`;
+    } else {
+      text.textContent = "Viewing — you can run and change things, but your changes stay in this tab.";
+    }
+    if (this.promoted) {
+      text.textContent += " You can edit this pad now: reload to join in — save your copy first, or your changes go.";
+      actions.append(button("Reload", () => location.reload()));
+    }
+    actions.append(button("Save as my copy", () => void this.saveCopy(), true));
+    bar.append(text, actions);
+    this.ui.setBanner(bar);
   }
 
   private say(status: Status, text: string): void {
@@ -1163,7 +1500,9 @@ export class App {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
+    for (const timer of this.stuck.values()) clearTimeout(timer);
     this.events.abort();
     this.peers?.close();
     this.unbind?.();

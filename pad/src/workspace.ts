@@ -55,7 +55,14 @@ export class PadWorkspace {
     const preview = button("preview", "Preview", PREVIEW_ICON, "Open the server running in this folder");
     preview.hidden = true;
     const share = button("share", "Share", SHARE_ICON, "Copy the link");
-    this.shell.el("workspace-actions").append(run, preview, share);
+    // Where accounts start. A link, not a button: it goes somewhere.
+    const pads = document.createElement("a");
+    pads.id = "your-pads";
+    pads.className = "pad-action pad-link";
+    pads.href = "/dashboard";
+    pads.textContent = "Your pads";
+    pads.title = "Pads you control — sign in with Google or GitHub";
+    this.shell.el("workspace-actions").append(run, preview, share, pads);
 
     const backToEditor = button("back-to-editor", "Back to editor", "", "Return to the editor");
     backToEditor.hidden = true;
@@ -110,6 +117,27 @@ export class PadWorkspace {
 
   setFileCount(count: number) {
     this.shell.el("filecount").textContent = `${count} ${count === 1 ? "file" : "files"}`;
+  }
+
+  /**
+   * The bar under the header, for someone who can only view: what they can
+   * do instead, always on screen. `null` takes it away.
+   */
+  setBanner(content: HTMLElement | null) {
+    const bar = this.shell.el("away");
+    if (!content && bar.hidden) return;
+    bar.classList.add("pad-banner");
+    bar.replaceChildren(...(content ? [content] : []));
+    bar.hidden = !content;
+    this.shell.requestLayout();
+  }
+
+  /** The header's badge, saying this page cannot change the pad. */
+  setViewOnly(on: boolean) {
+    const badge = this.shell.el("readonly");
+    badge.textContent = "view only";
+    badge.title = "You can watch, run and change things here, but not change the pad";
+    badge.hidden = !on;
   }
 
   setPreview(open: boolean) {

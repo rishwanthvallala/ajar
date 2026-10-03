@@ -49,9 +49,16 @@ fn cookie_name(state: &AppState) -> &'static str {
     }
 }
 
-/// The session token from the request's cookies, if any.
-pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
-    let name = cookie_name(state);
+/// The cookie a sign-in leaves on the browser that started it. See `auth.rs`.
+fn sign_in_cookie_name(state: &AppState) -> &'static str {
+    if state.auth.secure() {
+        "__Host-ajar-signin"
+    } else {
+        "ajar-signin"
+    }
+}
+
+fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -60,6 +67,21 @@ pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
         .filter_map(|kv| kv.trim().split_once('='))
         .find(|(k, _)| *k == name)
         .map(|(_, v)| v.to_string())
+}
+
+/// `Set-Cookie` for one of ours: `None` clears it.
+fn set_cookie(state: &AppState, name: &str, value: Option<&str>, max_age: u64) -> String {
+    format!(
+        "{name}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        value.unwrap_or(""),
+        if value.is_some() { max_age } else { 0 },
+        if state.auth.secure() { "; Secure" } else { "" }
+    )
+}
+
+/// The session token from the request's cookies, if any.
+pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    cookie(headers, cookie_name(state))
 }
 
 pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Option<User> {
@@ -137,7 +159,22 @@ async fn start(
         .auth
         .start(&provider, q.next.as_deref().unwrap_or("/dashboard"))
     {
-        Some(url) => (StatusCode::SEE_OTHER, [(header::LOCATION, url)]).into_response(),
+        Some(started) => (
+            StatusCode::SEE_OTHER,
+            [
+                (header::LOCATION, started.location),
+                (
+                    header::SET_COOKIE,
+                    set_cookie(
+                        &state,
+                        sign_in_cookie_name(&state),
+                        Some(&started.cookie),
+                        crate::auth::SIGN_IN_SECS,
+                    ),
+                ),
+            ],
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             format!("signing in with {provider} is not set up here"),
@@ -156,22 +193,41 @@ struct Callback {
 async fn callback(
     State(state): State<AppState>,
     Path(provider): Path<String>,
+    headers: HeaderMap,
     Query(q): Query<Callback>,
 ) -> Response {
+    // Spent whatever happens next: a sign-in is one round trip.
+    let spent = set_cookie(&state, sign_in_cookie_name(&state), None, 0);
     let (Some(code), Some(nonce)) = (q.code, q.state) else {
-        // Cancelled at the provider, or refused there.
-        let why = q.error.unwrap_or_else(|| "no code".into());
+        // Cancelled at the provider, or refused there. Its reason goes back
+        // to the dashboard in the address, so only the characters such a
+        // reason is made of — `access_denied` — and nothing that could break
+        // out of it.
+        let why: String = q
+            .error
+            .unwrap_or_else(|| "no_code".into())
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .take(64)
+            .collect();
         return (
             StatusCode::SEE_OTHER,
-            [(header::LOCATION, format!("/dashboard?signin={why}"))],
+            [
+                (header::SET_COOKIE, spent),
+                (header::LOCATION, format!("/dashboard?signin={why}")),
+            ],
         )
             .into_response();
     };
+    let started = cookie(&headers, sign_in_cookie_name(&state));
     let auth = state.auth.clone();
-    let finished = blocking(move || auth.finish(&provider, &code, &nonce)).await;
+    let finished =
+        blocking(move || auth.finish(&provider, &code, &nonce, started.as_deref())).await;
     let (who, next) = match finished {
         Ok(done) => done,
-        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(why) => {
+            return (StatusCode::BAD_REQUEST, [(header::SET_COOKIE, spent)], why).into_response()
+        }
     };
     let accounts = state.accounts.clone();
     let token = blocking(move || {
@@ -183,16 +239,19 @@ async fn callback(
         Ok(t) => t,
         Err(e) => return refuse(e).into_response(),
     };
-    let cookie = format!(
-        "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{}",
+    let session = set_cookie(
+        &state,
         cookie_name(&state),
-        if state.auth.secure() { "; Secure" } else { "" }
+        Some(&token),
+        crate::accounts::SESSION_SECS,
     );
-    (
-        StatusCode::SEE_OTHER,
-        [(header::SET_COOKIE, cookie), (header::LOCATION, next)],
-    )
-        .into_response()
+    let mut response = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
+    for value in [session, spent] {
+        if let Ok(v) = header::HeaderValue::from_str(&value) {
+            response.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    response
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -203,12 +262,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         let accounts = state.accounts.clone();
         blocking(move || accounts.end_session(&token)).await;
     }
-    let cookie = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}",
-        cookie_name(&state),
-        if state.auth.secure() { "; Secure" } else { "" }
-    );
-    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
+    let cleared = set_cookie(&state, cookie_name(&state), None, 0);
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cleared)]).into_response()
 }
 
 #[derive(Serialize)]
@@ -216,12 +271,15 @@ struct Me {
     user: Option<User>,
     /// Who you can sign in with here; empty when sign-in is not set up.
     providers: Vec<&'static str>,
+    /// What an account may hold, for the dashboard to show against.
+    limits: crate::accounts::Limits,
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
     Json(Me {
         user: signed_in(&state, &headers).await,
         providers: state.auth.offered(),
+        limits: state.accounts.limits(),
     })
 }
 
@@ -320,6 +378,9 @@ async fn delete_pad(
 #[derive(Deserialize)]
 struct NewLink {
     role: Role,
+    /// Revoke every other link of this kind in the same step: Reset.
+    #[serde(default)]
+    replace: bool,
 }
 
 async fn new_link(
@@ -331,10 +392,21 @@ async fn new_link(
     intended(&headers)?;
     let me = require_user(&state, &headers).await?;
     let accounts = state.accounts.clone();
-    blocking(move || accounts.new_link(me.id, &name, body.role))
-        .await
-        .map(|l| (StatusCode::CREATED, Json(l)))
-        .map_err(refuse)
+    let pad_name = name.clone();
+    let link = blocking(move || {
+        if body.replace {
+            accounts.replace_link(me.id, &pad_name, body.role)
+        } else {
+            accounts.new_link(me.id, &pad_name, body.role)
+        }
+    })
+    .await
+    .map_err(refuse)?;
+    // Whoever came in on a link that has just stopped working leaves now.
+    if body.replace {
+        reconsider(&state, &name, false);
+    }
+    Ok((StatusCode::CREATED, Json(link)))
 }
 
 async fn revoke_link(

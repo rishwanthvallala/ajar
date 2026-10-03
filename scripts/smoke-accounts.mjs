@@ -39,6 +39,12 @@ process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 let nextUser = { id: 1, login: "ana" };
 /** code -> what it was issued for. */
 const issued = new Map();
+/**
+ * Whether the stand-in checks PKCE. Not every provider does, and where one
+ * does not, the `state` matched against the starting browser's cookie is all
+ * that stops a planted callback — so one check turns this off.
+ */
+let checkPkce = true;
 
 const provider = createServer(async (req, res) => {
   const url = new URL(req.url, PROVIDER);
@@ -67,7 +73,7 @@ const provider = createServer(async (req, res) => {
     const challenge = createHash("sha256").update(verifier).digest("base64url");
     const refuse = (why) => res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: why }));
     if (!grant) return refuse("unknown or reused code");
-    if (grant.method !== "S256" || grant.challenge !== challenge) return refuse("PKCE verifier does not match");
+    if (checkPkce && (grant.method !== "S256" || grant.challenge !== challenge)) return refuse("PKCE verifier does not match");
     if (form.get("redirect_uri") !== grant.redirect) return refuse("redirect_uri differs");
     if (form.get("client_id") !== "test-client" || form.get("client_secret") !== "test-secret") return refuse("bad client");
     res.writeHead(200, { "content-type": "application/json" }).end(
@@ -115,18 +121,27 @@ function startRelay() {
 
 const manual = (url, init = {}) => fetch(url, { ...init, redirect: "manual" });
 
-/** Sign in as `user` the way a browser would, hop by hop. */
-async function signIn(user, next = "/dashboard") {
+/** Leave for the provider and come back with a code: the callback to visit, and the cookie the start left. */
+async function startSignIn(user, next = "/dashboard") {
   nextUser = user;
   const start = await manual(`${HTTP}/auth/github/start?next=${encodeURIComponent(next)}`);
   if (start.status !== 303) fail(`start answered ${start.status}`);
+  const started = start.headers.getSetCookie().find((c) => c.startsWith("ajar-signin="));
+  if (!started || !/HttpOnly/.test(started) || !/Max-Age=600/.test(started)) fail(`start left no sign-in cookie: ${started}`);
   const atProvider = await manual(start.headers.get("location"));
-  const callback = atProvider.headers.get("location");
-  const back = await manual(callback);
+  return { callback: atProvider.headers.get("location"), started: started.split(";")[0] };
+}
+
+/** Sign in as `user` the way a browser would, hop by hop. */
+async function signIn(user, next = "/dashboard") {
+  const { callback, started } = await startSignIn(user, next);
+  const back = await manual(callback, { headers: { cookie: started } });
   if (back.status !== 303) fail(`the callback answered ${back.status}: ${await back.text()}`);
-  const set = back.headers.getSetCookie().find((c) => c.startsWith("ajar="));
-  if (!set) fail(`signing in set no cookie: ${back.headers.getSetCookie()}`);
-  return { cookie: set.split(";")[0], set, location: back.headers.get("location"), callback };
+  const cookies = back.headers.getSetCookie();
+  const set = cookies.find((c) => c.startsWith("ajar="));
+  if (!set) fail(`signing in set no cookie: ${cookies}`);
+  if (!cookies.some((c) => /^ajar-signin=;.*Max-Age=0/.test(c))) fail(`the sign-in cookie was not spent: ${cookies}`);
+  return { cookie: set.split(";")[0], set, location: back.headers.get("location"), callback, started };
 }
 
 function api(path, { cookie, code, method = "GET", body, intended = true } = {}) {
@@ -194,8 +209,24 @@ async function main() {
   if (me.user?.name !== "ana" || me.user?.provider !== "github") fail(`/api/me signed in: ${JSON.stringify(me)}`);
   ok("/api/me knows ana");
 
-  const replay = await manual(ana.callback);
-  await expectStatus(replay, 400, "replaying the callback");
+  // The provider's code is single-use, so even the right browser cannot come
+  // back twice.
+  await expectStatus(await manual(ana.callback, { headers: { cookie: ana.started } }), 400, "replaying the callback");
+
+  // Login CSRF: somebody starts a sign-in as themselves and sends the
+  // callback to someone else. Without the starter's cookie it signs nobody in.
+  const planted = await startSignIn({ id: 666, login: "mallory" });
+  const csrf = await manual(planted.callback);
+  await expectStatus(csrf, 400, "someone else's callback, in a browser with no sign-in of its own");
+  if (csrf.headers.getSetCookie().some((c) => c.startsWith("ajar=") && !/Max-Age=0/.test(c))) fail("a planted callback set a session");
+  // A browser mid-sign-in of its own has a cookie, just not this callback's.
+  // PKCE would refuse it too — this browser's verifier is not the one the
+  // code was issued for — so the provider stops checking, and the `state`
+  // has to.
+  const mine = await startSignIn({ id: 101, login: "ana" });
+  checkPkce = false;
+  await expectStatus(await manual(planted.callback, { headers: { cookie: mine.started } }), 400, "someone else's callback, in a browser that started its own, from a provider that skips PKCE");
+  checkPkce = true;
 
   const bounced = await signIn({ id: 101, login: "ana" }, "//evil.example/x");
   if (bounced.location !== "/dashboard") fail(`an off-site return address was followed: ${bounced.location}`);
@@ -310,6 +341,21 @@ async function main() {
   const listed = await (await api(`/api/my/pads/${name}`, { cookie: ana.cookie })).json();
   if (listed.links.some((l) => l.id === editLink.id) || !listed.links.some((l) => l.code === fresh.code)) fail(`the dashboard's links: ${JSON.stringify(listed.links)}`);
   ok("the dashboard shows the new link's code again, and not the revoked one");
+
+  // Reset: one request makes a new edit link and stops every other.
+  const holder = peer(name, { code: fresh.code });
+  await holder.connect();
+  const reset = await (await expectStatus(
+    await api(`/api/my/pads/${name}/links`, { cookie: ana.cookie, method: "POST", body: { role: "editor", replace: true } }),
+    201,
+    "Reset the edit link",
+  )).json();
+  if ((await role({ code: fresh.code })) !== "viewer") fail("the edit link before a Reset still edits");
+  if ((await role({ code: reset.code })) !== "editor") fail("the edit link a Reset made does not edit");
+  if ((await role({ code: viewCode })) !== "viewer") fail("a Reset of edit links touched the view link");
+  await until(() => holder.ws.readyState === WebSocket.CLOSED, "the old link's holder to be closed");
+  ok("Reset stops the old edit link, in the store and the room, and leaves the view link alone");
+  fresh.code = reset.code;
 
   // --------------------------------------------------------------- quotas
   const second = (await (await api("/api/my/pads", { cookie: ana.cookie, method: "POST" })).json()).name;

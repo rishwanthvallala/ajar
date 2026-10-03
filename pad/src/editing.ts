@@ -65,6 +65,19 @@ export function cssString(text: string): string {
   });
 }
 
+/**
+ * The client id a text is seeded under: FNV-1a of it, never the 0 a seed
+ * used before. Two seeds share one only when their text is the same.
+ */
+export function seedId(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) || 1;
+}
+
 /** One open file, shared. */
 export class DocSession {
   readonly ydoc = new Y.Doc();
@@ -126,12 +139,22 @@ export class DocSession {
   /**
    * Put the stored text in.
    *
-   * Seeded under a fixed client id, which is what makes this safe to do more
-   * than once. A CRDT identifies every character by the client that inserted
-   * it, so two browsers seeding the same string as themselves produce two
-   * distinct insertions and the merge keeps both — the file silently doubles.
-   * Seeded as client 0 by everyone, the operations are byte-identical and
-   * merging them is a no-op.
+   * Seeded under a client id made from the text, which is what makes this
+   * safe to do more than once. A CRDT identifies every character by the
+   * client that inserted it, so two browsers seeding the same string as
+   * themselves produce two distinct insertions and the merge keeps both — the
+   * file silently doubles. Seeded under the same id, the operations are
+   * byte-identical and merging them is a no-op.
+   *
+   * From the text rather than a fixed 0, as it was until 4 October: two
+   * seeds of *different* text under one id are two documents claiming the
+   * same characters, and Yjs, taking each for one it already has, puts later
+   * edits against the wrong ones — garbled text, with nothing to notice. A
+   * viewer meets exactly that: it keeps a document whose editors have left,
+   * and the next editor seeds again from the stored copy. With an id per
+   * text, the stranger's edits build on characters this document has never
+   * seen, and wait as unplaceable — which a viewer notices and repairs (see
+   * `App.unstick`).
    *
    * The id is restored immediately: real edits must be attributable, or two
    * people typing would collide in the same way.
@@ -143,7 +166,7 @@ export class DocSession {
   seed(text: string) {
     if (this.ytext.length > 0 || !text) return;
     const mine = this.ydoc.clientID;
-    this.ydoc.clientID = 0;
+    this.ydoc.clientID = seedId(text);
     try {
       this.ydoc.transact(() => this.ytext.insert(0, text), "remote");
     } finally {
@@ -172,6 +195,15 @@ export class DocSession {
    * and the id is the colour: without this a document opened before a
    * reconnect went on showing everyone else the old one.
    */
+  /**
+   * Holding updates it cannot place, because what they build on never
+   * arrived. Briefly, while traffic is in flight, that is normal; for long,
+   * this document has a history the room's no longer shares.
+   */
+  get stuck(): boolean {
+    return this.ydoc.store.pendingStructs !== null;
+  }
+
   setUser(user: { id: number; name: string }) {
     this.awareness.setLocalStateField("user", user);
   }

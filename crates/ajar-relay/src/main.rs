@@ -381,11 +381,6 @@ async fn read_pad(
     State(state): State<AppState>,
 ) -> axum::response::Response {
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
-    // An owned pad says who may see it; an anonymous one is anybody's.
-    let access = http_accounts::access(&state, &headers, &name).await;
-    if access.role == accounts::Role::None {
-        return (StatusCode::FORBIDDEN, "this pad is private").into_response();
-    }
     let Ok(slot) = state
         .quota
         .claim(caller, std::time::Instant::now(), quota::Kind::Read)
@@ -405,6 +400,15 @@ async fn read_pad(
         )
             .into_response();
     };
+
+    // An owned pad says who may see it; an anonymous one is anybody's. Asked
+    // after the slot and the permit, not before: the answer is a database
+    // lookup, and a flood of reads the limits would refuse should not get one
+    // each first.
+    let access = http_accounts::access(&state, &headers, &name).await;
+    if access.role == accounts::Role::None {
+        return (StatusCode::FORBIDDEN, "this pad is private").into_response();
+    }
 
     // Opening, checking and renewing are filesystem calls, so they go where
     // blocking belongs rather than stalling a worker carrying keystrokes.

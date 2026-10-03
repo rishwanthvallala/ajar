@@ -99,6 +99,11 @@ export interface PeerEvents {
   /** A document update, awareness change, or request for state. */
   /** `from` is the sender's participant id, which the relay makes it stamp. */
   onDoc: (stream: number, kind: number, bytes: Uint8Array, from: number) => void;
+  /**
+   * The relay turned this browser away — a pad that has become private to
+   * it. Nothing reconnects after this.
+   */
+  onRefused?: (code: string, message: string) => void;
 }
 
 export class Peers {
@@ -137,6 +142,8 @@ export class Peers {
     private readonly url: string,
     private readonly session: string,
     private readonly events: PeerEvents,
+    /** The pad link's code, which the relay checks at the door. */
+    private readonly code: () => string | null = () => null,
   ) {
     this.ready = new Promise<void>((resolve) => {
       this.arrived = resolve;
@@ -160,7 +167,7 @@ export class Peers {
           channel: CH_CONTROL,
           streamId: 0,
           target: 0,
-          payload: json({ t: "hello", session: this.session, role: "peer" }),
+          payload: json({ t: "hello", session: this.session, role: "peer", ...this.codeField() }),
         }),
       );
     };
@@ -192,6 +199,11 @@ export class Peers {
     ws.onerror = () => ws.close();
   }
 
+  private codeField(): { code?: string } {
+    const code = this.code();
+    return code ? { code } : {};
+  }
+
   private receive(f: Frame): void {
     if (f.channel === CH_CONTROL) {
       const msg = parse(f.payload) as
@@ -214,6 +226,15 @@ export class Peers {
       } else if (msg.t === "left") {
         this.others.delete((msg as { participant_id: number }).participant_id);
         this.events.onPresence(this.others.size, this.id);
+      } else if (msg.t === "error") {
+        // Refused at the door. Knocking again every few seconds would be
+        // refused the same way for as long as the page stayed open.
+        const refusal = msg as { code?: string; message?: string };
+        if (refusal.code === "private") {
+          this.closed = true;
+          this.arrived?.();
+          this.events.onRefused?.(refusal.code, refusal.message ?? "");
+        }
       }
       return;
     }

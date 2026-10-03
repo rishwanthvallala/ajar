@@ -1,7 +1,8 @@
 # Accounts and pad links
 
-*Designed 3–4 October 2026. **Not built.** Decisions marked "decided" were made
-by the owner; the rest are recommendations, open until the build starts.*
+*Designed 3–4 October 2026 and built on 4 October, all four steps. Decisions
+marked "decided" were made by the owner. [As built](#as-built) says where the
+build went further than the design, or stopped short of it.*
 
 ## What it is
 
@@ -138,8 +139,9 @@ Suggestions and edit requests are later — see
 - **Full-page redirects, never popups.** The pad's origin is cross-origin
   isolated, and `Cross-Origin-Opener-Policy: same-origin` severs a popup's
   `window.opener`, so a popup flow cannot report back.
-- OAuth with `state` and PKCE. Google through OIDC; GitHub through an OAuth
-  app. A user is the pair (provider, provider's user id); the email is stored
+- OAuth with `state` and PKCE, both kept in a short-lived cookie on the
+  browser that started the sign-in, so a callback only signs in the browser
+  that asked. Google through OIDC; GitHub through an OAuth app. A user is the pair (provider, provider's user id); the email is stored
   for display only, and two providers are two users until linking is built.
 - The session is a `__Host-` cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
   30 days, stored hashed. State-changing requests also need a custom header,
@@ -203,7 +205,7 @@ first button on the page.
 | `crates/ajar-relay` | SQLite and its migrations; OAuth routes and sessions; roles in the store API and the peer room; dashboard API |
 | `pad/src` | Code handling and URL stripping; the share dialog; the viewer's banner, local scratch and copy-on-write; Save as my copy |
 | New page | The dashboard, on the pad's origin |
-| `deploy/` | Litestream unit; the server key; OAuth secrets |
+| `deploy/` | `/auth/*` to the relay; the database and `/etc/ajar/relay.env` in the unit. Litestream not yet |
 
 ## Build order
 
@@ -216,6 +218,69 @@ Each step ships on its own.
    the store API and the relay, revoke and rotate.
 3. **Viewers.** Live view, local scratch, copy-on-write, Save as my copy.
 4. **Settings.** Private viewing, only-me editing, quotas.
+
+## As built
+
+**The relay.** `accounts.rs` (the database), `auth.rs` (sign-in),
+`http_accounts.rs` (routes); roles are checked in `read_pad` and `write_pad`
+in `main.rs` and at the peer room's door in `ws.rs`. See
+[relay.md](relay.md#accounts) and
+[security.md](security.md#pads-that-belong-to-an-account).
+
+**The page.** `pad/src/access.ts` holds the code and the account API;
+`share.ts` the dialog; `dashboard.ts` the dashboard and the private-pad screen;
+the viewer's behaviour is in `app.ts`. **Your pads** sits in the header beside
+Share, and is hidden on a phone, where the header has no room.
+
+What the design left open, settled in the build:
+
+- **The schema** is as designed but for `pads.opened`, which is not kept: the
+  dashboard shows when a pad was made, its size and file count. A deleted pad
+  keeps its row, marked `deleted`, so its name stays retired.
+- **Rotating** is *Reset* — a new link, the old ones of that kind revoked, in
+  one press. The data model holds any number of links per kind; the interface
+  shows one.
+- **The plain address is the view link** while anyone with the link can view,
+  which is what people expect a bare URL to be. Once viewing needs a view
+  link, the dialog hands out the coded one.
+- **Changing who may do what reaches people already inside.** The relay
+  closes everyone in the room but the owner; they rejoin, the page re-reads
+  the pad, and an editor turned viewer gets the banner without a reload. A
+  viewer made editor switches in place too — unless they have local changes,
+  which would start saving into the pad behind their back: they keep viewing,
+  and the banner offers a reload.
+- **Copy-on-write starts at the first keystroke.** The document's first local
+  update detaches the file: no live document, no more updates for it. A file
+  a viewer's command writes, makes or deletes is the same. Discard puts the
+  stored copy back and rejoins the live document.
+- **Leaving with local changes** gets the browser's own prompt — browsers no
+  longer show a page's words there — so the count lives in the banner.
+- **Viewers answer `DOC_NONE`** to every request for a document, holding one or
+  not: the relay drops anything else they send, and an editor arriving must not
+  wait out the deadline for an answer that cannot come.
+- **A viewer's document can outlive its editors**, and the next editor starts
+  the document again from the stored copy. Two changes make that safe: seeds
+  take their client id from their text, and a viewer whose document holds
+  updates it cannot place for 1.5 s throws it away and asks again. See
+  [pad.md](pad.md#seeding-a-document-is-the-subtle-part).
+- **Save as my copy** writes the pad as it stands — live documents ahead of the
+  stored copy — with the viewer's files on top, to a new pad of theirs if they
+  are signed in and an open pad if not (one at the limit is asked first).
+- **Limits** are relay flags, `--account-max-pads` and `--account-max-bytes`;
+  the quota is charged to the owner whoever writes, and `/api/me` reports it
+  for the dashboard.
+- **Sign-in stays off until configured.** With no client ids the relay offers
+  nothing and the dashboard says so; see
+  [operations](operations.md#signing-in) for the apps and the secrets.
+
+Not built: Litestream backups (the database is on the box alone), deleting an
+account, linking a Google and a GitHub account into one, and any way to take a
+pad down for abuse short of the database. All in
+[open points](../open-points.md).
+
+The checks: `scripts/smoke-accounts.mjs` (the relay, against a stand-in OAuth
+provider that checks PKCE) and `pad/scripts/accounts-check.mjs` (three
+browsers: owner, editor, viewer), both in `scripts/check.sh`.
 
 ## Still open
 

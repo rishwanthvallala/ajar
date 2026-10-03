@@ -96,10 +96,15 @@ else
   echo "── ui: the pad, as a person uses it ──────────────────"
   node pad/scripts/terminal-check.mjs
   node pad/scripts/user-check.mjs
+  echo "── ui: accounts — owner, editor and viewer ───────────"
+  node pad/scripts/accounts-check.mjs
 fi
 
 echo "── smoke: peer sessions ──────────────────────────────"
 node scripts/smoke-peer.mjs
+
+echo "── smoke: accounts — sign-in, and roles in the store and the room"
+node scripts/smoke-accounts.mjs
 
 echo "── smoke: abuse ──────────────────────────────────────"
 node scripts/smoke-abuse.mjs

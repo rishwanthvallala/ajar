@@ -125,6 +125,56 @@ An empty value compiles the pad with previews disabled, and the button never
 appears. A value pointing at an origin that does not resolve is worse than
 none: the button appears and pressing it fails.
 
+## Signing in
+
+Accounts — pads you own, with view and edit links — need sign-in with Google
+or GitHub, and that needs an OAuth app at each. **Until the ids are on the
+box, nobody is offered sign-in**: the dashboard says it is not set up, and
+everything else works as before. Design and behaviour: [accounts](accounts.md).
+
+### The apps
+
+| | Where | Callback URL |
+|---|---|---|
+| Google | console.cloud.google.com → APIs & Services → Credentials → *Create OAuth client ID* → Web application. The consent screen needs only the default `openid`, `email` and `profile` scopes | `https://code.rishwanth.dev/auth/google/callback` |
+| GitHub | github.com → Settings → Developer settings → *OAuth Apps* → New. Not a GitHub App: an OAuth app is the one that hands back a user id and nothing more | `https://code.rishwanth.dev/auth/github/callback` |
+
+Google's consent screen starts in *testing*, which lets only listed test users
+sign in; publish it to let anyone.
+
+### The secrets
+
+They go in `/etc/ajar/relay.env`, which the deploy creates root-only with the
+public origin in it and never overwrites. Nothing secret is in the repository:
+
+```sh
+ssh ajar-relay
+sudo -e /etc/ajar/relay.env
+#   AJAR_PUBLIC_ORIGIN=https://code.rishwanth.dev
+#   AJAR_GOOGLE_CLIENT_ID=...apps.googleusercontent.com
+#   AJAR_GOOGLE_CLIENT_SECRET=...
+#   AJAR_GITHUB_CLIENT_ID=...
+#   AJAR_GITHUB_CLIENT_SECRET=...
+sudo systemctl restart ajar-relay
+sudo journalctl -u ajar-relay -n 5 -o cat   # "sign-in offered with ["google", "github"]"
+```
+
+A provider with no id is simply not offered, so one can go live before the
+other. Rotating a secret is the same edit and a restart; sessions survive it.
+
+### What is on disk
+
+`/var/lib/ajar/accounts.db` (SQLite, WAL) holds users, sessions, pads and
+links, and `/var/lib/ajar/accounts.key` beside it seals link codes so the
+dashboard can show a link again. **The two together are every edit link**;
+either alone is not. Neither is backed up yet — Litestream to S3 is the plan
+(see [open points](../open-points.md)), and the key must never go with it.
+Losing the key costs only the dashboard's copies of existing links: owners
+reset them and share again.
+
+The limits — 20 pads and 100 MB per account — are relay flags,
+`--account-max-pads` and `--account-max-bytes`, in the unit.
+
 ## Reaching the server
 
 **There is no inbound SSH.** Port 22 was closed on 14 September 2026; the

@@ -90,6 +90,9 @@ export default defineConfig({
     },
     proxy: {
       "/api": "http://127.0.0.1:8787",
+      // Signing in, for a relay run with AJAR_PUBLIC_ORIGIN set to this
+      // server — see docs/dev/operations.md#signing-in.
+      "/auth": "http://127.0.0.1:8787",
       "/ws": {
         target: "ws://127.0.0.1:8787",
         ws: true,

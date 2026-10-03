@@ -287,9 +287,67 @@ sets that header — otherwise any caller can claim any address.
 
 ## What the pad does not have
 
-The pad is plaintext on the server, has no accounts and no locks, and anyone
-with the link can change anything. That was decided deliberately as the trade
-for a URL anyone can open. Do not read pad code expecting ajar's guarantees.
+An **anonymous** pad is plaintext on the server, has no locks, and anyone with
+the link can change anything. That was decided deliberately as the trade for a
+URL anyone can open, and accounts left it alone. Do not read pad code
+expecting ajar's guarantees.
+
+## Pads that belong to an account
+
+Built 4 October 2026; the design is [accounts](accounts.md). What holds:
+
+- **Roles are the server's, in both places a pad can change.** The store API
+  resolves a role from the session cookie and the `X-Pad-Code` header on every
+  read and write. The relay resolves one at the peer room's door from the
+  WebSocket upgrade's cookie and the `code` in the hello, refuses `none`, and
+  from a viewer forwards only `DOC_WANT` and `DOC_NONE` — no edit, no cursor,
+  no `moved`. The client's viewer mode is courtesy; the relay is the rule.
+- **A change to who may do what applies to people already inside.** Changing a
+  setting or revoking a link closes everyone in the room but the owner, and
+  they rejoin as what they now are. Deleting a pad closes everyone.
+- **Codes travel after the `#`**, which browsers never send: no server log,
+  `Referer` or link-unfurler sees one. The page moves the code into local
+  storage and out of the address bar, so copying the address bar shares the
+  bare name.
+- **Nothing reusable is stored in the clear.** Session tokens and link codes
+  are kept as SHA-256 hashes — right for 128-bit random secrets. Codes are
+  also sealed (AES-256-GCM) with `accounts.key`, a file beside the database
+  and outside its backups, so the dashboard can show a link again. The
+  database and the key together are every edit link. `smoke-accounts.mjs`
+  greps the database files for a live token and code.
+- **Sign-in is OAuth with PKCE**, full-page redirects, and a return address
+  that must be a path on this site (`//elsewhere` and full URLs become
+  `/dashboard`). The `state` and the PKCE verifier ride in a ten-minute
+  `HttpOnly` cookie on the browser that started the sign-in, not in the
+  relay's memory, and the callback must match it. That stops login CSRF — a
+  callback somebody else started, sent to you, would otherwise sign you into
+  their account, and what you made there would be theirs — and leaves nothing
+  for strangers to fill by starting sign-ins they never finish. The first
+  build kept `state` in a map on the server, which stops neither; found in
+  review before it shipped. `smoke-accounts.mjs` plants a callback with a
+  stand-in provider that skips PKCE, so the `state` has to stop it alone.
+  Calls to the provider time out after 15 s.
+- **Cross-site requests carry no session.** The cookie is `__Host-`,
+  `HttpOnly`, `Secure`, `SameSite=Lax`: no cross-site fetch or WebSocket
+  sends it, and every state-changing account request must also carry
+  `X-Ajar: 1`, which a form cannot set. Store writes are `PUT` with JSON,
+  which another origin cannot send without a preflight this server never
+  answers.
+- **A deleted pad's name is never reused**, and stays closed to everyone —
+  including anonymous writers, who would otherwise take it over.
+- **Quotas bound an account**, not just an address: 20 pads and 100 MB across
+  them, charged to the owner whoever writes. An edit link cannot be used to
+  fill the owner's disk past that.
+
+What does not hold, yet:
+
+- **The server can read every pad**, private ones included. Encrypting
+  private pads with the view code is in [open points](../open-points.md).
+- **Names are addresses, not secrets.** Three words is about 39 bits —
+  enough that nobody stumbles on a pad, not enough against guessing at scale.
+  "Only people with a view link" is what makes a pad private.
+- **A view link can be passed on** like any link. Reset makes a new one and
+  closes the old for everyone using it.
 
 ## What bounds an anonymous caller
 

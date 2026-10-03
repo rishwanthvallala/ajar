@@ -6,6 +6,8 @@
  * because no two browsers can agree on a clock.
  */
 
+import type { Access } from "./access";
+
 export type Encoding = "utf8" | "base64";
 
 export interface StoredFile {
@@ -19,6 +21,8 @@ export interface Pad {
   exists: boolean;
   seq: number;
   files: Record<string, StoredFile>;
+  /** Who you are to this pad. Absent from a relay older than accounts. */
+  access?: Access;
 }
 
 /** One change. A `content` of `null` deletes. */
@@ -38,7 +42,12 @@ export class StoreError extends Error {
 
   /** Over a cap. Permanent until the caller sends less, so not worth retrying. */
   get tooBig(): boolean {
-    return this.status === 413;
+    return this.status === 413 || this.status === 507;
+  }
+
+  /** Not yours to see, or not yours to change. Retrying changes nothing. */
+  get refused(): boolean {
+    return this.status === 403;
   }
 }
 
@@ -48,10 +57,26 @@ async function refuse(res: Response): Promise<never> {
 }
 
 export class Store {
-  constructor(private readonly base = "") {}
+  /**
+   * `code` is the pad link's code, if this browser holds one: sent with every
+   * request, because the server decides who may read and write.
+   */
+  constructor(
+    private readonly base = "",
+    private readonly code: (name: string) => string | null = () => null,
+  ) {}
+
+  private headers(name: string): Record<string, string> {
+    const code = this.code(name);
+    return code ? { "x-pad-code": code } : {};
+  }
 
   async read(name: string): Promise<Pad> {
-    const res = await fetch(`${this.base}/api/pad/${encodeURIComponent(name)}`);
+    const res = await fetch(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
+      headers: this.headers(name),
+      // A pad's answer depends on who asks. Never one from a cache.
+      cache: "no-store",
+    });
     if (!res.ok) await refuse(res);
     return (await res.json()) as Pad;
   }
@@ -60,7 +85,7 @@ export class Store {
   async write(name: string, changes: Change[]): Promise<number> {
     const res = await fetch(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...this.headers(name) },
       body: JSON.stringify({ writes: changes }),
     });
     if (!res.ok) await refuse(res);

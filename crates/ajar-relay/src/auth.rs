@@ -16,16 +16,27 @@
 //! | `AJAR_<P>_AUTHORIZE_URL`, `_TOKEN_URL`, `_USERINFO_URL` | Endpoint overrides — the checks point them at a stand-in |
 //!
 //! A provider with no client id is simply not offered.
+//!
+//! What a sign-in needs between leaving and coming back — the PKCE verifier,
+//! the `state`, where to go after — rides in a short-lived cookie on the
+//! browser that started it, never in memory here. That binds the callback to
+//! that browser: a callback URL somebody else started, sent to you, finds no
+//! cookie of yours to match and signs nobody in. A `state` kept only on the
+//! server lets that through — login CSRF, which signs you into the sender's
+//! account so that what you make there is theirs. And there is nothing here
+//! for strangers to fill by starting sign-ins they never finish.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
-use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 /// How long a sign-in may take between leaving and coming back.
-const PENDING_FOR: Duration = Duration::from_secs(10 * 60);
+pub const SIGN_IN_SECS: u64 = 10 * 60;
+
+/// How long a provider gets to answer. Each call holds a blocking thread, and
+/// one that never answered would hold it for good.
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Provider {
     pub id: &'static str,
@@ -46,17 +57,84 @@ pub struct Identity {
     pub name: String,
 }
 
-struct Pending {
-    provider: &'static str,
-    verifier: String,
-    next: String,
-    at: Instant,
+/// A sign-in on its way: where to send the browser, and the cookie it has to
+/// bring back.
+pub struct Started {
+    pub location: String,
+    pub cookie: String,
 }
 
 pub struct Auth {
     pub origin: String,
     providers: Vec<Provider>,
-    pending: Mutex<HashMap<String, Pending>>,
+    http: ureq::Agent,
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(PROVIDER_TIMEOUT))
+            .build(),
+    )
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Equal, in time that does not depend on where they differ.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+/// The cookie: `provider.state.verifier.issued.next`, every part URL-safe
+/// base64 or digits, so a dot is only ever a separator.
+fn started_cookie(provider: &str, state: &str, verifier: &str, at: u64, next: &str) -> String {
+    format!(
+        "{provider}.{state}.{verifier}.{at}.{}",
+        b64(next.as_bytes())
+    )
+}
+
+/// Check a callback against the cookie its browser brought, and say what the
+/// sign-in carried: the PKCE verifier, and where to go after.
+fn check_started(
+    cookie: Option<&str>,
+    provider: &str,
+    state: &str,
+    at: u64,
+) -> Result<(String, String), String> {
+    let cookie = cookie.ok_or("this browser did not start that sign-in — try again")?;
+    let parts: Vec<&str> = cookie.split('.').collect();
+    let [pid, nonce, verifier, issued, next] = parts[..] else {
+        return Err("that sign-in was garbled — try again".into());
+    };
+    if pid != provider || !same(nonce, state) {
+        return Err("that sign-in was started somewhere else — try again".into());
+    }
+    let issued: u64 = issued
+        .parse()
+        .map_err(|_| "that sign-in was garbled — try again")?;
+    if at.saturating_sub(issued) > SIGN_IN_SECS {
+        return Err("that sign-in took too long — try again".into());
+    }
+    let next = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(next)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default();
+    Ok((verifier.to_string(), safe_next(&next)))
 }
 
 impl Auth {
@@ -99,7 +177,7 @@ impl Auth {
         Auth {
             origin: var("AJAR_PUBLIC_ORIGIN").unwrap_or_default(),
             providers,
-            pending: Mutex::new(HashMap::new()),
+            http: agent(),
         }
     }
 
@@ -128,9 +206,9 @@ impl Auth {
         format!("{}/auth/{provider}/callback", self.origin)
     }
 
-    /// Where to send the browser to start signing in, or `None` if that
-    /// provider is not set up.
-    pub fn start(&self, provider: &str, next: &str) -> Option<String> {
+    /// Where to send the browser to start signing in, and the cookie it must
+    /// bring back — or `None` if that provider is not set up.
+    pub fn start(&self, provider: &str, next: &str) -> Option<Started> {
         let p = self.provider(provider)?;
         let state = crate::accounts::new_secret();
         let verifier = format!(
@@ -138,21 +216,8 @@ impl Auth {
             crate::accounts::new_secret(),
             crate::accounts::new_secret()
         );
-        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(Sha256::digest(verifier.as_bytes()));
-        {
-            let mut pending = self.pending.lock();
-            pending.retain(|_, v| v.at.elapsed() < PENDING_FOR);
-            pending.insert(
-                state.clone(),
-                Pending {
-                    provider: p.id,
-                    verifier,
-                    next: safe_next(next),
-                    at: Instant::now(),
-                },
-            );
-        }
+        let challenge = b64(&Sha256::digest(verifier.as_bytes()));
+        let cookie = started_cookie(p.id, &state, &verifier, now(), &safe_next(next));
         let mut url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
             p.authorize,
@@ -165,29 +230,31 @@ impl Auth {
         if p.id == "google" {
             url.push_str("&prompt=select_account");
         }
-        Some(url)
+        Some(Started {
+            location: url,
+            cookie,
+        })
     }
 
-    /// Finish signing in: check the state, trade the code for a token, and ask
-    /// the provider who this is. Blocking — it makes two HTTPS requests — so
-    /// call it off the async workers. Returns where to go next as well.
+    /// Finish signing in: check the callback against the cookie its browser
+    /// brought, trade the code for a token, and ask the provider who this is.
+    /// Blocking — it makes two HTTPS requests — so call it off the async
+    /// workers. Returns where to go next as well.
     pub fn finish(
         &self,
         provider: &str,
         code: &str,
         state: &str,
+        cookie: Option<&str>,
     ) -> Result<(Identity, String), String> {
-        let pending = self
-            .pending
-            .lock()
-            .remove(state)
-            .filter(|p| p.provider == provider && p.at.elapsed() < PENDING_FOR)
-            .ok_or("that sign-in had expired or was not started here — try again")?;
+        let (verifier, next) = check_started(cookie, provider, state, now())?;
         let p = self
             .provider(provider)
             .ok_or("that provider is not set up")?;
 
-        let token: serde_json::Value = ureq::post(&p.token)
+        let token: serde_json::Value = self
+            .http
+            .post(&p.token)
             .header("Accept", "application/json")
             .send_form([
                 ("grant_type", "authorization_code"),
@@ -195,7 +262,7 @@ impl Auth {
                 ("redirect_uri", &self.redirect_uri(p.id)),
                 ("client_id", &p.client_id),
                 ("client_secret", &p.client_secret),
-                ("code_verifier", &pending.verifier),
+                ("code_verifier", &verifier),
             ])
             .map_err(|e| format!("{} refused the sign-in: {e}", p.id))?
             .body_mut()
@@ -205,7 +272,9 @@ impl Auth {
             .as_str()
             .ok_or_else(|| format!("{} gave no access token", p.id))?;
 
-        let me: serde_json::Value = ureq::get(&p.userinfo)
+        let me: serde_json::Value = self
+            .http
+            .get(&p.userinfo)
             .header("Authorization", &format!("Bearer {access}"))
             .header("Accept", "application/json")
             // GitHub refuses a request without one.
@@ -216,7 +285,7 @@ impl Auth {
             .read_json()
             .map_err(|e| format!("{} answered strangely: {e}", p.id))?;
         identity(p.id, &me)
-            .map(|id| (id, pending.next))
+            .map(|id| (id, next))
             .ok_or_else(|| format!("{} did not say who you are", p.id))
     }
 }
@@ -312,9 +381,34 @@ mod tests {
         let auth = Auth {
             origin: String::new(),
             providers: Vec::new(),
-            pending: Mutex::new(HashMap::new()),
+            http: agent(),
         };
         assert!(auth.offered().is_empty());
-        assert_eq!(auth.start("google", "/"), None);
+        assert!(auth.start("google", "/").is_none());
+    }
+
+    #[test]
+    fn a_callback_needs_the_cookie_of_the_browser_that_started_it() {
+        let cookie = started_cookie("github", "the-state", "the-verifier", 1000, "/a-b-c");
+        assert_eq!(
+            check_started(Some(&cookie), "github", "the-state", 1060),
+            Ok(("the-verifier".into(), "/a-b-c".into()))
+        );
+        // Somebody else's callback, in a browser that started its own
+        // sign-in, or none at all.
+        assert!(check_started(Some(&cookie), "github", "their-state", 1060).is_err());
+        assert!(check_started(None, "github", "the-state", 1060).is_err());
+        // Started with one provider, back from another.
+        assert!(check_started(Some(&cookie), "google", "the-state", 1060).is_err());
+        // Too long ago.
+        let late = 1000 + SIGN_IN_SECS + 1;
+        assert!(check_started(Some(&cookie), "github", "the-state", late).is_err());
+        // Garbled, and a return address tampered with in the cookie.
+        assert!(check_started(Some("github.the-state"), "github", "the-state", 1060).is_err());
+        let bounced = started_cookie("github", "s", "v", 1000, "//evil.example");
+        assert_eq!(
+            check_started(Some(&bounced), "github", "s", 1000).map(|(_, next)| next),
+            Ok("/dashboard".to_string())
+        );
     }
 }

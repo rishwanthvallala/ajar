@@ -68,6 +68,8 @@ export class FileTree {
   /** The last thing drawn, so folding can redraw without the caller's help. */
   private shown: string[] = [];
   private active = "";
+  /** Files that are this tab's own copy — a viewer's changes. */
+  private local: ReadonlySet<string> = new Set();
 
   constructor(
     private readonly host: HTMLElement,
@@ -78,9 +80,10 @@ export class FileTree {
     this.pending.add(path);
   }
 
-  render(paths: string[], active: string): void {
+  render(paths: string[], active: string, local: ReadonlySet<string> = this.local): void {
     this.shown = paths;
     this.active = active;
+    this.local = local;
     // A directory with something in it is no longer pending — it exists
     // because its contents imply it.
     for (const p of [...this.pending]) {
@@ -143,9 +146,17 @@ export class FileTree {
         into.append(row);
         if (open) this.draw(child, into, active, depth + 1);
       } else {
-        row.className = `row file${child.path === active ? " on" : ""}`;
+        const mine = this.local.has(child.path);
+        row.className = `row file${child.path === active ? " on" : ""}${mine ? " local" : ""}`;
         row.innerHTML = `<span class="chev"></span><span class="ico">${ICONS.file}</span>`;
         row.append(child.name);
+        if (mine) {
+          const mark = document.createElement("span");
+          mark.className = "local-mark";
+          mark.textContent = "local";
+          mark.title = "Your own copy — changed in this tab only";
+          row.append(mark);
+        }
         row.dataset.path = child.path;
         row.onclick = () => this.events.onOpen(child.path);
         // Beside the row rather than in it: a button cannot contain a button,

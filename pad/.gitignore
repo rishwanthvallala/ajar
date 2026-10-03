@@ -9,6 +9,7 @@ public/packages/
 # and they change on every run, so committing them is pure churn.
 shot.png
 failed.png
+failed-*.png
 
 # The wasmer SDK's own package cache, written when anything runs the SDK
 # outside a browser. 66 MB of it was committed by accident with the first

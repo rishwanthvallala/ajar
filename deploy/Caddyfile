@@ -158,6 +158,14 @@ code.rishwanth.dev {
 			header_up X-Forwarded-For {remote_host}
 		}
 	}
+	# Signing in with Google or GitHub: out to the provider and back. Without
+	# this the callback falls through to the page, which answers 200 with
+	# index.html and the sign-in silently goes nowhere. See docs/dev/accounts.md.
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
 	handle /ws {
 		reverse_proxy 127.0.0.1:8787 {
 			header_up X-Forwarded-For {remote_host}

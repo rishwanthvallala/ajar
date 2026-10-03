@@ -368,6 +368,17 @@ finds nothing, and marks it ready in that same step. No command can run before
 then, so nothing is written into a sandbox mid-command. `app-check.mjs` holds
 one browser's packages back and deletes a file under it.
 
+**Only the file on screen is bound to its document.** A file somebody else is
+typing in, while this browser shows another, keeps the editor model it had
+when it was last on screen; its document — and the sandbox, which each update
+is written into — move on without it. So anything that writes a file into the
+sandbox reads it with `App.current`: the document when it has state, the model
+otherwise. Run wrote models until 4 October, which put the older text back
+into the sandbox, and the save after the run stored it over the newer — the
+other person's last edit gone from the store until they typed again.
+`accounts-check.mjs` has an editor press Run in one file while the owner types
+in another.
+
 ### Seeding a document is the subtle part
 
 Three attempts, and the first two are instructive:
@@ -415,6 +426,20 @@ seeds only once everyone present has said so or left; otherwise it waits, up
 to five seconds, for whoever does have it. The check slows one browser's relay
 by 1.5 s and compares the whole text on both sides — a check of each side's
 lines alone passed against the 600 ms wait.
+
+**The seed's client id comes from its text** since 4 October, not a fixed 0.
+Viewers made the fixed id dangerous. A viewer keeps a document but cannot hand
+it on — the relay drops everything a viewer sends but `DOC_WANT` and
+`DOC_NONE` — so when the editors who shared its history leave, the next editor
+to arrive hears `DOC_NONE` from everyone and seeds again from the stored copy.
+Under one id for every seed, that new document claims the same characters as
+the viewer's old one, and the viewer applied the new editor's typing against
+the wrong ones: garbled text, nothing pending, nothing to notice. With the id
+made from the text (FNV-1a, `seedId` in `editing.ts`), the same text still
+dedupes, and a different one shares no ids — the newcomer's edits wait in the
+viewer's document as unplaceable, which `App.unstick` notices after 1.5 s: it
+throws the document away and asks the room again. `accounts-check.mjs` plays
+exactly that, typing at the start of the file, where the garble shows.
 
 ### Seeding the sandbox is a separate problem, with the same shape
 

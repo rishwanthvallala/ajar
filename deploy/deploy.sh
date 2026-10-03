@@ -36,9 +36,10 @@ if ! rustup target list --installed | grep -qx "$TARGET"; then
     rustup target add "$TARGET"
 fi
 
-# Pure Rust with no C dependencies, but the linker still has to emit Linux
-# aarch64 and a stock macOS toolchain will not. Three ways, in order of how
-# little they assume:
+# Rust plus a little C — SQLite, bundled, and ring's TLS primitives, for
+# signing in — and the linker has to emit Linux aarch64, which a stock macOS
+# toolchain will not. Three ways, in order of how little they assume (the
+# container's image already has the C compiler):
 BIN="target/$TARGET/release/ajar-relay"
 if command -v cross >/dev/null 2>&1; then
     cross build --release --target "$TARGET" -p ajar-relay
@@ -156,6 +157,22 @@ say "shipping to $HOST"
 # that wanted --pad-dir met a unit that had never heard of it.
 scp -q deploy/ajar-relay.service "$HOST:/tmp/ajar-relay.service"
 ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.service && $SUDO systemctl daemon-reload"
+
+# Sign-in's settings. Made once, with the public origin and nothing secret;
+# the OAuth client ids and secrets are added on the box by hand (see
+# docs/operations.md) and this never touches the file again.
+ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'RELAYENV'
+mkdir -p /etc/ajar
+if [ ! -f /etc/ajar/relay.env ]; then
+    umask 077
+    printf '%s\n' \
+        '# ajar-relay.service reads this. Secrets live here and nowhere else.' \
+        'AJAR_PUBLIC_ORIGIN=https://code.rishwanth.dev' \
+        '# AJAR_GOOGLE_CLIENT_ID=' '# AJAR_GOOGLE_CLIENT_SECRET=' \
+        '# AJAR_GITHUB_CLIENT_ID=' '# AJAR_GITHUB_CLIENT_SECRET=' \
+        > /etc/ajar/relay.env
+fi
+RELAYENV
 
 # The egress endpoint. Node only exists on the box for this — the relay is a
 # static binary — so it is installed on demand rather than in the bootstrap,

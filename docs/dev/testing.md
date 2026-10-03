@@ -35,6 +35,8 @@ worse than no gate, because it still reports success.
 | `scripts/check-terminal.mjs` | A guest's terminal by real key presses, through the relay to a real bash on the host: history, the editing keys, Tab, Ctrl-R, clearing, Ctrl-C, a paste, the python REPL, unicode, and less, vi, nano and top drawing and quitting. The host's shell is pinned — prompt, inputrc, locale — so what is tested is the path, not the machine's bash. `AJAR_RELAY` and `AGENT` run it against a deployment. With the client dropping one byte, ESC, twelve of its thirty fail — needs `npm run build:ajar` |
 | `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco; and that a guest arriving to no terminals is given exactly one — needs `npm run build:ajar` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
+| `scripts/smoke-accounts.mjs` | Accounts at the relay, against a stand-in OAuth provider that checks PKCE: sign-in, the cookie's flags, a replayed callback, an off-site return address; then the store and the peer room as a stranger, a viewer, an editor and the owner — a viewer's edit dropped and its `DOC_NONE` passed, every setting, revoking, eviction of people already inside, both quotas, deletion, a restart, and no token or code in the database in the clear. Each enforcement point was reverted and the suite failed |
+| `pad/scripts/accounts-check.mjs` | Accounts in three browsers — owner, edit link, bare name: signing in, New pad, the share dialog's links, the code taken out of the address bar, live typing both ways, a viewer's copy-on-write, a command's file kept local, Discard rejoining the live document, Save as my copy, settings reaching people already inside, the private screen, the dashboard; and a viewer's document outliving its editors. In the gate |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 | `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
@@ -201,7 +203,7 @@ Three ways these measured the wrong thing before they were fixed:
 
 ## Checks that passed for the wrong reason
 
-Twenty-four so far, and they are the most transferable lesson in this repository.
+Twenty-six so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -231,6 +233,8 @@ passing evidence by accident.**
 | A pad newcomer seeding beside a slow room | It checked each side had the other's line; two documents ignoring each other's history still both take a line typed at the end. Then it compared whole texts, but read the stored copy before the room's save had landed — the one case where seeding is safe |
 | A cursor id writing the stylesheet | It looked for any `display: none` in a style element, and the page's own stylesheets have those |
 | A pad Run's status | It read the status once, straight after Run; a save landing a moment later overwrote it only on a fast machine, so the check passed locally and failed on CI |
+| A viewer converging after its editors left | With every seed under one client id, the new editor's typing is put against the viewer's characters of the same ids — but typed at the end of the file it lands at the end anyway. The fix was to type *inside* the seed, after its first character, with Cmd+Home and an arrow; Cmd+Home is not a Monaco binding on a Mac, the cursor never left the end, and it passed twice more. The cursor is now placed through Monaco's API, and the check asserts the editor's own text first |
+| Discard rejoining the live file | It waited for the room's next line to appear, which the stored copy also delivers, a save later. It now requires the live document itself |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service

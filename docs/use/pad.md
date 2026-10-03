@@ -116,6 +116,53 @@ Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for
 everyone once it finishes.
 
+## Pads you control
+
+A pad anyone opens is anyone's: whoever has the link can change it. To decide
+who can, sign in — **Your pads**, top right, or `code.rishwanth.dev/dashboard`
+— with Google or GitHub. No password, and nothing is sent to your inbox.
+
+**New pad** makes one with a three-word name, like `amber-falcon-river`, and
+opens it. It is yours for as long as your account is: it never expires.
+
+Each pad has two settings, on its row in Your pads or under **Share** in the
+pad:
+
+| Who can view | Who can edit |
+|---|---|
+| Anyone with the link | Anyone with an edit link |
+| Only people with a view link | Only you |
+| Only you | |
+
+**Share** gives you the links. An edit link has a code after the `#` — that
+code is the permission, so send it only to people you want editing. The view
+link is the plain address while anyone with the link can view. Your address
+bar never shows a code, even after you open an edit link, so copying it out of
+the address bar never hands out editing by accident.
+
+**Reset** makes a new link and stops the old one working for everyone using
+it, straight away — for a link that went further than you meant. Changing a
+setting takes effect straight away too, for people already in the pad.
+
+**Delete** removes the pad and its files for everyone, and its name is never
+used again.
+
+An account holds 20 pads and 100 MB across them.
+
+### Opening someone else's pad to view
+
+You can watch it change as they type, and **run it** — running happens in your
+own browser, as always. You can type and run commands too, but nothing you do
+reaches anyone else: a bar across the top says so. The file you change becomes
+**your own copy** — marked *local* in the file list — and stops following
+theirs. **Discard my changes** puts theirs back, live again.
+
+**Save as my copy** makes a new pad of everything you are looking at, your
+changes included: yours if you are signed in, an open pad if not. Leaving with
+changes you have not saved asks first.
+
+A private pad you have no link for says so, and nothing more.
+
 ## The things it cannot do
 
 **It runs on your computer, not a server.** Your browser downloads the tools
@@ -145,11 +192,12 @@ anywhere else.
 **Empty folders disappear on reload.** A folder needs something in it to
 survive.
 
-**Nothing is private.** Anyone with the link can read and change the folder,
-and the files are stored in the clear on the server. Do not put anything
-sensitive in it.
+**Nothing is private** in a pad anyone opens: anyone with the link can read
+and change the folder. Pads you control decide who can, but every pad is
+stored in the clear on the server. Do not put anything sensitive in one.
 
-**A folder nobody opens or edits for 90 days is deleted.** Opening the link
+**A folder nobody opens or edits for 90 days is deleted** — unless it is one
+of yours. Opening the link
 counts, so a folder people keep visiting stays. Once one is deleted its name is
 free, so an old link opens an empty folder — or whatever somebody else has
 started there since. Keep anything you care about somewhere else too.

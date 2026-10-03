@@ -110,6 +110,13 @@ file as it is at that moment. Deciding from an earlier read and deleting by path
 would remove whatever a write had just renamed onto that path — somebody's new
 folder.
 
+**A pad that belongs to an account never lapses.** The relay reads the owned
+names from the accounts database at start and pins them in the store, and a
+new one is pinned as it is made; the sweeper and the read path both skip a
+pinned name. Deleting an account pad removes its file at once and keeps the
+name's row, so the name stays retired — nobody can take it over anonymously.
+See [accounts](accounts.md).
+
 It was the opposite until September 2026: a lapse left a `<name>.tomb`, and the
 name answered 410 "will not be reused" forever, so that a link in a tutorial
 could never later show a stranger's files. The cost fell on exactly the names
@@ -117,6 +124,20 @@ people use — `/demo` became a page that could only refuse — and the tombston
 were an unbounded count nobody could reclaim. The trade was reversed
 deliberately: an old link now opens an empty folder, or somebody else's newer
 one. Opening the store deletes any tombstones the old policy left.
+
+## Accounts
+
+`accounts.rs` is the database: SQLite in WAL mode beside the pad store, opened
+once, every call a few rows by key behind one mutex and run off the async
+workers. `auth.rs` is sign-in (OAuth with PKCE, blocking `ureq` calls off the
+workers too), and `http_accounts.rs` the routes: `/auth/{provider}/start`,
+`/auth/{provider}/callback`, `/auth/logout`, `/api/me` and `/api/my/pads…`.
+
+Who you are to a pad is `Accounts::access(name, user, code)`, and the two
+places that ask are `read_pad`/`write_pad` in `main.rs` and the peer join in
+`ws.rs`. A pad with no row is anonymous and everyone is an editor, as before.
+The rest is in [accounts](accounts.md) and
+[security.md](security.md#pads-that-belong-to-an-account).
 
 ## Session shapes
 

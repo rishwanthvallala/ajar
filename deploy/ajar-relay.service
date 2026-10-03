@@ -20,8 +20,13 @@ StartLimitBurst=5
 Type=exec
 User=ajar
 Group=ajar
-ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for --pad-dir /var/lib/ajar/pads
+ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for --pad-dir /var/lib/ajar/pads --accounts-db /var/lib/ajar/accounts.db
 Environment=RUST_LOG=ajar_relay=info
+# Signing in: the public origin, and each provider's client id and secret.
+# Kept on the box, root-only, and never in the repository; the deploy creates
+# it with the origin alone and never overwrites it. Without the ids, nobody is
+# offered sign-in and the site works as it did. See docs/operations.md.
+EnvironmentFile=-/etc/ajar/relay.env
 
 # Creates /var/lib/ajar owned by the service user, so the pad store needs no
 # step in the bootstrap script that someone can forget on a new box.
