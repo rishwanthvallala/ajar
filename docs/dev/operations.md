@@ -78,13 +78,30 @@ while, refresh it before deploying — `npm run build:pad && node
 pad/scripts/fetch-packages.mjs` — and after, `app-check.mjs` against the live
 site must report every package served from this origin.
 
-**The SSM tunnel dropped at "updating caddy", twice in a row, on 3 October** —
-`Timeout, server … not responding` — after everything before it had worked.
-The relay is swapped and restarted in the shipping step, so by then it already
-was; only the Caddy comparison, the Caddyfile reload and the final check were
-skipped. Confirm the relay from outside rather than by ssh: a WebSocket to
-`/ws` that never says hello is closed after ten seconds by any relay from
-v0.0.6 on, and the live asset hashes say whether the clients went out.
+**The SSM tunnel dropped at "updating caddy", on every deploy from 2 to 4
+October** — `Timeout, server … not responding` — after everything before it had
+worked. It was read as a flaky tunnel, and the relay and clients had shipped,
+so it looked harmless. It was not: on 4 October a `--config-only` push got
+through the upload and the validation and then sat for ten minutes in
+`systemctl reload caddy`, with the old config still serving. Caddy's default
+`grace_period` is for ever, a reload waits for every open connection to close,
+and this site holds connections open for hours; SSM closes a session idle for
+twenty minutes, which is the "timeout". So **no Caddyfile change in those
+deploys went live** — the `/auth` route for signing in among them, and most
+likely the pad's 100-an-hour file limit. The Caddyfile now sets
+`grace_period 10s`, and a restart clears a reload that is already stuck:
+
+```sh
+AJAR_CADDY_RESTART=1 ./deploy/deploy.sh ajar-relay --config-only
+```
+
+`--config-only` pushes, validates and loads the Caddyfile and does nothing
+else. **Check a Caddyfile change from outside after every deploy** — a route
+answering as the relay rather than with `index.html`, a header that changed —
+because a deploy that ends without one says nothing about whether it loaded.
+Confirm the relay the same way: a WebSocket to `/ws` that never says hello is
+closed after ten seconds by any relay from v0.0.6 on, and the live asset hashes
+say whether the clients went out.
 
 **The Caddy build checked its plugin by running a Linux binary.** It compared
 only the architecture, so on an Apple-silicon Mac it tried, failed, and

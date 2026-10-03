@@ -33,14 +33,16 @@ echo small > "$tmp/pad/packages/small.webc"
 echo 'export {}' > "$tmp/pad/vendor/sdk.js"
 echo '<!doctype html><title>pad</title>' > "$tmp/pad/index.html"
 
+# Caddy takes one block of global options, and first: the Caddyfile's own go
+# into this one, and its block is left out of what follows.
+global=$(awk '/^\{$/ { on = 1; next } on && /^\}$/ { exit } on' deploy/Caddyfile)
 {
-    printf '{\n\tadmin off\n\tauto_https off\n\tpersist_config off\n\tstorage file_system %s/data\n}\n' "$tmp"
-    sed -E \
+    printf '{\n\tadmin off\n\tauto_https off\n\tpersist_config off\n\tstorage file_system %s/data\n%s\n}\n' "$tmp" "$global"
+    awk 'state == 0 && /^\{$/ { state = 1; next } state == 1 { if (/^\}$/) state = 2; next } { print }' deploy/Caddyfile | sed -E \
         -e "s#^([a-z]+)\.rishwanth\.dev \{#http://\1.rishwanth.dev:$PORT {#" \
         -e "s#/srv/ajar/pad#$tmp/pad#g" \
         -e "s#/var/log/caddy/#$tmp/#g" \
-        -e "s#reverse_proxy (127\.0\.0\.1:[0-9]+|https://cloudflare-dns\.com)#reverse_proxy 127.0.0.1:9#" \
-        deploy/Caddyfile
+        -e "s#reverse_proxy (127\.0\.0\.1:[0-9]+|https://cloudflare-dns\.com)#reverse_proxy 127.0.0.1:9#"
 } > "$tmp/Caddyfile"
 
 "$CADDY" validate --config "$tmp/Caddyfile" --adapter caddyfile >/dev/null 2>"$tmp/validate.err" || {

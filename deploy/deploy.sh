@@ -20,7 +20,7 @@ DOMAIN="${AJAR_DOMAIN:-ajar.rishwanth.dev}"
 # Pinned: this is the version the egress checks were run against.
 WISP_VERSION="${AJAR_WISP_VERSION:-0.4.1}"
 
-[ -n "$HOST" ] || { echo "usage: $0 user@host [--bootstrap]" >&2; exit 1; }
+[ -n "$HOST" ] || { echo "usage: $0 user@host [--bootstrap | --config-only]" >&2; exit 1; }
 
 # Everything below writes to /usr/local/bin, /etc and /srv. Root does that
 # directly; anyone else needs sudo, and a cloud image's default user is never
@@ -28,6 +28,50 @@ WISP_VERSION="${AJAR_WISP_VERSION:-0.4.1}"
 SUDO=$(ssh "$HOST" 'if [ "$(id -u)" = 0 ]; then echo; else echo sudo; fi')
 
 say() { printf '\n  %s\n' "$*"; }
+
+# The Caddyfile: pushed, validated, then loaded. Every deploy ends with this,
+# and `--config-only` does nothing else — for a change to the Caddyfile alone,
+# and for a deploy whose tunnel dropped before it got here (see
+# docs/dev/operations.md), which leaves the old config running.
+push_caddyfile() {
+    # Only the bare domain is rewritten, anchored, so a name that already carries a
+    # prefix — code.rishwanth.dev — is left alone rather than becoming
+    # code.<newdomain>.
+    sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
+        | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
+    # Validated before it is loaded: a reload with a broken file leaves the old
+    # config running, which looks like the deploy did nothing at all. By the binary
+    # that will run it, named by path — the packaged one at /usr/bin rejects the
+    # rate limits outright.
+    #
+    # `validate` opens the log files named in the config, and running it as root
+    # creates any that are missing owned by root — which the caddy user then cannot
+    # write, so the very next reload fails on a file the validation step made. The
+    # chown afterwards is not tidying; it is repairing what validating did.
+    VALIDATE="$SUDO /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+    if ! ssh "$HOST" "$VALIDATE" >/dev/null 2>&1; then
+        echo "  the Caddyfile is not valid; nothing was reloaded" >&2
+        ssh "$HOST" "$VALIDATE" >&2 || true
+        return 1
+    fi
+    ssh "$HOST" "$SUDO chown -R caddy:caddy /var/log/caddy"
+    # A new binary needs a restart. A reload would hand the new config to the old
+    # process, which lacks the plugin, refuses it, and carries on with the old one.
+    # AJAR_CADDY_RESTART=1 asks for one too: for a Caddy whose reloads are stuck.
+    if [ -n "$CADDY_SWAPPED" ] || [ -n "${AJAR_CADDY_RESTART:-}" ]; then
+        ssh "$HOST" "$SUDO systemctl restart caddy"
+    else
+        ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
+    fi
+}
+
+if [ "$MODE" = "--config-only" ]; then
+    CADDY_SWAPPED=""
+    say "updating the Caddyfile, and nothing else"
+    push_caddyfile
+    say "caddy reloaded"
+    exit 0
+fi
 
 # ---------------------------------------------------------------- build
 
@@ -254,34 +298,7 @@ CADDY
     say "caddy is now $(ssh "$HOST" '/usr/local/bin/caddy version' | cut -d' ' -f1), with the plugin"
 fi
 
-# Only the bare domain is rewritten, anchored, so a name that already carries a
-# prefix — code.rishwanth.dev — is left alone rather than becoming
-# code.<newdomain>.
-sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
-    | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
-# Validated before it is loaded: a reload with a broken file leaves the old
-# config running, which looks like the deploy did nothing at all. By the binary
-# that will run it, named by path — the packaged one at /usr/bin rejects the
-# rate limits outright.
-#
-# `validate` opens the log files named in the config, and running it as root
-# creates any that are missing owned by root — which the caddy user then cannot
-# write, so the very next reload fails on a file the validation step made. The
-# chown afterwards is not tidying; it is repairing what validating did.
-VALIDATE="$SUDO /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
-if ! ssh "$HOST" "$VALIDATE" >/dev/null 2>&1; then
-    echo "  the Caddyfile is not valid; nothing was reloaded" >&2
-    ssh "$HOST" "$VALIDATE" >&2 || true
-    exit 1
-fi
-ssh "$HOST" "$SUDO chown -R caddy:caddy /var/log/caddy"
-# A new binary needs a restart. A reload would hand the new config to the old
-# process, which lacks the plugin, refuses it, and carries on with the old one.
-if [ -n "$CADDY_SWAPPED" ]; then
-    ssh "$HOST" "$SUDO systemctl restart caddy"
-else
-    ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
-fi
+push_caddyfile
 
 # ---------------------------------------------------------------- check
 

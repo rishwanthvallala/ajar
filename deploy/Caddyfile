@@ -7,6 +7,18 @@
 #
 # Put this at /etc/caddy/Caddyfile and `systemctl reload caddy`.
 
+{
+	# How long a reload or a stop waits for open connections before closing
+	# them. Unset, Caddy waits for ever, and this site holds connections open
+	# for hours — terminals, pad rooms, the sandbox's way out — so a reload
+	# need never finish. On 4 October one sat for ten minutes with the old
+	# config still serving, and every deploy since 2 October had ended in the
+	# tunnel timing out at that step: the Caddyfile changes in them, it is most
+	# likely, never went live. Whoever is cut off reconnects, as they do after
+	# every relay restart.
+	grace_period 10s
+}
+
 ajar.rishwanth.dev {
 	# The relay serves the web client, the join pages, /install.sh and /ws.
 	reverse_proxy 127.0.0.1:8787 {
