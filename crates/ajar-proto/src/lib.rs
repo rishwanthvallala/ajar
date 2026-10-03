@@ -243,6 +243,11 @@ pub enum Control {
         /// version negotiation, which `serde(default)` reads as 0.
         #[serde(default)]
         protocol: u32,
+        /// A pad link's code, from after the `#`, for a peer joining an owned
+        /// pad's room. Absent everywhere else, and left off the wire when
+        /// absent, so an agent's hello is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
     Welcome {
         participant_id: u32,
@@ -578,6 +583,7 @@ mod tests {
             role: Role::Guest,
             locked: false,
             protocol: PROTOCOL_VERSION,
+            code: None,
         };
         let f = Frame::json(Channel::Control, TARGET_ALL, &msg).unwrap();
         let back = Frame::decode(&f.encode()).unwrap();
@@ -600,6 +606,7 @@ mod tests {
             role: Role::Guest,
             locked: false,
             protocol: PROTOCOL_VERSION,
+            code: None,
         })
         .unwrap();
         assert!(
@@ -649,6 +656,7 @@ mod tests {
                 role: Role::Guest,
                 locked: false,
                 protocol: PROTOCOL_VERSION,
+                code: None,
             },
         )
         .unwrap();

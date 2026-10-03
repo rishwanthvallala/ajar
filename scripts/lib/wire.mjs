@@ -205,7 +205,11 @@ export class Guest {
     this.outChain = Promise.resolve();
     this.inChain = Promise.resolve();
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl);
+      // Headers only when a check sets them — a cookie, for a pad's owner.
+      // Node's WebSocket takes them where a browser's never could.
+      const ws = this.headers
+        ? new WebSocket(this.wsUrl, { headers: this.headers })
+        : new WebSocket(this.wsUrl);
       ws.binaryType = "arraybuffer";
       this.ws = ws;
 
@@ -220,6 +224,8 @@ export class Guest {
             t: "hello",
             session: this.session,
             role: this.role,
+            // A pad link's code, the way the page sends it.
+            ...(this.code ? { code: this.code } : {}),
           }),
         );
       };

@@ -24,11 +24,30 @@ use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYT
 /// client takes; the browser sends its hello the moment the socket opens.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What decides who may join an owned pad's room: the account store, and who
+/// the socket's cookie says is signed in.
+pub struct Gate {
+    pub accounts: Arc<crate::accounts::Accounts>,
+    pub user: Option<i64>,
+}
+
+/// The first byte of a pad's doc payload, from `pad/src/peers.ts`: asking for
+/// a document's state, and answering that there is none to give. The only
+/// things a viewer may send.
+const DOC_WANT: u8 = 0x03;
+const DOC_NONE: u8 = 0x04;
+
+fn viewer_may_send(frame: &Frame) -> bool {
+    frame.channel == Channel::Doc
+        && matches!(frame.payload.first(), Some(&DOC_WANT) | Some(&DOC_NONE))
+}
+
 pub async fn handle(
     socket: WebSocket,
     registry: Arc<Registry>,
     quota: Arc<Quota>,
     caller: std::net::IpAddr,
+    gate: Gate,
 ) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = outbox::channel();
@@ -74,13 +93,14 @@ pub async fn handle(
         }
     };
 
-    let (session_id, role, locked, protocol) = match hello.parse_json::<Control>() {
+    let (session_id, role, locked, protocol, code) = match hello.parse_json::<Control>() {
         Ok(Control::Hello {
             session,
             role,
             locked,
             protocol,
-        }) => (session, role, locked, protocol),
+            code,
+        }) => (session, role, locked, protocol, code),
         _ => refuse!("expected_hello", "first frame must be a hello"),
     };
 
@@ -108,13 +128,33 @@ pub async fn handle(
         }
     };
 
+    // A pad that belongs to an account decides who comes into its room, and
+    // as what. Every peer used to be equal and a browser applied whatever
+    // another sent, so view-only would have been a rule the viewer's own page
+    // kept — the mistake the read-only fix of 2 October undid for ajar. An
+    // anonymous pad has no row and everyone edits, as it always has.
+    let (mut viewer, mut owner) = (false, false);
+    if role == Role::Peer {
+        let accounts = gate.accounts.clone();
+        let (name, user) = (session_id.clone(), gate.user);
+        let access =
+            crate::http_accounts::blocking(move || accounts.access(&name, user, code.as_deref()))
+                .await;
+        match access.role {
+            crate::accounts::Role::None => refuse!("private", "this pad is private"),
+            crate::accounts::Role::Viewer => viewer = true,
+            crate::accounts::Role::Owner => owner = true,
+            crate::accounts::Role::Editor => {}
+        }
+    }
+
     let joined = match role {
         Role::Host => registry.open_locked(&session_id, tx.clone(), locked, protocol),
         Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
         Role::Peer => registry
-            .join_peer(&session_id, tx.clone())
+            .join_peer(&session_id, tx.clone(), owner)
             .map(|(p, _created)| (p, false)),
     };
 
@@ -285,6 +325,13 @@ pub async fn handle(
             Role::Peer => {
                 if frame.channel == Channel::Control {
                     debug!("peer control frame dropped");
+                    continue;
+                }
+                // A viewer watches. It may ask for a document's state and say
+                // it has none to give; an edit, a cursor or a nudge to re-read
+                // the folder goes nowhere.
+                if viewer && !viewer_may_send(&frame) {
+                    debug!("viewer frame dropped");
                     continue;
                 }
                 // Same rule a guest follows — you may only speak as yourself,

@@ -147,6 +147,7 @@ async fn session(
             role: *role,
             locked: locked.load(Ordering::SeqCst),
             protocol: ajar_proto::PROTOCOL_VERSION,
+            code: None,
         },
         other => other.clone(),
     };

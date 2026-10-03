@@ -1,0 +1,393 @@
+#!/usr/bin/env node
+// Accounts, end to end: signing in, and who may do what to a pad.
+//
+// The relay is pointed at a stand-in for GitHub — a few lines of HTTP below
+// that check PKCE the way the real one does — so signing in runs the whole
+// flow without a network or a real app. Everything after that is the relay's
+// own enforcement, tested from outside: the store API and the peer room, as a
+// stranger, a viewer, an editor and the owner.
+//
+//   node scripts/smoke-accounts.mjs
+
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { CH_DOC, encode, fail, finish, Guest, ok, Procs, sleep, waitForHealth } from "./lib/wire.mjs";
+
+const PORT = 8851;
+const PROVIDER_PORT = 8852;
+const BARE_PORT = 8853;
+const HTTP = `http://127.0.0.1:${PORT}`;
+const WS = `ws://127.0.0.1:${PORT}/ws`;
+const PROVIDER = `http://127.0.0.1:${PROVIDER_PORT}`;
+
+const DOC_UPDATE = 0x01;
+const DOC_NONE = 0x04;
+const MAX_PADS = 3;
+const MAX_BYTES = 64 * 1024;
+
+const procs = new Procs();
+const dir = mkdtempSync(join(tmpdir(), "ajar-accounts-"));
+process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+
+// ------------------------------------------------------------ the provider
+
+/** Who the stand-in says is signing in next. */
+let nextUser = { id: 1, login: "ana" };
+/** code -> what it was issued for. */
+const issued = new Map();
+
+const provider = createServer(async (req, res) => {
+  const url = new URL(req.url, PROVIDER);
+  if (url.pathname === "/authorize") {
+    const code = `code-${Math.random().toString(36).slice(2)}`;
+    issued.set(code, {
+      user: nextUser,
+      challenge: url.searchParams.get("code_challenge"),
+      method: url.searchParams.get("code_challenge_method"),
+      redirect: url.searchParams.get("redirect_uri"),
+      client: url.searchParams.get("client_id"),
+    });
+    const back = new URL(url.searchParams.get("redirect_uri"));
+    back.searchParams.set("code", code);
+    back.searchParams.set("state", url.searchParams.get("state"));
+    res.writeHead(302, { location: back.toString() }).end();
+    return;
+  }
+  if (url.pathname === "/token" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const form = new URLSearchParams(body);
+    const grant = issued.get(form.get("code"));
+    issued.delete(form.get("code"));
+    const verifier = form.get("code_verifier") ?? "";
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const refuse = (why) => res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: why }));
+    if (!grant) return refuse("unknown or reused code");
+    if (grant.method !== "S256" || grant.challenge !== challenge) return refuse("PKCE verifier does not match");
+    if (form.get("redirect_uri") !== grant.redirect) return refuse("redirect_uri differs");
+    if (form.get("client_id") !== "test-client" || form.get("client_secret") !== "test-secret") return refuse("bad client");
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({ access_token: `token-${grant.user.id}-${grant.user.login}`, token_type: "bearer" }),
+    );
+    return;
+  }
+  if (url.pathname === "/user") {
+    const m = /^Bearer token-(\d+)-(\w+)$/.exec(req.headers.authorization ?? "");
+    if (!m) return res.writeHead(401).end();
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({ id: Number(m[1]), login: m[2], name: null, email: null }),
+    );
+    return;
+  }
+  res.writeHead(404).end();
+});
+
+// ---------------------------------------------------------------- helpers
+
+function startRelay() {
+  return procs.start(
+    "target/debug/ajar-relay",
+    [
+      "--bind", `127.0.0.1:${PORT}`,
+      "--pad-dir", join(dir, "pads"),
+      "--accounts-db", join(dir, "accounts.db"),
+      "--account-max-pads", String(MAX_PADS),
+      "--account-max-bytes", String(MAX_BYTES),
+    ],
+    "relay",
+    {
+      env: {
+        ...process.env,
+        AJAR_PUBLIC_ORIGIN: HTTP,
+        AJAR_GITHUB_CLIENT_ID: "test-client",
+        AJAR_GITHUB_CLIENT_SECRET: "test-secret",
+        AJAR_GITHUB_AUTHORIZE_URL: `${PROVIDER}/authorize`,
+        AJAR_GITHUB_TOKEN_URL: `${PROVIDER}/token`,
+        AJAR_GITHUB_USERINFO_URL: `${PROVIDER}/user`,
+      },
+    },
+  );
+}
+
+const manual = (url, init = {}) => fetch(url, { ...init, redirect: "manual" });
+
+/** Sign in as `user` the way a browser would, hop by hop. */
+async function signIn(user, next = "/dashboard") {
+  nextUser = user;
+  const start = await manual(`${HTTP}/auth/github/start?next=${encodeURIComponent(next)}`);
+  if (start.status !== 303) fail(`start answered ${start.status}`);
+  const atProvider = await manual(start.headers.get("location"));
+  const callback = atProvider.headers.get("location");
+  const back = await manual(callback);
+  if (back.status !== 303) fail(`the callback answered ${back.status}: ${await back.text()}`);
+  const set = back.headers.getSetCookie().find((c) => c.startsWith("ajar="));
+  if (!set) fail(`signing in set no cookie: ${back.headers.getSetCookie()}`);
+  return { cookie: set.split(";")[0], set, location: back.headers.get("location"), callback };
+}
+
+function api(path, { cookie, code, method = "GET", body, intended = true } = {}) {
+  const headers = {};
+  if (cookie) headers.cookie = cookie;
+  if (code) headers["x-pad-code"] = code;
+  if (intended && method !== "GET") headers["x-ajar"] = "1";
+  if (body !== undefined) headers["content-type"] = "application/json";
+  return fetch(`${HTTP}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+const write = (name, files, who = {}) =>
+  api(`/api/pad/${name}`, { ...who, method: "PUT", body: { writes: files }, intended: false });
+
+const file = (path, content) => ({ path, content });
+
+async function expectStatus(res, status, what) {
+  if (res.status !== status) fail(`${what}: expected ${status}, got ${res.status} ${await res.text()}`);
+  ok(`${what} — ${status}`);
+  return res;
+}
+
+function peer(session, { code, cookie } = {}) {
+  const p = new Guest(WS, session, "someone", null);
+  p.role = "peer";
+  p.code = code;
+  if (cookie) p.headers = { cookie };
+  p.docs = [];
+  p.onDoc = (stream, kind) => p.docs.push({ stream, kind });
+  return p;
+}
+
+function docFrom(p, kind) {
+  const payload = new Uint8Array([kind, 1, 2, 3]);
+  p.send(encode({ channel: CH_DOC, streamId: 7, target: p.participantId, payload }));
+}
+
+async function until(test, what, ms = 3000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await test()) return;
+    await sleep(25);
+  }
+  fail(`timed out waiting for ${what}`);
+}
+
+// ------------------------------------------------------------------- main
+
+async function main() {
+  await new Promise((r) => provider.listen(PROVIDER_PORT, "127.0.0.1", r));
+  startRelay();
+  await waitForHealth(HTTP);
+  ok("relay is up with sign-in pointed at a stand-in provider");
+
+  // ----------------------------------------------------------- signing in
+  let me = await (await api("/api/me")).json();
+  if (me.user !== null || JSON.stringify(me.providers) !== '["github"]') fail(`/api/me before signing in: ${JSON.stringify(me)}`);
+  ok("signed out, /api/me says nobody and offers github");
+
+  const ana = await signIn({ id: 101, login: "ana" }, "/amber-x");
+  if (ana.location !== "/amber-x") fail(`sign-in went to ${ana.location}, not where it was asked`);
+  if (!/HttpOnly/.test(ana.set) || !/SameSite=Lax/.test(ana.set) || /Secure/.test(ana.set)) fail(`cookie flags: ${ana.set}`);
+  ok("signed in through the provider with PKCE; HttpOnly, SameSite=Lax, and no Secure on plain http");
+  me = await (await api("/api/me", { cookie: ana.cookie })).json();
+  if (me.user?.name !== "ana" || me.user?.provider !== "github") fail(`/api/me signed in: ${JSON.stringify(me)}`);
+  ok("/api/me knows ana");
+
+  const replay = await manual(ana.callback);
+  await expectStatus(replay, 400, "replaying the callback");
+
+  const bounced = await signIn({ id: 101, login: "ana" }, "//evil.example/x");
+  if (bounced.location !== "/dashboard") fail(`an off-site return address was followed: ${bounced.location}`);
+  ok("an off-site return address becomes /dashboard");
+
+  const bo = await signIn({ id: 202, login: "bo" });
+
+  // --------------------------------------------------------- making a pad
+  await expectStatus(await api("/api/my/pads", { cookie: ana.cookie, method: "POST", intended: false }), 403, "making a pad without X-Ajar");
+  await expectStatus(await api("/api/my/pads", { method: "POST" }), 401, "making a pad signed out");
+  const made = await (await expectStatus(await api("/api/my/pads", { cookie: ana.cookie, method: "POST" }), 201, "ana makes a pad")).json();
+  const name = made.name;
+  if (!/^[a-z]+-[a-z]+-[a-z]+$/.test(name)) fail(`not three words: ${name}`);
+  const viewCode = made.links.find((l) => l.role === "viewer")?.code;
+  const editCode = made.links.find((l) => l.role === "editor")?.code;
+  if (!viewCode || !editCode || made.view !== "link" || made.edit !== "code") fail(`a new pad: ${JSON.stringify(made)}`);
+  ok(`${name}: three words, a view link and an edit link, view by link and edit by link`);
+
+  const theirs = await (await api("/api/my/pads", { cookie: bo.cookie })).json();
+  if (theirs.length !== 0) fail("bo sees ana's pad");
+  await expectStatus(await api(`/api/my/pads/${name}`, { cookie: bo.cookie, method: "DELETE" }), 404, "bo deleting ana's pad");
+
+  // ------------------------------------------------------------ the store
+  const role = async (who) => {
+    const res = await api(`/api/pad/${name}`, who);
+    return res.status === 200 ? (await res.json()).access.role : res.status;
+  };
+  await expectStatus(await write(name, [file("main.py", "print(1)\n")], { cookie: ana.cookie }), 200, "the owner writes");
+  if ((await role({})) !== "viewer") fail("the bare name should view");
+  if ((await role({ code: viewCode })) !== "viewer") fail("a view code should view");
+  if ((await role({ code: editCode })) !== "editor") fail("an edit code should edit");
+  if ((await role({ cookie: ana.cookie })) !== "owner") fail("the owner is not the owner");
+  if ((await role({ cookie: bo.cookie, code: "not-a-real-code-at-all" })) !== "viewer") fail("a wrong code should fall back to the bare name");
+  ok("store reads: bare name and view code view, edit code edits, the cookie owns");
+
+  await expectStatus(await write(name, [file("x.py", "1")]), 403, "writing with the bare name");
+  await expectStatus(await write(name, [file("x.py", "1")], { code: viewCode }), 403, "writing with a view code");
+  await expectStatus(await write(name, [file("x.py", "1")], { code: editCode }), 200, "writing with an edit code");
+  await expectStatus(await write(name, [file("x.py", "2")], { cookie: bo.cookie }), 403, "another account writing");
+
+  // -------------------------------------------------------- the peer room
+  const watcher = peer(name);
+  await watcher.connect();
+  const editor = peer(name, { code: editCode });
+  await editor.connect();
+  const owner = peer(name, { cookie: ana.cookie });
+  await owner.connect();
+  ok("a viewer, an editor and the owner are in the room");
+
+  docFrom(watcher, DOC_UPDATE);
+  docFrom(watcher, DOC_NONE);
+  await until(() => editor.docs.some((d) => d.kind === DOC_NONE), "the viewer's DOC_NONE");
+  if (editor.docs.some((d) => d.kind === DOC_UPDATE) || owner.docs.some((d) => d.kind === DOC_UPDATE)) fail("a viewer's edit reached the room");
+  ok("the room drops a viewer's edit and passes its DOC_NONE");
+  docFrom(editor, DOC_UPDATE);
+  await until(() => watcher.docs.some((d) => d.kind === DOC_UPDATE), "the editor's edit at the viewer");
+  ok("an editor's edit reaches the viewer");
+
+  // ----------------------------------------------------- changing settings
+  await expectStatus(
+    await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "PATCH", body: { view: "link", edit: "owner" } }),
+    200,
+    "ana locks editing to herself",
+  );
+  await until(() => editor.ws.readyState === WebSocket.CLOSED, "the editor to be closed");
+  if (!editor.control.some((m) => m.t === "closed")) fail("the editor was closed without being told why");
+  if (owner.ws.readyState !== WebSocket.OPEN) fail("the owner was closed too");
+  ok("everyone but the owner is closed and told why; the owner stays");
+  if ((await role({ code: editCode })) !== "viewer") fail("an edit code with editing locked should view");
+  await expectStatus(await write(name, [file("x.py", "3")], { code: editCode }), 403, "writing with an edit code once editing is locked");
+  await editor.reconnect();
+  editor.docs.length = 0;
+  owner.docs.length = 0;
+  docFrom(editor, DOC_UPDATE);
+  docFrom(editor, DOC_NONE);
+  await until(() => owner.docs.some((d) => d.kind === DOC_NONE), "the demoted editor's DOC_NONE");
+  if (owner.docs.some((d) => d.kind === DOC_UPDATE)) fail("a demoted editor's edit reached the owner");
+  ok("rejoining with the same edit code, it is a viewer in the room too");
+
+  await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "PATCH", body: { view: "code", edit: "code" } });
+  if ((await role({})) !== 403) fail("the bare name should not open a pad viewed by link only");
+  if ((await role({ code: viewCode })) !== "viewer") fail("a view code should still view");
+  if ((await role({ code: editCode })) !== "editor") fail("an edit code should edit again, and its link was kept");
+  try {
+    await peer(name).connect();
+    fail("a stranger joined a private pad's room");
+  } catch (e) {
+    if (!/^private:/.test(e.message)) fail(`a stranger was refused for the wrong reason: ${e.message}`);
+  }
+  ok("view by code: the bare name is refused in the store and the room; the codes still work");
+
+  await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "PATCH", body: { view: "owner", edit: "code" } });
+  if ((await role({ code: viewCode })) !== 403) fail("a view code should not open a pad only its owner views");
+  if ((await role({ code: editCode })) !== "editor") fail("an edit link always opens the pad");
+  ok("view by owner: view codes are off, and an edit link still opens and edits");
+  await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "PATCH", body: { view: "link", edit: "code" } });
+
+  // ------------------------------------------------------------- revoking
+  const editLink = made.links.find((l) => l.role === "editor");
+  const fresh = await (await expectStatus(
+    await api(`/api/my/pads/${name}/links`, { cookie: ana.cookie, method: "POST", body: { role: "editor" } }),
+    201,
+    "a second edit link",
+  )).json();
+  await editor.reconnect();
+  await expectStatus(await api(`/api/my/pads/${name}/links/${editLink.id}`, { cookie: ana.cookie, method: "DELETE" }), 204, "revoking the first edit link");
+  if ((await role({ code: editCode })) !== "viewer") fail("a revoked edit code still edits");
+  if ((await role({ code: fresh.code })) !== "editor") fail("the new edit code does not edit");
+  await until(() => editor.ws.readyState === WebSocket.CLOSED, "the revoked editor to be closed");
+  ok("a revoked code stops working at once, in the room too; the new one works");
+
+  const listed = await (await api(`/api/my/pads/${name}`, { cookie: ana.cookie })).json();
+  if (listed.links.some((l) => l.id === editLink.id) || !listed.links.some((l) => l.code === fresh.code)) fail(`the dashboard's links: ${JSON.stringify(listed.links)}`);
+  ok("the dashboard shows the new link's code again, and not the revoked one");
+
+  // --------------------------------------------------------------- quotas
+  const second = (await (await api("/api/my/pads", { cookie: ana.cookie, method: "POST" })).json()).name;
+  await api("/api/my/pads", { cookie: ana.cookie, method: "POST" });
+  await expectStatus(await api("/api/my/pads", { cookie: ana.cookie, method: "POST" }), 507, `a ${MAX_PADS + 1}th pad`);
+
+  const big = "x".repeat(40 * 1024);
+  await expectStatus(await write(name, [file("big.txt", big)], { cookie: ana.cookie }), 200, "40 KB into the first pad");
+  const over = await write(second, [file("big.txt", big)], { cookie: ana.cookie });
+  await expectStatus(over, 507, "40 KB more into the second, past the account's 64 KB");
+  await expectStatus(await write(second, [file("big.txt", big)], { code: (await (await api(`/api/my/pads/${second}`, { cookie: ana.cookie })).json()).links.find((l) => l.role === "editor").code }), 507, "the same through an edit link — the owner's room, whoever writes");
+  await expectStatus(await write(name, [file("big.txt", null)], { cookie: ana.cookie }), 200, "deleting the big file");
+  await expectStatus(await write(second, [file("big.txt", big)], { cookie: ana.cookie }), 200, "now it fits");
+  const info = await (await api(`/api/my/pads/${second}`, { cookie: ana.cookie })).json();
+  if (info.bytes < big.length || info.files !== 1) fail(`sizes on the dashboard: ${JSON.stringify(info)}`);
+  ok("the dashboard knows each pad's size");
+
+  // --------------------------------------------------------- what is stored
+  const stored = Buffer.concat(["accounts.db", "accounts.db-wal"].map((f) => join(dir, f)).filter(existsSync).map((f) => readFileSync(f)));
+  for (const [what, secret] of [["a session token", ana.cookie.split("=")[1]], ["an edit code", fresh.code], ["a view code", viewCode]]) {
+    if (stored.includes(Buffer.from(secret))) fail(`${what} is in the database in the clear`);
+  }
+  ok("no session token or link code is in the database in the clear");
+
+  // --------------------------------------------------------- surviving a restart
+  procs.kill(procs.list.find((p) => p.label === "relay"));
+  await sleep(300);
+  startRelay();
+  await waitForHealth(HTTP);
+  if ((await role({ cookie: ana.cookie })) !== "owner") fail("the session or the pad did not survive a restart");
+  if ((await role({ code: fresh.code })) !== "editor") fail("a link did not survive a restart");
+  ok("sessions, pads and links survive a restart");
+
+  // --------------------------------------------------------------- deleting
+  const lingering = peer(name, { code: fresh.code });
+  await lingering.connect();
+  await expectStatus(await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "DELETE" }), 204, "ana deletes the pad");
+  await until(() => lingering.ws.readyState === WebSocket.CLOSED, "the room to empty");
+  if ((await role({ cookie: ana.cookie })) !== 403) fail("a deleted pad still opens for its owner");
+  await expectStatus(await write(name, [file("mine.py", "1")]), 403, "taking a deleted pad's name anonymously");
+  ok("a deleted pad's room is emptied and its name is retired");
+
+  // ----------------------------------------------------- anonymous pads
+  const anon = "rustic-notch-5292";
+  await expectStatus(await write(anon, [file("a.py", "1")]), 200, "an anonymous pad, as before");
+  if ((await (await api(`/api/pad/${anon}`)).json()).access.role !== "editor") fail("an anonymous pad should be anybody's to edit");
+  const a1 = peer(anon);
+  const a2 = peer(anon);
+  await a1.connect();
+  await a2.connect();
+  docFrom(a1, DOC_UPDATE);
+  await until(() => a2.docs.some((d) => d.kind === DOC_UPDATE), "an edit in an anonymous room");
+  ok("anonymous pads are untouched: anyone reads, writes and edits live");
+
+  // ------------------------------------------------------------- signing out
+  await expectStatus(await api("/auth/logout", { cookie: ana.cookie, method: "POST", intended: false }), 403, "signing out without X-Ajar");
+  const out = await expectStatus(await api("/auth/logout", { cookie: ana.cookie, method: "POST" }), 204, "signing out");
+  if (!out.headers.getSetCookie().some((c) => /^ajar=;.*Max-Age=0/.test(c))) fail("signing out did not clear the cookie");
+  me = await (await api("/api/me", { cookie: ana.cookie })).json();
+  if (me.user !== null) fail("the old cookie still signs in");
+  ok("signed out: the cookie is cleared and the old token is dead");
+
+  // --------------------------------------------- a relay with nothing set up
+  procs.start("target/debug/ajar-relay", ["--bind", `127.0.0.1:${BARE_PORT}`, "--pad-dir", join(dir, "bare-pads"), "--accounts-db", join(dir, "bare.db")], "bare relay", {
+    env: { ...process.env, AJAR_PUBLIC_ORIGIN: "", AJAR_GITHUB_CLIENT_ID: "" },
+  });
+  await waitForHealth(`http://127.0.0.1:${BARE_PORT}`);
+  me = await (await fetch(`http://127.0.0.1:${BARE_PORT}/api/me`)).json();
+  if (me.providers.length !== 0) fail("a relay with no sign-in set up offers some");
+  await expectStatus(await fetch(`http://127.0.0.1:${BARE_PORT}/auth/github/start`, { redirect: "manual" }), 404, "starting a sign-in nobody set up");
+  ok("without configuration, nothing is offered and pads work as before");
+
+  provider.close();
+  finish(procs, "accounts: sign-in and roles hold in the store and the room");
+}
+
+main().catch((e) => {
+  console.error(e);
+  for (const p of procs.list) console.error(`--- ${p.label}\n${p.output.slice(-3000)}`);
+  process.exit(1);
+});

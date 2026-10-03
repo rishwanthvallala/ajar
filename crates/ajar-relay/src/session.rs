@@ -64,6 +64,9 @@ pub struct Session {
     /// Set when the host's socket drops without a deliberate close.
     pub host_left_at: Option<Instant>,
     pub guests: HashMap<u32, Conn>,
+    /// In a peer room, the participants who own the pad. They stay when who
+    /// may do what changes; everyone else reconnects and is checked again.
+    pub owners: std::collections::HashSet<u32>,
     /// Sealed by the host. New guests are refused; existing ones stay.
     pub locked: bool,
     /// What the host speaks, from its handshake. Relayed to each guest so a
@@ -80,6 +83,7 @@ impl Session {
             snapshot: None,
             host_left_at: None,
             guests: HashMap::new(),
+            owners: Default::default(),
             locked: false,
             host_protocol: ajar_proto::PROTOCOL_UNVERSIONED,
             // In a hosted session 1 is reserved for the host, so guests start
@@ -257,7 +261,12 @@ impl Registry {
     /// Nothing here checks whether the caller may *write* to the folder that
     /// name refers to. That is the durable store's business: the relay routes
     /// frames and has never known what they mean.
-    pub fn join_peer(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
+    pub fn join_peer(
+        &self,
+        id: &str,
+        tx: Tx,
+        owner: bool,
+    ) -> Result<(Participant, bool), JoinError> {
         let mut created = false;
         let mut entry = self.sessions.entry(id.to_string()).or_insert_with(|| {
             created = true;
@@ -278,6 +287,9 @@ impl Registry {
                 tx,
             },
         );
+        if owner {
+            entry.owners.insert(pid);
+        }
         Ok((participant, created))
     }
 
@@ -293,6 +305,7 @@ impl Registry {
         let empty = match self.sessions.get_mut(id) {
             Some(mut s) => {
                 s.guests.remove(&pid);
+                s.owners.remove(&pid);
                 s.is_empty()
             }
             None => return,
@@ -300,6 +313,31 @@ impl Registry {
         if empty {
             self.sessions.remove(id);
         }
+    }
+
+    /// Close every peer in a pad's room — or every one but its owners — after
+    /// telling them why. They reconnect and are let in on what they hold now:
+    /// a link that was revoked, or a setting that changed, takes effect for
+    /// people already inside rather than only for the next to arrive.
+    pub fn evict_peers(&self, id: &str, everyone: bool, notice: Vec<u8>) -> usize {
+        let Some(mut s) = self.sessions.get_mut(id) else {
+            return 0;
+        };
+        if s.shape != Shape::Peer {
+            return 0;
+        }
+        let leaving: Vec<u32> = s
+            .guests
+            .keys()
+            .copied()
+            .filter(|pid| everyone || !s.owners.contains(pid))
+            .collect();
+        for pid in &leaving {
+            if let Some(conn) = s.guests.remove(pid) {
+                conn.tx.finish(notice.clone());
+            }
+        }
+        leaving.len()
     }
 
     pub fn with<R>(&self, id: &str, f: impl FnOnce(&Session) -> R) -> Option<R> {
@@ -442,7 +480,7 @@ mod tests {
         // you can start using. There is no "no such session" to hit.
         let r = Registry::new();
         let (a, _ra) = tx();
-        let (p, created) = r.join_peer("demowork", a).unwrap();
+        let (p, created) = r.join_peer("demowork", a, false).unwrap();
         assert!(created, "the first peer should have created the session");
         assert_eq!(p.role, Role::Peer);
         assert_ne!(p.id, 0, "0 is TARGET_ALL and can never be a participant");
@@ -455,8 +493,8 @@ mod tests {
         let r = Registry::new();
         let (a, _ra) = tx();
         let (b, _rb) = tx();
-        r.join_peer("demowork", a).unwrap();
-        let (_, created) = r.join_peer("demowork", b).unwrap();
+        r.join_peer("demowork", a, false).unwrap();
+        let (_, created) = r.join_peer("demowork", b, false).unwrap();
         assert!(!created, "the second peer must not look like a creation");
     }
 
@@ -465,8 +503,8 @@ mod tests {
         let r = Registry::new();
         let (a, _ra) = tx();
         let (b, _rb) = tx();
-        let (first, _) = r.join_peer("s", a).unwrap();
-        let (second, _) = r.join_peer("s", b).unwrap();
+        let (first, _) = r.join_peer("s", a, false).unwrap();
+        let (second, _) = r.join_peer("s", b, false).unwrap();
         assert_ne!(first.id, second.id);
     }
 
@@ -477,7 +515,7 @@ mod tests {
         // put two routing rules in one room.
         let r = Registry::new();
         let (a, _ra) = tx();
-        r.join_peer("shared", a).unwrap();
+        r.join_peer("shared", a, false).unwrap();
         let (h, _rh) = tx();
         assert_eq!(r.open("shared", h).err(), Some(JoinError::WrongShape));
 
@@ -485,7 +523,10 @@ mod tests {
         let (h2, _rh2) = tx();
         r2.open("hosted", h2).unwrap();
         let (p, _rp) = tx();
-        assert_eq!(r2.join_peer("hosted", p).err(), Some(JoinError::WrongShape));
+        assert_eq!(
+            r2.join_peer("hosted", p, false).err(),
+            Some(JoinError::WrongShape)
+        );
     }
 
     #[test]
@@ -495,8 +536,8 @@ mod tests {
         let r = Registry::new();
         let (a, mut ra) = tx();
         let (b, mut rb) = tx();
-        let (me, _) = r.join_peer("s", a).unwrap();
-        r.join_peer("s", b).unwrap();
+        let (me, _) = r.join_peer("s", a, false).unwrap();
+        r.join_peer("s", b, false).unwrap();
 
         r.with("s", |s| s.send_others(me.id, b"update")).unwrap();
         assert!(rb.try_next().is_some(), "the other peer heard nothing");
@@ -510,8 +551,8 @@ mod tests {
         let r = Registry::new();
         let (a, _ra) = tx();
         let (b, _rb) = tx();
-        let (first, _) = r.join_peer("s", a).unwrap();
-        let (second, _) = r.join_peer("s", b).unwrap();
+        let (first, _) = r.join_peer("s", a, false).unwrap();
+        let (second, _) = r.join_peer("s", b, false).unwrap();
 
         r.drop_peer("s", first.id);
         assert!(r.exists("s"), "one peer left, the room should stand");
@@ -525,7 +566,7 @@ mod tests {
         // session has no host by definition, and must not read as expired.
         let r = Registry::new();
         let (a, _ra) = tx();
-        r.join_peer("shared", a).unwrap();
+        r.join_peer("shared", a, false).unwrap();
         let reaped = r.reap(Duration::from_millis(0), b"gone");
         assert!(
             reaped.is_empty(),

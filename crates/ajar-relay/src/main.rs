@@ -3,6 +3,9 @@
 //! It holds a session map and forwards bytes. It does not know what a
 //! terminal is, what a file is, or what any payload contains.
 
+mod accounts;
+mod auth;
+mod http_accounts;
 mod outbox;
 mod pad;
 mod quota;
@@ -131,6 +134,23 @@ struct Args {
     /// limits become decorative.
     #[arg(long)]
     trust_forwarded_for: bool,
+
+    /// The accounts database: who has signed in, the pads they own, and the
+    /// links to them. Its sealing key is kept beside it, as `<name>.key`.
+    ///
+    /// Relative by default for the same reason as `--pad-dir`. Signing in also
+    /// needs `AJAR_PUBLIC_ORIGIN` and a provider's client id and secret — see
+    /// `auth.rs` — and without them the site works exactly as before.
+    #[arg(long, default_value = "./ajar-accounts.db")]
+    accounts_db: String,
+
+    /// Pads one account may own.
+    #[arg(long, default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
+    account_max_pads: usize,
+
+    /// Bytes one account's pads may hold together.
+    #[arg(long, default_value_t = accounts::MAX_BYTES_PER_ACCOUNT)]
+    account_max_bytes: u64,
 }
 
 #[derive(Clone)]
@@ -147,6 +167,8 @@ struct AppState {
     /// What each address has added to the pad store today.
     growth: Arc<quota::Growth>,
     trust_forwarded: bool,
+    accounts: Arc<accounts::Accounts>,
+    auth: Arc<auth::Auth>,
 }
 
 #[tokio::main]
@@ -173,6 +195,30 @@ async fn main() -> anyhow::Result<()> {
         args.max_store_bytes / (1024 * 1024),
     );
 
+    let accounts = Arc::new(
+        accounts::Accounts::open(std::path::Path::new(&args.accounts_db))
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "cannot open the accounts database {}: {e}",
+                    args.accounts_db
+                )
+            })?
+            .with_limits(accounts::Limits {
+                pads: args.account_max_pads,
+                bytes: args.account_max_bytes,
+            }),
+    );
+    // An owned pad lasts as long as its account: none of them lapses.
+    for name in accounts.owned_names() {
+        pads.pin(&name);
+    }
+    let auth = Arc::new(auth::Auth::from_env());
+    info!(
+        "accounts in {} — sign-in offered with {:?}",
+        args.accounts_db,
+        auth.offered()
+    );
+
     let state = AppState {
         registry: Arc::new(Registry::new()),
         quota: Arc::new(quota::Quota::new()),
@@ -181,6 +227,8 @@ async fn main() -> anyhow::Result<()> {
         reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
         growth: Arc::new(quota::Growth::new(args.pad_growth_per_address)),
         trust_forwarded: args.trust_forwarded_for,
+        accounts,
+        auth,
     };
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
@@ -241,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
                 .put(write_pad)
                 .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
         )
+        .merge(http_accounts::routes())
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -295,6 +344,7 @@ fn give_up_on_stalled_peers(tcp: &tokio::net::TcpStream, after: std::time::Durat
 #[derive(serde::Serialize)]
 struct PadBody {
     exists: bool,
+    access: http_accounts::AccessView,
     seq: u64,
     files: std::collections::BTreeMap<String, pad::File>,
 }
@@ -331,6 +381,11 @@ async fn read_pad(
     State(state): State<AppState>,
 ) -> axum::response::Response {
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    // An owned pad says who may see it; an anonymous one is anybody's.
+    let access = http_accounts::access(&state, &headers, &name).await;
+    if access.role == accounts::Role::None {
+        return (StatusCode::FORBIDDEN, "this pad is private").into_response();
+    }
     let Ok(slot) = state
         .quota
         .claim(caller, std::time::Instant::now(), quota::Kind::Read)
@@ -357,10 +412,12 @@ async fn read_pad(
     let Ok(opened) = tokio::task::spawn_blocking(move || pads.open_for_read(&name)).await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "reading the pad failed").into_response();
     };
+    let view = http_accounts::AccessView::from(&access);
     match opened {
-        Ok(Some(opened)) => stream_pad(opened, (slot, permit)),
+        Ok(Some(opened)) => stream_pad(opened, &view, (slot, permit)),
         Ok(None) => Json(PadBody {
             exists: false,
+            access: view,
             seq: 0,
             files: Default::default(),
         })
@@ -376,13 +433,23 @@ async fn read_pad(
 /// when the last byte goes or the client disappears — not when this function
 /// returns, which is before a single byte of the body has moved. Held by the
 /// handler instead, the bound would cover nothing but opening the file.
-fn stream_pad(opened: pad::Opened, held: impl Send + 'static) -> axum::response::Response {
+fn stream_pad(
+    opened: pad::Opened,
+    access: &http_accounts::AccessView,
+    held: impl Send + 'static,
+) -> axum::response::Response {
     use futures_util::StreamExt;
 
-    const HEAD: &[u8] = br#"{"exists":true,"#;
+    // `exists` and who you are to this pad, then the stored object's own
+    // fields. The stored file starts with `{`, which `open_for_read` consumed.
+    let head = format!(
+        r#"{{"exists":true,"access":{},"#,
+        serde_json::to_string(access).unwrap_or_else(|_| "{}".into())
+    );
+    let head_len = head.len() as u64;
     let rest = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(opened.file));
-    let body = futures_util::stream::once(async {
-        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(HEAD))
+    let body = futures_util::stream::once(async move {
+        Ok::<_, std::io::Error>(axum::body::Bytes::from(head))
     })
     .chain(rest)
     .map(move |chunk| {
@@ -393,7 +460,7 @@ fn stream_pad(opened: pad::Opened, held: impl Send + 'static) -> axum::response:
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(
             axum::http::header::CONTENT_LENGTH,
-            HEAD.len() as u64 + opened.remaining,
+            head_len + opened.remaining,
         )
         .body(axum::body::Body::from_stream(body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
@@ -438,14 +505,42 @@ async fn write_pad(
     Json(body): Json<WriteBody>,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    // Writing needs an edit link or the pad itself; viewing is not enough.
+    // An anonymous pad lets everyone write, as it always has.
+    let access = http_accounts::access(&state, &headers, &name).await;
+    if access.role < accounts::Role::Editor {
+        return Err((
+            StatusCode::FORBIDDEN,
+            if access.role == accounts::Role::None {
+                "this pad is private".to_string()
+            } else {
+                "you can view this pad but not change it".to_string()
+            },
+        ));
+    }
     let now = std::time::Instant::now();
-    let allowance = state.growth.remaining(caller, now);
+    let by_address = state.growth.remaining(caller, now);
+    // An owned pad also draws on its account's room, whoever is writing.
+    let by_account = match access.owner {
+        Some(owner) => {
+            let (accounts, pad) = (state.accounts.clone(), name.clone());
+            http_accounts::blocking(move || {
+                accounts
+                    .room_for(owner, &pad)
+                    .saturating_sub(accounts.bytes_of(&pad))
+            })
+            .await
+        }
+        None => u64::MAX,
+    };
+    let allowance = by_address.min(by_account);
 
     // Read, modify and rename under a lock: blocking work, kept off the workers
     // that carry every session's frames.
     let pads = state.pads.clone();
+    let pad_name = name.clone();
     let written =
-        tokio::task::spawn_blocking(move || pads.write_within(&name, &body.writes, allowance))
+        tokio::task::spawn_blocking(move || pads.write_within(&pad_name, &body.writes, allowance))
             .await
             .map_err(|_| {
                 (
@@ -453,8 +548,24 @@ async fn write_pad(
                     "storing the pad failed".to_string(),
                 )
             })?
-            .map_err(refuse)?;
+            .map_err(|e| {
+                // Refused for the account's room rather than the address's
+                // day: say which, or the advice is wrong.
+                if e == pad::Error::OverAllowance && by_account < by_address {
+                    (
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        accounts::AccountError::OverQuota(state.accounts.limits().bytes).message(),
+                    )
+                } else {
+                    refuse(e)
+                }
+            })?;
     state.growth.charge(caller, now, written.grew);
+    if access.owner.is_some() {
+        let accounts = state.accounts.clone();
+        let (bytes, files) = (written.bytes, written.files);
+        http_accounts::blocking(move || accounts.record_size(&name, bytes, files)).await;
+    }
     Ok(Json(Wrote { seq: written.seq }))
 }
 
@@ -556,6 +667,14 @@ async fn upgrade(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    // Who the cookie says is signed in, for an owned pad's room. Read here,
+    // on the upgrade, because it is the one request that carries the cookie.
+    let gate = ws::Gate {
+        accounts: state.accounts.clone(),
+        user: http_accounts::signed_in(&state, &headers)
+            .await
+            .map(|u| u.id),
+    };
     // Cap what one client may send in a single frame. The largest legitimate
     // payload is a workspace snapshot, which the store already refuses above
     // 25 MB — so anything much larger than that is either a bug or an attempt
@@ -563,7 +682,13 @@ async fn upgrade(
     ws.max_message_size(32 * 1024 * 1024)
         .max_frame_size(32 * 1024 * 1024)
         .on_upgrade(move |socket| {
-            ws::handle(socket, state.registry.clone(), state.quota.clone(), caller)
+            ws::handle(
+                socket,
+                state.registry.clone(),
+                state.quota.clone(),
+                caller,
+                gate,
+            )
         })
 }
 

@@ -299,6 +299,7 @@ async fn run() -> Result<()> {
             role: Role::Host,
             locked: false,
             protocol: ajar_proto::PROTOCOL_VERSION,
+            code: None,
         },
         cipher,
         lock_state.clone(),

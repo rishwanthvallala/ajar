@@ -105,6 +105,9 @@ pub const RESERVED: &[&str] = &[
     // unreachable, which is the exact failure this list exists to prevent.
     "wisp",
     "dns-query",
+    // Signing in, and the dashboard for the pads an account owns.
+    "auth",
+    "dashboard",
     // Kept back for things that do not exist yet, because a name cannot be
     // taken back once somebody owns it.
     "admin",
@@ -216,6 +219,10 @@ pub struct Opened {
 pub struct Written {
     pub seq: u64,
     pub grew: u64,
+    /// What the pad came to, for an owned pad's dashboard and its account's
+    /// quota.
+    pub bytes: u64,
+    pub files: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -368,6 +375,9 @@ pub struct Store {
     /// `No such file or directory` after the winner renamed the file away.
     /// Two people typing in one folder is the ordinary case here, not an edge.
     stripes: Vec<Mutex<()>>,
+    /// Pads that belong to an account. Their lease never lapses: an owned
+    /// pad lasts as long as its account, and deleting it is the owner's call.
+    pinned: parking_lot::RwLock<std::collections::HashSet<String>>,
 }
 
 impl Store {
@@ -406,7 +416,32 @@ impl Store {
             ceiling,
             used: AtomicU64::new(used),
             stripes: (0..STRIPES).map(|_| Mutex::new(())).collect(),
+            pinned: Default::default(),
         })
+    }
+
+    /// Exempt a pad from its lease, for as long as it is owned.
+    pub fn pin(&self, name: &str) {
+        self.pinned.write().insert(name.to_owned());
+    }
+
+    fn lapsed(&self, name: &str, meta: &std::fs::Metadata) -> bool {
+        !self.pinned.read().contains(name) && lapsed(meta)
+    }
+
+    /// Delete a pad outright — its owner said so. The name is the accounts
+    /// store's to retire; here it is only files.
+    pub fn remove(&self, name: &str) -> Result<(), Error> {
+        check_name(name)?;
+        let _guard = self.stripe(name).lock();
+        self.pinned.write().remove(name);
+        let path = self.pad_path(name);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return Ok(());
+        };
+        std::fs::remove_file(&path).map_err(|e| Error::Io(e.to_string()))?;
+        self.used.fetch_sub(meta.len(), Ordering::Relaxed);
+        Ok(())
     }
 
     /// Serialised bytes the store is holding right now.
@@ -444,7 +479,7 @@ impl Store {
         };
         // Checked on the way out as well as by the sweeper, so a pad is never
         // served past its lease just because nothing has swept recently.
-        if lapsed(&file.metadata().map_err(io)?) {
+        if self.lapsed(name, &file.metadata().map_err(io)?) {
             return Ok(None);
         }
         let mut raw = Vec::new();
@@ -480,7 +515,7 @@ impl Store {
         let meta = file.metadata().map_err(io)?;
         // Lapsed reads as free, the same as `get`, and for the same reason is
         // left for the sweeper to delete.
-        if lapsed(&meta) {
+        if self.lapsed(name, &meta) {
             return Ok(None);
         }
         renew(&file, &meta);
@@ -581,7 +616,12 @@ impl Store {
         }
 
         let grew = self.save(name, &pad, allowance)?;
-        Ok(Written { seq: pad.seq, grew })
+        Ok(Written {
+            seq: pad.seq,
+            grew,
+            bytes: bytes as u64,
+            files: pad.files.len() as u64,
+        })
     }
 
     /// Store a pad, returning how many bytes it added to the store.
@@ -643,7 +683,7 @@ impl Store {
         let Ok(meta) = std::fs::metadata(&path) else {
             return false;
         };
-        if !lapsed(&meta) {
+        if !self.lapsed(name, &meta) {
             return false;
         }
         let freed = meta.len();
@@ -676,6 +716,26 @@ fn stem(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_pad_outlives_its_lease_and_removing_it_frees_its_bytes() {
+        let dir = tempdir::Dir::new();
+        let s = Store::open(dir.path(), u64::MAX).unwrap();
+        s.write("owned", &[put("a.txt", "kept")]).unwrap();
+        s.write("anon", &[put("a.txt", "lapses")]).unwrap();
+        s.pin("owned");
+        for name in ["owned", "anon"] {
+            touched(&s, name, LEASE + Duration::from_secs(60));
+        }
+        assert_eq!(s.sweep(), vec!["anon".to_string()]);
+        assert!(
+            s.get("owned").unwrap().is_some(),
+            "an owned pad does not lapse"
+        );
+        s.remove("owned").unwrap();
+        assert!(s.get("owned").unwrap().is_none());
+        assert_eq!(s.used(), 0);
+    }
 
     /// A pad ~1 MiB on disk, so a ceiling can be reached without writing 4 GB.
     fn megabyte(s: &Store, name: &str) -> Result<u64, Error> {
