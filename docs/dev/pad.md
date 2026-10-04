@@ -563,6 +563,50 @@ is not supported on wasm32`.
 Caddy also needs `precompressed zstd gzip` for `.webc`: its `encode` directive
 decides from Content-Type and does not know that extension.
 
+## Zips, in and out
+
+`pad/src/zip.ts`, about 300 lines and no library: the browser's own
+`CompressionStream("deflate-raw")` does the deflating both ways, and the rest
+is the format's headers and a CRC. Names are written with the UTF-8 flag
+(0x0800) and read as UTF-8 when it is set, CP437 when not, which is what old
+Windows zips use.
+
+**Reading checks before it inflates.** The central directory says how many
+entries and how many bytes they unpack to; over the pad's 500 files or 25 MB is
+refused there, before any inflating. A zip can lie about those sizes — the
+classic zip bomb — so the inflated bytes are counted again as they come, and
+each entry's size and CRC must match what the directory claimed. Encrypted
+entries, methods other than stored and deflate, and ZIP64 are refused with a
+reason rather than read wrongly.
+
+**What a zip becomes** is `prepareImport`'s decision, kept apart from reading
+so it can be checked on its own:
+
+- Junk out: `__MACOSX/`, `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, and
+  what `sync.ts` already never publishes (`__pycache__`, `.git`,
+  `node_modules`).
+- One wrapping folder off: when every entry is under the same top folder.
+  GitHub's Download ZIP and macOS's Compress both wrap a project that way. The
+  whole-pad download wraps in `<name>/` for the same reason, so a pad's own zip
+  round-trips whatever its layout. A downloaded *folder* is not restored as
+  that folder: `src.zip` holds `src/…` alone, which unwraps.
+- The relay's path rule (`pad::check_path`), byte length included, applied
+  before sending, so nothing is written that the store would refuse half-way.
+- Text in, binary out: strict UTF-8 with no NUL byte. The store can hold base64
+  files, but nothing puts one in the sandbox or shows it in the tree, so an
+  imported image would be a file only Download could find.
+
+**Importing into an open pad** is one store write, in `queueWrite` behind any
+save, then each file applied the way a peer's change would be: through the
+editor if the file is open (so its live document carries it to everyone),
+through `replace` on a document that is open but not bound, otherwise to the
+model, and in every case to the sandbox. A file that would change is asked
+about first, in one dialog for all of them. An untouched starter — a new pad's
+`main.py`, unsaved and unchanged — is removed rather than left beside the zip.
+
+**From the dashboard**, Import a zip reads and checks the zip first, then makes
+the pad and writes into it; a write that fails deletes the pad it just made.
+
 ## What it does not do
 
 - **Empty folders do not persist.** Directories are derived from the paths

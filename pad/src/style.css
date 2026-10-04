@@ -52,12 +52,21 @@ body { background: var(--bg); color: var(--ink); }
 /* A file's row and its delete button, side by side: a button cannot hold one. */
 .pad-shell .file-row { position: relative; display: flex; align-items: center; }
 .pad-shell .file-row > .row { flex: 1; min-width: 0; }
-.pad-shell .file-row > .delete { position: absolute; right: 0.3rem; opacity: 0; padding: 0.2rem; }
+.pad-shell .file-row > .delete, .pad-shell .file-row > .get { position: absolute; right: 0.3rem; opacity: 0; padding: 0.2rem; }
+/* Download beside delete on a file's row; alone on a folder's. */
+.pad-shell .file-row > .get { right: 1.75rem; }
+.pad-shell .file-row.dir-row > .get { right: 0.3rem; }
+.pad-shell .file-row > .get svg { width: 0.8125rem; height: 0.8125rem; }
+.pad-shell .file-row > .get:hover { color: var(--accent); background: var(--surface-2); }
+.pad-shell .file-row.dir-row > .row { padding-right: 1.75rem; }
+.pad-shell .tree-bar-end { margin-left: auto; display: flex; gap: 2px; }
+/* A zip dragged over the files says where it will go. */
+.pad-shell .files.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .pad-shell .file-row > .delete svg { width: 0.8125rem; height: 0.8125rem; }
-.pad-shell .file-row:hover > .delete, .pad-shell .file-row > .delete:focus-visible { opacity: 1; }
+.pad-shell .file-row:hover > :is(.delete, .get), .pad-shell .file-row > :is(.delete, .get):focus-visible { opacity: 1; }
 .pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }
 /* No hover to reveal it on a touch screen, so it is always there. */
-@media (hover: none) { .pad-shell .file-row > .delete { opacity: 0.7; } }
+@media (hover: none) { .pad-shell .file-row > :is(.delete, .get) { opacity: 0.7; } }
 
 .pad-shell #viewer { position: relative; display: block; overflow: hidden; }
 .pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }
@@ -113,7 +122,7 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .quiet-button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .pad-shell .row.local { color: var(--ink); }
 .pad-shell .local-mark {
-  margin-left: auto; margin-right: 1.6rem; padding: 0.05rem 0.4rem; border-radius: 99px; line-height: 1.4;
+  margin-left: auto; margin-right: 3.2rem; padding: 0.05rem 0.4rem; border-radius: 99px; line-height: 1.4;
   font-family: system-ui, sans-serif; font-size: 0.6875rem; font-weight: 600; color: var(--warn);
   background: color-mix(in srgb, var(--warn) 12%, var(--surface));
 }

@@ -116,6 +116,23 @@ export class DocSession {
     });
   }
 
+  /** Whether an editor is showing this document right now. */
+  get bound(): boolean {
+    return this.binding !== null;
+  }
+
+  /**
+   * Put new text in place of all of it, as an edit of this browser's — so it
+   * reaches everyone else in the room, as typing does. For a file replaced
+   * from outside the editor: a zip's version of it.
+   */
+  replace(text: string) {
+    this.ydoc.transact(() => {
+      this.ytext.delete(0, this.ytext.length);
+      this.ytext.insert(0, text);
+    }, "local");
+  }
+
   /** The text as it stands. */
   contents(): string {
     return this.ytext.toString();

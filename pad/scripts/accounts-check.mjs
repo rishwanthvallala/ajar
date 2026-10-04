@@ -9,7 +9,7 @@
 //   npx vite build && node scripts/accounts-check.mjs
 
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -501,6 +501,36 @@ try {
   });
   is(ratio >= 4.5, true, `a primary link-button's label is readable (${ratio.toFixed(2)}:1)`);
   await ownerTab.close();
+
+  // ---- a pad made from a zip ----
+  // From the empty dashboard's own button. Zipped by Python, as a folder.
+  const zipDir = await mkdtemp(join(tmpdir(), "pad-acct-zip-"));
+  const zipPath = join(zipDir, "site.zip");
+  execFileSync("python3", ["-c", `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("site/app.js", "console.log('zipped')\\n")
+    z.writestr("site/lib/a.py", "A = 1\\n")
+    z.writestr("site/img.png", bytes([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13]))
+`, zipPath]);
+  const chooser = owner.waitForEvent("filechooser");
+  await owner.getByRole("button", { name: "Start from a zip" }).click();
+  await (await chooser).setFiles(zipPath);
+  await owner.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+(\?.*)?$/, { timeout: 15_000 });
+  const zipped = new URL(owner.url()).pathname.slice(1);
+  await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const told = await owner.waitForSelector(".toast:has-text('Made from your zip')", { timeout: 10_000 }).then((t) => t.textContent(), () => "");
+  is(/2 files, and 1 binary file left out/.test(told), true, `Start from a zip makes a pad and says what came in (${zipped}: "${told}")`);
+  is(new URL(owner.url()).search, "", "and the address is the pad's own, without the count");
+  const zippedFiles = await stored(zipped);
+  is(JSON.stringify(Object.keys(zippedFiles ?? {}).sort()), '["app.js","lib/a.py"]', "the pad holds the zip's text files, out of their folder, and no starter");
+  is(zippedFiles?.["lib/a.py"]?.content, "A = 1\n", "as they were in the zip");
+  is(await owner.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort().join()), "app.js,lib/a.py", "and the page shows them");
+  is(await role(owner), "owner", "a pad of the account's, like New pad's");
+  await fetch(`${ORIGIN}/api/my/pads/${zipped}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
+  await rm(zipDir, { recursive: true, force: true });
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.waitForSelector("text=No pads yet");
 
   // ---- a viewer's document outliving its editors ----
   //

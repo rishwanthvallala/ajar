@@ -22,6 +22,23 @@ over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
 
+**Zips in and out.** Above the file list, the down arrow downloads the whole
+pad as `<pad-name>.zip`, its files in a folder of that name. On a folder's row
+it downloads that folder as a zip; on a file's row, that file as it is. The up
+arrow — or dropping a `.zip` on the file list — adds a zip's files to the pad,
+for everyone on it:
+
+- Only text files come in. Images and other binary files are left out, and
+  the status line says how many: a pad holds text.
+- A zip that is all one folder — `my-project/…`, as GitHub's **Download ZIP**
+  and macOS's **Compress** make — comes in without that folder, so the files
+  land at the top. A pad's own zip goes back in exactly as it was.
+- `__MACOSX`, `.DS_Store` and the rest of what zipping leaves behind stay out.
+- If a file in the zip would replace a different one already here, you are
+  asked first. On a new pad, the starter `main.py` makes way.
+- 500 files and 25 MB, the same as any pad. Password-protected zips are
+  refused.
+
 **Colours** above the editor turns the colouring off, for every file, and
 shows plain text. The button at the end of the top bar picks the theme: System
 (follow the device), Light, or Dark. Both are remembered by your browser, not
@@ -124,6 +141,8 @@ who can, sign in — **Your pads**, top right, or `code.rishwanth.dev/dashboard`
 
 **New pad** makes one with a three-word name, like `amber-falcon-river`, and
 opens it. It is yours for as long as your account is: it never expires.
+**Import a zip**, beside it, does the same with a zip's text files in the new
+pad instead of the starter.
 
 Each pad has two settings, on its row in Your pads or under **Share** in the
 pad:

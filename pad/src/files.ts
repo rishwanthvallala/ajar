@@ -17,6 +17,14 @@ export interface TreeEvents {
   onNewFile: (inDirectory: string) => void;
   onNewFolder: (inDirectory: string) => void;
   onDelete: (path: string) => void;
+  /** A file as itself, or a folder as a zip. */
+  onDownload: (path: string, folder: boolean) => void;
+  /** The whole pad as a zip. */
+  onDownloadAll: () => void;
+  /** A zip's files into this pad. */
+  onImport?: (zip?: File) => void;
+  /** Whether this page may add files at all — a viewer may not. */
+  importable?: () => boolean;
 }
 
 interface Node {
@@ -58,6 +66,8 @@ const ICONS = {
   newFile: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 1.5v4M9.5 3.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   newFolder: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2a1 1 0 0 1 .7.3l1 1a1 1 0 0 0 .7.3h2.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2 4.5v8A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M12.5 2.5v4M10.5 4.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   chevron: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  download: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v8M4.8 7.3 8 10.5l3.2-3.2M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  upload: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5v-8M4.8 5.7 8 2.5l3.2 3.2M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   trash: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.6 9a1.5 1.5 0 0 0 1.5 1.4h3.8a1.5 1.5 0 0 0 1.5-1.4L12 4M6.5 6.5v5M9.5 6.5v5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 } as const;
 
@@ -103,6 +113,12 @@ export class FileTree {
         this.events.onNewFolder(this.folderFor(active)),
       ),
     );
+    // Apart from making things: what goes in and out whole.
+    const whole = document.createElement("span");
+    whole.className = "tree-bar-end";
+    if (this.events.onImport && (this.events.importable?.() ?? true)) whole.append(this.iconButton("upload", "Upload a zip", () => this.events.onImport?.()));
+    whole.append(this.iconButton("download", "Download as zip", () => this.events.onDownloadAll()));
+    bar.append(whole);
 
     this.host.replaceChildren(bar, list);
   }
@@ -143,7 +159,14 @@ export class FileTree {
           else this.collapsed.delete(child.path);
           this.render(this.shown, this.active);
         };
-        into.append(row);
+        row.dataset.path = child.path;
+        // A folder's row with its one action beside it, as a file's has.
+        const wrap = document.createElement("div");
+        wrap.className = "file-row dir-row";
+        const zip = this.iconButton("download", `Download ${child.path} as a zip`, () => this.events.onDownload(child.path, true));
+        zip.classList.add("get");
+        wrap.append(row, zip);
+        into.append(wrap);
         if (open) this.draw(child, into, active, depth + 1);
       } else {
         const mine = this.local.has(child.path);
@@ -163,9 +186,11 @@ export class FileTree {
         // and the row's text stays the file's name alone.
         const wrap = document.createElement("div");
         wrap.className = "file-row";
+        const get = this.iconButton("download", `Download ${child.path}`, () => this.events.onDownload(child.path, false));
+        get.classList.add("get");
         const del = this.iconButton("trash", `Delete ${child.path}`, () => this.events.onDelete(child.path));
         del.classList.add("delete");
-        wrap.append(row, del);
+        wrap.append(row, get, del);
         into.append(wrap);
       }
     }

@@ -21,11 +21,12 @@
 // package, which needs the deployment's network.
 
 import { createServer } from "node:http";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 
 const { chromium } = createRequire(new URL("../../web/package.json", import.meta.url))("playwright");
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
@@ -318,6 +319,142 @@ try {
   const deleted = await page.waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "run.sh"), null, { timeout: 10_000 }).then(() => true, () => false);
   await typed("ls run.sh 2>&1 | tail -1");
   expect("the delete button removes a file from the tree and the folder", deleted && (await shows(/No such file/)), await tail(2));
+
+  // ---- zips, in and out ----
+  // Made and read by Python's zipfile, so the pad's own reader and writer are
+  // held to someone else's idea of a zip, not only to each other.
+  section = "zips";
+  const zips = await mkdtemp(join(tmpdir(), "pad-zips-"));
+  const zipOf = (file, entries) => {
+    execFileSync("python3", ["-c", `
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    for name, body in json.loads(sys.argv[2]).items():
+        z.writestr(name, bytes(body) if isinstance(body, list) else body)
+`, join(zips, file), JSON.stringify(entries)]);
+    return join(zips, file);
+  };
+  const unzip = (file) => JSON.parse(execFileSync("python3", ["-c", `
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    print(json.dumps({"bad": z.testzip(), "files": {n: z.read(n).decode() for n in z.namelist()}}))
+`, file]).toString());
+  const proj = zipOf("proj.zip", {
+    "proj/": "",
+    "proj/main.py": "print('from the zip')\n",
+    "proj/src/util.py": "def f():\n    return 42\n",
+    "proj/naïve.txt": "café\n",
+    "proj/logo.png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13],
+    "proj/.DS_Store": [0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31],
+    "__MACOSX/proj/._main.py": [0, 5, 22, 7, 0],
+  });
+  const paths = () => page.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort());
+  const editorText = (path) => page.evaluate((p) => window.__pad.text(p) ?? null, path);
+  const upload = async (file) => {
+    const chooser = page.waitForEvent("filechooser");
+    await page.locator('#files button[aria-label="Upload a zip"]').click();
+    await (await chooser).setFiles(file);
+  };
+  const confirmShown = () => page.waitForSelector("dialog.modal-confirm[open]", { timeout: 5000 }).then(() => true, () => false);
+  await open("main.py");
+  const before = await editorText("main.py");
+  await upload(proj);
+  const asked = await confirmShown();
+  const title = asked ? await page.locator("dialog.modal-confirm[open] h2").textContent() : "";
+  if (asked) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Cancel" }).click();
+  await wait(500);
+  expect("a zip that would replace a changed file asks first, and Cancel leaves everything as it was",
+    asked && /Replace main\.py\?/.test(title) && (await editorText("main.py")) === before && !(await paths()).includes("src/util.py"),
+    `asked ${asked} "${title}", ${JSON.stringify(await paths())}`);
+
+  await upload(proj);
+  if (await confirmShown()) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Replace" }).click();
+  await page.waitForFunction(() => /added 3 files/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).catch(() => {});
+  const after = await paths();
+  expect("its text files come in without the folder that wrapped them",
+    ["main.py", "naïve.txt", "src/util.py"].every((p) => after.includes(p)) && !after.some((p) => /proj|logo|DS_Store|MACOSX/.test(p)),
+    JSON.stringify(after));
+  expect("Replace replaces", (await editorText("main.py")) === "print('from the zip')\n", JSON.stringify(await editorText("main.py")));
+  expect("the status says what came in and what was left out", /added 3 files from proj\.zip — left out 1 binary file/.test(await status()), `"${await status()}"`);
+  await clear();
+  await typed("cat src/util.py naïve.txt");
+  expect("they are in the terminal's folder too", (await shows(/return 42/)) && (await shows(/café/)), await tail());
+
+  // Dropped on the file list, as from a file manager.
+  const dropped = zipOf("more.zip", { "docs/readme.md": "# hi\n", "todo.txt": "later\n" });
+  const bytes = [...(await readFile(dropped))];
+  await page.evaluate((b) => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array(b)], "more.zip", { type: "application/zip" }));
+    const files = document.querySelector("#files");
+    files.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: data }));
+    files.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data }));
+  }, bytes);
+  const landed = await page.waitForFunction(() => [...document.querySelectorAll("#files .row.file")].some((b) => b.dataset.path === "docs/readme.md"), null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("a zip dropped on the file list comes in, asking nothing when it replaces nothing", landed && !(await page.$("dialog.modal-confirm[open]")), JSON.stringify(await paths()));
+  const notZip = await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["hello"], "hello.txt", { type: "text/plain" }));
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data });
+    document.querySelector("#files").dispatchEvent(drop);
+    return drop.defaultPrevented;
+  });
+  expect("anything else dropped there is refused, not opened in place of the pad", notZip && /drop a \.zip/.test(await status()), `"${await status()}"`);
+
+  await writeFile(join(zips, "fake.zip"), "not a zip at all");
+  await upload(join(zips, "fake.zip"));
+  await wait(500);
+  expect("a file that is not a zip says so", /not a zip/.test(await status()), `"${await status()}"`);
+
+  const got = async (click) => {
+    const download = page.waitForEvent("download", { timeout: 10_000 });
+    await click();
+    const d = await download;
+    const to = join(zips, `got-${d.suggestedFilename()}`);
+    await d.saveAs(to);
+    return { name: d.suggestedFilename(), to };
+  };
+  const padName = new URL(page.url()).pathname.slice(1);
+  const whole = await got(() => page.locator('#files button[aria-label="Download as zip"]').click());
+  const all = unzip(whole.to);
+  const inPad = (p) => all.files[`${padName}/${p}`];
+  expect("Download as zip is the whole pad, in a folder named after it, and a zip anything can read",
+    whole.name === `${padName}.zip` && all.bad === null && inPad("src/util.py") === "def f():\n    return 42\n" && inPad("naïve.txt") === "café\n" && inPad("docs/readme.md") === "# hi\n" && inPad("page.html") !== undefined && Object.keys(all.files).every((p) => p.startsWith(`${padName}/`)),
+    `${whole.name}: ${JSON.stringify(Object.keys(all.files))}`);
+  await page.hover('#files .dir-row:has(.row.dir:text-is("src"))');
+  const folder = await got(() => page.locator('#files button[aria-label="Download src as a zip"]').click());
+  const one = unzip(folder.to);
+  expect("a folder downloads as a zip of that folder", folder.name === "src.zip" && JSON.stringify(Object.keys(one.files)) === '["src/util.py"]', `${folder.name}: ${JSON.stringify(one)}`);
+  await page.hover('#files .file-row:has(.row.file[data-path="naïve.txt"])');
+  const single = await got(() => page.locator('#files button[aria-label="Download naïve.txt"]').click());
+  expect("a file downloads as itself", single.name === "naïve.txt" && (await readFile(single.to, "utf8")) === "café\n", `${single.name}`);
+
+  // A new pad's starter makes way for a zip, rather than sitting beside it.
+  const fresh = await context.newPage();
+  fresh.on("pageerror", (e) => pageErrors.push(`zips (a new pad): ${e.message}`));
+  await fresh.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+  await fresh.waitForFunction(() => window.__pad && document.querySelector('#files .row.file[data-path="main.py"]'), null, { timeout: 60_000 });
+  const freshChooser = fresh.waitForEvent("filechooser");
+  await fresh.locator('#files button[aria-label="Upload a zip"]').click();
+  await (await freshChooser).setFiles(dropped);
+  const replaced = await fresh.waitForFunction(() => {
+    const files = [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path);
+    return files.sort().join() === "docs/readme.md,todo.txt";
+  }, null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("on a new pad the untouched starter goes, and nothing is asked",
+    replaced && !(await fresh.$("dialog.modal-confirm[open]")),
+    JSON.stringify(await fresh.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path))));
+  // What Download as zip made goes back in with every file where it was.
+  const original = await paths();
+  const againChooser = fresh.waitForEvent("filechooser");
+  await fresh.locator('#files button[aria-label="Upload a zip"]').click();
+  await (await againChooser).setFiles(whole.to);
+  const roundTrip = await fresh.waitForFunction((want) => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort().join() === want, original.join(), { timeout: 10_000 }).then(() => true, () => false);
+  expect("a pad's own zip, uploaded into another, puts each file back where it was",
+    roundTrip && (await fresh.evaluate(() => window.__pad.text("src/util.py"))) === "def f():\n    return 42\n",
+    JSON.stringify(await fresh.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort())));
+  await fresh.close();
+  await rm(zips, { recursive: true, force: true });
 
   // ---- keys ----
   section = "keys";

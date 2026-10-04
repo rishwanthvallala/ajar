@@ -29,6 +29,8 @@ export const ICONS = {
   out: stroke(`<path d="M6.2 13.4H3.8a1.2 1.2 0 0 1-1.2-1.2V3.8a1.2 1.2 0 0 1 1.2-1.2h2.4M10.4 11.2 13.6 8l-3.2-3.2M13.4 8H6"/>`),
   reset: stroke(`<path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8"/><path d="M2.6 2.6v2.8h2.8"/>`),
   alert: stroke(`<circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 11h.01"/>`),
+  upload: stroke(`<path d="M8 10.5v-8M4.8 5.7 8 2.5l3.2 3.2M3 13.5h10"/>`),
+  download: stroke(`<path d="M8 2.5v8M4.8 7.3 8 10.5l3.2-3.2M3 13.5h10"/>`),
   chart: stroke(`<path d="M2.6 13.4h10.8M4.6 11V8.4M8 11V4.6M11.4 11V6.6"/>`),
   refresh: stroke(`<path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.8"/><path d="M13.4 2.6v2.8h-2.8"/>`),
   shield: stroke(`<path d="M8 1.8 13 3.6v4c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6v-4L8 1.8Z"/>`),

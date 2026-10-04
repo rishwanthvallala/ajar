@@ -6,10 +6,12 @@
  * them needs the runtime, the editor or the room, and the dashboard is where
  * someone arrives back from signing in. Styles are in accounts.css.
  */
-import { account, AccountError, type Edit, type Me, type PadInfo, PROVIDERS, size, type View } from "./access";
+import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, PROVIDERS, size, type View } from "./access";
 import type { IconName } from "./icons";
 import { openShare } from "./share";
+import { Store } from "./store";
 import { brand, button, confirmDialog, el, icon, isBusy, providerButtons, setBusy, themeToggle, toast, toastRegions } from "./ui";
+import { leftOut, PAD_LIMITS, pickZip, prepareImport, readZip, ZipError } from "./zip";
 
 /** Reasons a provider sends someone back with, that are not failures. */
 const SIGN_IN_CANCELLED = new Set(["access_denied"]);
@@ -251,6 +253,8 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   meter.setAttribute("aria-hidden", "true");
   const create = button("New pad", { icon: "plus", className: "btn-primary" });
   create.id = "new-pad";
+  const fromZip = button("Import a zip", { icon: "upload", title: "A new pad of yours, with a zip's files in it" });
+  fromZip.id = "import-zip";
   const limits = me.limits;
   const full = () => !!limits && pads.length >= limits.pads;
 
@@ -276,6 +280,9 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     else create.removeAttribute("aria-disabled");
     // The empty state has its own button; two primaries would compete.
     create.hidden = pads.length === 0;
+    fromZip.hidden = pads.length === 0;
+    if (full()) fromZip.setAttribute("aria-disabled", "true");
+    else fromZip.removeAttribute("aria-disabled");
     if (pads.length === 0) {
       list.replaceChildren(
         el(
@@ -284,7 +291,12 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
           el("span", { className: "empty-icon" }, icon("file")),
           el("h2", {}, "No pads yet"),
           el("p", {}, "A pad of your own gets a three-word name, never expires, and lets you choose who can view it and who can edit it."),
-          button("Make your first pad", { icon: "plus", className: "btn-primary", onClick: () => void makePad(create) }),
+          el(
+            "div",
+            { className: "empty-actions" },
+            button("Make your first pad", { icon: "plus", className: "btn-primary", onClick: () => void makePad(create) }),
+            button("Start from a zip", { icon: "upload", onClick: (e) => void makeFromZip(e.currentTarget as HTMLElement) }),
+          ),
         ),
       );
       return;
@@ -410,6 +422,46 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   };
   create.onclick = () => void makePad(create);
 
+  /**
+   * A new pad of theirs with a zip's files in it. The zip is read and held to
+   * a pad's limits here first; if writing its files fails, the pad made for
+   * them goes too, rather than staying behind empty in their list.
+   */
+  const makeFromZip = async (from: HTMLElement) => {
+    if (isBusy(from)) return;
+    if (full()) return toast(`An account holds ${limits!.pads} pads — delete one to make another`, "error");
+    const zip = await pickZip();
+    if (!zip) return;
+    setBusy(from, true, `Reading ${zip.name}…`);
+    try {
+      let prepared;
+      try {
+        prepared = prepareImport(await readZip(zip, PAD_LIMITS));
+      } catch (e) {
+        throw new Error(e instanceof ZipError ? e.message : `could not read ${zip.name} as a zip`);
+      }
+      if (!prepared.files.length) {
+        const why = leftOut(prepared);
+        throw new Error(`nothing in ${zip.name} a pad can hold${why ? ` — ${why}` : ""}`);
+      }
+      const now = await account.me();
+      if (now.user?.id !== me.user?.id) return location.reload();
+      const pad = await account.create();
+      try {
+        await new Store("", codeFor).write(pad.name, prepared.files.map((f) => ({ path: f.path, content: f.content })));
+      } catch (e) {
+        await account.remove(pad.name).catch(() => {});
+        throw e;
+      }
+      location.assign(`/${pad.name}?imported=${prepared.files.length}&skipped=${prepared.binary.length}`);
+    } catch (e) {
+      staleSession(e);
+      toast((e as Error).message, "error");
+      setBusy(from, false);
+    }
+  };
+  fromZip.onclick = () => void makeFromZip(fromZip);
+
   const load = async () => {
     loading();
     try {
@@ -458,7 +510,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       el(
         "main",
         { className: "dash" },
-        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), create),
+        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), el("div", { className: "dash-actions" }, fromZip, create)),
         list,
       ),
       footer(),

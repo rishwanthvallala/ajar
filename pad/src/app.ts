@@ -21,6 +21,7 @@ import { Shell, type Finished } from "./shell";
 import { ICONS } from "./icons";
 import { openShare } from "./share";
 import { confirmDialog, toast, toastRegions } from "./ui";
+import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
@@ -152,6 +153,10 @@ export class App {
   private bannerKey = "";
   /** Save as my copy in flight: a second press would make a second pad. */
   private copying = false;
+  /** The page opened an empty pad and put the starter in it, unsaved. */
+  private starter = false;
+  /** A zip being read or written in: one at a time. */
+  private importing = false;
   /**
    * This page was the owner's, and the session behind it ended — signed out
    * in another tab, or expired. Their work stays here; signing in again, in
@@ -241,6 +246,7 @@ export class App {
       // A folder nobody has written to opens with something runnable in it, so
       // the first thing a visitor can do is press Run and watch it work.
       this.setFile("main.py", STARTER);
+      this.starter = true;
     } else {
       for (const [path, f] of files) this.setFile(path, f.content);
       this.show(files[0]![0]);
@@ -248,6 +254,7 @@ export class App {
 
     this.renderFiles();
     this.wire();
+    this.acceptDrops();
     await this.openTerminal();
     if (this.disposed) return;
     this.expose();
@@ -770,6 +777,10 @@ export class App {
       onNewFile: (dir) => this.addFile(dir),
       onNewFolder: (dir) => this.addFolder(dir),
       onDelete: (path) => void this.deleteFile(path),
+      onDownload: (path, folder) => void this.download(path, folder),
+      onDownloadAll: () => void this.downloadAll(),
+      onImport: (zip) => void this.importZip(zip),
+      importable: () => !this.viewer,
     });
     this.tree.render([...this.models.keys()], this.active, this.local);
     this.ui?.setFileCount(this.models.size);
@@ -1348,6 +1359,7 @@ export class App {
     if (couldWrite && this.viewer) this.keepUnsaved();
     this.el.share.title = this.access.account ? "Share this pad" : "Copy the link";
     this.paintBanner();
+    this.renderFiles();
   }
 
   /**
@@ -1467,9 +1479,176 @@ export class App {
     location.reload();
   }
 
+  // ------------------------------------------------------- zips, in and out
+
+  /**
+   * What is on this page, as files: each file's text as it stands here — a
+   * viewer's own copies included — and the binary files the pad holds that
+   * the editor does not show. `under` keeps one folder's.
+   */
+  private async collect(under = ""): Promise<ZipEntry[]> {
+    const inside = (p: string) => !under || p.startsWith(`${under}/`);
+    const out = new Map<string, Uint8Array>();
+    if (!this.lost) {
+      try {
+        const pad = await this.store.read(this.name);
+        for (const [path, f] of Object.entries(pad.files)) {
+          if (f.encoding === "base64" && inside(path) && !this.local.has(path)) out.set(path, Uint8Array.from(atob(f.content), (c) => c.charCodeAt(0)));
+        }
+      } catch {
+        // What is on the page is still worth having.
+      }
+    }
+    const enc = new TextEncoder();
+    for (const path of this.models.keys()) if (inside(path)) out.set(path, enc.encode(this.current(path) ?? ""));
+    return [...out].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({ path, data }));
+  }
+
+  /**
+   * The whole pad, in a folder named after it as GitHub's zips are: it
+   * unpacks into one place, and Upload a zip takes that folder off again, so
+   * the files come back where they were whatever the pad's layout.
+   */
+  private async downloadAll(): Promise<void> {
+    const entries = await this.collect();
+    if (!entries.length) return this.say("", "nothing here to download yet");
+    save(await makeZip(entries.map((e) => ({ path: `${this.name}/${e.path}`, data: e.data }))), `${this.name}.zip`);
+    this.say("", `downloaded ${entries.length} ${entries.length === 1 ? "file" : "files"} as ${this.name}.zip`);
+  }
+
+  /** One file as itself; a folder as a zip, with the folder at its top. */
+  private async download(path: string, folder: boolean): Promise<void> {
+    const leaf = path.split("/").pop()!;
+    if (!folder) {
+      const entry = (await this.collect()).find((e) => e.path === path);
+      if (entry) save(new Blob([entry.data as BlobPart], { type: "application/octet-stream" }), leaf);
+      return;
+    }
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+    const entries = (await this.collect(path)).map((e) => ({ path: e.path.slice(parent.length), data: e.data }));
+    if (!entries.length) return this.say("", `${path} has nothing in it to download`);
+    save(await makeZip(entries), `${leaf}.zip`);
+  }
+
+  /** The starter on an empty pad, as it was put there — unsaved and untouched. */
+  private untouchedStarter(): boolean {
+    return this.starter && !this.known.has("main.py") && this.models.get("main.py")?.getValue() === STARTER;
+  }
+
+  /**
+   * A zip's files into this pad, for everyone on it. Read and checked here —
+   * its text files only, the pad's limits held to before anything is sent —
+   * and asked about first if it would replace files that are already here.
+   */
+  private async importZip(given?: File): Promise<void> {
+    if (this.viewer || this.importing) return;
+    const zip = given ?? (await pickZip());
+    if (!zip) return;
+    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then import");
+    this.importing = true;
+    try {
+      this.say("loading", `reading ${zip.name}…`);
+      let prepared: Prepared;
+      try {
+        prepared = prepareImport(await readZip(zip, PAD_LIMITS));
+      } catch (e) {
+        return this.say("error", e instanceof ZipError ? e.message : `could not read ${zip.name} as a zip`);
+      }
+      const { files } = prepared;
+      const skipped = leftOut(prepared);
+      if (!files.length) return this.say("error", `nothing in ${zip.name} a pad can hold${skipped ? ` — ${skipped}` : ""}`);
+      const starter = this.untouchedStarter();
+      const after = new Set([...this.models.keys(), ...files.map((f) => f.path)]);
+      if (starter && !files.some((f) => f.path === "main.py")) after.delete("main.py");
+      if (after.size > PAD_LIMITS.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${PAD_LIMITS.maxFiles}`);
+
+      const replacing = files.filter((f) => this.models.has(f.path) && !(f.path === "main.py" && starter) && this.current(f.path) !== f.content);
+      if (replacing.length) {
+        const yes = await confirmDialog({
+          title: replacing.length === 1 ? `Replace ${replacing[0]!.path}?` : `Replace ${replacing.length} files?`,
+          body: `${zip.name} has ${replacing.length === 1 ? "a file" : `${replacing.length} files`} with the same ${replacing.length === 1 ? "name as one" : "names as ones"} here. Its ${replacing.length === 1 ? "version replaces" : "versions replace"} what is here, for everyone on this pad.`,
+          confirm: "Replace",
+        });
+        if (!yes) return this.say("", "");
+      }
+
+      this.say("saving", `adding ${files.length} ${files.length === 1 ? "file" : "files"}…`);
+      await this.queueWrite(async () => {
+        const seq = await this.store.write(this.name, files.map((f) => ({ path: f.path, content: f.content })));
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        const rt = this.runtimeReady ? await this.runtime : null;
+        this.applyingRemote = true;
+        try {
+          for (const f of files) {
+            this.known.set(f.path, f.content);
+            this.dirty.delete(f.path);
+            // A file someone has open changes as their typing would, so the
+            // room's documents take it rather than undoing it on the next save.
+            const doc = this.docs.get(f.path);
+            if (doc?.bound) this.models.get(f.path)?.setValue(f.content);
+            else if (doc) {
+              doc.replace(f.content);
+              this.setFile(f.path, f.content);
+            } else this.setFile(f.path, f.content);
+            await rt?.write(f.path, f.content);
+          }
+          // The starter makes way for what was brought in.
+          if (starter && !files.some((f) => f.path === "main.py")) {
+            if (this.active === "main.py") this.active = "";
+            this.closeDoc("main.py");
+            this.models.get("main.py")?.dispose();
+            this.models.delete("main.py");
+            await rt?.remove("main.py").catch(() => {});
+          }
+        } finally {
+          this.applyingRemote = false;
+        }
+        this.starter = false;
+        this.peers?.moved(seq);
+      });
+      if (!this.models.has(this.active)) this.show(files.map((f) => f.path).sort()[0]!);
+      this.renderFiles();
+      this.say("", `added ${files.length} ${files.length === 1 ? "file" : "files"} from ${zip.name}${skipped ? ` — ${skipped}` : ""}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    } finally {
+      this.importing = false;
+    }
+  }
+
+  /** A zip dropped on the file list goes in as Upload a zip would take it. */
+  private acceptDrops(): void {
+    const files = this.el.files;
+    const hasFiles = (e: DragEvent) => !this.viewer && [...(e.dataTransfer?.types ?? [])].includes("Files");
+    files.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      files.classList.add("dropping");
+    }, { signal: this.events.signal });
+    files.addEventListener("dragleave", () => files.classList.remove("dropping"), { signal: this.events.signal });
+    files.addEventListener("drop", (e) => {
+      files.classList.remove("dropping");
+      if (!hasFiles(e)) return;
+      // Taken either way: left alone, the browser opens the file in place of the pad.
+      e.preventDefault();
+      const zip = [...(e.dataTransfer?.files ?? [])].find((f) => /\.zip$/i.test(f.name));
+      if (zip) void this.importZip(zip);
+      else this.say("error", "drop a .zip here to add the files in it");
+    }, { signal: this.events.signal });
+  }
+
   /** A pad that was just made by Save as my copy says so, once. */
   private welcomeCopy(): void {
     const params = new URLSearchParams(location.search);
+    const imported = params.get("imported");
+    if (imported) {
+      const skipped = Number(params.get("skipped") ?? 0);
+      params.delete("imported");
+      params.delete("skipped");
+      history.replaceState(history.state, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
+      toast(`Made from your zip: ${imported} ${imported === "1" ? "file" : "files"}${skipped ? `, and ${skipped} binary ${skipped === 1 ? "file" : "files"} left out — a pad holds text` : ""}.`);
+      return;
+    }
     const copied = params.get("copied");
     if (!copied) return;
     params.delete("copied");

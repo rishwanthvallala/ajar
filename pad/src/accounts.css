@@ -466,3 +466,10 @@
   .mix li { grid-template-columns: minmax(0, 1fr) auto; }
   .mix-bar { grid-column: 1 / -1; grid-row: 2; }
 }
+.dash-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+.empty-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+@media (max-width: 40rem) {
+  #import-zip { height: 2.5rem; }
+  #import-zip .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #import-zip { width: 2.5rem; padding: 0; }
+}

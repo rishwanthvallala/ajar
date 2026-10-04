@@ -184,7 +184,10 @@ plus that key is every edit link; the key never goes to S3.
 `code.rishwanth.dev/dashboard`, signed in. One row per pad: name, last opened,
 size, the two settings, and copy-view-link and copy-edit-link. From there you
 can make a link, revoke one, change a setting, or delete the pad. New pad is the
-first button on the page.
+first button on the page, and Import a zip beside it (Start from a zip on an
+empty dashboard) makes the pad and writes the zip's text files into it before
+opening it — removing the pad again if that write fails, so a failed import
+does not leave an empty pad counting against the 20.
 
 ## Limits and lifecycle
 

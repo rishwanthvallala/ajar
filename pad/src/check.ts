@@ -12,6 +12,7 @@ import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
 import { seedFiles } from "./seed";
 import { diff, ignored, knownFrom } from "./sync";
+import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 
 const results: string[] = [];
 const el = document.getElementById("log")!;
@@ -317,6 +318,58 @@ async function main() {
     is(stray.endState.equals(START), true, "and opens nothing");
     is(runs("a\tb, c", START, "\t").runs, "c0=a d=\t c1=b, c", "TSV splits on tabs, and a comma is text");
     is(runs("a,b,c,d,e,f,g,h,i").runs.split(" ").at(-1), "c0=i", "colours cycle after eight columns");
+  }
+
+  // ---- zips, in and out ----
+  //
+  // Made here and read here, and — the one that matters — read when made by
+  // something else: this fixture is Python's zipfile, deflated, the way a
+  // download from anywhere arrives. Wrapped in one folder, with a name in
+  // UTF-8, a binary file, a Mac's leftovers and a path that climbs out.
+  {
+    const limits = { maxFiles: 500, maxBytes: 25 * 1024 * 1024 };
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    const text = (b: Uint8Array) => new TextDecoder().decode(b);
+    is(crc32(bytes("123456789")).toString(16), "cbf43926", "the zip CRC is the standard one");
+
+    const ours = [
+      { path: "main.py", data: bytes("print('x')\n".repeat(200)) },
+      { path: "src/tiny.txt", data: bytes("hi") },
+      { path: "naïve/café.md", data: bytes("# é\n") },
+    ];
+    const back = await readZip(await makeZip(ours), limits);
+    is(back.map((e) => `${e.path}=${text(e.data).length}`).join(","), ours.map((e) => `${e.path}=${text(e.data).length}`).join(","), "a zip made here reads back the same, deflated and stored entries both");
+    is(text(back[0]!.data), text(ours[0]!.data), "with the same bytes");
+
+    const foreign = Uint8Array.from(atob("UEsDBBQAAAAAAAAAIQAAAAAAAAAAAAAAAAAKAAAAcHJvai1tYWluL1BLAwQUAAAACAAddERdEMg0FCEAAAAIAgAAEQAAAHByb2otbWFpbi9tYWluLnB5KyjKzCvRUM9IzcnJV0grys9VSFSoyixQ1+QqGJUZQTIAUEsDBBQAAAAIAB10RF1ltxlmFgAAABYAAAAVAAAAcHJvai1tYWluL3NyYy91dGlsLnB5S0lNU0jT0LTiUgCCotSS0qI8BUMuAFBLAwQUAAAICAAddERd0uxEiQgAAAAGAAAAFAAAAHByb2otbWFpbi9uYcOvdmUudHh0S05MO7ySCwBQSwMEFAAAAAgAHXREXWUe/38KAAAACAAAABIAAABwcm9qLW1haW4vbG9nby5wbmfrDPBzZ2BkYgYAUEsDBBQAAAAIAB10RF2DPXOlBgAAAAQAAAAcAAAAX19NQUNPU1gvcHJvai1tYWluLy5fbWFpbi5weWNgFWMHAFBLAwQUAAAACAAddERdTWIqawoAAAAIAAAAEwAAAHByb2otbWFpbi8uRFNfU3RvcmVjYGBgdCpNMQQAUEsDBBQAAAAIAB10RF1abPMNFAAAABIAAAAVAAAAcHJvai1tYWluLy4uL2V2aWwudHh0K87IL81JUchLLUstUshJzEvhAgBQSwECFAMUAAAAAAAAACEAAAAAAAAAAAAAAAAACgAAAAAAAAAAAAAAgAEAAAAAcHJvai1tYWluL1BLAQIUAxQAAAAIAB10RF0QyDQUIQAAAAgCAAARAAAAAAAAAAAAAACAASgAAABwcm9qLW1haW4vbWFpbi5weVBLAQIUAxQAAAAIAB10RF1ltxlmFgAAABYAAAAVAAAAAAAAAAAAAACAAXgAAABwcm9qLW1haW4vc3JjL3V0aWwucHlQSwECFAMUAAAICAAddERd0uxEiQgAAAAGAAAAFAAAAAAAAAAAAAAAgAHBAAAAcHJvai1tYWluL25hw692ZS50eHRQSwECFAMUAAAACAAddERdZR7/fwoAAAAIAAAAEgAAAAAAAAAAAAAAgAH7AAAAcHJvai1tYWluL2xvZ28ucG5nUEsBAhQDFAAAAAgAHXREXYM9c6UGAAAABAAAABwAAAAAAAAAAAAAAIABNQEAAF9fTUFDT1NYL3Byb2otbWFpbi8uX21haW4ucHlQSwECFAMUAAAACAAddERdTWIqawoAAAAIAAAAEwAAAAAAAAAAAAAAgAF1AQAAcHJvai1tYWluLy5EU19TdG9yZVBLAQIUAxQAAAAIAB10RF1abPMNFAAAABIAAAAVAAAAAAAAAAAAAACAAbABAABwcm9qLW1haW4vLi4vZXZpbC50eHRQSwUGAAAAAAgACAAKAgAA9wEAAAAA"), (c) => c.charCodeAt(0));
+    const read = await readZip(new Blob([foreign]), limits);
+    is(read.some((e) => e.path === "proj-main/naïve.txt" && text(e.data) === "café\n"), true, "a zip made by Python's zipfile reads, UTF-8 names and all");
+    const prepared = prepareImport(read);
+    is(prepared.root, "proj-main", "a zip wrapped in one folder is unwrapped");
+    is(prepared.files.map((f) => f.path).sort().join(","), "main.py,naïve.txt,src/util.py", "its text files come in, junk and binary left out");
+    is(prepared.binary.join(","), "logo.png", "a binary file is left out by name");
+    is(prepared.unsafe.join(","), "proj-main/../evil.txt", "a path that climbs out of the folder is refused");
+    // 200 characters, 600 bytes: the relay counts bytes.
+    const long = prepareImport([{ path: `${"字".repeat(200)}.txt`, data: bytes("x") }, { path: "ok.txt", data: bytes("y") }]);
+    is(long.unsafe.length === 1 && long.files.map((f) => f.path).join() === "ok.txt", true, "a path over the relay's 512 bytes is refused, however few characters");
+
+    const refuses = async (blob: Blob, lim: typeof limits, m: string) => {
+      try {
+        await readZip(blob, lim);
+        fail(`${m} — it was read`);
+      } catch (e) {
+        is(e instanceof ZipError, true, m);
+      }
+    };
+    await refuses(new Blob([foreign]), { maxFiles: 3, maxBytes: limits.maxBytes }, "more files than a pad holds is refused before reading them");
+    await refuses(new Blob([foreign]), { maxFiles: 500, maxBytes: 100 }, "more bytes than a pad holds is refused before inflating");
+    // A zip that says an entry is small and inflates to much more: the bomb.
+    const bomb = new Uint8Array(await (await makeZip([{ path: "z.txt", data: new Uint8Array(100_000).fill(48) }])).arrayBuffer());
+    const cd = bomb.length - 22 - (46 + 5);
+    new DataView(bomb.buffer).setUint32(cd + 24, 10, true);
+    await refuses(new Blob([bomb]), { maxFiles: 500, maxBytes: 1000 }, "a zip that lies about its sizes is stopped while inflating");
+    await refuses(new Blob([bytes("not a zip at all")]), limits, "something that is not a zip says so");
+    await refuses(new Blob([foreign.slice(0, foreign.length - 40)]), limits, "a zip cut short says so");
   }
 
   // ---- the text-processing tools ----
