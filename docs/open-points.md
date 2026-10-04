@@ -297,9 +297,8 @@ still open in it:
   [accounts](dev/accounts.md#as-built)):
   - An anonymous pad's name can still be held by a hosted session opened
     under it, keeping its live room shut while it lasts (owned pads refuse
-    this now).
-  - A page that cannot join its room — refused as the wrong shape — retries
-    quietly and never says so.
+    this now). The page says so — **Not live** — and goes live when the
+    session ends, but nothing stops the session being opened.
   - Typing that reached the room but not the store when its typist lost
     editing is on everyone else's screen and in no one's save: only the
     typist saves a file, and theirs was refused. The typist keeps it as
@@ -371,6 +370,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 |---|---|
 | Sign-in was off in production until the OAuth apps existed — both are live, and the Google app is published | — |
 | No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | `e2786ae` |
+| A pad page refused from its room as the wrong shape retried four times a second and never said so; it backs off and shows **Not live** | this change |
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 
 ## Closed on 2–3 October

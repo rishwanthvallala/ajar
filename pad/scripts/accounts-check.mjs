@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { CH_CONTROL, encode, Guest } from "../../scripts/lib/wire.mjs";
 
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5210;
@@ -594,6 +595,41 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     fail(`the viewer kept a different document: ${JSON.stringify(await text(lone, "main.py"))} against ${JSON.stringify(theirs)}`);
   }
   await fetch(`${ORIGIN}/api/my/pads/${quiet}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
+
+  // ---- a name an ajar session holds ----
+  // A pad cannot share a room with an agent's session. The page used to keep
+  // knocking in silence; now it says it is not live, and goes live once the
+  // session ends.
+  const agent = new Guest(`ws://127.0.0.1:${RELAY_PORT}/ws`, "held-by-an-agent", "agent", null);
+  agent.role = "host";
+  await agent.connect();
+  const passer = await person("passer-by");
+  await passer.addInitScript(() => {
+    const Real = window.WebSocket;
+    window.__sockets = 0;
+    window.WebSocket = class extends Real {
+      constructor(...args) {
+        super(...args);
+        window.__sockets += 1;
+      }
+    };
+  });
+  await passer.goto(`${ORIGIN}/held-by-an-agent`);
+  await passer.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const shutOut = await passer.waitForSelector("#presence .not-live", { timeout: 10_000 }).then(() => true, () => false);
+  const shutSaid = await passer.waitForSelector(".toast:has-text('Not live')", { timeout: 5_000 }).then((t) => t.textContent(), () => "");
+  is(shutOut && /ajar session is using this name/.test(shutSaid), true, `a pad whose name an ajar session holds says it is not live, and why (marker ${shutOut}, "${shutSaid}")`);
+  // Refused, it backs off rather than knocking four times a second.
+  const triedBefore = await passer.evaluate(() => window.__sockets);
+  await sleep(4000);
+  const knocks = (await passer.evaluate(() => window.__sockets)) - triedBefore;
+  is(knocks <= 5, true, `refused, it backs off (${knocks} tries in 4 s)`);
+  agent.ws.send(encode({ channel: CH_CONTROL, payload: new TextEncoder().encode(JSON.stringify({ t: "close" })) }));
+  // Backed off to at most 8 s between tries, so well inside 20.
+  const live = await passer.waitForSelector("#presence .not-live", { state: "detached", timeout: 20_000 }).then(() => true, () => false);
+  const liveSaid = await passer.waitForSelector(".toast:has-text('Live again')", { timeout: 5_000 }).then(() => true, () => false);
+  is(live && liveSaid, true, "and goes live once the session ends, and says so");
+  await passer.close();
 
   // A pad of theirs open in another tab, as owner, when they sign out here.
   const still = (await (await fetch(`${ORIGIN}/api/my/pads`, { method: "POST", headers: { cookie: ownerCookie, "x-ajar": "1" } })).json()).name;

@@ -133,6 +133,11 @@ Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for
 everyone once it finishes.
 
+**Not live**, in place of the dots, means an `ajar` session is using the
+pad's name, and a pad cannot share its live room with one. Your changes still
+save, but other people's show only when you reload. It goes back to live by
+itself once that session ends.
+
 ## Pads you control
 
 A pad anyone opens is anyone's: whoever has the link can change it. To decide

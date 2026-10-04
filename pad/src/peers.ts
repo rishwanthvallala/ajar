@@ -104,6 +104,12 @@ export interface PeerEvents {
    * it. Nothing reconnects after this.
    */
   onRefused?: (code: string, message: string) => void;
+  /**
+   * The room is shut to this page for now: an ajar session is using the name,
+   * and a pad cannot share a room with one. Still retried, since sessions
+   * end; `false` once a later try gets in.
+   */
+  onShut?: (shut: boolean) => void;
 }
 
 export class Peers {
@@ -126,6 +132,7 @@ export class Peers {
   }
   private closed = false;
   private attempt = 0;
+  private shut = false;
   /** Doc frames in and out, for the browser checks. */
   readonly counts = { docOut: 0, docIn: 0, dropped: 0 };
   private arrived: (() => void) | null = null;
@@ -158,7 +165,9 @@ export class Peers {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.attempt = 0;
+      // Not the end of backing off: a room that refuses the hello still opened
+      // the socket first, and resetting here retried that four times a second.
+      // The welcome is what resets it.
       // Straight onto the socket. The hello is what *earns* a participant id,
       // and every other frame waits for one — routing this through the queue
       // would park it waiting for the reply it is supposed to cause.
@@ -212,6 +221,11 @@ export class Peers {
         | { t: "left"; participant_id: number }
         | { t: string };
       if (msg.t === "welcome") {
+        this.attempt = 0;
+        if (this.shut) {
+          this.shut = false;
+          this.events.onShut?.(false);
+        }
         const welcome = msg as { participant_id: number; participants: { id: number }[] };
         this.id = welcome.participant_id;
         this.others = new Set(
@@ -234,6 +248,13 @@ export class Peers {
           this.closed = true;
           this.arrived?.();
           this.events.onRefused?.(refusal.code, refusal.message ?? "");
+        } else if (refusal.code === "wrong_shape") {
+          // Nobody else is here to wait for, and the page should say why.
+          this.arrived?.();
+          if (!this.shut) {
+            this.shut = true;
+            this.events.onShut?.(true);
+          }
         }
       }
       return;

@@ -131,6 +131,8 @@ export class App {
   private writeChain: Promise<void> = Promise.resolve();
   /** This browser's participant id and name, as cursors are labelled. */
   private me = 1;
+  /** The room is shut to this page: an ajar session holds the name. */
+  private notLive = false;
   private whoami = "someone";
   /** Who this browser is to the pad, as the store last said. */
   private access: Access = OPEN;
@@ -280,6 +282,14 @@ export class App {
   private renderPresence(others: number[]): void {
     const el = this.el.presence;
     el.replaceChildren();
+    if (this.notLive) {
+      const mark = document.createElement("span");
+      mark.className = "not-live";
+      mark.textContent = "Not live";
+      mark.title = "An ajar session is using this name, so this page cannot reach the others on it. Your changes still save; theirs show when you reload.";
+      el.append(mark);
+      return;
+    }
     if (others.length === 0) return;
     for (const id of [this.me, ...others]) {
       const dot = document.createElement("span");
@@ -324,6 +334,15 @@ export class App {
       },
       onDoc: (stream, kind, bytes, from) => this.onDoc(stream, kind, bytes, from),
       onRefused: (code) => this.lose(code === "gone" ? "gone" : "private"),
+      // It used to retry in silence, and two people on the name each saw
+      // only their own typing with nothing to say why.
+      onShut: (shut) => {
+        this.notLive = shut;
+        this.renderPresence(shut ? [] : (this.peers?.otherIds ?? []));
+        // A toast, not the status line, which the next save or load writes over.
+        if (shut) toast("Not live: an ajar session is using this name. Your changes save, but other people's on it show only when you reload.", "error");
+        else toast("Live again — you'll see other people's changes as they make them.");
+      },
     }, () => codeFor(this.name));
     this.peers.connect();
   }
