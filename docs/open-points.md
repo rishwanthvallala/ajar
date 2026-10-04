@@ -370,7 +370,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 |---|---|
 | Sign-in was off in production until the OAuth apps existed — both are live, and the Google app is published | — |
 | No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | `e2786ae` |
-| A pad page refused from its room as the wrong shape retried four times a second and never said so; it backs off and shows **Not live** | this change |
+| A pad page refused from its room as the wrong shape retried four times a second and never said so; it backs off and shows **Not live** | `eadbd53` |
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 
 ## Closed on 2–3 October
