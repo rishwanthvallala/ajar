@@ -370,8 +370,8 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | | |
 |---|---|
 | Sign-in was off in production until the OAuth apps existed — both are live, and the Google app is published | — |
-| No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | this change |
-| Signing out left that session's room connections as owner until they dropped | this change |
+| No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | `e2786ae` |
+| Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 
 ## Closed on 2–3 October
 
