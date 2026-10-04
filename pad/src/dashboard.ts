@@ -144,6 +144,8 @@ function signInPage(me: Me, problem: string | null): HTMLElement {
   } else {
     card.append(el("a", { className: "btn btn-block btn-primary", href: "/" }, el("span", { className: "btn-label" }, "Open a pad"), icon("arrow")));
   }
+  // Nothing to sign in with: no pitch for it, just the way to an open pad.
+  if (!offered) return shell(topbar(), el("main", { className: "center" }, card), footer());
   return shell(
     topbar(),
     el(
@@ -191,6 +193,20 @@ function chip(kind: "view" | "edit", c: { text: string; title: string; open: boo
     el("span", { className: "vh" }, kind === "view" ? "Who can view: " : "Who can edit: "),
     el("span", {}, c.text),
   );
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** Quiet ways on, under a card's one main action. */
+function gateLinks(...links: [string, string][]): HTMLElement {
+  const row = el("p", { className: "gate-links" });
+  links.forEach(([text, href], i) => {
+    if (i) row.append(el("span", { ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"));
+    row.append(el("a", { href }, text));
+  });
+  return row;
 }
 
 function made(seconds: number): string {
@@ -295,6 +311,11 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
           code: null,
           pad,
           fromDashboard: true,
+          onGone: () => {
+            pads = pads.filter((p) => p.name !== pad.name);
+            draw();
+            toast(`${pad.name} no longer exists — it was deleted in another tab`, "error");
+          },
           // In place, not a new row: the dialog hands the focus back to this
           // button when it closes, and a replaced row would have taken it away.
           onChange: (next) => {
@@ -306,7 +327,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
         }),
     });
     share.setAttribute("aria-label", `Share ${pad.name}`);
-    const open = el("a", { className: "btn btn-small btn-icon", href, title: `Open ${pad.name}` }, icon("open"));
+    const open = el("a", { className: "btn btn-small btn-icon pad-open", href, title: `Open ${pad.name}` }, icon("open"));
     open.setAttribute("aria-label", `Open ${pad.name}`);
     const remove = button("", {
       icon: "trash",
@@ -373,6 +394,11 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     }
     setBusy(from, true, "Making a pad…");
     try {
+      // Two windows side by side never hide each other, so a page can be
+      // showing someone who is no longer the one signed in. The pad would be
+      // made in the other account.
+      const now = await account.me();
+      if (now.user?.id !== me.user?.id) return location.reload();
       const pad = await account.create();
       location.assign(`/${pad.name}`);
     } catch (e) {
@@ -399,7 +425,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
           { className: "empty" },
           el("span", { className: "empty-icon bad" }, icon("alert")),
           el("h2", {}, signedOut ? "You were signed out" : "Your pads did not load"),
-          el("p", {}, signedOut ? "Sign in again to see them." : (e as Error).message),
+          el("p", {}, signedOut ? "Sign in again to see them." : capitalise((e as Error).message)),
           signedOut
             ? button("Sign in again", { icon: "arrow", className: "btn-primary", onClick: () => location.assign("/dashboard") })
             : button("Try again", { icon: "reset", onClick: () => void load() }),
@@ -444,7 +470,13 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
  * A pad this browser may not open: private to it, or deleted by its owner.
  * `signin` is why a sign-in begun from this screen came back unfinished.
  */
-export async function showPrivate(root: HTMLElement, name: string, why: "private" | "gone" | "invalid" = "private", signin: string | null = null): Promise<void> {
+export async function showPrivate(
+  root: HTMLElement,
+  name: string,
+  why: "private" | "gone" | "invalid" = "private",
+  signin: string | null = null,
+  deadLink = false,
+): Promise<void> {
   document.title = `${name} — pad`;
   toastRegions();
   const me = await account.me().catch((): Me => ({ user: null, providers: [] }));
@@ -475,7 +507,7 @@ export async function showPrivate(root: HTMLElement, name: string, why: "private
       el("code", { className: "name-chip" }, name),
       el("p", { className: "muted" }, "Its owner deleted it, and its files are gone. The name won't be used again."),
       el("a", { className: "btn btn-block btn-primary", href: "/" }, el("span", { className: "btn-label" }, "Open a new pad"), icon("arrow")),
-      me.user ? el("a", { className: "btn btn-block btn-ghost gate-second", href: "/dashboard" }, el("span", { className: "btn-label" }, "Your pads")) : null,
+      me.user ? gateLinks(["Your pads", "/dashboard"]) : null,
     );
     root.replaceChildren(shell(topbar(me.user ? accountMenu(me, () => void signOut()) : null), el("main", { className: "center" }, card), footer()));
     return;
@@ -489,6 +521,11 @@ export async function showPrivate(root: HTMLElement, name: string, why: "private
     el("p", { className: "muted" }, "It belongs to someone's account, and this browser has no link that opens it. Ask its owner to send you one."),
   );
   if (signin) card.append(signInAlert(signin));
+  if (deadLink) {
+    const note = el("div", { className: "alert alert-quiet" }, icon("alert"), el("span", {}, "The link you opened no longer works — its owner reset it or turned it off."));
+    note.setAttribute("role", "status");
+    card.append(note);
+  }
   let offered = false;
   if (me.user) {
     offered = true;
@@ -496,8 +533,10 @@ export async function showPrivate(root: HTMLElement, name: string, why: "private
     card.append(
       el("p", { className: "gate-who" }, avatar(me.user.name), el("span", {}, `Signed in as ${me.user.name} with ${provider} — it isn't one of your pads.`)),
       button("Use another account", { icon: "out", className: "btn-block", onClick: () => void signOut() }),
-      el("a", { className: "btn btn-block btn-ghost gate-second", href: "/dashboard" }, el("span", { className: "btn-label" }, "Your pads")),
+      gateLinks(["Your pads", "/dashboard"], ["Open a new pad", "/"]),
     );
+    root.replaceChildren(shell(topbar(accountMenu(me, () => void signOut())), el("main", { className: "center" }, card), footer()));
+    return;
   } else if (me.providers.length) {
     offered = true;
     card.append(el("p", { className: "gate-ask" }, "Is it yours? Sign in to open it."), providerButtons(me.providers, `/${name}`));

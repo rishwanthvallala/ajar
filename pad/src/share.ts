@@ -9,7 +9,7 @@
  *
  * Anonymous pads have no dialog. Share copies the link, as it always has.
  */
-import { account, type Access, type Edit, linkTo, type PadInfo, resetLink, type View } from "./access";
+import { account, type Access, AccountError, type Edit, linkTo, type PadInfo, resetLink, type View } from "./access";
 import type { IconName } from "./icons";
 import { button, confirmDialog, copyText, el, icon, modal, toast, uid } from "./ui";
 
@@ -24,6 +24,8 @@ export interface ShareContext {
   onChange?: (pad: PadInfo) => void;
   /** Whether to offer the way to the dashboard — not from the dashboard itself. */
   fromDashboard?: boolean;
+  /** The pad turned out not to exist any more — deleted in another tab. */
+  onGone?: () => void;
 }
 
 interface Choice<T extends string> {
@@ -134,7 +136,8 @@ function linkRow(opts: {
         copy.classList.add("copied");
         copy.querySelector(".btn-label")!.textContent = "Copied";
         copy.querySelector(".icon")!.innerHTML = icon("check").innerHTML;
-        toast(`${opts.label} copied`);
+        // The button turning green says it; the toast is for screen readers.
+        toast(`${opts.label} copied`, "ok", true);
         setTimeout(() => {
           copy.classList.remove("copied");
           copy.querySelector(".btn-label")!.textContent = "Copy";
@@ -194,7 +197,12 @@ function setting<T extends string>(
 }
 
 /** The owner's view: both settings, and a link of each kind. */
-function ownerBody(pad: PadInfo, redraw: (pad: PadInfo, focus?: string) => void, fromDashboard: boolean): HTMLElement[] {
+function ownerBody(
+  pad: PadInfo,
+  redraw: (pad: PadInfo, focus?: string) => void,
+  fromDashboard: boolean,
+  gone: (e: unknown) => boolean,
+): HTMLElement[] {
   const viewLink = pad.links.find((l) => l.role === "viewer");
   const editLink = pad.links.find((l) => l.role === "editor");
   const access = el("section", { className: "share-section" });
@@ -209,6 +217,7 @@ function ownerBody(pad: PadInfo, redraw: (pad: PadInfo, focus?: string) => void,
       redraw(await account.settings(pad.name, what));
       toast("Sharing updated");
     } catch (e) {
+      if (gone(e)) return;
       toast((e as Error).message, "error");
       redraw(pad);
     }
@@ -220,6 +229,7 @@ function ownerBody(pad: PadInfo, redraw: (pad: PadInfo, focus?: string) => void,
       redraw(await account.pad(pad.name), `copy-${role}`);
       toast(`New ${role === "viewer" ? "view" : "edit"} link — any old one no longer works`);
     } catch (e) {
+      if (gone(e)) return;
       toast((e as Error).message, "error");
     }
   };
@@ -325,24 +335,46 @@ export async function openShare(ctx: ShareContext): Promise<void> {
     dialog.showModal();
     return;
   }
+  // Deleted elsewhere since the list loaded: nothing here can be changed.
+  const gone = (e: unknown) => {
+    if (!(e instanceof AccountError)) return false;
+    if (e.status === 401) {
+      // Signed out in another tab: nothing here is theirs to change now.
+      dialog.close();
+      toast(e.message, "error");
+      return true;
+    }
+    if (e.status !== 404) return false;
+    dialog.close();
+    ctx.onGone?.();
+    return true;
+  };
   // Redrawn whole after every change; the focus goes back to the control of
   // the same name, or to `focus`, rather than falling onto the page.
   const redraw = (pad: PadInfo, focus?: string) => {
     const was = (dialog.contains(document.activeElement) && (document.activeElement as HTMLElement).dataset.focus) || undefined;
-    body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard));
+    body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard, gone));
     const target = focus ?? was;
     if (target) body.querySelector<HTMLElement>(`[data-focus="${target}"]`)?.focus();
     ctx.pad = pad;
     ctx.onChange?.(pad);
   };
   if (ctx.pad) {
-    body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard));
+    body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard, gone));
+    // Not to be copied until the server has confirmed them.
+    for (const section of body.querySelectorAll(".share-section")) section.setAttribute("aria-busy", "true");
     dialog.showModal();
     // Fresh as well: the list may have loaded before another tab reset a
     // link or changed a setting, and showing those would hand out dead links.
-    void account.pad(ctx.name).then((fresh) => {
-      if (dialog.open) redraw(fresh);
-    }, () => {});
+    void account.pad(ctx.name).then(
+      (fresh) => {
+        if (dialog.open) redraw(fresh);
+      },
+      (e) => {
+        // Not gone, just not answered: the links shown are the best there is.
+        if (!gone(e)) for (const section of body.querySelectorAll(".share-section")) section.removeAttribute("aria-busy");
+      },
+    );
     return;
   }
   const loading = el("div", { className: "share-loading" }, el("span", { className: "skeleton" }), el("span", { className: "skeleton" }), el("span", { className: "skeleton short" }), el("span", { className: "vh" }, "Loading this pad's links…"));

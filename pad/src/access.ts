@@ -62,6 +62,38 @@ export interface PadInfo {
 }
 
 const KEY = (name: string) => `pad.code.${name}`;
+const PREV = (name: string) => `pad.code.prev.${name}`;
+
+/**
+ * The server accepted the code this tab is using: whatever it replaced can
+ * go. Called once the pad has been read with it.
+ */
+export function acceptCode(name: string): void {
+  try {
+    sessionStorage.removeItem(PREV(name));
+  } catch {
+    // Nothing kept.
+  }
+}
+
+/**
+ * The code this tab is using turned out to open nothing. If it replaced one
+ * that worked, that one comes back and the answer is true: open the page
+ * again with it.
+ */
+export function restorePreviousCode(name: string): boolean {
+  let before: string | null = null;
+  try {
+    before = sessionStorage.getItem(PREV(name));
+    sessionStorage.removeItem(PREV(name));
+  } catch {
+    return false;
+  }
+  if (!before) return false;
+  held.set(name, before);
+  remember(name, before);
+  return true;
+}
 
 function remember(name: string, code: string | null): void {
   try {
@@ -93,7 +125,19 @@ export function takeCode(name: string): boolean {
   // Exactly a code's shape — 128 bits as 22 characters — so an ordinary
   // anchor like #installation-and-setup never replaces a working code.
   if (/^[A-Za-z0-9_-]{22}$/.test(fromUrl)) {
-    fresh = codeFor(name) !== fromUrl;
+    const before = codeFor(name);
+    fresh = before !== fromUrl;
+    // On trial until the server accepts it: an anchor that happens to have a
+    // code's shape — #installation-and-setup is 22 characters — must not
+    // throw away a working edit code. The one it replaces is kept for this
+    // tab, to go back to; see `restorePreviousCode`.
+    if (fresh && before) {
+      try {
+        sessionStorage.setItem(PREV(name), before);
+      } catch {
+        // Without it, a bad hash costs the old code, as it did before.
+      }
+    }
     held.set(name, fromUrl);
     remember(name, fromUrl);
   }

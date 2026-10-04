@@ -302,7 +302,18 @@ design, accessibility, and edge cases — and changed as a result:
   the last one is discarded.
 - **Save as my copy** removes the pad it made if the write fails, offers an
   open pad when the account is full (pads or bytes), ignores a second press,
-  and the new pad says it is your copy.
+  and the new pad says it is your copy. **It never makes an open copy of an
+  account pad without asking**, and a failure to ask who is signed in is an
+  error, not a reason to make an open pad — the second review found a
+  signed-out owner's private pad could otherwise be copied into one anyone
+  could open.
+- **An owner signed out under their page** — in another tab, or by expiry —
+  is told so, keeps the page and its work, and gets "Sign in again" (a new
+  tab). Back on this page and signed in as the owner, what it kept is saved
+  into the pad and the page reloads.
+- **A new code is on trial** until the server accepts it: if it opens
+  nothing and replaced a code that worked, the old one comes back. An anchor
+  like `#installation-and-setup` is 22 characters, a code's shape.
 - **The dashboard** keeps up with other tabs: a share dialog always reloads its
   pad (it could offer a link reset elsewhere), coming back to the tab checks
   who is signed in and refreshes the list, and a pad deleted elsewhere just

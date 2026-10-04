@@ -102,7 +102,12 @@ body { background: var(--bg); color: var(--ink); }
 }
 .pad-shell .viewing-pill.own { background: color-mix(in srgb, var(--warn) 15%, var(--surface)); color: var(--warn); }
 .pad-shell .viewing-pill svg { width: 0.8rem; height: 0.8rem; }
-@media (max-width: 40rem) { .pad-shell .viewing-text { flex-basis: 100%; } }
+@media (max-width: 40rem) {
+  .pad-shell .viewing-text { flex-basis: 100%; }
+  /* A long status gives way rather than pushing the header onto more rows. */
+  .pad-shell .connection-status { flex: 1 1 0; min-width: 0; }
+  .pad-shell .status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 .pad-shell .viewing-text { flex: 1 1 16rem; min-width: 0; }
 .pad-shell .viewing-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .pad-shell .quiet-button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }

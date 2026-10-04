@@ -15,7 +15,12 @@ export async function startPad(): Promise<void> {
     const { startDashboard } = await import("./dashboard");
     return startDashboard(root);
   }
-  // Not a pad's shape at all — capitals, slashes, too long: said at once,
+  // A name typed with capitals is the same pad in lower case.
+  if (path !== path.toLowerCase() && /^[a-z0-9-]{1,64}$/.test(path.toLowerCase())) {
+    location.replace(`/${path.toLowerCase()}${location.search}${location.hash}`);
+    return;
+  }
+  // Not a pad's shape at all — slashes, too long, other characters: said at once,
   // rather than after an editor has been drawn around an error.
   if (path && !/^[a-z0-9-]{1,64}$/.test(path)) {
     const { showPrivate } = await import("./dashboard");
@@ -55,10 +60,10 @@ export async function startPad(): Promise<void> {
     ui.dispose();
   };
   app = new App(name, new Store("", codeFor), ui.elements, ui, {
-    onPrivate: (why) => {
+    onPrivate: (why, deadLink) => {
       leave();
       app = null;
-      void import("./dashboard").then(({ showPrivate }) => showPrivate(root, name, why, signin));
+      void import("./dashboard").then(({ showPrivate }) => showPrivate(root, name, why, signin, deadLink));
     },
   });
   await app.start();

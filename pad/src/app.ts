@@ -10,7 +10,7 @@ import type * as Monaco from "monaco-editor";
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
-import { type Access, account, AccountError, codeFor, forgetCode, OPEN } from "./access";
+import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
 import { carryOver } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
@@ -54,8 +54,12 @@ print(f"wrote {len(rows)} rows to out.csv")
 type Status = "" | "loading" | "running" | "saving" | "error";
 
 export interface AppHooks {
-  /** The pad is not this browser's to see, now or any more — private, deleted, or not a pad name at all. */
-  onPrivate?: (why: "private" | "gone" | "invalid") => void;
+  /**
+   * The pad is not this browser's to see, now or any more — private, deleted,
+   * or not a pad name at all. `deadLink`: the code this browser held opened
+   * nothing, because its link was reset or turned off.
+   */
+  onPrivate?: (why: "private" | "gone" | "invalid", deadLink?: boolean) => void;
 }
 
 /**
@@ -148,6 +152,12 @@ export class App {
   private bannerKey = "";
   /** Save as my copy in flight: a second press would make a second pad. */
   private copying = false;
+  /**
+   * This page was the owner's, and the session behind it ended — signed out
+   * in another tab, or expired. Their work stays here; signing in again, in
+   * another tab, puts it back into the pad.
+   */
+  private signedOut = false;
   /** Set once the page is torn down — by leaving, or by being refused. */
   private disposed = false;
   /** Documents with updates they could not place, and when to give up on them. */
@@ -204,6 +214,12 @@ export class App {
     try {
       pad = await this.store.read(this.name);
     } catch (e) {
+      if (e instanceof StoreError && e.refused && e.message.includes("no longer works")) {
+        // A code-shaped hash that replaced a working code: back to that one.
+        if (restorePreviousCode(this.name)) return location.reload();
+        forgetCode(this.name);
+        return this.hooks.onPrivate?.("private", true);
+      }
       if (e instanceof StoreError && (e.refused || e.gone)) return this.hooks.onPrivate?.(e.gone ? "gone" : "private");
       // A reserved word or a name the store will not take: not a pad, and an
       // editor around an error would look like one that is broken.
@@ -1312,6 +1328,7 @@ export class App {
     const held = this.viewer && access.role !== "viewer" && this.local.size > 0;
     const next: Access = held ? { ...access, role: "viewer" } : access;
     const couldWrite = this.access.role === "editor" || this.access.role === "owner";
+    if (this.access.role === "owner" && next.role !== "owner" && this.granted.account) this.noticeSignedOut();
     const same =
       next.role === this.access.role &&
       next.view === this.access.view &&
@@ -1319,6 +1336,9 @@ export class App {
       next.account === this.access.account &&
       held === this.promoted;
     if (same) return;
+    // The banner is not a live region — it is redrawn on every file switch —
+    // so the one change in it that matters is said aloud here.
+    if (held && !this.promoted) toast("You can edit this pad now — reload to join in. Save your copy first, or your changes go.");
     this.promoted = held;
     this.access = next;
     if (this.viewer && this.saveTimer) {
@@ -1336,8 +1356,11 @@ export class App {
    * leaving someone to wonder why their edit link opens it to view.
    */
   private noticeDeadLink(): void {
-    if (!this.granted.account || this.granted.link || this.granted.role === "owner") return;
+    if (!this.granted.account || this.granted.role === "owner") return;
+    if (this.granted.link) return acceptCode(this.name);
     if (!codeFor(this.name)) return;
+    // A code-shaped hash that replaced a working code: the working one comes back.
+    if (restorePreviousCode(this.name)) return location.reload();
     forgetCode(this.name);
     toast("The link you opened this with no longer works — its owner reset it or turned it off.", "error");
   }
@@ -1351,6 +1374,7 @@ export class App {
    */
   private lose(why: "private" | "gone"): void {
     if (this.lost) return;
+    if (this.access.role === "owner" && why === "private") this.noticeSignedOut();
     if (this.dirty.size === 0 && this.local.size === 0) return this.hooks.onPrivate?.(why);
     this.lost = why;
     this.peers?.close();
@@ -1364,7 +1388,8 @@ export class App {
     this.access = { ...this.granted, role: "viewer" };
     this.renderFiles();
     this.paintBanner();
-    this.say("error", why === "gone" ? "this pad was deleted" : "you no longer have access to this pad");
+    // Short: the banner says the rest, and a long status wrapped the header.
+    this.say("error", why === "gone" ? "deleted" : "no access");
   }
 
   /**
@@ -1404,6 +1429,42 @@ export class App {
     } catch (e) {
       if (e instanceof StoreError && (e.refused || e.gone)) this.lose(e.gone ? "gone" : "private");
     }
+  }
+
+  /**
+   * The owner's session ended under this page. Said once, with the way back:
+   * sign in again in another tab, and on returning here what this page kept
+   * goes into the pad.
+   */
+  private noticeSignedOut(): void {
+    if (this.signedOut) return;
+    this.signedOut = true;
+    toast("You were signed out. Sign in again in another tab — your work here stays, and goes into the pad when you're back.", "error");
+    addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") void this.regain();
+    }, { signal: this.events.signal });
+  }
+
+  /** Back, signed in as the owner again: what this page kept goes into the pad, then it starts afresh. */
+  private async regain(): Promise<void> {
+    if (!this.signedOut) return;
+    let pad: Pad;
+    try {
+      pad = await this.store.read(this.name);
+    } catch {
+      return;
+    }
+    if (pad.access?.role !== "owner") return;
+    const changes = [...this.local].map((path) => ({ path, content: this.models.get(path)?.getValue() ?? null }));
+    try {
+      if (changes.length) await this.store.write(this.name, changes);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+      return;
+    }
+    this.local.clear();
+    this.dirty.clear();
+    location.reload();
   }
 
   /** A pad that was just made by Save as my copy says so, once. */
@@ -1583,7 +1644,7 @@ export class App {
         if (!(target.account && e instanceof StoreError && e.tooBig)) throw e;
         const open = await confirmDialog({
           title: "Your account is full",
-          body: `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}. Make an open pad instead? Anyone with its link can edit it.`,
+          body: "Your pads together are at the space an account can hold, so this copy does not fit. Make an open pad instead? Anyone with its link can edit it.",
           confirm: "Make an open pad",
         });
         if (!open) return this.say("", "");
@@ -1605,15 +1666,28 @@ export class App {
 
   /** A pad of your own if you are signed in; otherwise a fresh open one. */
   private async newPadName(): Promise<{ name: string; account: boolean } | null> {
-    const me = await account.me().catch(() => null);
-    if (me?.user) {
+    // A failure to ask is an error, not a sign of being signed out: it must
+    // not turn someone's copy into an open pad.
+    const me = await account.me();
+    if (!me.user && this.access.account) {
+      // Copying a pad that is not open into one that is: never unasked.
+      const open = await confirmDialog({
+        title: "Make an open copy?",
+        body: this.signedOut
+          ? "You're signed out, so your copy would be an open pad: anyone with its link could view and edit it. Sign in again in another tab first to keep it yours."
+          : "You're not signed in, so your copy will be an open pad: anyone with its link can view and edit it.",
+        confirm: "Make an open pad",
+      });
+      return open ? { name: await this.openPadName(), account: false } : null;
+    }
+    if (me.user) {
       try {
         return { name: (await account.create()).name, account: true };
       } catch (e) {
         if (!(e instanceof AccountError && e.status === 507)) throw e;
         const open = await confirmDialog({
           title: "Your account is full",
-          body: `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}. Make an open pad instead? Anyone with its link can edit it.`,
+          body: "You have as many pads as an account can hold. Make an open pad instead? Anyone with its link can edit it.",
           confirm: "Make an open pad",
         });
         if (!open) return null;
@@ -1639,7 +1713,7 @@ export class App {
   private paintBanner(): void {
     if (!this.ui) return;
     const own = this.local.has(this.active) && this.models.has(this.active);
-    const key = this.viewer ? `${this.lost}|${own ? this.active : ""}|${this.local.size}|${this.promoted}` : "";
+    const key = this.viewer ? `${this.lost}|${this.signedOut}|${own ? this.active : ""}|${this.local.size}|${this.promoted}` : "";
     if (key === this.bannerKey) return;
     this.bannerKey = key;
     if (!this.viewer) return this.ui.setBanner(null);
@@ -1659,8 +1733,16 @@ export class App {
     };
     const pill = document.createElement("span");
     pill.className = `viewing-pill${own || this.lost ? " own" : ""}`;
-    pill.innerHTML = `${own ? ICONS.pencil : ICONS.eye}<span>${this.lost ? "No access" : own ? "Your copy" : "Viewing"}</span>`;
-    if (this.lost) {
+    pill.innerHTML = `${this.lost ? ICONS.lock : own ? ICONS.pencil : ICONS.eye}<span>${this.lost ? "No access" : own ? "Your copy" : "Viewing"}</span>`;
+    if (this.signedOut && this.lost !== "gone") {
+      text.textContent = "You were signed out. Sign in again in another tab and come back: what's on this page goes into the pad.";
+      const again = document.createElement("a");
+      again.className = "quiet-button";
+      again.href = "/dashboard";
+      again.target = "_blank";
+      again.textContent = "Sign in again";
+      actions.append(again);
+    } else if (this.lost) {
       text.textContent =
         this.lost === "gone"
           ? "This pad was deleted. What's on this page stays until you leave — save it as your own copy to keep it."

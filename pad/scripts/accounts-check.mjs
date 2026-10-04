@@ -200,7 +200,9 @@ try {
   await owner.keyboard.press("Escape");
 
   // ---- a pad of one's own ----
-  await owner.click("#new-pad");
+  // An empty dashboard has one way to make a pad: the empty state's own.
+  is(await owner.locator("#new-pad").isVisible(), false, "an empty dashboard does not show two New pad buttons");
+  await owner.getByRole("button", { name: "Make your first pad" }).click();
   await owner.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+$/, { timeout: 15_000 });
   const name = new URL(owner.url()).pathname.slice(1);
   ok(`New pad opens a three-word pad (${name})`);
@@ -319,6 +321,8 @@ try {
   is(JSON.stringify(clipped), JSON.stringify({ overflow: false, covered: false }), "on a phone the banner shows its buttons whole");
   await viewer.setViewportSize({ width: 1280, height: 720 });
   await viewer.click("#away button:has-text('Save as my copy')");
+  // Copying a pad that is not open into one that is, signed out: asked first.
+  await viewer.locator("dialog.modal-confirm").getByRole("button", { name: "Make an open pad" }).click();
   await viewer.waitForURL((u) => !u.pathname.endsWith(name), { timeout: 15_000 });
   const copy = new URL(viewer.url()).pathname.slice(1);
   is(/^[a-z]+-[a-z]+-\d{4}$/.test(copy), true, `Save as my copy makes an open pad (${copy})`);
@@ -339,6 +343,12 @@ try {
   await paster.evaluate((code) => { location.hash = code; }, editUrl.split("#")[1]);
   await until(paster, () => window.__pad?.role() === "editor", undefined, 30_000);
   is(await paster.evaluate(() => location.hash), "", "an edit link pasted into a viewer's tab makes it an editor, and leaves no code in the address bar");
+  // An anchor with a code's shape — 22 characters — must not cost the tab
+  // its working edit code.
+  await paster.goto(`${ORIGIN}/${name}#installation-and-setup`);
+  await paster.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  await until(paster, () => window.__pad?.role() === "editor", undefined, 30_000);
+  is(await paster.evaluate((n) => localStorage.getItem(`pad.code.${n}`), name), editUrl.split("#")[1], "a code-shaped anchor does not replace a working edit code");
   await paster.close();
 
   // ---- the owner changes who may do what ----
@@ -383,6 +393,7 @@ try {
   await until(keeper, () => document.querySelector("#away .viewing-pill")?.textContent === "No access", undefined, 15_000);
   is((await text(keeper, "main.py")).includes("the-keepers-own"), true, "someone turned away with local work keeps the page and the work");
   await keeper.click("#away button:has-text('Save as my copy')");
+  await keeper.locator("dialog.modal-confirm").getByRole("button", { name: "Make an open pad" }).click();
   await keeper.waitForURL((u) => !u.pathname.endsWith(name), { timeout: 15_000 });
   const kept = new URL(keeper.url()).pathname.slice(1);
   is((await (await fetch(`${ORIGIN}/api/pad/${kept}`)).json()).files["main.py"]?.content.includes("the-keepers-own"), true, "and can still save it as their own copy");
@@ -393,11 +404,14 @@ try {
   await stranger.goto(viewUrl);
   await stranger.waitForSelector("text=This pad is private", { timeout: 15_000 });
   is(await stranger.locator("a.provider", { hasText: "Continue with GitHub" }).count(), 1, "a stranger is told it is private, and offered sign-in");
-  await stranger.goto(`${ORIGIN}/Not-A-Pad`);
+  await stranger.goto(`${ORIGIN}/no_such.pad`);
   await stranger.waitForSelector("text=That isn't a pad address", { timeout: 15_000 });
   await stranger.goto(`${ORIGIN}/admin`);
   await stranger.waitForSelector("text=That isn't a pad address", { timeout: 30_000 });
   ok("a name no pad can have is said to be one, not shown as a broken editor");
+  await stranger.goto(`${ORIGIN}/${name.toUpperCase()}`);
+  await stranger.waitForURL((u) => u.pathname === `/${name}`, { timeout: 15_000 });
+  ok("a pad address typed in capitals goes to the pad");
   await stranger.goto(`${ORIGIN}/login`);
   await stranger.waitForSelector("text=Pads you control", { timeout: 15_000 });
   is(new URL(stranger.url()).pathname, "/dashboard", "/login goes to the sign-in page");
@@ -458,6 +472,20 @@ try {
   is(await (await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } })).status, 410, "deleting it from the dashboard deletes it");
   await ownerTab.waitForSelector("text=This pad was deleted", { timeout: 15_000 });
   ok("the owner's other tab says the pad was deleted — not that it is private");
+  // A link drawn as a primary button reads on its own colour: page-link
+  // colouring once won over it and left the label at 2.4:1.
+  const ratio = await ownerTab.evaluate(() => {
+    const a = document.querySelector("a.btn-primary");
+    const rgb = (v) => v.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number);
+    const lum = ([r, g, b]) => {
+      const c = [r, g, b].map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const style = getComputedStyle(a);
+    const [l1, l2] = [lum(rgb(style.color)), lum(rgb(style.backgroundColor))].sort((x, y) => y - x);
+    return (l1 + 0.05) / (l2 + 0.05);
+  });
+  is(ratio >= 4.5, true, `a primary link-button's label is readable (${ratio.toFixed(2)}:1)`);
   await ownerTab.close();
 
   // ---- a viewer's document outliving its editors ----

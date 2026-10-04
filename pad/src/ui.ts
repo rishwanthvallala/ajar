@@ -130,8 +130,12 @@ export function toastRegions(host: Element = document.body): HTMLElement {
   return wrap;
 }
 
-/** A short confirmation at the bottom of the screen: "Link copied". */
-export function toast(text: string, kind: "ok" | "error" = "ok"): void {
+/**
+ * A short confirmation at the bottom of the screen: "Link copied". `heard`
+ * alone is for a confirmation the screen already shows — read aloud, not
+ * drawn over what it confirms.
+ */
+export function toast(text: string, kind: "ok" | "error" = "ok", heard = false): void {
   // The server's messages start in lower case, for the status line; a toast
   // is a sentence of its own.
   const sentence = text.charAt(0).toUpperCase() + text.slice(1);
@@ -139,7 +143,7 @@ export function toast(text: string, kind: "ok" | "error" = "ok"): void {
   const host = dialogs[dialogs.length - 1] ?? document.body;
   const wrap = toastRegions(host);
   const region = wrap.querySelector(kind === "ok" ? ".toasts-polite" : ".toasts-alert")!;
-  const t = el("div", { className: `toast toast-${kind}` }, icon(kind === "ok" ? "check" : "alert"), el("span", {}, sentence));
+  const t = el("div", { className: `toast toast-${kind}${heard ? " vh" : ""}` }, icon(kind === "ok" ? "check" : "alert"), el("span", {}, sentence));
   region.append(t);
   // Failures stay long enough to read twice, and while a pointer is on them.
   const life = kind === "ok" ? 2600 : 9000;

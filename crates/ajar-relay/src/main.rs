@@ -418,7 +418,16 @@ async fn read_pad(
         return (StatusCode::GONE, "this pad was deleted by its owner").into_response();
     }
     if access.role == accounts::Role::None {
-        return (StatusCode::FORBIDDEN, "this pad is private").into_response();
+        // A code was presented and matched no link: it was reset or revoked,
+        // and the page can say so — and forget it — rather than only that the
+        // pad is private.
+        let dead = headers.contains_key("x-pad-code") && access.link_role.is_none();
+        let why = if dead {
+            "the link you opened no longer works"
+        } else {
+            "this pad is private"
+        };
+        return (StatusCode::FORBIDDEN, why).into_response();
     }
 
     // Opening, checking and renewing are filesystem calls, so they go where

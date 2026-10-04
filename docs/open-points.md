@@ -307,6 +307,15 @@ still open in it:
     this now).
   - A page that cannot join its room — refused as the wrong shape — retries
     quietly and never says so.
+  - Typing that reached the room but not the store when its typist lost
+    editing is on everyone else's screen and in no one's save: only the
+    typist saves a file, and theirs was refused. The typist keeps it as
+    their own copy; the room's copy goes when the room empties, unless the
+    owner types in that file. The same holds for anyone who leaves mid-typing
+    and was the only one to have typed.
+  - Two sign-ins started at once in one browser share the cookie: the first
+    to come back is refused as "started elsewhere", and lands where the
+    second was going.
   - An owner signed out in another tab keeps their page and its unsaved work,
     but signing in again is a trip away from it; carrying the work across
     that trip (sessionStorage) would let it be saved to the pad itself.
