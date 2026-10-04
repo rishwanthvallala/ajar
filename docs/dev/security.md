@@ -316,8 +316,12 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   database and the key together are every edit link. `smoke-accounts.mjs`
   greps the database files for a live token and code.
 - **Sign-in is OAuth with PKCE**, full-page redirects, and a return address
-  that must be a path on this site (`//elsewhere` and full URLs become
-  `/dashboard`). The `state` and the PKCE verifier ride in a ten-minute
+  that must be a path on this site, in printable ASCII (`//elsewhere`, full
+  URLs, and anything with whitespace or a control character become
+  `/dashboard`). The printable rule came from review on 4 October: browsers
+  drop tabs and newlines while parsing a URL, so `/<tab>/evil.example` passed
+  a check for `//` here and reached the browser as `//evil.example` — an open
+  redirect, fixed before anyone used it. The `state` and the PKCE verifier ride in a ten-minute
   `HttpOnly` cookie on the browser that started the sign-in, not in the
   relay's memory, and the callback must match it. That stops login CSRF — a
   callback somebody else started, sent to you, would otherwise sign you into
@@ -334,12 +338,33 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   which another origin cannot send without a preflight this server never
   answers.
 - **A deleted pad's name is never reused**, and stays closed to everyone —
-  including anonymous writers, who would otherwise take it over.
+  including anonymous writers, who would otherwise take it over. It answers
+  410, not 403, so a page can say *deleted* rather than *private*.
+- **An owned pad's name cannot be taken by a hosted session.** The relay
+  refuses a host or guest hello for any name with an accounts row; before,
+  anyone who knew the name could open an ajar session under it and keep the
+  pad's room shut (its people refused as the wrong shape).
+- **A setting changes alone.** The dashboard sends only the setting that
+  changed, and the relay leaves the other as stored. Sending both let a
+  dialog holding an old copy re-open editing an owner had just locked.
+- **What a viewer can pass on is what their link grants.** The store reports
+  the role of the link presented (`access.link`), so an edit link opened while
+  editing is locked — a viewer for now — is never offered as the viewer's
+  "link" to share.
 - **Quotas bound an account**, not just an address: 20 pads and 100 MB across
   them, charged to the owner whoever writes. An edit link cannot be used to
-  fill the owner's disk past that.
+  fill the owner's disk past that. Writes to one account's pads take turns,
+  so the room left is read and spent as one step — parallel writes each saw
+  the same room and together went past it, until review found it.
 
 What does not hold, yet:
+
+- **Signing out does not close a room connection** the session opened; that
+  socket keeps its role until it drops. The next request it makes to the
+  store is refused.
+- **Anonymous pads can still be squatted** the same way owned ones could: a
+  hosted session opened under an anonymous pad's name holds the name while
+  it lasts. Nobody's access is at stake there, only the live room.
 
 - **The server can read every pad**, private ones included. Encrypting
   private pads with the view code is in [open points](../open-points.md).

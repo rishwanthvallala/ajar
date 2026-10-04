@@ -169,6 +169,11 @@ struct AppState {
     trust_forwarded: bool,
     accounts: Arc<accounts::Accounts>,
     auth: Arc<auth::Auth>,
+    /// One write at a time per account, so the room an account has left is
+    /// read and spent as one step. Without it, writes in parallel each saw
+    /// the same room and together went past it.
+    account_writes:
+        Arc<parking_lot::Mutex<std::collections::HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 #[tokio::main]
@@ -229,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
         trust_forwarded: args.trust_forwarded_for,
         accounts,
         auth,
+        account_writes: Default::default(),
     };
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
@@ -406,6 +412,11 @@ async fn read_pad(
     // lookup, and a flood of reads the limits would refuse should not get one
     // each first.
     let access = http_accounts::access(&state, &headers, &name).await;
+    // Deleted is not private: the page says which, so an owner who deleted
+    // it in another tab is not told to sign in as someone else.
+    if access.deleted {
+        return (StatusCode::GONE, "this pad was deleted by its owner").into_response();
+    }
     if access.role == accounts::Role::None {
         return (StatusCode::FORBIDDEN, "this pad is private").into_response();
     }
@@ -512,6 +523,12 @@ async fn write_pad(
     // Writing needs an edit link or the pad itself; viewing is not enough.
     // An anonymous pad lets everyone write, as it always has.
     let access = http_accounts::access(&state, &headers, &name).await;
+    if access.deleted {
+        return Err((
+            StatusCode::GONE,
+            "this pad was deleted by its owner".to_string(),
+        ));
+    }
     if access.role < accounts::Role::Editor {
         return Err((
             StatusCode::FORBIDDEN,
@@ -522,6 +539,18 @@ async fn write_pad(
             },
         ));
     }
+    let _account_turn = match access.owner {
+        Some(owner) => {
+            let lock = state
+                .account_writes
+                .lock()
+                .entry(owner)
+                .or_default()
+                .clone();
+            Some(lock.lock_owned().await)
+        }
+        None => None,
+    };
     let now = std::time::Instant::now();
     let by_address = state.growth.remaining(caller, now);
     // An owned pad also draws on its account's room, whoever is writing.

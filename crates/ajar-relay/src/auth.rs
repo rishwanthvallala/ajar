@@ -48,6 +48,23 @@ pub struct Provider {
     scope: &'static str,
 }
 
+/// Why a sign-in did not finish: a short code the page turns into words, and
+/// the detail, which goes to the log rather than to the person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInError {
+    pub code: &'static str,
+    pub detail: String,
+}
+
+impl SignInError {
+    fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        SignInError {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
 /// Who a provider says somebody is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -114,27 +131,45 @@ fn check_started(
     provider: &str,
     state: &str,
     at: u64,
-) -> Result<(String, String), String> {
-    let cookie = cookie.ok_or("this browser did not start that sign-in — try again")?;
+) -> Result<(String, String), SignInError> {
+    let cookie = cookie.ok_or(SignInError::new("not_started", "no sign-in cookie"))?;
     let parts: Vec<&str> = cookie.split('.').collect();
     let [pid, nonce, verifier, issued, next] = parts[..] else {
-        return Err("that sign-in was garbled — try again".into());
+        return Err(SignInError::new("garbled", "sign-in cookie malformed"));
     };
     if pid != provider || !same(nonce, state) {
-        return Err("that sign-in was started somewhere else — try again".into());
+        return Err(SignInError::new(
+            "elsewhere",
+            "state or provider differs from the cookie",
+        ));
     }
     let issued: u64 = issued
         .parse()
-        .map_err(|_| "that sign-in was garbled — try again")?;
+        .map_err(|_| SignInError::new("garbled", "sign-in cookie time malformed"))?;
     if at.saturating_sub(issued) > SIGN_IN_SECS {
-        return Err("that sign-in took too long — try again".into());
+        return Err(SignInError::new(
+            "expired",
+            "sign-in cookie older than ten minutes",
+        ));
     }
+    Ok((verifier.to_string(), decode_next(next)))
+}
+
+fn decode_next(raw: &str) -> String {
     let next = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(next)
+        .decode(raw)
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
         .unwrap_or_default();
-    Ok((verifier.to_string(), safe_next(&next)))
+    safe_next(&next)
+}
+
+/// Where a sign-in was going, read from its cookie — for one that ends without
+/// finishing, so the person is sent back where they started rather than to a
+/// page they never asked for. Only ever a path on this site.
+pub fn next_of(cookie: Option<&str>) -> Option<String> {
+    let next = cookie?.split('.').nth(4)?;
+    Some(decode_next(next))
 }
 
 impl Auth {
@@ -246,11 +281,13 @@ impl Auth {
         code: &str,
         state: &str,
         cookie: Option<&str>,
-    ) -> Result<(Identity, String), String> {
+    ) -> Result<(Identity, String), SignInError> {
         let (verifier, next) = check_started(cookie, provider, state, now())?;
-        let p = self
-            .provider(provider)
-            .ok_or("that provider is not set up")?;
+        let p = self.provider(provider).ok_or(SignInError::new(
+            "unavailable",
+            "that provider is not set up",
+        ))?;
+        let refused = |detail: String| SignInError::new("provider", detail);
 
         let token: serde_json::Value = self
             .http
@@ -264,13 +301,13 @@ impl Auth {
                 ("client_secret", &p.client_secret),
                 ("code_verifier", &verifier),
             ])
-            .map_err(|e| format!("{} refused the sign-in: {e}", p.id))?
+            .map_err(|e| refused(format!("{} refused the sign-in: {e}", p.id)))?
             .body_mut()
             .read_json()
-            .map_err(|e| format!("{} answered strangely: {e}", p.id))?;
+            .map_err(|e| refused(format!("{} answered strangely: {e}", p.id)))?;
         let access = token["access_token"]
             .as_str()
-            .ok_or_else(|| format!("{} gave no access token", p.id))?;
+            .ok_or_else(|| refused(format!("{} gave no access token", p.id)))?;
 
         let me: serde_json::Value = self
             .http
@@ -280,13 +317,13 @@ impl Auth {
             // GitHub refuses a request without one.
             .header("User-Agent", "ajar")
             .call()
-            .map_err(|e| format!("{} would not say who you are: {e}", p.id))?
+            .map_err(|e| refused(format!("{} would not say who you are: {e}", p.id)))?
             .body_mut()
             .read_json()
-            .map_err(|e| format!("{} answered strangely: {e}", p.id))?;
+            .map_err(|e| refused(format!("{} answered strangely: {e}", p.id)))?;
         identity(p.id, &me)
             .map(|id| (id, next))
-            .ok_or_else(|| format!("{} did not say who you are", p.id))
+            .ok_or_else(|| refused(format!("{} did not say who you are", p.id)))
     }
 }
 
@@ -318,8 +355,14 @@ fn identity(provider: &'static str, me: &serde_json::Value) -> Option<Identity> 
 
 /// Only a path on this site — never `//elsewhere` or a full URL — so the
 /// return address cannot be used to bounce someone off to another site.
+///
+/// Printable ASCII only. Browsers drop tabs and newlines from a URL as they
+/// parse it, so `/<tab>/evil.example` passed a check for `//` here and arrived
+/// as `//evil.example` — another site — once the browser had read it. Found
+/// in review, 4 October, before anyone was redirected anywhere.
 pub fn safe_next(next: &str) -> String {
-    if next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') {
+    let printable = next.bytes().all(|b| b.is_ascii_graphic());
+    if printable && next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') {
         next.to_string()
     } else {
         "/dashboard".to_string()
@@ -347,6 +390,13 @@ mod tests {
         assert_eq!(safe_next("//evil.example/x"), "/dashboard");
         assert_eq!(safe_next("https://evil.example"), "/dashboard");
         assert_eq!(safe_next("/\\evil.example"), "/dashboard");
+        // What a browser strips while parsing must not hide a `//`.
+        assert_eq!(safe_next("/\t/evil.example"), "/dashboard");
+        assert_eq!(safe_next("/\n/evil.example"), "/dashboard");
+        assert_eq!(safe_next("/\r/evil.example"), "/dashboard");
+        assert_eq!(safe_next("/ /evil.example"), "/dashboard");
+        assert_eq!(safe_next("/caf\u{e9}"), "/dashboard");
+        assert_eq!(safe_next("/a-b-c?x=1"), "/a-b-c?x=1");
     }
 
     #[test]
@@ -405,7 +455,18 @@ mod tests {
         assert!(check_started(Some(&cookie), "github", "the-state", late).is_err());
         // Garbled, and a return address tampered with in the cookie.
         assert!(check_started(Some("github.the-state"), "github", "the-state", 1060).is_err());
+        assert_eq!(
+            check_started(None, "github", "the-state", 1060).map_err(|e| e.code),
+            Err("not_started")
+        );
+        assert_eq!(
+            check_started(Some(&cookie), "github", "their-state", 1060).map_err(|e| e.code),
+            Err("elsewhere")
+        );
+        assert_eq!(next_of(Some(&cookie)), Some("/a-b-c".into()));
+        assert_eq!(next_of(None), None);
         let bounced = started_cookie("github", "s", "v", 1000, "//evil.example");
+        assert_eq!(next_of(Some(&bounced)), Some("/dashboard".into()));
         assert_eq!(
             check_started(Some(&bounced), "github", "s", 1000).map(|(_, next)| next),
             Ok("/dashboard".to_string())

@@ -104,22 +104,52 @@ export function themeToggle(): HTMLButtonElement {
 
 // --------------------------------------------------------------- toasts
 
+let ids = 0;
+/** A unique id, for labels and descriptions that point across the tree. */
+export function uid(prefix: string): string {
+  ids += 1;
+  return `${prefix}-${ids}`;
+}
+
+/**
+ * The live regions toasts are written into: a polite one for confirmations
+ * and an alert for failures. Made empty and ahead of time — a region added
+ * together with its first message is one screen readers often miss — on the
+ * page, and in each dialog, since everything outside an open modal is inert.
+ */
+export function toastRegions(host: Element = document.body): HTMLElement {
+  const existing = host.querySelector<HTMLElement>(":scope > .toasts");
+  if (existing) return existing;
+  const polite = el("div", { className: "toasts-polite" });
+  polite.setAttribute("role", "status");
+  polite.setAttribute("aria-live", "polite");
+  const loud = el("div", { className: "toasts-alert" });
+  loud.setAttribute("role", "alert");
+  const wrap = el("div", { className: "toasts" }, polite, loud);
+  host.append(wrap);
+  return wrap;
+}
+
 /** A short confirmation at the bottom of the screen: "Link copied". */
 export function toast(text: string, kind: "ok" | "error" = "ok"): void {
-  let region = document.getElementById("toasts");
-  if (!region) {
-    region = el("div", { id: "toasts", className: "toasts" });
-    region.setAttribute("role", "status");
-    region.setAttribute("aria-live", "polite");
-    document.body.append(region);
-  }
-  // Inside an open modal dialog, so it is not underneath the backdrop.
-  const host = document.querySelector("dialog[open]") ?? document.body;
-  if (region.parentElement !== host) host.append(region);
-  const t = el("div", { className: `toast toast-${kind}` }, icon(kind === "ok" ? "check" : "alert"), el("span", {}, text));
+  // The server's messages start in lower case, for the status line; a toast
+  // is a sentence of its own.
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  const dialogs = document.querySelectorAll("dialog[open]");
+  const host = dialogs[dialogs.length - 1] ?? document.body;
+  const wrap = toastRegions(host);
+  const region = wrap.querySelector(kind === "ok" ? ".toasts-polite" : ".toasts-alert")!;
+  const t = el("div", { className: `toast toast-${kind}` }, icon(kind === "ok" ? "check" : "alert"), el("span", {}, sentence));
   region.append(t);
-  setTimeout(() => t.classList.add("leaving"), 2600);
-  setTimeout(() => t.remove(), 3000);
+  // Failures stay long enough to read twice, and while a pointer is on them.
+  const life = kind === "ok" ? 2600 : 9000;
+  let timer = setTimeout(() => leave(), life);
+  const leave = () => {
+    t.classList.add("leaving");
+    setTimeout(() => t.remove(), 300);
+  };
+  t.addEventListener("pointerenter", () => clearTimeout(timer));
+  t.addEventListener("pointerleave", () => (timer = setTimeout(() => leave(), 2000)));
 }
 
 export async function copyText(text: string): Promise<boolean> {
@@ -131,6 +161,22 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * Busy on a button that keeps its focus: `disabled` would drop it to the page
+ * for someone who pressed it from the keyboard. Clicks are ignored meanwhile
+ * by whoever checks `isBusy`.
+ */
+export function setBusy(b: HTMLElement, busy: boolean, label?: string): void {
+  if (busy) b.setAttribute("aria-busy", "true");
+  else b.removeAttribute("aria-busy");
+  let note = b.querySelector<HTMLElement>(".busy-note");
+  if (busy && label) {
+    note ??= b.appendChild(el("span", { className: "vh busy-note" }));
+    note.textContent = label;
+  } else note?.remove();
+}
+export const isBusy = (b: HTMLElement) => b.getAttribute("aria-busy") === "true";
+
 // --------------------------------------------------------------- dialogs
 
 /**
@@ -139,11 +185,21 @@ export async function copyText(text: string): Promise<boolean> {
  */
 export function modal(title: string, subtitle?: string, className = ""): { dialog: HTMLDialogElement; body: HTMLElement } {
   const dialog = el("dialog", { className: `modal ${className}`.trim() });
-  dialog.setAttribute("aria-label", subtitle ? `${title} ${subtitle}` : title);
+  const titleId = uid("modal-title");
+  const subId = uid("modal-sub");
+  dialog.setAttribute("aria-labelledby", subtitle ? `${titleId} ${subId}` : titleId);
   const close = button("", { icon: "close", className: "btn-icon btn-quiet modal-close", title: "Close", onClick: () => dialog.close() });
-  const head = el("header", { className: "modal-head" }, el("div", { className: "modal-titles" }, el("h2", {}, title), subtitle ? el("p", { className: "modal-sub" }, subtitle) : null), close);
+  // Divs, not header and footer: inside a dialog those would be read as the
+  // page's own banner and footer landmarks.
+  const head = el(
+    "div",
+    { className: "modal-head" },
+    el("div", { className: "modal-titles" }, el("h2", { id: titleId }, title), subtitle ? el("p", { className: "modal-sub", id: subId }, subtitle) : null),
+    close,
+  );
   const body = el("div", { className: "modal-body" });
   dialog.append(head, body);
+  toastRegions(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   // A click on the backdrop lands on the dialog element itself.
   dialog.addEventListener("click", (e) => {
@@ -153,16 +209,26 @@ export function modal(title: string, subtitle?: string, className = ""): { dialo
   return { dialog, body };
 }
 
-/** Ask before something that cannot be undone. Resolves true for yes. */
-export function confirmDialog(opts: { title: string; body: string; confirm: string; danger?: boolean }): Promise<boolean> {
+/**
+ * Ask before something that cannot be undone. Resolves true for yes. `title`
+ * may hold a node — a pad's name, set in mono.
+ */
+export function confirmDialog(opts: { title: string | (string | Node)[]; body: string; confirm: string; danger?: boolean }): Promise<boolean> {
   return new Promise((resolve) => {
     const dialog = el("dialog", { className: "modal modal-confirm" });
-    dialog.setAttribute("aria-label", opts.title);
+    const titleId = uid("confirm-title");
+    const bodyId = uid("confirm-body");
+    // An alert dialog, so the consequence is read out with the question.
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-labelledby", titleId);
+    dialog.setAttribute("aria-describedby", bodyId);
     let answer = false;
     const yes = button(opts.confirm, { className: opts.danger ? "btn-danger" : "btn-primary", onClick: () => { answer = true; dialog.close(); } });
     const no = button("Cancel", { onClick: () => dialog.close() });
+    const heading = el("h2", { id: titleId });
+    heading.append(...(typeof opts.title === "string" ? [opts.title] : opts.title));
     dialog.append(
-      el("div", { className: "confirm-body" }, el("h2", {}, opts.title), el("p", {}, opts.body)),
+      el("div", { className: "confirm-body" }, heading, el("p", { id: bodyId }, opts.body)),
       el("div", { className: "confirm-actions" }, no, yes),
     );
     dialog.addEventListener("close", () => {

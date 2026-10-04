@@ -49,11 +49,27 @@ export class StoreError extends Error {
   get refused(): boolean {
     return this.status === 403;
   }
+
+  /** Deleted by its owner. */
+  get gone(): boolean {
+    return this.status === 410;
+  }
 }
 
 async function refuse(res: Response): Promise<never> {
   const body = await res.text().catch(() => "");
+  // A proxy's answer while the relay is away is not something to repeat.
+  if (res.status >= 502 && res.status <= 504) throw new StoreError(res.status, "can't reach the server right now — trying again");
   throw new StoreError(res.status, body || `the server said ${res.status}`);
+}
+
+/** fetch, with a dropped connection as a StoreError like any other refusal. */
+async function request(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new StoreError(0, "can't reach the server right now — check your connection");
+  }
 }
 
 export class Store {
@@ -72,7 +88,7 @@ export class Store {
   }
 
   async read(name: string): Promise<Pad> {
-    const res = await fetch(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       headers: this.headers(name),
       // A pad's answer depends on who asks. Never one from a cache.
       cache: "no-store",
@@ -83,7 +99,7 @@ export class Store {
 
   /** Apply changes and return the new sequence number. */
   async write(name: string, changes: Change[]): Promise<number> {
-    const res = await fetch(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       method: "PUT",
       headers: { "content-type": "application/json", ...this.headers(name) },
       body: JSON.stringify({ writes: changes }),

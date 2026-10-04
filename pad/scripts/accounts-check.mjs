@@ -261,7 +261,7 @@ try {
   await viewer.waitForSelector(".monaco-editor", { timeout: 30_000 });
   await until(viewer, () => window.__pad?.role() === "viewer");
   ok("the bare name opens it to view");
-  is(await viewer.locator("#readonly").textContent(), "view only", "the header says view only");
+  is(await viewer.locator("#away .viewing-pill").textContent(), "Viewing", "the banner says Viewing");
   is(await viewer.locator("#away .viewing-text").isVisible(), true, "a banner says changes stay in the tab");
   await until(viewer, () => window.__pad?.text("main.py")?.includes("by-the-editor"));
   await typeAtEnd(owner, "main.py", "# live-one\n");
@@ -306,6 +306,18 @@ try {
   // Save as my copy: not signed in, so an open pad.
   await typeAtEnd(viewer, "main.py", "# kept-in-my-copy\n");
   await until(viewer, () => window.__pad?.local().includes("main.py"));
+  // On a phone the banner's buttons — the way out of a copy — are all there:
+  // the shell's bar clipped them to a sliver once.
+  await viewer.setViewportSize({ width: 390, height: 844 });
+  const clipped = await viewer.evaluate(() => {
+    const bar = document.getElementById("away");
+    const save = [...bar.querySelectorAll("button")].find((b) => b.textContent === "Save as my copy");
+    const r = save.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { overflow: bar.scrollHeight > bar.clientHeight + 1, covered: !save.contains(hit) };
+  });
+  is(JSON.stringify(clipped), JSON.stringify({ overflow: false, covered: false }), "on a phone the banner shows its buttons whole");
+  await viewer.setViewportSize({ width: 1280, height: 720 });
   await viewer.click("#away button:has-text('Save as my copy')");
   await viewer.waitForURL((u) => !u.pathname.endsWith(name), { timeout: 15_000 });
   const copy = new URL(viewer.url()).pathname.slice(1);
@@ -315,6 +327,19 @@ try {
   const copied = await (await fetch(`${ORIGIN}/api/pad/${copy}`)).json();
   is(copied.files["main.py"]?.content.includes("kept-in-my-copy") && copied.files["main.py"]?.content.includes("live-three"), true, "with the pad's text and the viewer's change");
   is(copied.files["scratch.txt"]?.content, "scratch\n", "and the file their command made");
+  await viewer.waitForSelector(".toast:has-text('This is your copy')", { timeout: 10_000 });
+  is(new URL(viewer.url()).search, "", "the new pad says it is your copy, and the address is clean");
+
+  // A link pasted into a tab already on the pad takes effect: the browser
+  // does not reload for a change after the #.
+  const paster = await person("paster");
+  await paster.goto(viewUrl);
+  await paster.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  await until(paster, () => window.__pad?.role() === "viewer");
+  await paster.evaluate((code) => { location.hash = code; }, editUrl.split("#")[1]);
+  await until(paster, () => window.__pad?.role() === "editor", undefined, 30_000);
+  is(await paster.evaluate(() => location.hash), "", "an edit link pasted into a viewer's tab makes it an editor, and leaves no code in the address bar");
+  await paster.close();
 
   // ---- the owner changes who may do what ----
   const watcher = await person("watcher");
@@ -322,10 +347,31 @@ try {
   await watcher.waitForSelector(".monaco-editor", { timeout: 30_000 });
   await until(watcher, () => window.__pad?.role() === "viewer");
 
+  // Someone with local work of their own, on the bare name.
+  const keeper = await person("keeper");
+  await keeper.goto(viewUrl);
+  await keeper.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  await until(keeper, () => window.__pad?.role() === "viewer");
+  await typeAtEnd(keeper, "main.py", "# the-keepers-own\n");
+  await until(keeper, () => window.__pad?.local().includes("main.py"));
+
   await owner.click("#share");
   await owner.waitForSelector(".share-dialog select");
+  // The editor types and, before that can be saved, loses editing: what
+  // they typed exists nowhere else, and is kept as their own copy.
+  await editor.click('#files .row.file[data-path="main.py"]');
+  await editor.evaluate(() => {
+    const e = window.monaco.editor.getEditors()[0];
+    const m = e.getModel();
+    e.focus();
+    e.setPosition(m.getPositionAt(m.getValueLength()));
+    e.trigger("keyboard", "type", { text: "# typed-as-editing-ended\n" });
+  });
   await owner.getByRole("dialog").getByLabel("Who can edit").selectOption("owner");
   await until(editor, () => window.__pad?.role() === "viewer", undefined, 15_000);
+  await until(editor, () => window.__pad?.local().includes("main.py") && window.__pad?.text("main.py").includes("typed-as-editing-ended"), undefined, 15_000);
+  is((await stored(name))["main.py"].content.includes("typed-as-editing-ended"), false, "typing that lost the race with a lock is not saved to the pad");
+  ok("but it is kept as the editor's own copy, not dropped");
   is(await editor.locator("#away .viewing-text").isVisible(), true, "locking editing turns an editor into a viewer, without a reload");
   await owner.waitForSelector(".share-dialog .share-link.off");
   is(await owner.locator(".share-dialog .share-url").count(), 1, "and the dialog stops offering an edit link");
@@ -333,6 +379,13 @@ try {
   await owner.getByRole("dialog").getByLabel("Who can view").selectOption("code");
   await watcher.waitForSelector("text=This pad is private", { timeout: 15_000 });
   ok("closing viewing to links turns someone on the bare name away, there and then");
+  // …unless they have work here that exists nowhere else.
+  await until(keeper, () => document.querySelector("#away .viewing-pill")?.textContent === "No access", undefined, 15_000);
+  is((await text(keeper, "main.py")).includes("the-keepers-own"), true, "someone turned away with local work keeps the page and the work");
+  await keeper.click("#away button:has-text('Save as my copy')");
+  await keeper.waitForURL((u) => !u.pathname.endsWith(name), { timeout: 15_000 });
+  const kept = new URL(keeper.url()).pathname.slice(1);
+  is((await (await fetch(`${ORIGIN}/api/pad/${kept}`)).json()).files["main.py"]?.content.includes("the-keepers-own"), true, "and can still save it as their own copy");
   await owner.keyboard.press("Escape");
   is(await owner.evaluate(() => window.__pad?.role()), "owner", "the owner stays");
 
@@ -340,12 +393,20 @@ try {
   await stranger.goto(viewUrl);
   await stranger.waitForSelector("text=This pad is private", { timeout: 15_000 });
   is(await stranger.locator("a.provider", { hasText: "Continue with GitHub" }).count(), 1, "a stranger is told it is private, and offered sign-in");
+  await stranger.goto(`${ORIGIN}/Not-A-Pad`);
+  await stranger.waitForSelector("text=That isn't a pad address", { timeout: 15_000 });
+  await stranger.goto(`${ORIGIN}/admin`);
+  await stranger.waitForSelector("text=That isn't a pad address", { timeout: 30_000 });
+  ok("a name no pad can have is said to be one, not shown as a broken editor");
+  await stranger.goto(`${ORIGIN}/login`);
+  await stranger.waitForSelector("text=Pads you control", { timeout: 15_000 });
+  is(new URL(stranger.url()).pathname, "/dashboard", "/login goes to the sign-in page");
 
   // ---- the dashboard ----
   await owner.goto(`${ORIGIN}/dashboard`);
   const card = () => owner.locator(`.pad-card[data-name="${name}"]`);
   await card().waitFor();
-  is(await card().locator(".chip-view-code").textContent(), "View link only", "the dashboard shows the settings at a glance");
+  is(await card().locator(".chip-view").textContent(), "Who can view: View link", "the dashboard shows the settings at a glance");
   is(/1 of 20 pads/.test(await owner.locator(".page-usage").textContent()), true, "and how much of the account is used");
 
   // Share from the dashboard is the pad's own dialog.
@@ -362,7 +423,7 @@ try {
   await editRow().locator(".share-url").waitFor();
   const before = await editLinkShown();
   is(before, editUrl, "turning editing back on brings the same edit link back");
-  await until(owner, (n) => document.querySelector(`.pad-card[data-name="${n}"] .chip-edit-code`), name);
+  await until(owner, (n) => document.querySelector(`.pad-card[data-name="${n}"] .chip-edit.chip-open`), name);
   ok("and the list behind the dialog shows it");
   await editRow().getByRole("button", { name: "Reset" }).click();
   // Asked first, in a dialog of its own; Cancel is what has focus.
@@ -382,6 +443,11 @@ try {
   await owner.keyboard.press("Escape");
   await dialog().waitFor({ state: "detached" });
 
+  // The pad still open in another of the owner's tabs.
+  const ownerTab = await owner.context().newPage();
+  await ownerTab.goto(`${ORIGIN}/${name}`);
+  await ownerTab.waitForSelector(".monaco-editor", { timeout: 30_000 });
+
   // Delete asks, and Cancel keeps it.
   await card().getByRole("button", { name: `Delete ${name}` }).click();
   await owner.locator("dialog.modal-confirm").getByRole("button", { name: "Cancel" }).click();
@@ -389,7 +455,10 @@ try {
   await card().getByRole("button", { name: `Delete ${name}` }).click();
   await owner.locator("dialog.modal-confirm").getByRole("button", { name: "Delete pad" }).click();
   await owner.waitForSelector("text=No pads yet");
-  is(await (await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } })).status, 403, "deleting it from the dashboard deletes it");
+  is(await (await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } })).status, 410, "deleting it from the dashboard deletes it");
+  await ownerTab.waitForSelector("text=This pad was deleted", { timeout: 15_000 });
+  ok("the owner's other tab says the pad was deleted — not that it is private");
+  await ownerTab.close();
 
   // ---- a viewer's document outliving its editors ----
   //
@@ -455,7 +524,7 @@ try {
   await fetch(`${ORIGIN}/api/my/pads/${quiet}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
 
   await owner.click(".account-button");
-  await owner.getByRole("menuitem", { name: "Sign out" }).click();
+  await owner.getByRole("button", { name: "Sign out" }).click();
   await owner.waitForSelector("text=Pads you control");
   ok("signing out returns to the signed-out dashboard");
 } catch (e) {

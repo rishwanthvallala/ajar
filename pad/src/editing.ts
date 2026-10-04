@@ -302,7 +302,12 @@ export class DocSession {
     this.awareness.on("change", onAwareness);
     this.drawCursors(model);
 
-    this.binding = () => {
+    // Once only. The page unbinds a file it moves off, and destroying the
+    // document unbinds again; a second unobserve made Yjs log an error on
+    // every disconnect.
+    const binding = () => {
+      if (this.binding !== binding) return;
+      this.binding = null;
       this.ytext.unobserve(onRemote);
       onLocal.dispose();
       onCursor.dispose();
@@ -311,7 +316,8 @@ export class DocSession {
       this.styleEl?.remove();
       this.styleEl = null;
     };
-    return this.binding;
+    this.binding = binding;
+    return binding;
   }
 
   /** Everyone else's cursor and selection, as editor decorations. */

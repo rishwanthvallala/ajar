@@ -211,22 +211,43 @@ async function main() {
 
   // The provider's code is single-use, so even the right browser cannot come
   // back twice.
-  await expectStatus(await manual(ana.callback, { headers: { cookie: ana.started } }), 400, "replaying the callback");
+  const noSession = (res) => !res.headers.getSetCookie().some((c) => c.startsWith("ajar=") && !/Max-Age=0/.test(c));
+  const backWith = async (res, reason, what) => {
+    const to = res.headers.get("location") ?? "";
+    if (res.status !== 303 || !to.endsWith(`?signin=${reason}`) || !noSession(res)) fail(`${what}: ${res.status} to ${to}`);
+    ok(`${what} — back to ${to}, nobody signed in`);
+  };
+  await backWith(await manual(ana.callback, { headers: { cookie: ana.started } }), "provider", "replaying the callback");
 
   // Login CSRF: somebody starts a sign-in as themselves and sends the
   // callback to someone else. Without the starter's cookie it signs nobody in.
   const planted = await startSignIn({ id: 666, login: "mallory" });
-  const csrf = await manual(planted.callback);
-  await expectStatus(csrf, 400, "someone else's callback, in a browser with no sign-in of its own");
-  if (csrf.headers.getSetCookie().some((c) => c.startsWith("ajar=") && !/Max-Age=0/.test(c))) fail("a planted callback set a session");
+  await backWith(await manual(planted.callback), "not_started", "someone else's callback, in a browser with no sign-in of its own");
   // A browser mid-sign-in of its own has a cookie, just not this callback's.
   // PKCE would refuse it too — this browser's verifier is not the one the
   // code was issued for — so the provider stops checking, and the `state`
   // has to.
   const mine = await startSignIn({ id: 101, login: "ana" });
   checkPkce = false;
-  await expectStatus(await manual(planted.callback, { headers: { cookie: mine.started } }), 400, "someone else's callback, in a browser that started its own, from a provider that skips PKCE");
+  await backWith(await manual(planted.callback, { headers: { cookie: mine.started } }), "elsewhere", "someone else's callback, in a browser that started its own, from a provider that skips PKCE");
   checkPkce = true;
+
+  // Cancelled at the provider: back to where the sign-in began.
+  const fromPad = await startSignIn({ id: 101, login: "ana" }, "/some-private-pad");
+  const callbackUrl = new URL(fromPad.callback);
+  callbackUrl.searchParams.delete("code");
+  callbackUrl.searchParams.set("error", "access_denied");
+  const cancelled = await manual(callbackUrl.toString(), { headers: { cookie: fromPad.started } });
+  if (cancelled.headers.get("location") !== "/some-private-pad?signin=access_denied") fail(`a cancel went to ${cancelled.headers.get("location")}`);
+  ok("cancelling a sign-in begun from a pad goes back to that pad, saying so");
+
+  // A return address with what browsers strip while parsing: `/<tab>/evil`
+  // is `//evil` — another site — by the time the browser has read it.
+  for (const sneaky of ["/\t/evil.example", "/\n/evil.example", "/ /evil.example"]) {
+    const signed = await signIn({ id: 101, login: "ana" }, sneaky);
+    if (signed.location !== "/dashboard") fail(`a return address with a hidden // was followed: ${JSON.stringify(signed.location)}`);
+  }
+  ok("a return address hiding // behind a tab, newline or space becomes /dashboard");
 
   const bounced = await signIn({ id: 101, login: "ana" }, "//evil.example/x");
   if (bounced.location !== "/dashboard") fail(`an off-site return address was followed: ${bounced.location}`);
@@ -296,6 +317,15 @@ async function main() {
   if (owner.ws.readyState !== WebSocket.OPEN) fail("the owner was closed too");
   ok("everyone but the owner is closed and told why; the owner stays");
   if ((await role({ code: editCode })) !== "viewer") fail("an edit code with editing locked should view");
+  const lockedLink = (await (await api(`/api/pad/${name}`, { code: editCode })).json()).access.link;
+  if (lockedLink !== "editor") fail(`a locked edit link should still say it is one, got ${lockedLink}`);
+  ok("an edit link with editing locked is still reported as an edit link, so a viewer's page never passes it on");
+  // A dialog holding an old copy of the edit setting changes only viewing:
+  // editing must stay locked.
+  await expectStatus(await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "PATCH", body: { view: "link" } }), 200, "changing only who can view");
+  const afterOne = await (await api(`/api/my/pads/${name}`, { cookie: ana.cookie })).json();
+  if (afterOne.edit !== "owner") fail(`changing one setting put the other back: ${JSON.stringify([afterOne.view, afterOne.edit])}`);
+  ok("changing one setting leaves the other as stored");
   await expectStatus(await write(name, [file("x.py", "3")], { code: editCode }), 403, "writing with an edit code once editing is locked");
   await editor.reconnect();
   editor.docs.length = 0;
@@ -373,6 +403,33 @@ async function main() {
   if (info.bytes < big.length || info.files !== 1) fail(`sizes on the dashboard: ${JSON.stringify(info)}`);
   ok("the dashboard knows each pad's size");
 
+  // Writes in parallel each used to see the same room, and together went
+  // past it. One at a time per account now.
+  await write(second, [file("big.txt", null)], { cookie: ana.cookie });
+  const chunk = "y".repeat(30 * 1024);
+  await Promise.all([name, second, name, second].map((pad, i) => write(pad, [file(`p${i}.txt`, chunk)], { cookie: ana.cookie })));
+  const held = (await (await api("/api/my/pads", { cookie: ana.cookie })).json()).reduce((n, p) => n + p.bytes, 0);
+  if (held > MAX_BYTES) fail(`parallel writes took the account to ${held} bytes, past ${MAX_BYTES}`);
+  ok(`four parallel writes leave the account within its room (${held} of ${MAX_BYTES} bytes)`);
+  for (const pad of [name, second]) await write(pad, [0, 1, 2, 3].map((i) => file(`p${i}.txt`, null)), { cookie: ana.cookie });
+
+  // A hosted session opened under an owned pad's name would take the name
+  // and keep the pad's own room shut. Against a pad whose room is empty —
+  // the attack — because one with people in it refuses a host anyway, and a
+  // check there passed with the fix taken out.
+  const squatter = new Guest(WS, second, "squatter", null);
+  squatter.role = "host";
+  try {
+    await squatter.connect();
+    fail("a hosted session took an owned pad's name");
+  } catch (e) {
+    if (!/^wrong_shape:/.test(e.message)) fail(`a squatter was refused for the wrong reason: ${e.message}`);
+  }
+  const stillOpen = peer(second, { cookie: ana.cookie });
+  await stillOpen.connect();
+  stillOpen.ws.close();
+  ok("nobody can open a hosted session under an owned pad's name, and its owner still gets in");
+
   // --------------------------------------------------------- what is stored
   const stored = Buffer.concat(["accounts.db", "accounts.db-wal"].map((f) => join(dir, f)).filter(existsSync).map((f) => readFileSync(f)));
   for (const [what, secret] of [["a session token", ana.cookie.split("=")[1]], ["an edit code", fresh.code], ["a view code", viewCode]]) {
@@ -394,8 +451,14 @@ async function main() {
   await lingering.connect();
   await expectStatus(await api(`/api/my/pads/${name}`, { cookie: ana.cookie, method: "DELETE" }), 204, "ana deletes the pad");
   await until(() => lingering.ws.readyState === WebSocket.CLOSED, "the room to empty");
-  if ((await role({ cookie: ana.cookie })) !== 403) fail("a deleted pad still opens for its owner");
-  await expectStatus(await write(name, [file("mine.py", "1")]), 403, "taking a deleted pad's name anonymously");
+  if ((await role({ cookie: ana.cookie })) !== 410) fail("a deleted pad should answer 410 — deleted, not private — even to its owner");
+  await expectStatus(await write(name, [file("mine.py", "1")]), 410, "taking a deleted pad's name anonymously");
+  try {
+    await peer(name).connect();
+    fail("someone joined a deleted pad's room");
+  } catch (e) {
+    if (!/^gone:/.test(e.message)) fail(`a deleted pad's room refused for the wrong reason: ${e.message}`);
+  }
   ok("a deleted pad's room is emptied and its name is retired");
 
   // ----------------------------------------------------- anonymous pads

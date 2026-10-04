@@ -11,7 +11,7 @@
  */
 import { account, type Access, type Edit, linkTo, type PadInfo, resetLink, type View } from "./access";
 import type { IconName } from "./icons";
-import { button, confirmDialog, copyText, el, icon, modal, toast } from "./ui";
+import { button, confirmDialog, copyText, el, icon, modal, toast, uid } from "./ui";
 
 export interface ShareContext {
   name: string;
@@ -63,6 +63,8 @@ function display(url: string): string {
  */
 function linkRow(opts: {
   label: string;
+  /** Which link, for the focus to come back to after a redraw. */
+  key: string;
   about: string;
   url: string | null;
   off: string;
@@ -70,11 +72,14 @@ function linkRow(opts: {
   reset?: () => Promise<void>;
 }): HTMLElement {
   const row = el("div", { className: "share-link" });
-  const head = el("div", { className: "share-link-head" }, icon(opts.icon, "icon share-link-icon"), el("strong", {}, opts.label));
-  row.append(head);
+  const main = el("div", { className: "share-link-main" });
+  const head = el("div", { className: "share-link-head" }, el("strong", {}, opts.label));
+  const hintId = uid("link-hint");
+  main.append(head);
+  row.append(el("span", { className: "setting-icon" }, icon(opts.icon)), main);
   if (!opts.url) {
     row.classList.add("off");
-    row.append(el("p", { className: "share-hint" }, opts.off));
+    main.append(el("p", { className: "share-hint", id: hintId }, opts.off));
     // On, but nothing to show: none made yet, or one whose stored copy can no
     // longer be read. Making one stops any old ones too.
     if (opts.reset) {
@@ -90,7 +95,8 @@ function linkRow(opts: {
           }
         },
       });
-      row.append(make);
+      make.dataset.focus = `make-${opts.key}`;
+      main.append(make);
     }
     return row;
   }
@@ -106,21 +112,19 @@ function linkRow(opts: {
           confirm: "Reset link",
           danger: true,
         });
-        if (!yes) return;
-        reset.disabled = true;
-        try {
-          await opts.reset!();
-        } finally {
-          reset.disabled = false;
-        }
+        if (yes) await opts.reset!();
       },
     });
+    reset.setAttribute("aria-label", `Reset ${opts.label.toLowerCase()}`);
+    reset.dataset.focus = `reset-${opts.key}`;
     head.append(reset);
   }
-  row.append(el("p", { className: "share-hint" }, opts.about));
+  main.append(el("p", { className: "share-hint", id: hintId }, opts.about));
   const field = el("input", { readOnly: true, value: display(opts.url), className: "share-url" });
   field.dataset.url = opts.url;
+  field.dataset.focus = `field-${opts.key}`;
   field.setAttribute("aria-label", opts.label);
+  field.setAttribute("aria-describedby", hintId);
   field.addEventListener("focus", () => field.select());
   const copy = button("Copy", {
     icon: "copy",
@@ -146,25 +150,35 @@ function linkRow(opts: {
       }
     },
   });
-  row.append(el("div", { className: "share-field" }, field, copy));
+  copy.setAttribute("aria-label", `Copy ${opts.label.toLowerCase()}`);
+  copy.dataset.focus = `copy-${opts.key}`;
+  main.append(el("div", { className: "share-field" }, field, copy));
   return row;
 }
 
 /** A setting: an icon for what it is now, the choice, and what that means. */
 function setting<T extends string>(
   label: string,
+  key: "view" | "edit",
   value: T,
   choices: Choice<T>[],
   hint: string,
   onChange: (v: T) => void,
 ): HTMLElement {
   const current = choices.find((c) => c.value === value) ?? choices[0]!;
+  const labelId = uid("setting-label");
+  const hintId = uid("setting-hint");
   const select = el("select", { className: "select" });
-  select.dataset.setting = label.toLowerCase().includes("view") ? "view" : "edit";
+  select.dataset.setting = key;
+  select.dataset.focus = `setting-${key}`;
+  // Named by its label and described by its hint, not named by both: the
+  // wrapping label alone made the name a whole sentence.
+  select.setAttribute("aria-labelledby", labelId);
+  select.setAttribute("aria-describedby", hintId);
   for (const c of choices) select.append(el("option", { value: c.value, selected: c.value === value }, c.label));
   select.onchange = () => onChange(select.value as T);
-  // The label wraps its select rather than pointing at an id: the dashboard
-  // opens one of these per pad over time, and ids would repeat.
+  // The label wraps its select rather than pointing at an id, so a click on
+  // the words focuses it.
   return el(
     "label",
     { className: `setting setting-${current.value}` },
@@ -172,23 +186,28 @@ function setting<T extends string>(
     el(
       "span",
       { className: "setting-main" },
-      el("span", { className: "setting-label" }, label),
+      el("span", { className: "setting-label", id: labelId }, label),
       el("span", { className: "select-wrap" }, select, icon("chevron", "icon select-chevron")),
-      el("span", { className: "share-hint" }, hint),
+      el("span", { className: "share-hint", id: hintId }, hint),
     ),
   );
 }
 
 /** The owner's view: both settings, and a link of each kind. */
-export function ownerBody(pad: PadInfo, redraw: (pad: PadInfo) => void, fromDashboard: boolean): HTMLElement[] {
+function ownerBody(pad: PadInfo, redraw: (pad: PadInfo, focus?: string) => void, fromDashboard: boolean): HTMLElement[] {
   const viewLink = pad.links.find((l) => l.role === "viewer");
   const editLink = pad.links.find((l) => l.role === "editor");
-  const busy = (on: boolean) => document.querySelectorAll<HTMLSelectElement>(".share-dialog .select").forEach((s) => (s.disabled = on));
-  const change = async (view: View, edit: Edit) => {
-    busy(true);
+  const access = el("section", { className: "share-section" });
+  // Busy on the section rather than disabling the select: a disabled control
+  // loses the focus it has, and the keyboard user is dropped onto the page.
+  // Only the setting that changed is sent. Sending both let a dialog holding
+  // an old copy of the other put it back — an owner who had locked editing
+  // re-opened it by changing who can view.
+  const change = async (what: { view?: View; edit?: Edit }) => {
+    access.setAttribute("aria-busy", "true");
     try {
-      redraw(await account.settings(pad.name, view, edit));
-      toast("Sharing updated — anyone already in the pad was asked to reconnect");
+      redraw(await account.settings(pad.name, what));
+      toast("Sharing updated");
     } catch (e) {
       toast((e as Error).message, "error");
       redraw(pad);
@@ -197,7 +216,8 @@ export function ownerBody(pad: PadInfo, redraw: (pad: PadInfo) => void, fromDash
   const reset = (role: "viewer" | "editor") => async () => {
     try {
       await resetLink(pad, role);
-      redraw(await account.pad(pad.name));
+      // Onto the new link's Copy, which is what anyone resetting wants next.
+      redraw(await account.pad(pad.name), `copy-${role}`);
       toast(`New ${role === "viewer" ? "view" : "edit"} link — any old one no longer works`);
     } catch (e) {
       toast((e as Error).message, "error");
@@ -207,40 +227,50 @@ export function ownerBody(pad: PadInfo, redraw: (pad: PadInfo) => void, fromDash
     pad.view === "link" ? linkTo(pad.name) : pad.view === "code" && viewLink ? linkTo(pad.name, viewLink.code) : null;
   const editUrl = pad.edit === "code" && editLink ? linkTo(pad.name, editLink.code) : null;
   const missing = "There is no link to show. Make a new one — any old ones stop working.";
+  const closed = pad.view === "owner" && pad.edit === "owner";
 
-  return [
-    el(
-      "section",
-      { className: "share-section" },
-      el("h3", {}, "Access"),
-      setting("Who can view", pad.view, VIEW_CHOICES, viewHint(pad.view, pad.edit), (v) => void change(v, pad.edit)),
-      setting("Who can edit", pad.edit, EDIT_CHOICES, editHint(pad.edit), (e) => void change(pad.view, e)),
-    ),
-    el(
-      "section",
-      { className: "share-section" },
-      el("h3", {}, "Links"),
+  access.append(
+    el("h3", {}, "Access"),
+    setting("Who can view", "view", pad.view, VIEW_CHOICES, viewHint(pad.view, pad.edit), (view) => void change({ view })),
+    setting("Who can edit", "edit", pad.edit, EDIT_CHOICES, editHint(pad.edit), (edit) => void change({ edit })),
+  );
+  const links = el("section", { className: "share-section" }, el("h3", {}, "Links"));
+  if (closed) {
+    links.append(el("p", { className: "share-off" }, "This pad is private. Choose who can view or edit it above to get a link to share."));
+  } else {
+    links.append(
       linkRow({
         label: "View link",
+        key: "viewer",
         icon: "eye",
-        about: pad.view === "link" ? "The plain address. Opens it to watch and run, not to change." : "Opens it to watch and run, not to change.",
+        about: pad.view === "link" ? "The plain address. Anyone with it can watch and run, not change." : "Anyone with this link can watch and run, not change.",
         url: viewUrl,
-        off: pad.view === "code" ? missing : "Viewing is off — only you can open this pad.",
+        off:
+          pad.view === "code"
+            ? missing
+            : pad.edit === "code"
+              ? "No view link — only you and people with the edit link can open it."
+              : "Viewing is off — only you can open this pad.",
         reset: pad.view === "code" ? reset("viewer") : undefined,
       }),
       linkRow({
         label: "Edit link",
+        key: "editor",
         icon: "pencil",
-        about: "Opens it to change, live, with everyone else on it.",
+        about: "Anyone with this link can edit it with you, live.",
         url: editUrl,
         off: pad.edit === "code" ? missing : "Editing is off — only you can change this pad.",
         reset: pad.edit === "code" ? reset("editor") : undefined,
       }),
-    ),
+    );
+  }
+  return [
+    access,
+    links,
     el(
-      "footer",
+      "div",
       { className: "share-foot" },
-      el("p", {}, "Anyone you send a link to can pass it on. Reset makes a new one and stops the old."),
+      el("p", {}, closed ? "Links you shared before stay off until you open the pad up again." : "Links can be forwarded. Reset replaces a link and turns the old one off."),
       fromDashboard ? null : el("a", { href: "/dashboard", className: "share-more" }, "All your pads", icon("arrow")),
     ),
   ];
@@ -251,32 +281,39 @@ function guestBody(ctx: ShareContext): HTMLElement[] {
   const { name, access, code } = ctx;
   const openView = access.view === "link";
   const editor = access.role === "editor";
-  const rows: HTMLElement[] = [
+  const links = el("section", { className: "share-section" }, el("h3", {}, "Links"));
+  // View first, then edit, as the owner sees them.
+  if (editor) {
+    links.append(
+      linkRow({ label: "View link", key: "viewer", icon: "eye", about: "The plain address. Anyone with it can watch and run, not change.", url: openView ? linkTo(name) : null, off: "Only its owner can hand out view links for this pad." }),
+      linkRow({ label: "Edit link", key: "editor", icon: "pencil", about: "Anyone with this link can edit it with you.", url: code && access.link === "editor" ? linkTo(name, code) : null, off: "You opened this without an edit link." }),
+    );
+  } else {
+    // Only a view link is a viewer's to pass on. An edit link whose editing
+    // is locked for now opens this as a viewer too — and would open it to
+    // edit for whoever it went to, the moment editing came back.
+    const ownViewLink = access.link === "viewer" && code;
+    links.append(
+      linkRow({
+        label: "Link",
+        key: "viewer",
+        icon: "eye",
+        about: openView ? "The plain address. Anyone with it can watch and run, not change." : "Anyone with this link can watch and run it.",
+        url: openView ? linkTo(name) : ownViewLink ? linkTo(name, code) : null,
+        off: access.link === "editor" ? "Only its owner can hand out links to this pad right now." : "Ask its owner for a link.",
+      }),
+    );
+  }
+  return [
     el(
       "div",
       { className: `share-role role-${access.role}` },
       icon(editor ? "pencil" : "eye"),
       el("span", {}, editor ? "You can edit this pad" : "You can view this pad"),
     ),
+    links,
+    el("div", { className: "share-foot" }, el("p", {}, "This pad belongs to someone's account. They decide who can view and edit it.")),
   ];
-  if (editor) {
-    rows.push(
-      linkRow({ label: "Edit link", icon: "pencil", about: "Lets people change it with you, as you can.", url: code ? linkTo(name, code) : null, off: "You opened this without a link." }),
-      linkRow({ label: "View link", icon: "eye", about: "The plain address. Opens it to watch and run, not to change.", url: openView ? linkTo(name) : null, off: "Only its owner can hand out view links for this pad." }),
-    );
-  } else {
-    rows.push(
-      linkRow({
-        label: "Link",
-        icon: "link",
-        about: openView ? "The plain address. Opens it to watch and run, not to change." : "Opens it the way it opens for you.",
-        url: openView ? linkTo(name) : code ? linkTo(name, code) : null,
-        off: "Ask its owner for a link.",
-      }),
-    );
-  }
-  rows.push(el("footer", { className: "share-foot" }, el("p", {}, "This pad belongs to someone's account. They decide who can view and edit it.")));
-  return rows;
 }
 
 export async function openShare(ctx: ShareContext): Promise<void> {
@@ -288,17 +325,29 @@ export async function openShare(ctx: ShareContext): Promise<void> {
     dialog.showModal();
     return;
   }
-  const redraw = (pad: PadInfo) => {
+  // Redrawn whole after every change; the focus goes back to the control of
+  // the same name, or to `focus`, rather than falling onto the page.
+  const redraw = (pad: PadInfo, focus?: string) => {
+    const was = (dialog.contains(document.activeElement) && (document.activeElement as HTMLElement).dataset.focus) || undefined;
     body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard));
+    const target = focus ?? was;
+    if (target) body.querySelector<HTMLElement>(`[data-focus="${target}"]`)?.focus();
     ctx.pad = pad;
     ctx.onChange?.(pad);
   };
   if (ctx.pad) {
     body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard));
     dialog.showModal();
+    // Fresh as well: the list may have loaded before another tab reset a
+    // link or changed a setting, and showing those would hand out dead links.
+    void account.pad(ctx.name).then((fresh) => {
+      if (dialog.open) redraw(fresh);
+    }, () => {});
     return;
   }
-  body.append(el("div", { className: "share-loading" }, el("span", { className: "skeleton" }), el("span", { className: "skeleton" }), el("span", { className: "skeleton short" })));
+  const loading = el("div", { className: "share-loading" }, el("span", { className: "skeleton" }), el("span", { className: "skeleton" }), el("span", { className: "skeleton short" }), el("span", { className: "vh" }, "Loading this pad's links…"));
+  loading.setAttribute("aria-busy", "true");
+  body.append(loading);
   dialog.showModal();
   try {
     redraw(await account.pad(ctx.name));

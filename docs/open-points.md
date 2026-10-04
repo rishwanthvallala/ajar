@@ -298,6 +298,18 @@ still open in it:
   editors should see them apart is undecided.
 - **An anonymous pad cannot be moved into an account.** Its maker copies the
   files into a new pad of theirs by hand.
+- **Left from the review of 4 October** (the rest was fixed — see
+  [accounts](dev/accounts.md#as-built)):
+  - Signing out does not close the room connections that session opened;
+    they keep their role until they drop.
+  - An anonymous pad's name can still be held by a hosted session opened
+    under it, keeping its live room shut while it lasts (owned pads refuse
+    this now).
+  - A page that cannot join its room — refused as the wrong shape — retries
+    quietly and never says so.
+  - An owner signed out in another tab keeps their page and its unsaved work,
+    but signing in again is a trip away from it; carrying the work across
+    that trip (sessionStorage) would let it be saved to the pad itself.
 
 ## Designed, not started
 

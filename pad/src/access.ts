@@ -16,6 +16,12 @@ export type Edit = "code" | "owner";
 /** What the store says about you and a pad, alongside its files. */
 export interface Access {
   role: Role;
+  /**
+   * What the link this browser presented grants on its own, before the pad's
+   * settings narrow it — "editor" for an edit link while editing is locked.
+   * Absent when it presented none, or one that no longer works.
+   */
+  link?: "viewer" | "editor";
   /** Whether the pad belongs to an account at all. */
   account: boolean;
   view?: View;
@@ -72,16 +78,27 @@ let held = new Map<string, string>();
 /**
  * Read the code from the address bar, keep it, and take it out of the bar.
  *
- * Returns the code this browser holds for the pad, from now or from before.
+ * Returns whether a code arrived that this browser did not already hold —
+ * which, for a page already open, means it should open again with it.
  */
-export function takeCode(name: string): string | null {
-  const fromUrl = decodeURIComponent(location.hash.replace(/^#/, "")).trim();
-  if (fromUrl && /^[A-Za-z0-9_-]{16,64}$/.test(fromUrl)) {
+export function takeCode(name: string): boolean {
+  let raw = location.hash.replace(/^#/, "");
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // A hash that is not valid percent-encoding is not a code either.
+  }
+  const fromUrl = raw.trim();
+  let fresh = false;
+  // Exactly a code's shape — 128 bits as 22 characters — so an ordinary
+  // anchor like #installation-and-setup never replaces a working code.
+  if (/^[A-Za-z0-9_-]{22}$/.test(fromUrl)) {
+    fresh = codeFor(name) !== fromUrl;
     held.set(name, fromUrl);
     remember(name, fromUrl);
   }
   if (location.hash) history.replaceState(history.state, "", `${location.pathname}${location.search}`);
-  return codeFor(name);
+  return fresh;
 }
 
 export function codeFor(name: string): string | null {
@@ -102,9 +119,17 @@ export function forgetCode(name: string): void {
   remember(name, null);
 }
 
-/** For the checks, which open several pads in one page. */
-export function resetCodes(): void {
+/**
+ * Forget every pad's code — signing out. On a shared computer the next person
+ * should not walk into the pads the last one was given links to.
+ */
+export function forgetAllCodes(): void {
   held = new Map();
+  try {
+    for (const key of Object.keys(localStorage)) if (key.startsWith("pad.code.")) localStorage.removeItem(key);
+  } catch {
+    // Nothing was kept.
+  }
 }
 
 export function linkTo(name: string, code?: string | null): string {
@@ -130,7 +155,10 @@ export class AccountError extends Error {
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const write = init.method && init.method !== "GET";
-  const res = await fetch(path, {
+  const away = "Can't reach pad right now — check your connection and try again.";
+  let res: Response;
+  try {
+    res = await fetch(path, {
     ...init,
     headers: {
       ...(init.body ? { "content-type": "application/json" } : {}),
@@ -139,10 +167,22 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(write ? { "x-ajar": "1" } : {}),
       ...init.headers,
     },
-  });
+    });
+  } catch {
+    throw new AccountError(0, away);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new AccountError(res.status, text || `the server said ${res.status}`);
+    // What a person can act on, for the two that come from a stale page.
+    const said =
+      res.status >= 502 && res.status <= 504
+        ? away
+        : res.status === 401
+        ? "You were signed out. Sign in again to carry on."
+        : res.status === 404 && path.startsWith("/api/my/pads/")
+          ? "That pad no longer exists — it may have been deleted in another tab."
+          : text || `The server said ${res.status}`;
+    throw new AccountError(res.status, said);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -154,10 +194,11 @@ export const account = {
   pad: (name: string) => call<PadInfo>(`/api/my/pads/${encodeURIComponent(name)}`),
   create: () => call<PadInfo>("/api/my/pads", { method: "POST" }),
   remove: (name: string) => call<void>(`/api/my/pads/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  settings: (name: string, view: View, edit: Edit) =>
+  /** One setting or both; one alone leaves the other as the server has it. */
+  settings: (name: string, change: { view?: View; edit?: Edit }) =>
     call<PadInfo>(`/api/my/pads/${encodeURIComponent(name)}`, {
       method: "PATCH",
-      body: JSON.stringify({ view, edit }),
+      body: JSON.stringify(change),
     }),
   /** `replace` revokes every other link of that kind in the same step. */
   newLink: (name: string, role: "viewer" | "editor", replace = false) =>
@@ -167,7 +208,10 @@ export const account = {
     }),
   revoke: (name: string, id: number) =>
     call<void>(`/api/my/pads/${encodeURIComponent(name)}/links/${id}`, { method: "DELETE" }),
-  signOut: () => call<void>("/auth/logout", { method: "POST" }),
+  signOut: async () => {
+    await call<void>("/auth/logout", { method: "POST" });
+    forgetAllCodes();
+  },
 };
 
 /**

@@ -279,6 +279,49 @@ What the design left open, settled in the build:
   nothing and the dashboard says so; see
   [operations](operations.md#signing-in) for the apps and the secrets.
 
+**Reviewed on 4 October** by four agents at once — every flow, the visual
+design, accessibility, and edge cases — and changed as a result:
+
+- **Work is never dropped when access changes.** An editor whose editing is
+  locked before their typing is saved keeps that typing as their own copy; a
+  command that finishes after the lock keeps its files the same way. Anyone
+  who loses access entirely — viewing closed, the pad deleted, their session
+  ended — with work on the page that exists nowhere else keeps the page, with
+  a "No access" banner and Save as my copy. With nothing unsaved, the page
+  becomes the private (or deleted) screen as before.
+- **Deleted is not private.** The store answers 410 and the room refuses with
+  `gone`; the page says the pad was deleted.
+- **A link pasted into an open tab takes effect** (the page reopens with it),
+  and a link that stopped working — reset, or turned off — is said so once
+  and forgotten. Only a code-shaped hash (22 characters) replaces a stored code.
+- **A sign-in that does not finish goes back where it started** with a reason
+  the page puts into words: cancelled, took too long, started in another tab,
+  the provider failed. It used to end on a plain-text 400.
+- **Viewers** get "Discard all my changes", which also brings back files a
+  command deleted; a promotion held back by local changes takes effect once
+  the last one is discarded.
+- **Save as my copy** removes the pad it made if the write fails, offers an
+  open pad when the account is full (pads or bytes), ignores a second press,
+  and the new pad says it is your copy.
+- **The dashboard** keeps up with other tabs: a share dialog always reloads its
+  pad (it could offer a link reset elsewhere), coming back to the tab checks
+  who is signed in and refreshes the list, and a pad deleted elsewhere just
+  leaves it.
+- **Names** that cannot be pads get a "That isn't a pad address" screen;
+  `/login`, `/signup`, `/account` and `/settings` go to the dashboard.
+- **Accessibility**: icon-only buttons keep their names on a phone, focus
+  returns to the control that was used after every change, the account menu
+  is a disclosure rather than a broken menu, toasts are written into live
+  regions that exist before they speak, the banner is no longer a live region
+  re-read on every file switch, dialogs are labelled by their headings, and
+  the light theme's muted text is 5:1.
+
+The server-side findings are in
+[security.md](security.md#pads-that-belong-to-an-account): an open redirect
+through a tab in the return address, a hosted session squatting an owned
+pad's name, parallel writes past the quota, and a stale dialog re-opening
+editing.
+
 Not built: Litestream backups (the database is on the box alone), deleting an
 account, linking a Google and a GitHub account into one, and any way to take a
 pad down for abuse short of the database. All in

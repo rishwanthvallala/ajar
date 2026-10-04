@@ -230,7 +230,7 @@ export class Peers {
         // Refused at the door. Knocking again every few seconds would be
         // refused the same way for as long as the page stayed open.
         const refusal = msg as { code?: string; message?: string };
-        if (refusal.code === "private") {
+        if (refusal.code === "private" || refusal.code === "gone") {
           this.closed = true;
           this.arrived?.();
           this.events.onRefused?.(refusal.code, refusal.message ?? "");

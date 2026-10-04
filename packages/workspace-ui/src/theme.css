@@ -5,7 +5,9 @@
   --surface-2: #eaecf1;
   --ink: #13171e;
   --ink-2: #414b59;
-  --muted: #6c7684;
+  /* 5:1 on the page background. #6c7684 was 4.2:1 there, under AA for the
+     small grey text the account pages put on it. */
+  --muted: #5f6977;
   --rule: #d9dde4;
   --accent: #2447c9;
   --ok: #1c6a4b;

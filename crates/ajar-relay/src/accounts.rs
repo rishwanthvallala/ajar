@@ -166,6 +166,13 @@ pub struct Access {
     pub role: Role,
     /// The link the caller came in by, so revoking it can find them.
     pub link: Option<i64>,
+    /// What the link they presented grants on its own — before the pad's
+    /// settings narrow it. A page uses it to tell an edit link that is locked
+    /// for now from a view link, and to notice a code that no longer works.
+    pub link_role: Option<Role>,
+    /// A pad its owner deleted. Nobody gets anything, and pages say so
+    /// rather than calling it private.
+    pub deleted: bool,
     /// The owner's id, or `None` for an anonymous pad.
     pub owner: Option<i64>,
     pub view: Option<View>,
@@ -177,6 +184,8 @@ impl Access {
         Access {
             role: Role::Editor,
             link: None,
+            link_role: None,
+            deleted: false,
             owner: None,
             view: None,
             edit: None,
@@ -202,7 +211,7 @@ impl AccountError {
                 format!("an account can hold {n} pads — delete one to make another")
             }
             AccountError::OverQuota(bytes) => format!(
-                "the owner's pads together are at the {} an account can hold",
+                "the account this pad belongs to is full — its pads together are at the {} an account can hold",
                 size(*bytes)
             ),
             AccountError::Db(e) => format!("the account store failed: {e}"),
@@ -452,7 +461,7 @@ impl Accounts {
         let names: Vec<String> = {
             let db = self.db.lock();
             let mut q = db.prepare(
-                "SELECT name FROM pads WHERE owner_id = ?1 AND deleted IS NULL ORDER BY created DESC",
+                "SELECT name FROM pads WHERE owner_id = ?1 AND deleted IS NULL ORDER BY created DESC, rowid DESC",
             )?;
             let rows = q.query_map(params![owner], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
@@ -564,6 +573,8 @@ impl Accounts {
         Ok(())
     }
 
+    /// Both settings at once — what the tests set up a pad with.
+    #[cfg(test)]
     pub fn set_access(
         &self,
         owner: i64,
@@ -571,10 +582,23 @@ impl Accounts {
         view: View,
         edit: Edit,
     ) -> Result<(), AccountError> {
+        self.change_access(owner, name, Some(view), Some(edit))
+    }
+
+    /// Change either setting, or both. One alone leaves the other as it
+    /// stands in the database — not as a page last saw it: a page holding a
+    /// stale copy of the other setting must not be able to put it back.
+    pub fn change_access(
+        &self,
+        owner: i64,
+        name: &str,
+        view: Option<View>,
+        edit: Option<Edit>,
+    ) -> Result<(), AccountError> {
         self.owned(owner, name)?;
         self.db.lock().execute(
-            "UPDATE pads SET view = ?1, edit = ?2 WHERE name = ?3",
-            params![view.as_str(), edit.as_str(), name],
+            "UPDATE pads SET view = COALESCE(?1, view), edit = COALESCE(?2, edit) WHERE name = ?3",
+            params![view.map(|v| v.as_str()), edit.map(|e| e.as_str()), name],
         )?;
         Ok(())
     }
@@ -671,11 +695,13 @@ impl Accounts {
         let mut access = Access {
             role: Role::None,
             link: None,
+            link_role: None,
+            deleted: deleted.is_some(),
             owner,
             view: Some(view),
             edit: Some(edit),
         };
-        if deleted.is_some() {
+        if access.deleted {
             return access;
         }
         if user.is_some() && user == owner {
@@ -696,6 +722,7 @@ impl Accounts {
                 .ok()
                 .flatten();
             if let Some((id, role)) = link {
+                access.link_role = Some(role_parse(&role));
                 let granted = match role_parse(&role) {
                     Role::Editor if edit == Edit::Code => Role::Editor,
                     _ if view != View::Owner => Role::Viewer,
@@ -901,6 +928,50 @@ mod tests {
         // Unlocking brings the same links back.
         a.set_access(me, &pad.name, View::Link, Edit::Code).unwrap();
         assert_eq!(a.access(&pad.name, None, Some(&edit)).role, Role::Editor);
+    }
+
+    #[test]
+    fn changing_one_setting_leaves_the_other_as_stored() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let pad = a.create_pad(me, &|_| false).unwrap();
+        a.set_access(me, &pad.name, View::Link, Edit::Owner)
+            .unwrap();
+        // A page that last saw editing open, changing only who can view.
+        a.change_access(me, &pad.name, Some(View::Code), None)
+            .unwrap();
+        let now = a.pad_of(me, &pad.name).unwrap();
+        assert_eq!((now.view, now.edit), (View::Code, Edit::Owner));
+    }
+
+    #[test]
+    fn a_link_says_what_it_grants_and_a_deleted_pad_says_so() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let pad = a.create_pad(me, &|_| false).unwrap();
+        let edit = pad
+            .links
+            .iter()
+            .find(|l| l.role == Role::Editor)
+            .unwrap()
+            .code
+            .clone();
+        a.set_access(me, &pad.name, View::Link, Edit::Owner)
+            .unwrap();
+        // Locked for now, but still an edit link — a viewer must not pass it on.
+        let held = a.access(&pad.name, None, Some(&edit));
+        assert_eq!(
+            (held.role, held.link_role),
+            (Role::Viewer, Some(Role::Editor))
+        );
+        assert_eq!(
+            a.access(&pad.name, None, Some("no-such-code-anywhere"))
+                .link_role,
+            None
+        );
+        a.delete_pad(me, &pad.name).unwrap();
+        let gone = a.access(&pad.name, Some(me), None);
+        assert!(gone.deleted && gone.role == Role::None);
     }
 
     #[test]

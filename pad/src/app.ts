@@ -10,7 +10,7 @@ import type * as Monaco from "monaco-editor";
 import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
-import { type Access, account, AccountError, codeFor, OPEN } from "./access";
+import { type Access, account, AccountError, codeFor, forgetCode, OPEN } from "./access";
 import { carryOver } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession } from "./editing";
@@ -20,6 +20,7 @@ import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
 import { ICONS } from "./icons";
 import { openShare } from "./share";
+import { confirmDialog, toast, toastRegions } from "./ui";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { diff, type Known, knownFrom } from "./sync";
@@ -53,8 +54,8 @@ print(f"wrote {len(rows)} rows to out.csv")
 type Status = "" | "loading" | "running" | "saving" | "error";
 
 export interface AppHooks {
-  /** The pad is not this browser's to see, now or any more. */
-  onPrivate?: () => void;
+  /** The pad is not this browser's to see, now or any more — private, deleted, or not a pad name at all. */
+  onPrivate?: (why: "private" | "gone" | "invalid") => void;
 }
 
 /**
@@ -136,6 +137,17 @@ export class App {
   private local = new Set<string>();
   /** A viewer allowed to edit since, with local changes that would be lost. */
   private promoted = false;
+  /** What the server last said, before a viewer's local changes held them back. */
+  private granted: Access = OPEN;
+  /**
+   * Access lost while this page held work nowhere else — private now, or
+   * deleted. The page stays, with that work, for Save as my copy.
+   */
+  private lost: "private" | "gone" | null = null;
+  /** The banner as last drawn, so it is not redrawn — and re-read aloud — for nothing. */
+  private bannerKey = "";
+  /** Save as my copy in flight: a second press would make a second pad. */
+  private copying = false;
   /** Set once the page is torn down — by leaving, or by being refused. */
   private disposed = false;
   /** Documents with updates they could not place, and when to give up on them. */
@@ -184,13 +196,18 @@ export class App {
 
   async start(): Promise<void> {
     this.el.title.textContent = this.name;
+    document.title = `${this.name} — pad`;
+    toastRegions();
     this.say("loading", "opening…");
 
     let pad: Pad;
     try {
       pad = await this.store.read(this.name);
     } catch (e) {
-      if (e instanceof StoreError && e.refused) return this.hooks.onPrivate?.();
+      if (e instanceof StoreError && (e.refused || e.gone)) return this.hooks.onPrivate?.(e.gone ? "gone" : "private");
+      // A reserved word or a name the store will not take: not a pad, and an
+      // editor around an error would look like one that is broken.
+      if (e instanceof StoreError && e.status === 400) return this.hooks.onPrivate?.("invalid");
       this.say("error", (e as Error).message);
       return;
     }
@@ -219,6 +236,7 @@ export class App {
     if (this.disposed) return;
     this.expose();
     this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
+    this.welcomeCopy();
     this.editor?.focus();
     // Last, so the runtime is seeded with every file above and nothing it does
     // competes with putting the editor on screen. See `warm`.
@@ -282,7 +300,7 @@ export class App {
         void this.refresh();
       },
       onDoc: (stream, kind, bytes, from) => this.onDoc(stream, kind, bytes, from),
-      onRefused: () => this.hooks.onPrivate?.(),
+      onRefused: (code) => this.lose(code === "gone" ? "gone" : "private"),
     }, () => codeFor(this.name));
     this.peers.connect();
   }
@@ -304,7 +322,7 @@ export class App {
     try {
       pad = await this.store.read(this.name);
     } catch (e) {
-      if (e instanceof StoreError && e.refused) this.hooks.onPrivate?.();
+      if (e instanceof StoreError && (e.refused || e.gone)) this.lose(e.gone ? "gone" : "private");
       return;
     }
     // Who may do what can change while the page is open: the owner locked
@@ -838,7 +856,10 @@ export class App {
         }
         // Not this browser's to change any more. Re-reading says what it is
         // now; retrying would be refused for as long as the page is open.
-        if (why.refused) {
+        // The typing stays marked unsaved, so that if access is gone for
+        // good the page keeps it rather than dropping it.
+        if (why.refused || why.gone) {
+          for (const p of paths) this.dirty.add(p);
           this.say("error", why.message);
           void this.refresh();
           return;
@@ -1221,7 +1242,18 @@ export class App {
       await this.flushModels(rt);
       const { changes, next } = await diff(rt, this.known);
       if (changes.length === 0) return;
-      const seq = await this.store.write(this.name, changes);
+      let seq: number;
+      try {
+        seq = await this.store.write(this.name, changes);
+      } catch (e) {
+        // Refused: this page may not change the pad any more — its access
+        // went while the command ran. What the command made is kept here,
+        // as a viewer's own, rather than reported as an error and lost.
+        if (!(e instanceof StoreError && (e.refused || e.gone))) throw e;
+        await this.recheckAccess();
+        if (this.viewer) await this.keepLocally(rt);
+        return;
+      }
       this.storeSeq = Math.max(this.storeSeq, seq);
       this.known = next;
       for (const change of changes) {
@@ -1265,27 +1297,124 @@ export class App {
    * back. They are told, and a reload makes the switch.
    */
   private adopt(next: Access | undefined): void {
-    const access = next ?? OPEN;
+    this.granted = next ?? OPEN;
+    this.noticeDeadLink();
+    this.applyAccess();
+  }
+
+  /**
+   * Take on what the server last said. Also run when a viewer's last local
+   * change goes, since that is what was holding a promotion back.
+   */
+  private applyAccess(): void {
+    if (this.lost) return;
+    const access = this.granted;
+    const held = this.viewer && access.role !== "viewer" && this.local.size > 0;
+    const next: Access = held ? { ...access, role: "viewer" } : access;
+    const couldWrite = this.access.role === "editor" || this.access.role === "owner";
     const same =
-      access.role === this.access.role &&
-      access.view === this.access.view &&
-      access.edit === this.access.edit &&
-      access.account === this.access.account;
+      next.role === this.access.role &&
+      next.view === this.access.view &&
+      next.edit === this.access.edit &&
+      next.account === this.access.account &&
+      held === this.promoted;
     if (same) return;
-    if (this.viewer && access.role !== "viewer" && this.local.size > 0) {
-      this.promoted = true;
-      this.access = { ...access, role: "viewer" };
-    } else {
-      this.promoted = false;
-      this.access = access;
-    }
+    this.promoted = held;
+    this.access = next;
     if (this.viewer && this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    this.ui?.setViewOnly(this.viewer);
+    if (couldWrite && this.viewer) this.keepUnsaved();
     this.el.share.title = this.access.account ? "Share this pad" : "Copy the link";
     this.paintBanner();
+  }
+
+  /**
+   * A link this browser kept for the pad that the server no longer honours —
+   * reset, or turned off by its owner. Said once, and forgotten, rather than
+   * leaving someone to wonder why their edit link opens it to view.
+   */
+  private noticeDeadLink(): void {
+    if (!this.granted.account || this.granted.link || this.granted.role === "owner") return;
+    if (!codeFor(this.name)) return;
+    forgetCode(this.name);
+    toast("The link you opened this with no longer works — its owner reset it or turned it off.", "error");
+  }
+
+  /**
+   * Access is gone: the pad was made private to this browser, or deleted, or
+   * the session that owned it ended. With nothing unsaved here, the page
+   * becomes the private (or deleted) screen. With work here that exists
+   * nowhere else — typing not yet saved, a viewer's own copies — the page
+   * stays, with that work, so it can be saved as a copy rather than lost.
+   */
+  private lose(why: "private" | "gone"): void {
+    if (this.lost) return;
+    if (this.dirty.size === 0 && this.local.size === 0) return this.hooks.onPrivate?.(why);
+    this.lost = why;
+    this.peers?.close();
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    for (const path of [...this.docs.keys()]) {
+      this.closeDoc(path);
+      this.local.add(path);
+    }
+    for (const path of this.dirty) this.local.add(path);
+    this.access = { ...this.granted, role: "viewer" };
+    this.renderFiles();
+    this.paintBanner();
+    this.say("error", why === "gone" ? "this pad was deleted" : "you no longer have access to this pad");
+  }
+
+  /**
+   * Typing that never reached the store when this page stopped being allowed
+   * to save it — editing locked, the link reset, the owner's session ended.
+   * It is the only copy, so it becomes this tab's own rather than being
+   * dropped with the save that was refused.
+   */
+  private keepUnsaved(): void {
+    let kept = 0;
+    this.applyingRemote = true;
+    try {
+      for (const path of [...this.dirty]) {
+        const text = this.current(path);
+        if (text === undefined || text === this.known.get(path)) continue;
+        this.closeDoc(path);
+        this.setFile(path, text);
+        this.local.add(path);
+        kept += 1;
+      }
+    } finally {
+      this.applyingRemote = false;
+    }
+    if (kept === 0) return;
+    this.renderFiles();
+    this.paintBanner();
+    toast(`Your access to this pad changed before ${kept === 1 ? "a change" : `${kept} changes`} of yours could be saved. ${kept === 1 ? "It's" : "They're"} kept here as your own copy — Save as my copy to keep ${kept === 1 ? "it" : "them"}.`, "error");
+  }
+
+  /**
+   * Ask the store what this page may do now — even mid-command, when
+   * `refresh` holds off — after a save was refused.
+   */
+  private async recheckAccess(): Promise<void> {
+    try {
+      this.adopt((await this.store.read(this.name)).access);
+    } catch (e) {
+      if (e instanceof StoreError && (e.refused || e.gone)) this.lose(e.gone ? "gone" : "private");
+    }
+  }
+
+  /** A pad that was just made by Save as my copy says so, once. */
+  private welcomeCopy(): void {
+    const params = new URLSearchParams(location.search);
+    const copied = params.get("copied");
+    if (!copied) return;
+    params.delete("copied");
+    const rest = params.toString();
+    history.replaceState(history.state, "", `${location.pathname}${rest ? `?${rest}` : ""}`);
+    toast(copied === "account" ? "This is your copy — a pad of your own. Share it from Share." : "This is your copy. It's an open pad: anyone with its link can edit it.");
   }
 
   /** A file a viewer has changed becomes theirs: no live document any more. */
@@ -1392,10 +1521,26 @@ export class App {
     }
     // Showing it again joins the room's live document, which may be ahead of
     // the stored copy just put back.
-    if (this.models.has(path)) this.show(path);
+    if (this.models.has(path) && this.active === path) this.show(path);
     this.renderFiles();
     this.paintBanner();
     this.say("", `back to the pad's ${path}`);
+    // The last local change gone may be all that held back a promotion.
+    this.applyAccess();
+  }
+
+  /** Every local change at once — including files a command deleted, which have no row to pick. */
+  private async discardAll(): Promise<void> {
+    const yes = await confirmDialog({
+      title: "Discard all your changes?",
+      body: `Every file you changed here goes back to the pad's version${this.local.size === 1 ? "" : ` — ${this.local.size} files`}. This can't be undone.`,
+      confirm: "Discard all",
+      danger: true,
+    });
+    if (!yes) return;
+    for (const path of [...this.local]) await this.discard(path);
+    if (this.models.has(this.active)) this.show(this.active);
+    this.say("", "back to the pad as it is");
   }
 
   /**
@@ -1404,11 +1549,20 @@ export class App {
    * anyone with its link edits — if not.
    */
   private async saveCopy(): Promise<void> {
+    if (this.copying) return;
+    this.copying = true;
+    let leaving = false;
     this.say("saving", "making your copy…");
     try {
-      const pad = await this.store.read(this.name);
       const files = new Map<string, Change>();
-      for (const [path, f] of Object.entries(pad.files)) files.set(path, { path, content: f.content, encoding: f.encoding });
+      // The pad as stored, when this page may still read it; after access is
+      // lost, what is on this page is all there is.
+      if (!this.lost) {
+        const pad = await this.store.read(this.name);
+        for (const [path, f] of Object.entries(pad.files)) files.set(path, { path, content: f.content, encoding: f.encoding });
+      } else {
+        for (const [path, model] of this.models) files.set(path, { path, content: model.getValue() });
+      }
       // Live documents are ahead of the stored copy.
       for (const [path, doc] of this.docs) if (doc.hasState) files.set(path, { path, content: doc.contents() });
       for (const path of this.local) {
@@ -1418,30 +1572,62 @@ export class App {
       }
       if (files.size === 0) throw new Error("there is nothing here to copy");
 
-      const target = await this.newPadName();
+      let target = await this.newPadName();
       if (!target) return this.say("", "");
-      await this.store.write(target, [...files.values()]);
+      try {
+        await this.store.write(target.name, [...files.values()]);
+      } catch (e) {
+        // A pad of theirs was made for this; it must not stay behind empty,
+        // using up a place in their account.
+        if (target.account) await account.remove(target.name).catch(() => {});
+        if (!(target.account && e instanceof StoreError && e.tooBig)) throw e;
+        const open = await confirmDialog({
+          title: "Your account is full",
+          body: `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}. Make an open pad instead? Anyone with its link can edit it.`,
+          confirm: "Make an open pad",
+        });
+        if (!open) return this.say("", "");
+        target = { name: await this.openPadName(), account: false };
+        await this.store.write(target.name, [...files.values()]);
+      }
       // Nothing is left behind now, so leaving needs no warning.
       this.local.clear();
-      location.assign(`/${target}`);
+      this.dirty.clear();
+      leaving = true;
+      location.assign(`/${target.name}?copied=${target.account ? "account" : "open"}`);
     } catch (e) {
       this.say("error", `could not make your copy: ${(e as Error).message}`);
+    } finally {
+      // Held while the page goes; released for a cancelled or failed one.
+      if (!leaving) this.copying = false;
     }
   }
 
   /** A pad of your own if you are signed in; otherwise a fresh open one. */
-  private async newPadName(): Promise<string | null> {
+  private async newPadName(): Promise<{ name: string; account: boolean } | null> {
     const me = await account.me().catch(() => null);
     if (me?.user) {
       try {
-        return (await account.create()).name;
+        return { name: (await account.create()).name, account: true };
       } catch (e) {
         if (!(e instanceof AccountError && e.status === 507)) throw e;
-        if (!confirm(`${e.message}.\n\nMake an open pad instead? Anyone with its link can edit it.`)) return null;
+        const open = await confirmDialog({
+          title: "Your account is full",
+          body: `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}. Make an open pad instead? Anyone with its link can edit it.`,
+          confirm: "Make an open pad",
+        });
+        if (!open) return null;
       }
     }
-    // Minted here, as every anonymous name is — so checked, because writing
-    // into somebody else's open pad would add these files to theirs.
+    return { name: await this.openPadName(), account: false };
+  }
+
+  /**
+   * A free open-pad name. Minted here, as every anonymous name is — so
+   * checked, because writing into somebody else's open pad would add these
+   * files to theirs.
+   */
+  private async openPadName(): Promise<string> {
     for (let i = 0; i < 5; i++) {
       const name = mintName();
       if (!(await this.store.read(name)).exists) return name;
@@ -1452,6 +1638,10 @@ export class App {
   /** What a viewer can do instead, always on screen. */
   private paintBanner(): void {
     if (!this.ui) return;
+    const own = this.local.has(this.active) && this.models.has(this.active);
+    const key = this.viewer ? `${this.lost}|${own ? this.active : ""}|${this.local.size}|${this.promoted}` : "";
+    if (key === this.bannerKey) return;
+    this.bannerKey = key;
     if (!this.viewer) return this.ui.setBanner(null);
     const bar = document.createElement("div");
     bar.className = "viewing";
@@ -1467,20 +1657,25 @@ export class App {
       b.onclick = onClick;
       return b;
     };
-    const own = this.local.has(this.active) && this.models.has(this.active);
     const pill = document.createElement("span");
-    pill.className = `viewing-pill${own ? " own" : ""}`;
-    pill.innerHTML = `${own ? ICONS.pencil : ICONS.eye}<span>${own ? "Your copy" : "Viewing"}</span>`;
-    if (own) {
+    pill.className = `viewing-pill${own || this.lost ? " own" : ""}`;
+    pill.innerHTML = `${own ? ICONS.pencil : ICONS.eye}<span>${this.lost ? "No access" : own ? "Your copy" : "Viewing"}</span>`;
+    if (this.lost) {
+      text.textContent =
+        this.lost === "gone"
+          ? "This pad was deleted. What's on this page stays until you leave — save it as your own copy to keep it."
+          : "You no longer have access to this pad. What's on this page stays until you leave — save it as your own copy to keep it.";
+    } else if (own) {
       text.textContent = `You're editing your own copy of ${this.active}. Changes to it from the pad no longer arrive.`;
       actions.append(button("Discard my changes", () => void this.discard(this.active)));
     } else if (this.local.size > 0) {
       const n = this.local.size;
       text.textContent = `${n} local ${n === 1 ? "change" : "changes"}, kept in this tab only. The rest follows the pad live.`;
+      actions.append(button("Discard all my changes", () => void this.discardAll()));
     } else {
       text.textContent = "Watching live. You can run and change things, but your changes stay in this tab.";
     }
-    if (this.promoted) {
+    if (this.promoted && !this.lost) {
       text.textContent += " You can edit this pad now: reload to join in — save your copy first, or your changes go.";
       actions.append(button("Reload", () => location.reload()));
     }

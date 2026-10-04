@@ -198,35 +198,46 @@ async fn callback(
 ) -> Response {
     // Spent whatever happens next: a sign-in is one round trip.
     let spent = set_cookie(&state, sign_in_cookie_name(&state), None, 0);
-    let (Some(code), Some(nonce)) = (q.code, q.state) else {
-        // Cancelled at the provider, or refused there. Its reason goes back
-        // to the dashboard in the address, so only the characters such a
-        // reason is made of — `access_denied` — and nothing that could break
-        // out of it.
-        let why: String = q
-            .error
-            .unwrap_or_else(|| "no_code".into())
+    let started = cookie(&headers, sign_in_cookie_name(&state));
+    // A sign-in that does not finish goes back where it started — the
+    // dashboard, or the private pad it was begun from — with a short reason
+    // the page puts into words. It used to end on a bare line of text with
+    // no way back. Only the characters a reason is made of, so nothing from
+    // the provider can break out of the address.
+    let back = |why: &str| {
+        let why: String = why
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
             .take(64)
             .collect();
-        return (
+        let next = crate::auth::next_of(started.as_deref()).unwrap_or_else(|| "/dashboard".into());
+        let path = next
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("/dashboard")
+            .to_string();
+        (
             StatusCode::SEE_OTHER,
             [
-                (header::SET_COOKIE, spent),
-                (header::LOCATION, format!("/dashboard?signin={why}")),
+                (header::SET_COOKIE, spent.clone()),
+                (header::LOCATION, format!("{path}?signin={why}")),
             ],
         )
-            .into_response();
+            .into_response()
     };
-    let started = cookie(&headers, sign_in_cookie_name(&state));
+    let (Some(code), Some(nonce)) = (q.code, q.state) else {
+        // Cancelled at the provider, or refused there.
+        return back(q.error.as_deref().unwrap_or("no_code"));
+    };
     let auth = state.auth.clone();
+    let cookie_value = started.clone();
     let finished =
-        blocking(move || auth.finish(&provider, &code, &nonce, started.as_deref())).await;
+        blocking(move || auth.finish(&provider, &code, &nonce, cookie_value.as_deref())).await;
     let (who, next) = match finished {
         Ok(done) => done,
         Err(why) => {
-            return (StatusCode::BAD_REQUEST, [(header::SET_COOKIE, spent)], why).into_response()
+            tracing::warn!(reason = why.code, detail = %why.detail, "a sign-in did not finish");
+            return back(why.code);
         }
     };
     let accounts = state.accounts.clone();
@@ -331,8 +342,9 @@ async fn create_pad(
 
 #[derive(Deserialize)]
 struct Settings {
-    view: View,
-    edit: Edit,
+    /// Either, or both: one alone leaves the other as it is stored.
+    view: Option<View>,
+    edit: Option<Edit>,
 }
 
 async fn set_access(
@@ -346,7 +358,7 @@ async fn set_access(
     let accounts = state.accounts.clone();
     let pad_name = name.clone();
     let pad = blocking(move || {
-        accounts.set_access(me.id, &pad_name, settings.view, settings.edit)?;
+        accounts.change_access(me.id, &pad_name, settings.view, settings.edit)?;
         accounts.pad_of(me.id, &pad_name)
     })
     .await
@@ -429,6 +441,10 @@ async fn revoke_link(
 #[derive(Serialize)]
 pub struct AccessView {
     pub role: Role,
+    /// What the link the page presented grants on its own; absent when it
+    /// presented none, or one that no longer works.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<Role>,
     /// Whether the pad belongs to an account at all.
     pub account: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -441,6 +457,7 @@ impl From<&Access> for AccessView {
     fn from(a: &Access) -> Self {
         AccessView {
             role: a.role,
+            link: a.link_role,
             account: a.owner.is_some(),
             view: a.view,
             edit: a.edit,

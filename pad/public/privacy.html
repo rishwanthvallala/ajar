@@ -39,12 +39,17 @@
       a { color: var(--accent); }
       code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }
       .meta { color: var(--muted); margin: 0; }
-      .short { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 0.75rem 1.25rem; }
+      .short { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 0.9rem 1.25rem; }
+      .short > :first-child { margin-top: 0; }
+      .short > :last-child { margin-bottom: 0; }
+      header a { display: inline-flex; align-items: center; gap: 0.5rem; }
+      .mark rect { fill: var(--accent); }
+      .mark path { stroke: var(--bg); }
     </style>
   </head>
   <body>
     <main>
-      <header><a href="/">pad</a><span class="meta">code.rishwanth.dev</span></header>
+      <header><a href="/"><svg class="mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect width="24" height="24" rx="6.5"/><path d="M6.5 8h8.5M9 12h8.5M9 16h5" stroke-width="2" stroke-linecap="round" fill="none"/></svg>pad</a><span class="meta">code.rishwanth.dev</span></header>
 
       <h1>Privacy</h1>
       <p class="meta">Effective 4 October 2026</p>

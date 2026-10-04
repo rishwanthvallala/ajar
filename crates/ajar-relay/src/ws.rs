@@ -134,12 +134,31 @@ pub async fn handle(
     // kept — the mistake the read-only fix of 2 October undid for ajar. An
     // anonymous pad has no row and everyone edits, as it always has.
     let (mut viewer, mut owner) = (false, false);
+    // A pad that belongs to an account is only ever a peer room. A hosted
+    // session opened under its name first would take the name, and the
+    // pad's own people would be refused as the wrong shape for as long as it
+    // was held — anyone who knew the name could keep a private pad's room shut.
+    if role != Role::Peer {
+        let accounts = gate.accounts.clone();
+        let name = session_id.clone();
+        let owned = crate::http_accounts::blocking(move || {
+            let a = accounts.access(&name, None, None);
+            a.owner.is_some() || a.deleted
+        })
+        .await;
+        if owned {
+            refuse!("wrong_shape", "that name belongs to a pad");
+        }
+    }
     if role == Role::Peer {
         let accounts = gate.accounts.clone();
         let (name, user) = (session_id.clone(), gate.user);
         let access =
             crate::http_accounts::blocking(move || accounts.access(&name, user, code.as_deref()))
                 .await;
+        if access.deleted {
+            refuse!("gone", "this pad was deleted by its owner");
+        }
         match access.role {
             crate::accounts::Role::None => refuse!("private", "this pad is private"),
             crate::accounts::Role::Viewer => viewer = true,
