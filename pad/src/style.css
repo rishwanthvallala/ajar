@@ -161,3 +161,4 @@ a.page-button { display: inline-block; text-decoration: none; }
 .pad-card-head { display: flex; align-items: baseline; gap: 0.5rem 0.9rem; flex-wrap: wrap; }
 .pad-name { font-family: var(--mono); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
 .pad-meta { color: var(--muted); font-size: 0.75rem; margin-right: auto; }
+.page-foot { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); font-size: 0.8125rem; }

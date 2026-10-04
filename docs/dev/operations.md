@@ -157,7 +157,12 @@ everything else works as before. Design and behaviour: [accounts](accounts.md).
 | GitHub | github.com → Settings → Developer settings → *OAuth Apps* → New. Not a GitHub App: an OAuth app is the one that hands back a user id and nothing more | `https://code.rishwanth.dev/auth/github/callback` |
 
 Google's consent screen starts in *testing*, which lets only listed test users
-sign in; publish it to let anyone.
+sign in; publish it to let anyone. Publishing needs a privacy policy on the
+authorised domain: `https://code.rishwanth.dev/privacy`, which is
+`pad/public/privacy.html` served by its own route in the Caddyfile. **It says
+exactly what is collected — change it in the same commit as anything that
+changes what the relay or the page stores or sends.** No logo: one sends the
+app to Google's verification review, and the three basic scopes need none.
 
 ### The secrets
 

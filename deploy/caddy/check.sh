@@ -32,6 +32,7 @@ head -c 200000 /dev/zero > "$tmp/pad/packages/big.webc"
 echo small > "$tmp/pad/packages/small.webc"
 echo 'export {}' > "$tmp/pad/vendor/sdk.js"
 echo '<!doctype html><title>pad</title>' > "$tmp/pad/index.html"
+echo '<!doctype html><title>Privacy — pad</title>' > "$tmp/pad/privacy.html"
 
 # Caddy takes one block of global options, and first: the Caddyfile's own go
 # into this one, and its block is left out of what follows.
@@ -116,6 +117,8 @@ r=$(spend "$WISP" 127.0.0.1 /wisp/)
 echo "everything else"
 [ "$(status 127.0.0.1 /some-folder-name)" = 200 ] && ok "a folder page is not limited" || bad "a folder page was refused"
 [ "$(status 127.0.0.1 /api/pad/x)" != 429 ] && ok "the relay's paths are left to the relay" || bad "/api was refused"
+privacy=$(curl -s --resolve "code.rishwanth.dev:$PORT:127.0.0.1" "http://code.rishwanth.dev:$PORT/privacy")
+echo "$privacy" | grep -q 'Privacy — pad' && ok "/privacy is the privacy policy, not the page" || bad "/privacy served: ${privacy:0:80}"
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

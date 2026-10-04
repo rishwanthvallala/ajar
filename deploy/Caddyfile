@@ -239,6 +239,14 @@ code.rishwanth.dev {
 		}
 	}
 
+	# The privacy policy, at the plain address Google's consent screen links
+	# to. A static page in the pad's build; `privacy` is a reserved name, so no
+	# pad can ever sit here.
+	handle /privacy {
+		root * /srv/ajar/pad
+		rewrite * /privacy.html
+		file_server
+	}
 	handle {
 		root * /srv/ajar/pad
 		# Any path that is not a file is a folder name, and the page reads

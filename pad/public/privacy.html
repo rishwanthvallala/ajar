@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy — pad</title>
+    <meta name="description" content="What pad at code.rishwanth.dev collects, why, and what it does not do." />
+    <!--
+      A plain page on purpose: no script, so it reads the same to a person, a
+      crawler and Google's consent-screen review, and nothing here can change
+      without this file changing. Served at /privacy by deploy/Caddyfile.
+      Keep it true: when what is collected changes, this changes with it.
+    -->
+    <style>
+      :root {
+        --bg: #f3f4f7; --surface: #ffffff; --ink: #13171e; --ink-2: #414b59;
+        --muted: #6c7684; --rule: #d9dde4; --accent: #2447c9;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1218; --surface: #161a22; --ink: #e7eaf0; --ink-2: #b4bcc8;
+          --muted: #8a94a2; --rule: #262c37; --accent: #8ca6ff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--ink);
+        font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+      header { display: flex; align-items: baseline; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--rule); margin-bottom: 1.5rem; }
+      header a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-weight: 600; color: var(--ink); text-decoration: none; }
+      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+      h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
+      p, li { color: var(--ink-2); }
+      ul { padding-left: 1.25rem; }
+      li { margin: 0.3rem 0; }
+      a { color: var(--accent); }
+      code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }
+      .meta { color: var(--muted); margin: 0; }
+      .short { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 0.75rem 1.25rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><a href="/">pad</a><span class="meta">code.rishwanth.dev</span></header>
+
+      <h1>Privacy</h1>
+      <p class="meta">Effective 4 October 2026</p>
+
+      <p>
+        pad is a code scratchpad at <code>code.rishwanth.dev</code>: open it, type, run, and send the link.
+        It is a personal project run by Rishwanth Vallala. Questions, or a request to see or delete
+        your data: <a href="mailto:vallalarishwanth@gmail.com">vallalarishwanth@gmail.com</a>.
+      </p>
+
+      <div class="short">
+        <p><strong>In short.</strong></p>
+        <ul>
+          <li>You can use pad without an account. Signing in is only for pads you control.</li>
+          <li>Signing in gives us your name, email address and an account id from Google or GitHub — nothing else.</li>
+          <li>Files you put in a pad are stored on our server, unencrypted.</li>
+          <li>No ads, no analytics, no tracking, no selling or sharing your data, no email.</li>
+        </ul>
+      </div>
+
+      <h2>If you sign in</h2>
+      <p>You can sign in with Google or GitHub. We never see or store a password.</p>
+      <ul>
+        <li><strong>From Google</strong> we receive your Google account id, your email address and your name (the <code>openid</code>, <code>email</code> and <code>profile</code> permissions).</li>
+        <li><strong>From GitHub</strong> we receive your GitHub account id, your username, and your name and email address if you have made them public (the <code>read:user</code> permission).</li>
+      </ul>
+      <p>
+        We store which service you signed in with, that account id, your email address, your name, and when you
+        first signed in. They are used only to recognise you when you come back and to show you whose account you
+        are in. The access the service grants is used once, during sign-in, to read those details, and is not kept.
+        We cannot see your contacts, files, repositories, or anything else in your Google or GitHub account.
+      </p>
+
+      <h2>Cookies</h2>
+      <ul>
+        <li>Once you sign in, a cookie holds a random token that keeps you signed in for 30 days, or until you sign out. The server keeps only a one-way hash of it.</li>
+        <li>While a sign-in is in progress, a second cookie lasts at most 10 minutes, to make sure the sign-in finishes in the browser that started it.</li>
+      </ul>
+      <p>There are no other cookies, and none from anyone else.</p>
+
+      <h2>Your pads</h2>
+      <ul>
+        <li>The files in a pad are stored on our server so that whoever has the link can open them. <strong>They are not encrypted</strong>, and the person who runs pad can read them. Do not put passwords, keys or anything sensitive in a pad.</li>
+        <li><strong>A pad anyone can open</strong> can be read and changed by anyone with its link, and is deleted after 90 days in which nobody opens it.</li>
+        <li><strong>A pad you own</strong> is kept until you delete it, and who can view or edit it is your choice. Deleting it from Your pads deletes its files straight away.</li>
+        <li>The links you share carry a code after the <code>#</code>. Browsers never send that part to a server, so it does not appear in our logs. We keep each code only as a one-way hash, plus an encrypted copy so that you can copy the link again from Your pads.</li>
+      </ul>
+
+      <h2>When you run code</h2>
+      <p>
+        Code runs inside your own browser, not on our server. To do that, your browser downloads the runtime —
+        most of it from us, and some from Wasmer (<code>registry.wasmer.io</code> and <code>cdn.wasmer.io</code>), which
+        sees your IP address as any site you download from does. When code in a pad installs a Python package, the
+        connection goes through our server to the Python Package Index (<code>pypi.org</code> and
+        <code>files.pythonhosted.org</code>), and nowhere else; its name lookups go through our server to Cloudflare's
+        DNS service. The connection is encrypted end to end, so we see which of those hosts it reached, not what was
+        sent.
+      </p>
+
+      <h2>Logs</h2>
+      <p>
+        Our web server records each request — the IP address it came from, the address requested, the time, and the
+        browser's description of itself — to keep the service secure, to limit abuse, and to fix problems. Older
+        entries are deleted automatically as the logs fill. IP addresses are also held in memory for a short time to
+        apply rate limits.
+      </p>
+
+      <h2>On your device</h2>
+      <p>
+        Your browser keeps your settings — theme, layout, colours — and the codes of pad links you have opened, in its
+        own storage on your device. They stay there until you clear your browser's data.
+      </p>
+
+      <h2>Who else is involved</h2>
+      <p>
+        pad runs on Amazon Web Services, in its Mumbai region, which stores and processes the data above on our
+        behalf. We do not sell, rent or share your data with anyone else, and do not use it for advertising. We
+        would disclose it only if the law required us to.
+      </p>
+
+      <h2>Google user data</h2>
+      <p>
+        pad's use and transfer of information received from Google APIs adheres to the
+        <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+        including the Limited Use requirements. The information pad receives from Google — your account id, email
+        address and name — is used only to sign you in and to show you which account you are using. It is not
+        shared, sold, used for advertising, or used to train any model.
+      </p>
+
+      <h2>Your choices</h2>
+      <ul>
+        <li>Delete any pad you own from <a href="/dashboard">Your pads</a>; its files go immediately.</li>
+        <li>Sign out from Your pads at any time.</li>
+        <li>To have your account and everything stored with it deleted, or to get a copy of it, email the address above; it will be done within 30 days.</li>
+        <li>You can also withdraw pad's access from your
+          <a href="https://myaccount.google.com/permissions">Google account</a> or under GitHub's
+          <a href="https://github.com/settings/applications">Authorized OAuth Apps</a>.</li>
+      </ul>
+
+      <h2>Children</h2>
+      <p>pad is not meant for children under 13, and we do not knowingly collect their data.</p>
+
+      <h2>Changes</h2>
+      <p>If what pad collects or how it uses it changes, this page will change first, with a new date at the top.</p>
+    </main>
+  </body>
+</html>

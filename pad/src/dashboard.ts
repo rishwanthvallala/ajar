@@ -9,7 +9,14 @@ import { account, AccountError, type Me, type PadInfo, PROVIDERS, signInUrl, siz
 import { el, ownerBody } from "./share";
 
 function page(...children: (Node | string)[]): HTMLElement {
-  return el("main", { className: "page" }, ...children);
+  return el(
+    "main",
+    { className: "page" },
+    ...children,
+    // Where sign-in is offered, what signing in collects is a click away —
+    // and Google's review asks for exactly that.
+    el("footer", { className: "page-foot" }, el("a", { href: "/privacy" }, "Privacy")),
+  );
 }
 
 function signInButtons(me: Me, next: string): HTMLElement {
