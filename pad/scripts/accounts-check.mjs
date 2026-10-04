@@ -188,13 +188,16 @@ try {
   const owner = await person("owner");
   await owner.goto(`${ORIGIN}/dashboard`);
   await owner.waitForSelector("text=Pads you control");
-  is(await owner.locator("a.page-button", { hasText: "Continue with GitHub" }).count(), 1, "signed out, the dashboard offers GitHub");
+  is(await owner.locator("a.provider", { hasText: "Continue with GitHub" }).count(), 1, "signed out, the dashboard offers GitHub");
   await owner.click("text=Continue with GitHub");
   await owner.waitForSelector("text=Your pads", { timeout: 15_000 });
   is(new URL(owner.url()).pathname, "/dashboard", "signing in comes back to the dashboard");
   ownerCookie = (await owner.context().cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
   is((await owner.context().cookies()).find((c) => c.name === "ajar")?.httpOnly, true, "the session cookie is HttpOnly");
-  is(await owner.locator(".page-who").textContent(), "ana · GitHub", "it says who is signed in");
+  is(await owner.locator(".account-name").textContent(), "ana", "it says who is signed in");
+  await owner.click(".account-button");
+  is((await owner.locator(".menu-who").textContent()).includes("GitHub"), true, "and with what, in the account menu");
+  await owner.keyboard.press("Escape");
 
   // ---- a pad of one's own ----
   await owner.click("#new-pad");
@@ -211,7 +214,7 @@ try {
   // ---- the share dialog ----
   await owner.click("#share");
   await owner.waitForSelector(".share-dialog .share-url");
-  const urls = await owner.$$eval(".share-dialog .share-url", (inputs) => inputs.map((i) => i.value));
+  const urls = await owner.$$eval(".share-dialog .share-url", (inputs) => inputs.map((i) => i.dataset.url));
   const viewUrl = urls.find((u) => !u.includes("#"));
   const editUrl = urls.find((u) => u.includes("#"));
   is(viewUrl, `${ORIGIN}/${name}`, "the view link is the plain address while anyone with it can view");
@@ -248,7 +251,7 @@ try {
 
   await editor.click("#share");
   await editor.waitForSelector(".share-dialog .share-url");
-  const editorUrls = await editor.$$eval(".share-dialog .share-url", (inputs) => inputs.map((i) => i.value));
+  const editorUrls = await editor.$$eval(".share-dialog .share-url", (inputs) => inputs.map((i) => i.dataset.url));
   is(editorUrls.includes(editUrl) && editorUrls.includes(viewUrl), true, "an editor can pass on editing, and viewing while it is open");
   await editor.keyboard.press("Escape");
 
@@ -336,30 +339,39 @@ try {
   const stranger = await person("stranger");
   await stranger.goto(viewUrl);
   await stranger.waitForSelector("text=This pad is private", { timeout: 15_000 });
-  is(await stranger.locator("a.page-button", { hasText: "Continue with GitHub" }).count(), 1, "a stranger is told it is private, and offered sign-in");
+  is(await stranger.locator("a.provider", { hasText: "Continue with GitHub" }).count(), 1, "a stranger is told it is private, and offered sign-in");
 
   // ---- the dashboard ----
   await owner.goto(`${ORIGIN}/dashboard`);
-  await owner.waitForSelector(`.pad-card[data-name="${name}"]`);
-  is(await owner.locator(`.pad-card[data-name="${name}"]`).getByLabel("Who can view").inputValue(), "code", "the dashboard shows the settings");
+  const card = () => owner.locator(`.pad-card[data-name="${name}"]`);
+  await card().waitFor();
+  is(await card().locator(".chip-view-code").textContent(), "View link only", "the dashboard shows the settings at a glance");
   is(/1 of 20 pads/.test(await owner.locator(".page-usage").textContent()), true, "and how much of the account is used");
 
-  // Editing back on from the dashboard, then Reset on its link.
-  const card = () => owner.locator(`.pad-card[data-name="${name}"]`);
-  // The edit row's own field: viewing needs a link by now, so the view link
-  // has a code after the # as well.
-  const editRow = () => card().locator(".share-link", { hasText: "Edit link" });
-  const editLinkShown = () => editRow().locator(".share-url").inputValue();
-  await card().getByLabel("Who can edit").selectOption("code");
+  // Share from the dashboard is the pad's own dialog.
+  const dialog = () => owner.locator("dialog.share-dialog");
+  await card().getByRole("button", { name: "Share" }).click();
+  await dialog().waitFor();
+  is(await dialog().getByLabel("Who can view").inputValue(), "code", "and in full, in the same dialog as the pad's");
+
+  // Editing back on, then Reset on its link. The edit row's own field:
+  // viewing needs a link by now, so the view link has a code after the # too.
+  const editRow = () => dialog().locator(".share-link", { hasText: "Edit link" });
+  const editLinkShown = () => editRow().locator(".share-url").getAttribute("data-url");
+  await dialog().getByLabel("Who can edit").selectOption("code");
   await editRow().locator(".share-url").waitFor();
   const before = await editLinkShown();
   is(before, editUrl, "turning editing back on brings the same edit link back");
+  await until(owner, (n) => document.querySelector(`.pad-card[data-name="${n}"] .chip-edit-code`), name);
+  ok("and the list behind the dialog shows it");
   await editRow().getByRole("button", { name: "Reset" }).click();
-  await until(owner, ([n, old]) => {
-    const row = [...document.querySelectorAll(`.pad-card[data-name="${n}"] .share-link`)].find((r) => r.textContent.includes("Edit link"));
-    const now = row?.querySelector(".share-url")?.value;
+  // Asked first, in a dialog of its own; Cancel is what has focus.
+  await owner.locator("dialog.modal-confirm").getByRole("button", { name: "Reset link" }).click();
+  await until(owner, (old) => {
+    const row = [...document.querySelectorAll("dialog.share-dialog .share-link")].find((r) => r.textContent.includes("Edit link"));
+    const now = row?.querySelector(".share-url")?.dataset.url;
     return !!now && now !== old;
-  }, [name, before]);
+  }, before);
   const after = await editLinkShown();
   const roleWith = async (url) => {
     const res = await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { "x-pad-code": url.split("#")[1] } });
@@ -367,7 +379,15 @@ try {
   };
   is(await roleWith(before), 403, "Reset stops the old edit link");
   is(await roleWith(after), "editor", "and the new one edits");
-  await owner.click(`.pad-card[data-name="${name}"] button:has-text("Delete")`);
+  await owner.keyboard.press("Escape");
+  await dialog().waitFor({ state: "detached" });
+
+  // Delete asks, and Cancel keeps it.
+  await card().getByRole("button", { name: `Delete ${name}` }).click();
+  await owner.locator("dialog.modal-confirm").getByRole("button", { name: "Cancel" }).click();
+  is(await (await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } })).status, 200, "cancelling a delete keeps the pad");
+  await card().getByRole("button", { name: `Delete ${name}` }).click();
+  await owner.locator("dialog.modal-confirm").getByRole("button", { name: "Delete pad" }).click();
   await owner.waitForSelector("text=No pads yet");
   is(await (await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } })).status, 403, "deleting it from the dashboard deletes it");
 
@@ -434,7 +454,8 @@ try {
   }
   await fetch(`${ORIGIN}/api/my/pads/${quiet}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
 
-  await owner.click("button:has-text('Sign out')");
+  await owner.click(".account-button");
+  await owner.getByRole("menuitem", { name: "Sign out" }).click();
   await owner.waitForSelector("text=Pads you control");
   ok("signing out returns to the signed-out dashboard");
 } catch (e) {

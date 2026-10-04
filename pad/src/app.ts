@@ -18,6 +18,7 @@ import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
+import { ICONS } from "./icons";
 import { openShare } from "./share";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
@@ -1239,12 +1240,7 @@ export class App {
 
   private async share(): Promise<void> {
     if (this.access.account) {
-      return openShare({
-        name: this.name,
-        access: this.access,
-        code: codeFor(this.name),
-        say: (text, error) => this.say(error ? "error" : "", text),
-      });
+      return openShare({ name: this.name, access: this.access, code: codeFor(this.name) });
     }
     const url = `${location.origin}/${this.name}`;
     try {
@@ -1471,21 +1467,25 @@ export class App {
       b.onclick = onClick;
       return b;
     };
-    if (this.local.has(this.active) && this.models.has(this.active)) {
+    const own = this.local.has(this.active) && this.models.has(this.active);
+    const pill = document.createElement("span");
+    pill.className = `viewing-pill${own ? " own" : ""}`;
+    pill.innerHTML = `${own ? ICONS.pencil : ICONS.eye}<span>${own ? "Your copy" : "Viewing"}</span>`;
+    if (own) {
       text.textContent = `You're editing your own copy of ${this.active}. Changes to it from the pad no longer arrive.`;
       actions.append(button("Discard my changes", () => void this.discard(this.active)));
     } else if (this.local.size > 0) {
       const n = this.local.size;
-      text.textContent = `Viewing — ${n} local ${n === 1 ? "change" : "changes"}, kept in this tab only.`;
+      text.textContent = `${n} local ${n === 1 ? "change" : "changes"}, kept in this tab only. The rest follows the pad live.`;
     } else {
-      text.textContent = "Viewing — you can run and change things, but your changes stay in this tab.";
+      text.textContent = "Watching live. You can run and change things, but your changes stay in this tab.";
     }
     if (this.promoted) {
       text.textContent += " You can edit this pad now: reload to join in — save your copy first, or your changes go.";
       actions.append(button("Reload", () => location.reload()));
     }
     actions.append(button("Save as my copy", () => void this.saveCopy(), true));
-    bar.append(text, actions);
+    bar.append(pill, text, actions);
     this.ui.setBanner(bar);
   }
 

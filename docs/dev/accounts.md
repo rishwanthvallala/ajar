@@ -228,9 +228,15 @@ in `main.rs` and at the peer room's door in `ws.rs`. See
 [security.md](security.md#pads-that-belong-to-an-account).
 
 **The page.** `pad/src/access.ts` holds the code and the account API;
-`share.ts` the dialog; `dashboard.ts` the dashboard and the private-pad screen;
-the viewer's behaviour is in `app.ts`. **Your pads** sits in the header beside
-Share, and is hidden on a phone, where the header has no room.
+`share.ts` the dialog; `dashboard.ts` the sign-in page, the dashboard and the
+private-pad screen; the viewer's behaviour is in `app.ts`. They are built from
+one small kit — `ui.ts` (buttons, the provider buttons, modals, a confirm
+dialog, toasts, the theme switch), `icons.ts` (inline SVG, since the CSP allows
+images only from this origin) and `accounts.css`, which uses only the theme's
+tokens, so both themes come for free. The dashboard lists pads with chips for
+who can view and edit; settings and links live in the share dialog, the same
+one the pad opens. **Your pads** sits in the header beside Share, and is hidden
+on a phone, where the header has no room.
 
 What the design left open, settled in the build:
 

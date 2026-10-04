@@ -71,7 +71,9 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .fixture-icon { min-width: 2rem; font: 0.6875rem var(--mono); line-height: 1.2; }
 
 @media (max-width: 47.999rem) {
-  .pad-shell .workspace-actions { width: 100%; justify-content: flex-end; }
+  /* The rest of the row, not all of it: at 100% the theme button after it
+     was pushed onto a third row of its own. */
+  .pad-shell .workspace-actions { flex: 1 1 auto; justify-content: flex-end; }
   .pad-shell .workspace-actions .pad-action span { display: none; }
   .pad-shell .workspace-actions .pad-action { min-width: 2rem; justify-content: center; }
 }
@@ -92,6 +94,14 @@ body { background: var(--bg); color: var(--ink); }
   background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--ink-2); font-size: 0.75rem;
 }
 .pad-shell .viewing { display: flex; align-items: center; gap: 0.5rem 0.75rem; flex-wrap: wrap; }
+.pad-shell .viewing-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem; height: 1.45rem; padding: 0 0.55rem; border-radius: 99px; flex: none;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-weight: 600;
+}
+.pad-shell .viewing-pill.own { background: color-mix(in srgb, var(--warn) 15%, var(--surface)); color: var(--warn); }
+.pad-shell .viewing-pill svg { width: 0.8rem; height: 0.8rem; }
+/* On a phone the header has no room for it, and the banner's pill says the same. */
+@media (max-width: 40rem) { .pad-shell #readonly { display: none !important; } }
 .pad-shell .viewing-text { flex: 1 1 16rem; min-width: 0; }
 .pad-shell .viewing-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .pad-shell .quiet-button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
@@ -102,63 +112,3 @@ body { background: var(--bg); color: var(--ink); }
   background: color-mix(in srgb, var(--warn) 12%, var(--surface));
 }
 
-/* The share dialog. */
-.pad-dialog {
-  width: min(34rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); padding: 0;
-  border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 0.8125rem;
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
-}
-.pad-dialog::backdrop { background: rgb(0 0 0 / 0.35); }
-.pad-dialog header { display: flex; align-items: center; gap: 0.75rem; padding: 0.8rem 1rem; border-bottom: 1px solid var(--rule); }
-.pad-dialog h2 { margin: 0; font-size: 0.9375rem; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
-.pad-dialog h2 code, .page code { font-family: var(--mono); font-size: 0.95em; }
-.share-body { display: grid; gap: 0.9rem; padding: 1rem; }
-.share-close { margin-left: auto; }
-.share-close, .share-button, .share-select, .page-button {
-  font: inherit; font-size: 0.75rem; line-height: 1.4; padding: 0.35rem 0.65rem;
-  border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); cursor: pointer;
-}
-.share-button:hover:not(:disabled), .share-close:hover, .page-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.share-button.primary, .page-button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.share-button:disabled, .page-button:disabled { opacity: 0.45; cursor: default; }
-.share-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.6rem; }
-.share-setting { display: grid; gap: 0.25rem; color: var(--muted); font-size: 0.75rem; }
-.share-select { color: var(--ink); width: 100%; }
-.share-link { display: grid; gap: 0.4rem; }
-.share-what { display: grid; gap: 0.1rem; }
-.share-what span { color: var(--muted); font-size: 0.75rem; }
-.share-link.off strong { color: var(--muted); }
-.share-actions { display: flex; gap: 0.4rem; min-width: 0; }
-.share-url {
-  flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.75rem; padding: 0.35rem 0.5rem;
-  border: 1px solid var(--rule); border-radius: 5px; background: var(--surface-2); color: var(--ink);
-}
-.share-note { margin: 0; color: var(--muted); font-size: 0.75rem; }
-.share-note a, .page a { color: var(--accent); }
-
-/* The dashboard, and the screen for a pad you may not open. */
-.page {
-  max-width: 52rem; margin: 0 auto; padding: 1rem 1rem 3rem;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 0.875rem; color: var(--ink);
-}
-.page-head { display: flex; align-items: center; gap: 0.75rem; padding-bottom: 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--rule); }
-.page-brand { font-family: var(--mono); font-weight: 600; color: var(--ink) !important; text-decoration: none; margin-right: auto; }
-.page-who { color: var(--muted); font-size: 0.8125rem; min-width: 0; overflow-wrap: anywhere; }
-.page h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
-.page-lede { color: var(--ink-2); line-height: 1.55; max-width: 38rem; }
-.page-note { color: var(--muted); }
-.page-status { min-height: 1.2em; margin: 0.5rem 0; color: var(--muted); font-size: 0.8125rem; }
-.page-status.error { color: var(--hard); }
-.page-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.25rem 0; }
-a.page-button { display: inline-block; text-decoration: none; }
-.page-button.danger:hover:not(:disabled) { border-color: var(--hard); color: var(--hard); }
-.page-title { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
-.page-title h1 { margin: 0; }
-.page-usage { color: var(--muted); font-size: 0.8125rem; margin-right: auto; font-variant-numeric: tabular-nums; }
-.pad-list { display: grid; gap: 0.9rem; }
-.pad-card { display: grid; gap: 0.9rem; padding: 1rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
-.pad-card-head { display: flex; align-items: baseline; gap: 0.5rem 0.9rem; flex-wrap: wrap; }
-.pad-name { font-family: var(--mono); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
-.pad-meta { color: var(--muted); font-size: 0.75rem; margin-right: auto; }
-.page-foot { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); font-size: 0.8125rem; }

@@ -1,5 +1,7 @@
 import { WorkspaceShell, type LayoutStorage } from "@ajar/workspace-ui";
 
+import { ICONS } from "./icons";
+
 const RUN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5l7 4.5-7 4.5V3.5Z" fill="currentColor"/></svg>`;
 const PREVIEW_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h9A1.5 1.5 0 0 1 14 4.5v7A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2 6h12" stroke="currentColor" stroke-width="1.2"/></svg>`;
 const SHARE_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5a2.5 2.5 0 0 0 3.6.1l2.2-2.2a2.5 2.5 0 0 0-3.5-3.5l-1 1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.5 6.5a2.5 2.5 0 0 0-3.6-.1L3.7 8.6a2.5 2.5 0 0 0 3.5 3.5l1-1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
@@ -60,7 +62,7 @@ export class PadWorkspace {
     pads.id = "your-pads";
     pads.className = "pad-action pad-link";
     pads.href = "/dashboard";
-    pads.textContent = "Your pads";
+    pads.innerHTML = `${ICONS.pads}<span>Your pads</span>`;
     pads.title = "Pads you control — sign in with Google or GitHub";
     this.shell.el("workspace-actions").append(run, preview, share, pads);
 

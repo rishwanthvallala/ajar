@@ -3,145 +3,194 @@
  *
  * The address bar never holds a code — the page takes it out — so this is
  * where links come from, and each says what it grants. What is offered
- * depends on who is asking: the owner gets both kinds and the settings; an
- * editor can pass on editing, and viewing when it is open; a viewer can pass
- * on what they have.
+ * depends on who is asking: the owner gets both settings and both kinds of
+ * link; an editor can pass on editing, and viewing when it is open; a viewer
+ * can pass on what they have. The dashboard opens the same dialog.
  *
  * Anonymous pads have no dialog. Share copies the link, as it always has.
  */
-import {
-  account,
-  type Access,
-  EDIT_LABEL,
-  type Edit,
-  linkTo,
-  type PadInfo,
-  resetLink,
-  VIEW_LABEL,
-  type View,
-} from "./access";
+import { account, type Access, type Edit, linkTo, type PadInfo, resetLink, type View } from "./access";
+import type { IconName } from "./icons";
+import { button, confirmDialog, copyText, el, icon, modal, toast } from "./ui";
 
 export interface ShareContext {
   name: string;
   access: Access;
   /** The code this browser opened the pad with, if any. */
   code: string | null;
-  /** Report something in the page's status line. */
-  say: (text: string, error?: boolean) => void;
+  /** The pad as the dashboard already has it; fetched when absent. */
+  pad?: PadInfo;
+  /** Called with the pad after the owner changes it. */
+  onChange?: (pad: PadInfo) => void;
+  /** Whether to offer the way to the dashboard — not from the dashboard itself. */
+  fromDashboard?: boolean;
 }
 
-export function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: Partial<HTMLElementTagNameMap[K]> & { className?: string } = {},
-  ...children: (Node | string)[]
-): HTMLElementTagNameMap[K] {
-  const node = Object.assign(document.createElement(tag), props);
-  node.append(...children);
-  return node;
+interface Choice<T extends string> {
+  value: T;
+  label: string;
+  icon: IconName;
 }
 
-async function copy(text: string, field: HTMLInputElement): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // No clipboard — an insecure origin, or permission refused. The link is
-    // in the field, selected, for copying by hand.
-    field.focus();
-    field.select();
-    return false;
-  }
+const VIEW_CHOICES: Choice<View>[] = [
+  { value: "link", label: "Anyone with the link", icon: "globe" },
+  { value: "code", label: "Only people with a view link", icon: "link" },
+  { value: "owner", label: "Only you", icon: "lock" },
+];
+const EDIT_CHOICES: Choice<Edit>[] = [
+  { value: "code", label: "Anyone with an edit link", icon: "pencil" },
+  { value: "owner", label: "Only you", icon: "lock" },
+];
+
+/** What a setting means, in the words of what it lets people do. */
+function viewHint(view: View, edit: Edit): string {
+  if (view === "link") return "Anyone who has the address can watch it live and run it.";
+  if (view === "code") return "Only people you send the view link to can open it.";
+  return edit === "code" ? "Nobody else can view it — except people with the edit link." : "Nobody else can open it.";
+}
+function editHint(edit: Edit): string {
+  return edit === "code" ? "People you send the edit link to change it with you, live." : "Nobody else can change it.";
+}
+
+/** Shown without the scheme: the box is narrow and every link is https. */
+function display(url: string): string {
+  return url.replace(/^https?:\/\//, "");
 }
 
 /**
- * One link: what it grants, the link itself, and Copy. `reset` replaces it,
- * for a link that has gone further than it should have.
+ * One link: what it is, what it grants, and Copy. `reset` replaces it, for a
+ * link that has gone further than it should have.
  */
-function linkRow(
-  label: string,
-  about: string,
-  url: string | null,
-  off: string,
-  reset?: () => Promise<void>,
-): HTMLElement {
+function linkRow(opts: {
+  label: string;
+  about: string;
+  url: string | null;
+  off: string;
+  icon: IconName;
+  reset?: () => Promise<void>;
+}): HTMLElement {
   const row = el("div", { className: "share-link" });
-  row.append(el("div", { className: "share-what" }, el("strong", {}, label), el("span", {}, url ? about : off)));
-  if (!url) {
+  const head = el("div", { className: "share-link-head" }, icon(opts.icon, "icon share-link-icon"), el("strong", {}, opts.label));
+  row.append(head);
+  if (!opts.url) {
     row.classList.add("off");
-    // On, but with no link to show: none made yet, or one whose stored copy
-    // can no longer be read. Making one stops any old ones too.
-    if (reset) {
-      const make = el("button", { type: "button", className: "share-button" }, "Make a new link");
-      make.onclick = async () => {
-        make.disabled = true;
-        try {
-          await reset();
-        } finally {
-          make.disabled = false;
-        }
-      };
-      row.append(el("div", { className: "share-actions" }, make));
+    row.append(el("p", { className: "share-hint" }, opts.off));
+    // On, but nothing to show: none made yet, or one whose stored copy can no
+    // longer be read. Making one stops any old ones too.
+    if (opts.reset) {
+      const make = button("Make a new link", {
+        icon: "plus",
+        className: "btn-small",
+        onClick: async () => {
+          make.disabled = true;
+          try {
+            await opts.reset!();
+          } finally {
+            make.disabled = false;
+          }
+        },
+      });
+      row.append(make);
     }
     return row;
   }
-  const field = el("input", { readOnly: true, value: url, className: "share-url" });
-  field.setAttribute("aria-label", label);
-  const copyButton = el("button", { type: "button", className: "share-button primary" }, "Copy");
-  copyButton.onclick = async () => {
-    copyButton.textContent = (await copy(url, field)) ? "Copied" : "Copy it from the box";
-    setTimeout(() => (copyButton.textContent = "Copy"), 1600);
-  };
-  const actions = el("div", { className: "share-actions" }, field, copyButton);
-  if (reset) {
-    const resetButton = el("button", { type: "button", className: "share-button" }, "Reset");
-    resetButton.title = "Make a new link. The old one stops working, for everyone using it.";
-    resetButton.onclick = async () => {
-      if (!confirm(`Reset the ${label.toLowerCase()}? Anyone using the old one loses access straight away.`)) return;
-      resetButton.disabled = true;
-      try {
-        await reset();
-      } finally {
-        resetButton.disabled = false;
-      }
-    };
-    actions.append(resetButton);
+  if (opts.reset) {
+    const reset = button("Reset", {
+      icon: "reset",
+      className: "btn-quiet btn-small share-reset",
+      title: "Make a new link. The old one stops working, for everyone using it.",
+      onClick: async () => {
+        const yes = await confirmDialog({
+          title: `Reset the ${opts.label.toLowerCase()}?`,
+          body: "Anyone using the current link loses access straight away. You'll get a new link to share.",
+          confirm: "Reset link",
+          danger: true,
+        });
+        if (!yes) return;
+        reset.disabled = true;
+        try {
+          await opts.reset!();
+        } finally {
+          reset.disabled = false;
+        }
+      },
+    });
+    head.append(reset);
   }
-  row.append(actions);
+  row.append(el("p", { className: "share-hint" }, opts.about));
+  const field = el("input", { readOnly: true, value: display(opts.url), className: "share-url" });
+  field.dataset.url = opts.url;
+  field.setAttribute("aria-label", opts.label);
+  field.addEventListener("focus", () => field.select());
+  const copy = button("Copy", {
+    icon: "copy",
+    className: "btn-primary share-copy",
+    onClick: async () => {
+      if (await copyText(opts.url!)) {
+        copy.classList.add("copied");
+        copy.querySelector(".btn-label")!.textContent = "Copied";
+        copy.querySelector(".icon")!.innerHTML = icon("check").innerHTML;
+        toast(`${opts.label} copied`);
+        setTimeout(() => {
+          copy.classList.remove("copied");
+          copy.querySelector(".btn-label")!.textContent = "Copy";
+          copy.querySelector(".icon")!.innerHTML = icon("copy").innerHTML;
+        }, 1800);
+      } else {
+        // No clipboard — an insecure origin, or permission refused. The link
+        // is in the field, selected, for copying by hand.
+        field.value = opts.url!;
+        field.focus();
+        field.select();
+        toast("Copy it from the box — the clipboard is not available here", "error");
+      }
+    },
+  });
+  row.append(el("div", { className: "share-field" }, field, copy));
   return row;
 }
 
-/**
- * A setting. The label wraps its select rather than pointing at an id: the
- * dashboard shows one of these per pad, and an id would repeat.
- */
-function select<T extends string>(label: string, value: T, options: Record<T, string>, onChange: (v: T) => void): HTMLElement {
-  const box = el("select", { className: "share-select" });
-  box.dataset.setting = label.toLowerCase().includes("view") ? "view" : "edit";
-  for (const [v, text] of Object.entries(options) as [T, string][]) {
-    box.append(el("option", { value: v, selected: v === value }, text));
-  }
-  box.onchange = () => onChange(box.value as T);
-  return el("label", { className: "share-setting" }, el("span", {}, label), box);
+/** A setting: an icon for what it is now, the choice, and what that means. */
+function setting<T extends string>(
+  label: string,
+  value: T,
+  choices: Choice<T>[],
+  hint: string,
+  onChange: (v: T) => void,
+): HTMLElement {
+  const current = choices.find((c) => c.value === value) ?? choices[0]!;
+  const select = el("select", { className: "select" });
+  select.dataset.setting = label.toLowerCase().includes("view") ? "view" : "edit";
+  for (const c of choices) select.append(el("option", { value: c.value, selected: c.value === value }, c.label));
+  select.onchange = () => onChange(select.value as T);
+  // The label wraps its select rather than pointing at an id: the dashboard
+  // opens one of these per pad over time, and ids would repeat.
+  return el(
+    "label",
+    { className: `setting setting-${current.value}` },
+    el("span", { className: "setting-icon" }, icon(current.icon)),
+    el(
+      "span",
+      { className: "setting-main" },
+      el("span", { className: "setting-label" }, label),
+      el("span", { className: "select-wrap" }, select, icon("chevron", "icon select-chevron")),
+      el("span", { className: "share-hint" }, hint),
+    ),
+  );
 }
 
-/**
- * The owner's view: the settings, and a link of each kind. The dashboard
- * shows the same panel for every pad, so the two never disagree.
- */
-export function ownerBody(
-  pad: PadInfo,
-  redraw: (pad: PadInfo) => void,
-  ctx: Pick<ShareContext, "say">,
-  onDashboard = false,
-): HTMLElement[] {
+/** The owner's view: both settings, and a link of each kind. */
+export function ownerBody(pad: PadInfo, redraw: (pad: PadInfo) => void, fromDashboard: boolean): HTMLElement[] {
   const viewLink = pad.links.find((l) => l.role === "viewer");
   const editLink = pad.links.find((l) => l.role === "editor");
+  const busy = (on: boolean) => document.querySelectorAll<HTMLSelectElement>(".share-dialog .select").forEach((s) => (s.disabled = on));
   const change = async (view: View, edit: Edit) => {
+    busy(true);
     try {
       redraw(await account.settings(pad.name, view, edit));
-      ctx.say("sharing changed — people already here were asked to reconnect");
+      toast("Sharing updated — anyone already in the pad was asked to reconnect");
     } catch (e) {
-      ctx.say((e as Error).message, true);
+      toast((e as Error).message, "error");
       redraw(pad);
     }
   };
@@ -149,43 +198,50 @@ export function ownerBody(
     try {
       await resetLink(pad, role);
       redraw(await account.pad(pad.name));
-      ctx.say(`new ${role === "viewer" ? "view" : "edit"} link — any old one no longer works`);
+      toast(`New ${role === "viewer" ? "view" : "edit"} link — any old one no longer works`);
     } catch (e) {
-      ctx.say((e as Error).message, true);
+      toast((e as Error).message, "error");
     }
   };
   const viewUrl =
     pad.view === "link" ? linkTo(pad.name) : pad.view === "code" && viewLink ? linkTo(pad.name, viewLink.code) : null;
   const editUrl = pad.edit === "code" && editLink ? linkTo(pad.name, editLink.code) : null;
-  const missing = "No link to show — make a new one, and any old ones stop working.";
+  const missing = "There is no link to show. Make a new one — any old ones stop working.";
+
   return [
     el(
-      "div",
-      { className: "share-settings" },
-      select("Who can view", pad.view, VIEW_LABEL, (v) => void change(v, pad.edit)),
-      select("Who can edit", pad.edit, EDIT_LABEL, (e) => void change(pad.view, e)),
-    ),
-    linkRow(
-      "View link",
-      pad.view === "link"
-        ? "Watch and run, not change. This is the plain address — anyone who has it can view."
-        : "Watch and run, not change. Only this link opens it.",
-      viewUrl,
-      pad.view === "code" ? missing : "Only you can view this pad. Change who can view to share it.",
-      pad.view === "code" ? reset("viewer") : undefined,
-    ),
-    linkRow(
-      "Edit link",
-      "Change the pad, live, with everyone else on it.",
-      editUrl,
-      pad.edit === "code" ? missing : "Only you can edit this pad. Change who can edit to share editing.",
-      pad.edit === "code" ? reset("editor") : undefined,
+      "section",
+      { className: "share-section" },
+      el("h3", {}, "Access"),
+      setting("Who can view", pad.view, VIEW_CHOICES, viewHint(pad.view, pad.edit), (v) => void change(v, pad.edit)),
+      setting("Who can edit", pad.edit, EDIT_CHOICES, editHint(pad.edit), (e) => void change(pad.view, e)),
     ),
     el(
-      "p",
-      { className: "share-note" },
-      "Anyone you send a link to can pass it on. Reset makes a new one and the old one stops working. ",
-      ...(onDashboard ? [] : [el("a", { href: "/dashboard" }, "All your pads")]),
+      "section",
+      { className: "share-section" },
+      el("h3", {}, "Links"),
+      linkRow({
+        label: "View link",
+        icon: "eye",
+        about: pad.view === "link" ? "The plain address. Opens it to watch and run, not to change." : "Opens it to watch and run, not to change.",
+        url: viewUrl,
+        off: pad.view === "code" ? missing : "Viewing is off — only you can open this pad.",
+        reset: pad.view === "code" ? reset("viewer") : undefined,
+      }),
+      linkRow({
+        label: "Edit link",
+        icon: "pencil",
+        about: "Opens it to change, live, with everyone else on it.",
+        url: editUrl,
+        off: pad.edit === "code" ? missing : "Editing is off — only you can change this pad.",
+        reset: pad.edit === "code" ? reset("editor") : undefined,
+      }),
+    ),
+    el(
+      "footer",
+      { className: "share-foot" },
+      el("p", {}, "Anyone you send a link to can pass it on. Reset makes a new one and stops the old."),
+      fromDashboard ? null : el("a", { href: "/dashboard", className: "share-more" }, "All your pads", icon("arrow")),
     ),
   ];
 }
@@ -194,56 +250,59 @@ export function ownerBody(
 function guestBody(ctx: ShareContext): HTMLElement[] {
   const { name, access, code } = ctx;
   const openView = access.view === "link";
-  const rows: HTMLElement[] = [];
-  if (access.role === "editor") {
+  const editor = access.role === "editor";
+  const rows: HTMLElement[] = [
+    el(
+      "div",
+      { className: `share-role role-${access.role}` },
+      icon(editor ? "pencil" : "eye"),
+      el("span", {}, editor ? "You can edit this pad" : "You can view this pad"),
+    ),
+  ];
+  if (editor) {
     rows.push(
-      linkRow("Edit link", "Change the pad with everyone else on it, as you can.", code ? linkTo(name, code) : null, "You opened this without a link."),
-      linkRow(
-        "View link",
-        "Watch and run, not change. The plain address.",
-        openView ? linkTo(name) : null,
-        "Only its owner can hand out view links for this pad.",
-      ),
+      linkRow({ label: "Edit link", icon: "pencil", about: "Lets people change it with you, as you can.", url: code ? linkTo(name, code) : null, off: "You opened this without a link." }),
+      linkRow({ label: "View link", icon: "eye", about: "The plain address. Opens it to watch and run, not to change.", url: openView ? linkTo(name) : null, off: "Only its owner can hand out view links for this pad." }),
     );
   } else {
     rows.push(
-      linkRow(
-        "Link",
-        openView ? "Watch and run, not change. The plain address." : "Opens it the way it opens for you.",
-        openView ? linkTo(name) : code ? linkTo(name, code) : null,
-        "Ask its owner for a link.",
-      ),
+      linkRow({
+        label: "Link",
+        icon: "link",
+        about: openView ? "The plain address. Opens it to watch and run, not to change." : "Opens it the way it opens for you.",
+        url: openView ? linkTo(name) : code ? linkTo(name, code) : null,
+        off: "Ask its owner for a link.",
+      }),
     );
   }
-  rows.push(el("p", { className: "share-note" }, "This pad belongs to someone's account; they decide who can view and edit it."));
+  rows.push(el("footer", { className: "share-foot" }, el("p", {}, "This pad belongs to someone's account. They decide who can view and edit it.")));
   return rows;
 }
 
 export async function openShare(ctx: ShareContext): Promise<void> {
-  const dialog = el("dialog", { className: "pad-dialog share-dialog" });
-  dialog.setAttribute("aria-label", `Share ${ctx.name}`);
-  const close = el("button", { type: "button", className: "share-close" }, "Close");
-  close.onclick = () => dialog.close();
-  const body = el("div", { className: "share-body" });
-  dialog.append(el("header", {}, el("h2", {}, "Share ", el("code", {}, ctx.name)), close), body);
-  dialog.addEventListener("close", () => dialog.remove());
-  // A click on the backdrop lands on the dialog itself.
-  dialog.addEventListener("click", (e) => {
-    if (e.target === dialog) dialog.close();
-  });
-  document.body.append(dialog);
+  const { dialog, body } = modal("Share", ctx.name, "share-dialog");
+  dialog.querySelector(".modal-sub")?.classList.add("mono");
 
-  if (ctx.access.role === "owner") {
-    body.append(el("p", { className: "share-note" }, "Loading…"));
+  if (ctx.access.role !== "owner") {
+    body.append(...guestBody(ctx));
     dialog.showModal();
-    const redraw = (pad: PadInfo) => body.replaceChildren(...ownerBody(pad, redraw, ctx));
-    try {
-      redraw(await account.pad(ctx.name));
-    } catch (e) {
-      body.replaceChildren(el("p", { className: "share-note" }, `Could not load this pad's links: ${(e as Error).message}`));
-    }
     return;
   }
-  body.append(...guestBody(ctx));
+  const redraw = (pad: PadInfo) => {
+    body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard));
+    ctx.pad = pad;
+    ctx.onChange?.(pad);
+  };
+  if (ctx.pad) {
+    body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard));
+    dialog.showModal();
+    return;
+  }
+  body.append(el("div", { className: "share-loading" }, el("span", { className: "skeleton" }), el("span", { className: "skeleton" }), el("span", { className: "skeleton short" })));
   dialog.showModal();
+  try {
+    redraw(await account.pad(ctx.name));
+  } catch (e) {
+    body.replaceChildren(el("p", { className: "share-error" }, icon("alert"), `Could not load this pad's links: ${(e as Error).message}`));
+  }
 }
