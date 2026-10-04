@@ -304,7 +304,11 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   no `moved`. The client's viewer mode is courtesy; the relay is the rule.
 - **A change to who may do what applies to people already inside.** Changing a
   setting or revoking a link closes everyone in the room but the owner, and
-  they rejoin as what they now are. Deleting a pad closes everyone.
+  they rejoin as what they now are. Deleting a pad, or the account that owns
+  it, closes everyone. Signing out closes every room connection that sign-in
+  made owner — the room keeps each by its session's hash — so a signed-out tab
+  does not go on editing as owner; until 4 October it did, until its socket
+  dropped.
 - **Codes travel after the `#`**, which browsers never send: no server log,
   `Referer` or link-unfurler sees one. The page moves the code into local
   storage and out of the address bar, so copying the address bar shares the

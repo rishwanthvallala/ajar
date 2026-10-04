@@ -228,12 +228,15 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     return;
   }
 
-  const problem = new URLSearchParams(location.search).get("signin");
-  if (problem) history.replaceState(null, "", location.pathname);
+  const params = new URLSearchParams(location.search);
+  const problem = params.get("signin");
+  const deletedAccount = params.get("deleted") === "account";
+  if (problem || deletedAccount) history.replaceState(null, "", location.pathname);
 
   if (!me.user) {
     document.title = "Sign in — pad";
     root.replaceChildren(signInPage(me, problem));
+    if (deletedAccount) toast("Your account and its pads were deleted.");
     return;
   }
 
@@ -504,6 +507,40 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     }
   });
 
+  /** Asked twice over — a dialog, and a word typed into it — then gone. */
+  const deleteAccount = async (from: HTMLElement) => {
+    if (isBusy(from)) return;
+    const n = pads.length;
+    const yes = await confirmDialog({
+      title: "Delete your account?",
+      body: `${n === 0 ? "You have no pads." : `Your ${n === 1 ? "pad is" : `${n} pads are`} deleted for everyone, with ${n === 1 ? "its" : "their"} files and links, and ${n === 1 ? "its name is" : "their names are"} never used again.`} Your name and email address are removed. This cannot be undone.`,
+      confirm: "Delete account",
+      danger: true,
+      typed: "delete",
+    });
+    if (!yes) return;
+    setBusy(from, true, "Deleting your account…");
+    try {
+      await account.deleteAccount();
+      location.assign("/dashboard?deleted=account");
+    } catch (e) {
+      staleSession(e);
+      toast((e as Error).message, "error");
+      setBusy(from, false);
+    }
+  };
+  const user = me.user;
+  const provider = PROVIDERS[user.provider] ?? user.provider;
+  const accountHeading = el("h2", { id: "account-heading" }, "Your account");
+  const removeAccount = button("Delete account", { icon: "trash", className: "btn-small btn-quiet-danger", onClick: (e) => void deleteAccount(e.currentTarget as HTMLElement) });
+  const accountPart = el(
+    "section",
+    { className: "dash-account" },
+    el("div", {}, accountHeading, el("p", {}, `${user.email ?? user.name}, signed in with ${provider}. Deleting the account deletes every pad in it.`)),
+    removeAccount,
+  );
+  accountPart.setAttribute("aria-labelledby", "account-heading");
+
   root.replaceChildren(
     shell(
       topbar(accountMenu(me, () => void signOut())),
@@ -512,6 +549,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
         { className: "dash" },
         el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), el("div", { className: "dash-actions" }, fromZip, create)),
         list,
+        accountPart,
       ),
       footer(),
     ),

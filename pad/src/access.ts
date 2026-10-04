@@ -258,6 +258,11 @@ export const account = {
     await call<void>("/auth/logout", { method: "POST" });
     forgetAllCodes();
   },
+  /** The account and every pad in it, for everyone, at once. */
+  deleteAccount: async () => {
+    await call<void>("/api/me", { method: "DELETE" });
+    forgetAllCodes();
+  },
 };
 
 /**

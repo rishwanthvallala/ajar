@@ -215,9 +215,10 @@ export function modal(title: string, subtitle?: string, className = ""): { dialo
 
 /**
  * Ask before something that cannot be undone. Resolves true for yes. `title`
- * may hold a node — a pad's name, set in mono.
+ * may hold a node — a pad's name, set in mono. With `typed`, yes stays off
+ * until that word is typed: for the few things one click is too few for.
  */
-export function confirmDialog(opts: { title: string | (string | Node)[]; body: string; confirm: string; danger?: boolean }): Promise<boolean> {
+export function confirmDialog(opts: { title: string | (string | Node)[]; body: string; confirm: string; danger?: boolean; typed?: string }): Promise<boolean> {
   return new Promise((resolve) => {
     const dialog = el("dialog", { className: "modal modal-confirm" });
     const titleId = uid("confirm-title");
@@ -231,10 +232,31 @@ export function confirmDialog(opts: { title: string | (string | Node)[]; body: s
     const no = button("Cancel", { onClick: () => dialog.close() });
     const heading = el("h2", { id: titleId });
     heading.append(...(typeof opts.title === "string" ? [opts.title] : opts.title));
-    dialog.append(
-      el("div", { className: "confirm-body" }, heading, el("p", { id: bodyId }, opts.body)),
-      el("div", { className: "confirm-actions" }, no, yes),
-    );
+    const body = el("div", { className: "confirm-body" }, heading, el("p", { id: bodyId }, opts.body));
+    let first: HTMLElement = no;
+    if (opts.typed) {
+      const word = opts.typed;
+      const inputId = uid("confirm-typed");
+      const input = el("input", { id: inputId, className: "confirm-typed", type: "text" }) as HTMLInputElement;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.setAttribute("autocapitalize", "off");
+      const label = el("label", { className: "confirm-typed-label" }, "Type ", el("strong", {}, word), " to confirm");
+      label.htmlFor = inputId;
+      const match = () => input.value.trim().toLowerCase() === word;
+      yes.disabled = true;
+      input.addEventListener("input", () => (yes.disabled = !match()));
+      // Enter in the field is yes, once the word is there; never before.
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        if (match()) yes.click();
+      });
+      body.append(label, input);
+      // Typing is the next thing to do, and nothing happens until it is done.
+      first = input;
+    }
+    dialog.append(body, el("div", { className: "confirm-actions" }, no, yes));
     dialog.addEventListener("close", () => {
       dialog.remove();
       resolve(answer);
@@ -242,6 +264,6 @@ export function confirmDialog(opts: { title: string | (string | Node)[]; body: s
     document.body.append(dialog);
     dialog.showModal();
     // The safe choice has focus, so Enter does not destroy anything.
-    no.focus();
+    first.focus();
   });
 }

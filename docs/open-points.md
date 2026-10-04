@@ -280,28 +280,21 @@ it took to get there.
 Built on 4 October — [dev/accounts.md](dev/accounts.md#as-built). What is
 still open in it:
 
-- **Sign-in is off in production until the OAuth apps exist.** Making a Google
-  and a GitHub app and putting their ids and secrets in `/etc/ajar/relay.env`
-  is a step for the owner of those accounts: [how](dev/operations.md#signing-in).
-  Until then the dashboard says sign-in is not set up, and nothing else
-  changes.
 - **The accounts database is not backed up.** It lives on the box alone.
   Litestream to S3 is the plan, which needs a bucket and credentials on the
   AWS account, and must leave `accounts.key` behind — the database and the key
   together are every edit link.
-- **No way to delete an account**, from the dashboard or otherwise. The
-  design says its pads go with it.
 - **Google and GitHub are two accounts** for one person until linking is built.
 - **No takedown tooling.** Taking a pad down for abuse, or banning an account,
-  means editing the database by hand.
+  means editing the database by hand. `/admin` shows the biggest pads and the
+  newest accounts but changes nothing.
 - **Viewers are counted in the presence dots** like anybody else; whether
   editors should see them apart is undecided.
-- **An anonymous pad cannot be moved into an account.** Its maker copies the
-  files into a new pad of theirs by hand.
+- **An anonymous pad cannot be moved into an account.** Its maker downloads it
+  as a zip and makes a pad of theirs from that zip on the dashboard — two
+  steps rather than one, and its text files only.
 - **Left from the review of 4 October** (the rest was fixed — see
   [accounts](dev/accounts.md#as-built)):
-  - Signing out does not close the room connections that session opened;
-    they keep their role until they drop.
   - An anonymous pad's name can still be held by a hosted session opened
     under it, keeping its live room shut while it lasts (owned pads refuse
     this now).
@@ -371,6 +364,14 @@ the previous build in place, and the check then measures the fix it was meant
 to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
+
+## Closed on 4 October
+
+| | |
+|---|---|
+| Sign-in was off in production until the OAuth apps existed — both are live, and the Google app is published | — |
+| No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | this change |
+| Signing out left that session's room connections as owner until they dropped | this change |
 
 ## Closed on 2–3 October
 

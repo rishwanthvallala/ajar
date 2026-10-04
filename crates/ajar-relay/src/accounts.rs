@@ -307,6 +307,12 @@ fn hash(secret: &str) -> Vec<u8> {
     Sha256::digest(secret.as_bytes()).to_vec()
 }
 
+/// A session token as the database keys it, for the room to remember an
+/// owner's connection by without keeping the token itself.
+pub fn session_key(token: &str) -> Vec<u8> {
+    hash(token)
+}
+
 /// A uniformly chosen word: rejection sampling rather than `%`, so no word is
 /// likelier than another.
 fn word() -> &'static str {
@@ -665,6 +671,37 @@ impl Accounts {
             params![now(), name],
         )?;
         Ok(())
+    }
+
+    /// Delete an account: the person, their sign-ins, and every pad they own.
+    /// Returns the pads that still existed, whose files the caller removes.
+    ///
+    /// The pads' names stay, marked deleted and owned by nobody, so none is
+    /// minted again and an old link says the pad was deleted rather than
+    /// opening someone else's. Nothing else of theirs stays: the links' codes
+    /// go, and the account row with its name and email address.
+    pub fn delete_account(&self, user: i64) -> Result<Vec<String>, AccountError> {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        let live: Vec<String> = {
+            let mut q =
+                tx.prepare("SELECT name FROM pads WHERE owner_id = ?1 AND deleted IS NULL")?;
+            let rows = q.query_map(params![user], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        tx.execute(
+            "DELETE FROM links WHERE pad IN (SELECT name FROM pads WHERE owner_id = ?1)",
+            params![user],
+        )?;
+        tx.execute(
+            "UPDATE pads SET deleted = COALESCE(deleted, ?2), owner_id = NULL, bytes = 0, files = 0
+             WHERE owner_id = ?1",
+            params![user, now()],
+        )?;
+        tx.execute("DELETE FROM sessions WHERE user_id = ?1", params![user])?;
+        tx.execute("DELETE FROM users WHERE id = ?1", params![user])?;
+        tx.commit()?;
+        Ok(live)
     }
 
     /// Every owned pad that still exists: the names the store must never let
@@ -1275,6 +1312,61 @@ mod tests {
         // Nor does it fall back to an open, anonymous pad anyone could write.
         assert_eq!(a.access(&pad.name, None, None).role, Role::None);
         assert!(a.owned_names().is_empty());
+    }
+
+    #[test]
+    fn deleting_an_account_takes_its_pads_sign_ins_and_details_and_retires_the_names() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let them = person(&a, "2");
+        let token = a.new_session(me).unwrap();
+        let kept = a.create_pad(me, &|_| false).unwrap();
+        let gone_before = a.create_pad(me, &|_| false).unwrap();
+        a.delete_pad(me, &gone_before.name).unwrap();
+        let theirs = a.create_pad(them, &|_| false).unwrap();
+        let code = kept.links[1].code.clone();
+
+        let live = a.delete_account(me).unwrap();
+        assert_eq!(
+            live,
+            vec![kept.name.clone()],
+            "only the pad still there needs its files removed"
+        );
+        assert!(a.session(&token).is_none(), "its sign-ins end");
+        let left: i64 =
+            a.db.lock()
+                .query_row(
+                    "SELECT COUNT(*) FROM users WHERE id = ?1",
+                    params![me],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(left, 0, "the person's row, name and email go");
+        let codes: i64 =
+            a.db.lock()
+                .query_row(
+                    "SELECT COUNT(*) FROM links WHERE pad IN (?1, ?2)",
+                    params![kept.name, gone_before.name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(codes, 0, "and the links' codes");
+        let access = a.access(&kept.name, None, Some(&code));
+        assert!(
+            access.deleted && access.role == Role::None,
+            "an old link finds a deleted pad"
+        );
+        assert!(!a.owned_names().contains(&kept.name));
+        assert_eq!(
+            a.pads_of(them).unwrap().len(),
+            1,
+            "someone else's pads are untouched"
+        );
+        assert_eq!(a.access(&theirs.name, Some(them), None).role, Role::Owner);
+        // Signing in again with the same provider id is a new, empty account.
+        let again = person(&a, "1");
+        assert!(a.pads_of(again).unwrap().is_empty());
+        assert_eq!(a.access(&kept.name, Some(again), None).role, Role::None);
     }
 
     #[test]

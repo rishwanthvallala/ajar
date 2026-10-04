@@ -344,10 +344,30 @@ the relay's uptime and memory. Nothing is collected for it; the privacy page
 says what it shows. Only `AJAR_ADMINS` may open it (`http_admin.rs`), and to
 anyone else it is what it was — not a pad address.
 
-Not built: Litestream backups (the database is on the box alone), deleting an
-account, linking a Google and a GitHub account into one, and any way to take a
-pad down for abuse short of the database. All in
-[open points](../open-points.md).
+**Signing out ends what the sign-in gave, in the room too** (4 October).
+Owner is the one role a room hands out from a sign-in, and it was decided at
+the door: a page that signed out — or another tab of it — went on editing the
+room as owner until its socket happened to drop. The room now remembers each
+owner connection by its session (the token's hash, as the database keys it),
+and `/auth/logout` closes those connections with `closed: signed out`. They
+rejoin, the page re-reads the pad, and drops to whatever the bare name or its
+link gives. The same person's other sign-ins — another browser, another device
+— are left alone.
+
+**Deleting an account** (4 October), at the foot of the dashboard, behind a
+dialog and a typed `delete`: `DELETE /api/me`. In one transaction the person's
+row, sessions, and every link of their pads go; their pads are marked deleted
+and owned by nobody, so their names stay retired and an old link says the pad
+was deleted rather than opening something else. Then the pads' files are
+removed and their rooms emptied, as deleting one pad does, all inside the
+account's write turn so no write lands between the rows and the files. Signing
+in again with the same Google or GitHub account starts a new, empty account.
+The privacy page points at it, and keeps the email address for a copy of what
+is stored, or for someone who can no longer sign in.
+
+Not built: Litestream backups (the database is on the box alone), linking a
+Google and a GitHub account into one, and any way to take a pad down for
+abuse short of the database. All in [open points](../open-points.md).
 
 The checks: `scripts/smoke-accounts.mjs` (the relay, against a stand-in OAuth
 provider that checks PKCE) and `pad/scripts/accounts-check.mjs` (three

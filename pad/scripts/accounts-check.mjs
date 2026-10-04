@@ -595,10 +595,54 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   }
   await fetch(`${ORIGIN}/api/my/pads/${quiet}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
 
+  // A pad of theirs open in another tab, as owner, when they sign out here.
+  const still = (await (await fetch(`${ORIGIN}/api/my/pads`, { method: "POST", headers: { cookie: ownerCookie, "x-ajar": "1" } })).json()).name;
+  await fetch(`${ORIGIN}/api/pad/${still}`, {
+    method: "PUT",
+    headers: { cookie: ownerCookie, "content-type": "application/json" },
+    body: JSON.stringify({ writes: [{ path: "main.py", content: "print('still')\n" }] }),
+  });
+  const stillTab = await owner.context().newPage();
+  pages.set("owner's other tab", stillTab);
+  await stillTab.goto(`${ORIGIN}/${still}`);
+  // In the room: its document for the open file is there only once it is.
+  await until(stillTab, () => window.__pad?.role() === "owner" && window.__pad?.docs().includes("main.py"), undefined, 30_000);
+
   await owner.click(".account-button");
   await owner.getByRole("button", { name: "Sign out" }).click();
   await owner.waitForSelector("text=Pads you control");
   ok("signing out returns to the signed-out dashboard");
+  // Its room was told, so the other tab is not owner a moment longer.
+  const demoted = await until(stillTab, () => window.__pad?.role() === "viewer", undefined, 10_000).then(() => true, () => false);
+  is(demoted, true, "a pad open as owner in another tab drops to what it holds signed out, without a reload");
+
+  // ---- deleting the account ----
+  await owner.click("text=Continue with GitHub");
+  await owner.waitForSelector("text=Your pads", { timeout: 15_000 });
+  const doomed = (await (await fetch(`${ORIGIN}/api/my/pads`, { method: "POST", headers: { cookie: (await owner.context().cookies()).map((c) => `${c.name}=${c.value}`).join("; "), "x-ajar": "1" } })).json()).name;
+  const lastCookie = (await owner.context().cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+  await stillTab.goto(`${ORIGIN}/${doomed}`);
+  await until(stillTab, () => window.__pad?.role() === "owner", undefined, 30_000);
+  await owner.reload();
+  await owner.getByRole("button", { name: "Delete account" }).click();
+  const sure = owner.locator("dialog.modal-confirm");
+  await sure.waitFor();
+  const yes = sure.getByRole("button", { name: "Delete account" });
+  is(await yes.isDisabled(), true, "Delete account is off until the word is typed");
+  await sure.getByLabel("Type delete to confirm").fill("delet");
+  is(await yes.isDisabled(), true, "and stays off for anything else");
+  const warned = await sure.textContent();
+  is(/Your 2 pads are deleted for everyone/.test(warned), true, `the dialog says what goes with it (${warned.slice(0, 120)})`);
+  await sure.getByLabel("Type delete to confirm").fill("delete");
+  await yes.click();
+  await owner.waitForSelector("text=Pads you control", { timeout: 15_000 });
+  await owner.waitForSelector(".toast:has-text('Your account and its pads were deleted')", { timeout: 5_000 });
+  ok("deleting the account signs out and says so");
+  const meAfter = await (await fetch(`${ORIGIN}/api/me`, { headers: { cookie: lastCookie } })).json();
+  is(meAfter.user, null, "the account's sign-in no longer works");
+  is((await fetch(`${ORIGIN}/api/pad/${doomed}`)).status, 410, "its pads are deleted");
+  await stillTab.waitForSelector("text=This pad was deleted", { timeout: 15_000 });
+  ok("and a tab that had one open says it was deleted");
 } catch (e) {
   fail(e.message.split("\n")[0]);
   for (const [label, page] of pages) {

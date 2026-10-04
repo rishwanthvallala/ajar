@@ -485,12 +485,58 @@ async function main() {
   ok("anonymous pads are untouched: anyone reads, writes and edits live");
 
   // ------------------------------------------------------------- signing out
+  // A second pad, open as owner in two sign-ins — this one and another
+  // device's — with a viewer beside them.
+  const kept = (await (await api("/api/my/pads", { cookie: ana.cookie, method: "POST" })).json()).name;
+  const elsewhere = await signIn({ id: 101, login: "ana" });
+  const ownerHere = peer(kept, { cookie: ana.cookie });
+  const ownerThere = peer(kept, { cookie: elsewhere.cookie });
+  const looker = peer(kept);
+  for (const p of [ownerHere, ownerThere, looker]) await p.connect();
   await expectStatus(await api("/auth/logout", { cookie: ana.cookie, method: "POST", intended: false }), 403, "signing out without X-Ajar");
   const out = await expectStatus(await api("/auth/logout", { cookie: ana.cookie, method: "POST" }), 204, "signing out");
   if (!out.headers.getSetCookie().some((c) => /^ajar=;.*Max-Age=0/.test(c))) fail("signing out did not clear the cookie");
   me = await (await api("/api/me", { cookie: ana.cookie })).json();
   if (me.user !== null) fail("the old cookie still signs in");
   ok("signed out: the cookie is cleared and the old token is dead");
+  // Owner was decided at the door; signed out, it must not outlive the sign-in.
+  await until(() => ownerHere.ws.readyState === WebSocket.CLOSED, "the signed-out owner's room connection to close");
+  if (!ownerHere.control.some((m) => m.t === "closed" && /signed out/.test(m.reason ?? ""))) fail(`the signed-out owner was closed without being told why: ${JSON.stringify(ownerHere.control)}`);
+  await sleep(200);
+  if (ownerThere.ws.readyState !== WebSocket.OPEN || looker.ws.readyState !== WebSocket.OPEN) fail("signing out closed another sign-in's page, or a viewer's");
+  ok("signing out closes that sign-in's owner connections, and only those");
+  const back = peer(kept, { cookie: ana.cookie });
+  await back.connect();
+  docFrom(back, DOC_UPDATE);
+  await sleep(300);
+  if (looker.docs.some((d) => d.kind === DOC_UPDATE)) fail("a page that signed out still edits the room as owner");
+  ok("reconnecting with the dead cookie is a viewer: its edits reach nobody");
+
+  // ------------------------------------------------------- deleting the account
+  const bystander = (await (await api("/api/my/pads", { cookie: bo.cookie, method: "POST" })).json()).name;
+  const accountsBefore = (await (await api("/api/admin/stats", { cookie: elsewhere.cookie })).json()).accounts?.users;
+  await expectStatus(await api("/api/me", { cookie: elsewhere.cookie, method: "DELETE", intended: false }), 403, "deleting an account without X-Ajar");
+  await expectStatus(await api("/api/me", { method: "DELETE" }), 401, "deleting an account while signed out");
+  const deletedMe = await expectStatus(await api("/api/me", { cookie: elsewhere.cookie, method: "DELETE" }), 204, "ana deletes her account");
+  if (!deletedMe.headers.getSetCookie().some((c) => /^ajar=;.*Max-Age=0/.test(c))) fail("deleting the account did not clear the cookie");
+  await until(() => looker.ws.readyState === WebSocket.CLOSED && ownerThere.ws.readyState === WebSocket.CLOSED, "the deleted account's pad's room to empty");
+  if ((await (await api("/api/me", { cookie: elsewhere.cookie })).json()).user !== null) fail("a deleted account's sign-in still works");
+  await expectStatus(await api(`/api/pad/${kept}`), 410, "a deleted account's pad");
+  await expectStatus(await write(kept, [file("mine.py", "1")]), 410, "taking a deleted account's pad's name");
+  try {
+    await peer(kept).connect();
+    fail("someone joined a deleted account's pad's room");
+  } catch (e) {
+    if (!/^gone:/.test(e.message)) fail(`a deleted account's pad's room refused for the wrong reason: ${e.message}`);
+  }
+  if ((await (await api(`/api/pad/${bystander}`, { cookie: bo.cookie })).json()).access?.role !== "owner") fail("deleting ana's account touched bo's pad");
+  const reborn = await signIn({ id: 101, login: "ana" });
+  // One gone and one new: kept beside it, the old one would make it one more.
+  const accountsAfter = (await (await api("/api/admin/stats", { cookie: reborn.cookie })).json()).accounts?.users;
+  if (typeof accountsBefore !== "number" || accountsAfter !== accountsBefore) fail(`the old account was kept: ${accountsBefore} accounts before, ${accountsAfter} after signing in again`);
+  if ((await (await api("/api/my/pads", { cookie: reborn.cookie })).json()).length !== 0) fail("signing in again brought the deleted pads back");
+  if ((await (await api(`/api/pad/${kept}`, { cookie: reborn.cookie })).status) !== 410) fail("signing in again made her owner of a deleted pad");
+  ok("a deleted account takes its pads and sign-ins with it, leaves others' pads alone, and signing in again starts afresh");
 
   // --------------------------------------------- a relay with nothing set up
   procs.start("target/debug/ajar-relay", ["--bind", `127.0.0.1:${BARE_PORT}`, "--pad-dir", join(dir, "bare-pads"), "--accounts-db", join(dir, "bare.db")], "bare relay", {

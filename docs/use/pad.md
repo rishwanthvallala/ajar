@@ -168,6 +168,12 @@ used again.
 
 An account holds 20 pads and 100 MB across them.
 
+**Delete account**, at the bottom of Your pads, deletes your account and every
+pad in it, for everyone, straight away — after you type `delete` to confirm.
+Their names are never used again. Signing in later starts a new, empty
+account. Signing out, by contrast, keeps everything; a pad you had open as its
+owner in another tab drops to what anyone with its link could do.
+
 ### Opening someone else's pad to view
 
 You can watch it change as they type, and **run it** — running happens in your

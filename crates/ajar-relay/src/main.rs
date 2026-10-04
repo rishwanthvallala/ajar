@@ -716,11 +716,14 @@ async fn upgrade(
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Who the cookie says is signed in, for an owned pad's room. Read here,
     // on the upgrade, because it is the one request that carries the cookie.
+    let user = http_accounts::signed_in(&state, &headers).await;
     let gate = ws::Gate {
         accounts: state.accounts.clone(),
-        user: http_accounts::signed_in(&state, &headers)
-            .await
-            .map(|u| u.id),
+        user: user.as_ref().map(|u| u.id),
+        // Which sign-in, so that ending it ends what it let this socket do.
+        session: user
+            .and(http_accounts::session_token(&state, &headers))
+            .map(|t| accounts::session_key(&t)),
     };
     // Cap what one client may send in a single frame. The largest legitimate
     // payload is a workspace snapshot, which the store already refuses above

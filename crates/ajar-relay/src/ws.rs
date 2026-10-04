@@ -29,6 +29,8 @@ pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 pub struct Gate {
     pub accounts: Arc<crate::accounts::Accounts>,
     pub user: Option<i64>,
+    /// The sign-in `user` came from, as the room remembers an owner by it.
+    pub session: Option<crate::session::SessionKey>,
 }
 
 /// The first byte of a pad's doc payload, from `pad/src/peers.ts`: asking for
@@ -133,7 +135,7 @@ pub async fn handle(
     // another sent, so view-only would have been a rule the viewer's own page
     // kept — the mistake the read-only fix of 2 October undid for ajar. An
     // anonymous pad has no row and everyone edits, as it always has.
-    let (mut viewer, mut owner) = (false, false);
+    let (mut viewer, mut owner) = (false, None);
     // A pad that belongs to an account is only ever a peer room. A hosted
     // session opened under its name first would take the name, and the
     // pad's own people would be refused as the wrong shape for as long as it
@@ -162,7 +164,8 @@ pub async fn handle(
         match access.role {
             crate::accounts::Role::None => refuse!("private", "this pad is private"),
             crate::accounts::Role::Viewer => viewer = true,
-            crate::accounts::Role::Owner => owner = true,
+            // Owner only ever comes from a sign-in, so there is one to name.
+            crate::accounts::Role::Owner => owner = gate.session.clone(),
             crate::accounts::Role::Editor => {}
         }
     }

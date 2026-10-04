@@ -21,7 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/{provider}/start", get(start))
         .route("/auth/{provider}/callback", get(callback))
         .route("/auth/logout", post(logout))
-        .route("/api/me", get(me))
+        .route("/api/me", get(me).delete(delete_me))
         .route("/api/my/pads", get(my_pads).post(create_pad))
         .route(
             "/api/my/pads/{name}",
@@ -128,19 +128,25 @@ fn refuse(e: AccountError) -> Refusal {
     (status, e.message())
 }
 
-/// Everyone in a pad's room but its owner reconnects, and is let back in on
-/// what they hold now. Called whenever who may do what to a pad changes.
-fn reconsider(state: &AppState, name: &str, everyone: bool) {
-    let notice = ajar_proto::Frame::json(
+/// What a room connection is told as it is closed for being reconsidered.
+fn closed(reason: &str) -> Vec<u8> {
+    ajar_proto::Frame::json(
         ajar_proto::Channel::Control,
         ajar_proto::TARGET_ALL,
         &ajar_proto::Control::Closed {
-            reason: "who can open this pad changed".into(),
+            reason: reason.into(),
         },
     )
     .map(|f| f.encode())
-    .unwrap_or_default();
-    state.registry.evict_peers(name, everyone, notice);
+    .unwrap_or_default()
+}
+
+/// Everyone in a pad's room but its owner reconnects, and is let back in on
+/// what they hold now. Called whenever who may do what to a pad changes.
+fn reconsider(state: &AppState, name: &str, everyone: bool) {
+    state
+        .registry
+        .evict_peers(name, everyone, closed("who can open this pad changed"));
 }
 
 // ------------------------------------------------------------- signing in
@@ -270,11 +276,60 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return r.into_response();
     }
     if let Some(token) = session_token(&state, &headers) {
+        // The rooms this sign-in made someone owner in hear of it now, in
+        // every tab, rather than when their sockets next happen to drop.
+        state
+            .registry
+            .evict_session(&crate::accounts::session_key(&token), closed("signed out"));
         let accounts = state.accounts.clone();
         blocking(move || accounts.end_session(&token)).await;
     }
     let cleared = set_cookie(&state, cookie_name(&state), None, 0);
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cleared)]).into_response()
+}
+
+/// Delete the signed-in account and every pad it owns, for everyone.
+async fn delete_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(r) = intended(&headers) {
+        return r.into_response();
+    }
+    let me = match require_user(&state, &headers).await {
+        Ok(me) => me,
+        Err(r) => return r.into_response(),
+    };
+    // The account's write turn: a write to one of its pads either lands
+    // before the files go, or finds the pad deleted.
+    let turn = state
+        .account_writes
+        .lock()
+        .entry(me.id)
+        .or_default()
+        .clone();
+    let _turn = turn.lock_owned().await;
+    let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
+    let deleted = blocking(move || {
+        let live = accounts.delete_account(me.id)?;
+        for name in &live {
+            if let Err(e) = pads.remove(name) {
+                // The pad is deleted either way: it opens for nobody, and its
+                // file is no longer pinned, so it lapses like any other.
+                tracing::warn!(pad = %name, error = %e.message(), "a deleted account's pad kept its file");
+            }
+        }
+        Ok::<_, AccountError>(live)
+    })
+    .await;
+    match deleted {
+        Ok(live) => {
+            for name in &live {
+                reconsider(&state, name, true);
+            }
+            tracing::info!(pads = live.len(), "an account was deleted");
+            let cleared = set_cookie(&state, cookie_name(&state), None, 0);
+            (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cleared)]).into_response()
+        }
+        Err(e) => refuse(e).into_response(),
+    }
 }
 
 #[derive(Serialize)]

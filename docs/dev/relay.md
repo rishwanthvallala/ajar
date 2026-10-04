@@ -131,7 +131,7 @@ one. Opening the store deletes any tombstones the old policy left.
 once, every call a few rows by key behind one mutex and run off the async
 workers. `auth.rs` is sign-in (OAuth with PKCE, blocking `ureq` calls off the
 workers too), and `http_accounts.rs` the routes: `/auth/{provider}/start`,
-`/auth/{provider}/callback`, `/auth/logout`, `/api/me` and `/api/my/pads…`.
+`/auth/{provider}/callback`, `/auth/logout`, `/api/me` (`DELETE` deletes the account) and `/api/my/pads…`.
 
 Who you are to a pad is `Accounts::access(name, user, code)`, and the two
 places that ask are `read_pad`/`write_pad` in `main.rs` and the peer join in

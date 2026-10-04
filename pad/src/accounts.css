@@ -135,6 +135,18 @@
 .confirm-body h2 .mono { font-size: 0.95em; }
 .confirm-body p { margin: 0; color: var(--ink-2); font-size: 0.875rem; line-height: 1.5; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.3rem 1.2rem; }
+.confirm-typed-label { display: block; margin: 0.9rem 0 0.35rem; color: var(--ink-2); font-size: 0.8125rem; }
+.confirm-typed-label strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+.confirm-typed {
+  width: 100%; height: 2.35rem; padding: 0 0.75rem; border-radius: var(--r-sm);
+  border: 1px solid var(--field-line); background: var(--surface); color: var(--ink); font: 500 0.875rem var(--mono);
+}
+.confirm-typed:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The account's own corner of the dashboard: quiet, below everything else. */
+.dash-account { display: flex; align-items: center; gap: 1rem; margin-top: 2.2rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); }
+.dash-account h2 { margin: 0 0 0.2rem; font-size: 0.9rem; font-weight: 650; }
+.dash-account p { margin: 0; color: var(--ink-2); font-size: 0.8125rem; line-height: 1.5; }
+.dash-account .btn { margin-left: auto; flex: none; }
 
 /* ----------------------------------------------------------- share dialog */
 
