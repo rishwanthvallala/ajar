@@ -42,6 +42,8 @@ export interface Me {
   user: User | null;
   providers: string[];
   limits?: { pads: number; bytes: number };
+  /** Whether this person may open /admin. */
+  admin?: boolean;
 }
 
 export interface Link {

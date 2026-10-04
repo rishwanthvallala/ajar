@@ -6,6 +6,7 @@
 mod accounts;
 mod auth;
 mod http_accounts;
+mod http_admin;
 mod outbox;
 mod pad;
 mod quota;
@@ -174,6 +175,8 @@ struct AppState {
     /// the same room and together went past it.
     account_writes:
         Arc<parking_lot::Mutex<std::collections::HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
+    /// When the relay started, for the operator's view.
+    started: std::time::Instant,
 }
 
 #[tokio::main]
@@ -235,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
         accounts,
         auth,
         account_writes: Default::default(),
+        started: std::time::Instant::now(),
     };
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
@@ -296,6 +300,7 @@ async fn main() -> anyhow::Result<()> {
                 .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
         )
         .merge(http_accounts::routes())
+        .merge(http_admin::routes())
         .layer(CorsLayer::permissive())
         .with_state(state);
 

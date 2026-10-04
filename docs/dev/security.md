@@ -357,6 +357,12 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   so the room left is read and spent as one step — parallel writes each saw
   the same room and together went past it, until review found it.
 
+- **The admin figures are the operator's alone.** `/api/admin/stats` answers
+  404 to anyone not in `AJAR_ADMINS` — signed out, or signed in as anyone
+  else — so even its existence is not given away. An admin is matched by
+  `provider:id`, or by an email the provider vouches for: Google's only when
+  it says the address is verified, since an unverified one could be anyone's.
+
 What does not hold, yet:
 
 - **Signing out does not close a room connection** the session opened; that

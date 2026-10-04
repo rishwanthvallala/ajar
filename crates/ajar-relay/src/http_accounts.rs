@@ -284,6 +284,8 @@ struct Me {
     providers: Vec<&'static str>,
     /// What an account may hold, for the dashboard to show against.
     limits: crate::accounts::Limits,
+    /// Whether this person may open /admin.
+    admin: bool,
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
@@ -291,6 +293,9 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
         user: signed_in(&state, &headers).await,
         providers: state.auth.offered(),
         limits: state.accounts.limits(),
+        admin: crate::http_admin::require_admin(&state, &headers)
+            .await
+            .is_ok(),
     })
 }
 

@@ -170,6 +170,15 @@ pub enum HostExit {
     Dropped,
 }
 
+/// See [`Registry::census`].
+#[derive(Debug, Default, serde::Serialize)]
+pub struct RoomCensus {
+    pub pad_rooms: usize,
+    pub pad_people: usize,
+    pub sessions: usize,
+    pub session_people: usize,
+}
+
 #[derive(Default)]
 pub struct Registry {
     sessions: DashMap<String, Session>,
@@ -338,6 +347,25 @@ impl Registry {
             }
         }
         leaving.len()
+    }
+
+    /// Who is here right now, for the operator's view: pad rooms and the
+    /// people in them, and hosted sessions with their hosts and guests.
+    pub fn census(&self) -> RoomCensus {
+        let mut c = RoomCensus::default();
+        for s in self.sessions.iter() {
+            match s.shape {
+                Shape::Peer => {
+                    c.pad_rooms += 1;
+                    c.pad_people += s.guests.len();
+                }
+                Shape::Hosted => {
+                    c.sessions += 1;
+                    c.session_people += s.guests.len() + usize::from(s.host.is_some());
+                }
+            }
+        }
+        c
     }
 
     pub fn with<R>(&self, id: &str, f: impl FnOnce(&Session) -> R) -> Option<R> {

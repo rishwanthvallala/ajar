@@ -193,6 +193,54 @@ impl Access {
     }
 }
 
+/// See [`Accounts::stats`].
+#[derive(Debug, Serialize)]
+pub struct AccountStats {
+    pub users: i64,
+    pub by_provider: Vec<Count>,
+    /// People who signed in within the window.
+    pub signed_in: i64,
+    /// Sessions that have not expired.
+    pub sessions: i64,
+    pub pads: i64,
+    pub deleted: i64,
+    pub bytes: i64,
+    pub links: i64,
+    pub view: Vec<Count>,
+    pub edit: Vec<Count>,
+    /// Accounts made, and account pads made, per day of the window.
+    pub signups: Vec<Day>,
+    pub made: Vec<Day>,
+    /// The accounts holding the most, and the newest.
+    pub biggest: Vec<AccountRow>,
+    pub newest: Vec<AccountRow>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Count {
+    pub key: String,
+    pub n: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Day {
+    /// The day's start, in Unix seconds.
+    pub day: i64,
+    pub n: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountRow {
+    pub name: String,
+    pub provider: String,
+    pub email: Option<String>,
+    pub joined: i64,
+    pub pads: i64,
+    pub bytes: i64,
+    /// When they last signed in, if a session of theirs is still on record.
+    pub signed_in: Option<i64>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum AccountError {
     NotFound,
@@ -668,6 +716,99 @@ impl Accounts {
         self.limits.bytes.saturating_sub(used.max(0) as u64)
     }
 
+    // ---------------------------------------------------------- the operator
+
+    /// The provider's own id for a user, for matching an admin given as
+    /// `github:12345`.
+    pub fn provider_id(&self, user: i64) -> Option<String> {
+        self.db
+            .lock()
+            .query_row(
+                "SELECT provider_id FROM users WHERE id = ?1",
+                params![user],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// Totals for the operator's view, from what the database already holds:
+    /// who signed up and when, pads and how they are shared, and the accounts
+    /// that use the most room. Nothing is collected for it.
+    pub fn stats(&self, days: i64, top: usize) -> Result<AccountStats, AccountError> {
+        let db = self.db.lock();
+        let now = now();
+        let since = now - days * 86_400;
+        let one = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> rusqlite::Result<i64> {
+            db.query_row(sql, p, |r| r.get(0))
+        };
+        let counts = |sql: &str| -> rusqlite::Result<Vec<Count>> {
+            let mut q = db.prepare(sql)?;
+            let rows = q.query_map([], |r| {
+                Ok(Count {
+                    key: r.get(0)?,
+                    n: r.get(1)?,
+                })
+            })?;
+            rows.collect()
+        };
+        let per_day = |sql: &str| -> rusqlite::Result<Vec<Day>> {
+            let mut q = db.prepare(sql)?;
+            let rows = q.query_map(params![since], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let got: std::collections::HashMap<i64, i64> = rows.collect::<Result<_, _>>()?;
+            // Every day in the window, the empty ones too, oldest first.
+            let today = now / 86_400;
+            Ok((0..days)
+                .rev()
+                .map(|back| {
+                    let day = today - back;
+                    Day {
+                        day: day * 86_400,
+                        n: got.get(&day).copied().unwrap_or(0),
+                    }
+                })
+                .collect())
+        };
+        let accounts = |order: &str| -> rusqlite::Result<Vec<AccountRow>> {
+            let mut q = db.prepare(&format!(
+                "SELECT u.name, u.provider, u.email, u.created,
+                        COUNT(p.name), COALESCE(SUM(p.bytes), 0),
+                        (SELECT MAX(s.created) FROM sessions s WHERE s.user_id = u.id)
+                 FROM users u LEFT JOIN pads p ON p.owner_id = u.id AND p.deleted IS NULL
+                 GROUP BY u.id ORDER BY {order} LIMIT ?1"
+            ))?;
+            let rows = q.query_map(params![top as i64], |r| {
+                Ok(AccountRow {
+                    name: r.get(0)?,
+                    provider: r.get(1)?,
+                    email: r.get(2)?,
+                    joined: r.get(3)?,
+                    pads: r.get(4)?,
+                    bytes: r.get(5)?,
+                    signed_in: r.get(6)?,
+                })
+            })?;
+            rows.collect()
+        };
+        Ok(AccountStats {
+            users: one("SELECT COUNT(*) FROM users", &[])?,
+            by_provider: counts("SELECT provider, COUNT(*) FROM users GROUP BY provider ORDER BY 2 DESC")?,
+            signed_in: one("SELECT COUNT(DISTINCT user_id) FROM sessions WHERE created > ?1", &[&since])?,
+            sessions: one("SELECT COUNT(*) FROM sessions WHERE expires > ?1", &[&now])?,
+            pads: one("SELECT COUNT(*) FROM pads WHERE deleted IS NULL", &[])?,
+            deleted: one("SELECT COUNT(*) FROM pads WHERE deleted IS NOT NULL", &[])?,
+            bytes: one("SELECT COALESCE(SUM(bytes), 0) FROM pads WHERE deleted IS NULL", &[])?,
+            links: one("SELECT COUNT(*) FROM links WHERE revoked IS NULL", &[])?,
+            view: counts("SELECT view, COUNT(*) FROM pads WHERE deleted IS NULL GROUP BY view ORDER BY 2 DESC")?,
+            edit: counts("SELECT edit, COUNT(*) FROM pads WHERE deleted IS NULL GROUP BY edit ORDER BY 2 DESC")?,
+            signups: per_day("SELECT created / 86400, COUNT(*) FROM users WHERE created > ?1 GROUP BY 1")?,
+            made: per_day("SELECT created / 86400, COUNT(*) FROM pads WHERE created > ?1 GROUP BY 1")?,
+            biggest: accounts("6 DESC, u.created DESC")?,
+            newest: accounts("u.created DESC")?,
+        })
+    }
+
     // ---------------------------------------------------------- access
 
     /// What `user`, holding `code`, may do with `name`.
@@ -928,6 +1069,29 @@ mod tests {
         // Unlocking brings the same links back.
         a.set_access(me, &pad.name, View::Link, Edit::Code).unwrap();
         assert_eq!(a.access(&pad.name, None, Some(&edit)).role, Role::Editor);
+    }
+
+    #[test]
+    fn stats_count_what_is_there() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let you = person(&a, "2");
+        let pad = a.create_pad(me, &|_| false).unwrap();
+        a.create_pad(you, &|_| false).unwrap();
+        a.record_size(&pad.name, 5000, 2);
+        a.new_session(me).unwrap();
+        let s = a.stats(30, 5).unwrap();
+        assert_eq!((s.users, s.pads, s.bytes, s.signed_in), (2, 2, 5000, 1));
+        assert_eq!(s.links, 4, "a viewer and an editor link each");
+        assert_eq!(s.signups.len(), 30);
+        assert_eq!(s.signups.last().unwrap().n, 2, "both joined today");
+        assert_eq!(s.made.iter().map(|d| d.n).sum::<i64>(), 2);
+        assert_eq!(s.biggest[0].bytes, 5000);
+        assert!(s.biggest[0].signed_in.is_some());
+        assert_eq!(
+            s.view.iter().find(|c| c.key == "link").map(|c| c.n),
+            Some(2)
+        );
     }
 
     #[test]

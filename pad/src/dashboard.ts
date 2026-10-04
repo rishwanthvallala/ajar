@@ -41,11 +41,11 @@ function signInAlert(code: string): HTMLElement {
   return alert;
 }
 
-function topbar(...right: (HTMLElement | null)[]): HTMLElement {
+export function topbar(...right: (HTMLElement | null)[]): HTMLElement {
   return el("header", { className: "topbar" }, el("div", { className: "topbar-inner" }, brand(), el("div", { className: "topbar-right" }, ...right, themeToggle())));
 }
 
-function footer(): HTMLElement {
+export function footer(): HTMLElement {
   return el(
     "footer",
     { className: "page-foot" },
@@ -55,7 +55,7 @@ function footer(): HTMLElement {
   );
 }
 
-function shell(...children: HTMLElement[]): HTMLElement {
+export function shell(...children: HTMLElement[]): HTMLElement {
   return el("div", { className: "acct" }, ...children);
 }
 
@@ -74,7 +74,7 @@ function avatar(name: string): HTMLElement {
  * panel — not an application menu: two items do not need arrow keys, and a
  * panel can say who you are, which a menu cannot.
  */
-function accountMenu(me: Me, onSignOut: () => void): HTMLElement {
+export function accountMenu(me: Me, onSignOut: () => void): HTMLElement {
   const user = me.user!;
   const provider = PROVIDERS[user.provider] ?? user.provider;
   const wrap = el("div", { className: "menu-wrap" });
@@ -93,6 +93,7 @@ function accountMenu(me: Me, onSignOut: () => void): HTMLElement {
       avatar(user.name),
       el("div", {}, el("strong", {}, user.name), el("span", {}, user.email ? `${user.email} · ${provider}` : `Signed in with ${provider}`)),
     ),
+    me.admin ? el("a", { className: "menu-item", href: "/admin" }, icon("chart"), "Admin") : null,
     el("a", { className: "menu-item", href: "/privacy" }, icon("shield"), "Privacy"),
     signOut,
   );

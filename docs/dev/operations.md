@@ -182,7 +182,20 @@ sudo journalctl -u ajar-relay -n 5 -o cat   # "sign-in offered with ["google", "
 ```
 
 A provider with no id is simply not offered, so one can go live before the
-other. Rotating a secret is the same edit and a restart; sessions survive it.
+other.
+
+**The admin page**, `/admin`, is for the people named in `AJAR_ADMINS` in the
+same file — comma-separated, each an email (Google's only when Google says it
+is verified; GitHub's only if it is public on the profile) or a
+`provider:id` (`github:583231`; a GitHub id is at
+`api.github.com/users/<login>`). Anyone else gets a 404 and the page says
+`/admin` is not a pad address. It shows only what the relay already keeps —
+see [accounts](accounts.md#as-built).
+
+```sh
+#   AJAR_ADMINS=you@example.com,github:583231
+sudo systemctl restart ajar-relay
+``` Rotating a secret is the same edit and a restart; sessions survive it.
 
 ### What is on disk
 

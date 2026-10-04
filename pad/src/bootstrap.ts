@@ -15,6 +15,11 @@ export async function startPad(): Promise<void> {
     const { startDashboard } = await import("./dashboard");
     return startDashboard(root);
   }
+  // The operator's view. To anyone else it says what /admin always said.
+  if (path === "admin") {
+    const { startAdmin } = await import("./admin");
+    return startAdmin(root);
+  }
   // A name typed with capitals is the same pad in lower case.
   if (path !== path.toLowerCase() && /^[a-z0-9-]{1,64}$/.test(path.toLowerCase())) {
     location.replace(`/${path.toLowerCase()}${location.search}${location.hash}`);

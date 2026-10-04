@@ -695,6 +695,63 @@ impl Store {
     }
 
     /// Delete everything past its lease, freeing the names. Returns them.
+    /// What the store holds, for the operator's view: how many pads, how
+    /// recently each was last opened or written, and the biggest. A walk of
+    /// the directory and a `stat` each, as the sweeper does — no pad is
+    /// parsed, and nothing is read that the store does not already keep.
+    pub fn census(&self, top: usize) -> Census {
+        let mut census = Census {
+            pads: 0,
+            owned: 0,
+            bytes: self.used(),
+            ceiling: self.ceiling,
+            touched_1d: 0,
+            touched_7d: 0,
+            touched_30d: 0,
+            biggest: Vec::new(),
+        };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return census;
+        };
+        let pinned = self.pinned.read();
+        let mut sizes = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let (Some(name), Ok(meta)) = (stem(&path), entry.metadata()) else {
+                continue;
+            };
+            let owned = pinned.contains(&name);
+            if !owned && lapsed(&meta) {
+                continue;
+            }
+            census.pads += 1;
+            census.owned += owned as u64;
+            let idle = idle_for(&meta);
+            census.touched_1d += (idle <= Duration::from_secs(86_400)) as u64;
+            census.touched_7d += (idle <= Duration::from_secs(7 * 86_400)) as u64;
+            census.touched_30d += (idle <= Duration::from_secs(30 * 86_400)) as u64;
+            let touched = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            sizes.push(PadSize {
+                name,
+                bytes: meta.len(),
+                touched,
+                owned,
+            });
+        }
+        sizes.sort_by_key(|p| std::cmp::Reverse(p.bytes));
+        sizes.truncate(top);
+        census.biggest = sizes;
+        census
+    }
+
     pub fn sweep(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return Vec::new();
@@ -709,6 +766,31 @@ impl Store {
     }
 }
 
+/// See [`Store::census`].
+#[derive(Debug, Serialize)]
+pub struct Census {
+    pub pads: u64,
+    /// Of those, the ones that belong to an account.
+    pub owned: u64,
+    pub bytes: u64,
+    pub ceiling: u64,
+    /// Opened or written within a day, a week, a month — from the lease,
+    /// which a read renews at most once a day.
+    pub touched_1d: u64,
+    pub touched_7d: u64,
+    pub touched_30d: u64,
+    pub biggest: Vec<PadSize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PadSize {
+    pub name: String,
+    pub bytes: u64,
+    /// When it was last opened or written, in Unix seconds.
+    pub touched: u64,
+    pub owned: bool,
+}
+
 fn stem(path: &Path) -> Option<String> {
     path.file_stem()?.to_str().map(str::to_owned)
 }
@@ -716,6 +798,24 @@ fn stem(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_census_counts_live_pads_and_leaves_out_lapsed_ones() {
+        let dir = tempdir::Dir::new();
+        let s = Store::open(dir.path(), u64::MAX).unwrap();
+        s.write("fresh", &[put("a.txt", "x")]).unwrap();
+        s.write("big", &[put("a.txt", &"y".repeat(5000))]).unwrap();
+        s.write("old", &[put("a.txt", "z")]).unwrap();
+        s.write("kept", &[put("a.txt", "k")]).unwrap();
+        s.pin("kept");
+        touched(&s, "old", LEASE + Duration::from_secs(60));
+        touched(&s, "kept", Duration::from_secs(10 * 86_400));
+        let c = s.census(2);
+        assert_eq!((c.pads, c.owned), (3, 1), "a lapsed pad is not counted");
+        assert_eq!((c.touched_1d, c.touched_7d, c.touched_30d), (2, 2, 3));
+        assert_eq!(c.biggest.len(), 2);
+        assert_eq!(c.biggest[0].name, "big");
+    }
 
     #[test]
     fn a_pinned_pad_outlives_its_lease_and_removing_it_frees_its_bytes() {

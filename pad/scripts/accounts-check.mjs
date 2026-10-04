@@ -70,6 +70,7 @@ const relay = spawn(
     env: {
       ...process.env,
       AJAR_PUBLIC_ORIGIN: ORIGIN,
+      AJAR_ADMINS: "github:7",
       AJAR_GITHUB_CLIENT_ID: "id",
       AJAR_GITHUB_CLIENT_SECRET: "secret",
       AJAR_GITHUB_AUTHORIZE_URL: `${PROVIDER}/authorize`,
@@ -415,6 +416,19 @@ try {
   await stranger.goto(`${ORIGIN}/login`);
   await stranger.waitForSelector("text=Pads you control", { timeout: 15_000 });
   is(new URL(stranger.url()).pathname, "/dashboard", "/login goes to the sign-in page");
+
+  // ---- the operator's view ----
+  await stranger.goto(`${ORIGIN}/admin`);
+  await stranger.waitForSelector("text=That isn't a pad address", { timeout: 15_000 });
+  ok("/admin to anyone else is what it always was");
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.click(".account-button");
+  await owner.getByRole("link", { name: "Admin" }).click();
+  await owner.waitForSelector(".stat", { timeout: 15_000 });
+  const figures = await owner.evaluate(() => Object.fromEntries([...document.querySelectorAll(".stat")].map((s) => [s.querySelector(".stat-label").textContent, s.querySelector(".stat-value").textContent])));
+  is(figures.Accounts, "1", "the operator's view counts the accounts");
+  is(Number(figures["In pads"]) >= 1, true, "and who is in a pad right now");
+  is(await owner.locator(".chart-svg[role=img]").count(), 2, "with charts that say what they show");
 
   // ---- the dashboard ----
   await owner.goto(`${ORIGIN}/dashboard`);

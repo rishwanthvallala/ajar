@@ -333,6 +333,14 @@ through a tab in the return address, a hosted session squatting an owned
 pad's name, parallel writes past the quota, and a stale dialog re-opening
 editing.
 
+**The operator's view**, `/admin` (added 4 October): totals of how the pad is
+used, built from what the relay already keeps — accounts and sign-ups per day
+from the database, pads and when each was last opened from the store's files
+(their lease timestamps), who is in a room right now from the registry, and
+the relay's uptime and memory. Nothing is collected for it; the privacy page
+says what it shows. Only `AJAR_ADMINS` may open it (`http_admin.rs`), and to
+anyone else it is what it was — not a pad address.
+
 Not built: Litestream backups (the database is on the box alone), deleting an
 account, linking a Google and a GitHub account into one, and any way to take a
 pad down for abuse short of the database. All in

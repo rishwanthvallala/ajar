@@ -109,6 +109,7 @@ function startRelay() {
       env: {
         ...process.env,
         AJAR_PUBLIC_ORIGIN: HTTP,
+        AJAR_ADMINS: "github:101",
         AJAR_GITHUB_CLIENT_ID: "test-client",
         AJAR_GITHUB_CLIENT_SECRET: "test-secret",
         AJAR_GITHUB_AUTHORIZE_URL: `${PROVIDER}/authorize`,
@@ -429,6 +430,16 @@ async function main() {
   await stillOpen.connect();
   stillOpen.ws.close();
   ok("nobody can open a hosted session under an owned pad's name, and its owner still gets in");
+
+  // --------------------------------------------------------------- admin
+  // Only the operators named in AJAR_ADMINS; anyone else is told there is
+  // nothing there.
+  await expectStatus(await api("/api/admin/stats"), 404, "the admin figures, signed out");
+  await expectStatus(await api("/api/admin/stats", { cookie: bo.cookie }), 404, "the admin figures, for someone not named");
+  const figures = await (await expectStatus(await api("/api/admin/stats", { cookie: ana.cookie }), 200, "the admin figures, for the operator")).json();
+  if (figures.accounts.users < 2 || figures.store.pads < 1 || figures.accounts.signups.length !== figures.days || typeof figures.live.pad_rooms !== "number") fail(`admin figures: ${JSON.stringify(figures).slice(0, 300)}`);
+  if ((await (await api("/api/me", { cookie: ana.cookie })).json()).admin !== true || (await (await api("/api/me", { cookie: bo.cookie })).json()).admin !== false) fail("/api/me does not say who is an admin");
+  ok(`the operator sees ${figures.accounts.users} accounts and ${figures.store.pads} pads; /api/me says who is one`);
 
   // --------------------------------------------------------- what is stored
   const stored = Buffer.concat(["accounts.db", "accounts.db-wal"].map((f) => join(dir, f)).filter(existsSync).map((f) => readFileSync(f)));

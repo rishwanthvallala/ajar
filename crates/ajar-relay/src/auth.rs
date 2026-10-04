@@ -85,6 +85,9 @@ pub struct Auth {
     pub origin: String,
     providers: Vec<Provider>,
     http: ureq::Agent,
+    /// Who sees /admin: `AJAR_ADMINS`, comma-separated, each an email or
+    /// `provider:id`. Empty means nobody.
+    admins: Vec<String>,
 }
 
 fn agent() -> ureq::Agent {
@@ -213,7 +216,24 @@ impl Auth {
             origin: var("AJAR_PUBLIC_ORIGIN").unwrap_or_default(),
             providers,
             http: agent(),
+            admins: var("AJAR_ADMINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|a| a.trim().to_lowercase())
+                .filter(|a| !a.is_empty())
+                .collect(),
         }
+    }
+
+    /// Whether this person is one of the operators named in `AJAR_ADMINS` —
+    /// by email, which is only stored when the provider vouches for it, or
+    /// by `provider:id`, which needs no email at all.
+    pub fn is_admin(&self, provider: &str, provider_id: Option<&str>, email: Option<&str>) -> bool {
+        let by_id = provider_id.map(|id| format!("{provider}:{id}").to_lowercase());
+        let email = email.map(str::to_lowercase);
+        self.admins
+            .iter()
+            .any(|a| Some(a) == by_id.as_ref() || (a.contains('@') && Some(a) == email.as_ref()))
     }
 
     /// Providers someone can sign in with here.
@@ -337,7 +357,12 @@ fn identity(provider: &'static str, me: &serde_json::Value) -> Option<Identity> 
             .map(|n| n.to_string())
             .or_else(|| me["id"].as_str().map(str::to_string))?,
     };
-    let email = me["email"].as_str().map(str::to_string);
+    // Google says whether it has checked the address; one it has not could be
+    // anybody's, and an email names an admin.
+    let email = me["email"]
+        .as_str()
+        .filter(|_| provider != "google" || me["email_verified"].as_bool() != Some(false))
+        .map(str::to_string);
     let name = me["name"]
         .as_str()
         .filter(|n| !n.is_empty())
@@ -432,9 +457,29 @@ mod tests {
             origin: String::new(),
             providers: Vec::new(),
             http: agent(),
+            admins: Vec::new(),
         };
         assert!(auth.offered().is_empty());
         assert!(auth.start("google", "/").is_none());
+    }
+
+    #[test]
+    fn admins_by_email_or_provider_id_and_unverified_emails_are_dropped() {
+        let auth = Auth {
+            origin: String::new(),
+            providers: Vec::new(),
+            http: agent(),
+            admins: vec!["ana@example.com".into(), "github:583231".into()],
+        };
+        assert!(auth.is_admin("google", Some("1"), Some("Ana@Example.com")));
+        assert!(auth.is_admin("github", Some("583231"), None));
+        assert!(
+            !auth.is_admin("google", Some("583231"), None),
+            "the id is the provider's"
+        );
+        assert!(!auth.is_admin("github", Some("2"), Some("bo@example.com")));
+        let unverified = serde_json::json!({ "sub": "9", "email": "ana@example.com", "email_verified": false, "name": "X" });
+        assert_eq!(identity("google", &unverified).unwrap().email, None);
     }
 
     #[test]

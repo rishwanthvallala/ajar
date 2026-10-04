@@ -213,7 +213,7 @@ if [ ! -f /etc/ajar/relay.env ]; then
         '# ajar-relay.service reads this. Secrets live here and nowhere else.' \
         'AJAR_PUBLIC_ORIGIN=https://code.rishwanth.dev' \
         '# AJAR_GOOGLE_CLIENT_ID=' '# AJAR_GOOGLE_CLIENT_SECRET=' \
-        '# AJAR_GITHUB_CLIENT_ID=' '# AJAR_GITHUB_CLIENT_SECRET=' \
+        '# AJAR_GITHUB_CLIENT_ID=' '# AJAR_GITHUB_CLIENT_SECRET=' '# AJAR_ADMINS=you@example.com' \
         > /etc/ajar/relay.env
 fi
 RELAYENV
