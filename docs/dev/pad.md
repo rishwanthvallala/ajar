@@ -490,10 +490,38 @@ CPU spent in idle frames. The CSV tokenizer on its own takes about 250 ms per
 lines, so the pad adds no limit of its own. **Colours** in the editor header
 switches it off for anyone who wants that anyway.
 
-Not measured yet, and the likelier cost in a long shared file: every remote
-document update writes the whole file into the sandbox (`app.ts`, the
-`DOC_UPDATE` branch of the doc handler), and every pause in typing saves the
-whole file.
+### Two people in one long file
+
+Measured on 4 October with `pad/scripts/typing-perf.mjs`: two headless
+Chromium pages on one pad through a real relay, the runtime up in both, one
+typing 200 characters into the middle of `big.py`. Long tasks are the browser's
+own (over 50 ms); lag is how late a 50 ms timer fires on that page.
+
+| `big.py` | Typing | Typist: long tasks, lag p95 / max | Watcher: long tasks, lag p95 / max |
+|---|---|---:|---:|
+| 0.1 MB | steady, 20 a second | 0, 10 / 15 ms | 0, 2 / 3 ms |
+| 4.8 MB | steady | 0, 18 / 33 ms | 0, 6 / 45 ms |
+| 4.8 MB | bursts of 10, 0.7 s apart | **19 (3.1 s), 146 / 174 ms** | 0, 7 / 36 ms |
+| 4.8 MB, saving after 2 s | bursts | 0, 14 / 42 ms | 0, 8 / 15 ms |
+
+**The suspect was innocent.** Every remote update writes the whole file into
+the watcher's sandbox (the `DOC_UPDATE` branch of `onDoc`), and the watcher
+never had a long task, at 4.8 MB.
+
+**The save was the cost.** A save sends the whole file: at 4.8 MB that was
+80–165 ms of the typist's main thread — the request body, the timer's own
+work, collection after — once per pause of half a second, which is most of
+them. Live collaboration does not depend on it — the room carries every
+keystroke as it is typed — so a file over 1 MB now saves 2 s after typing
+stops rather than 0.5 s, and the long tasks went. Sending only what changed
+would fix it at the root; it needs a patch operation in the store, and
+nothing measured asks for that yet.
+
+**Closing a tab inside the save delay used to lose that typing**, unless
+someone else in the room saved the same file. The page now saves what is
+waiting when it is hidden and when it goes; `keepalive` lets the browser
+finish a request of up to 64 KB after the page has gone, so a bigger file
+relies on the hidden moment, which comes first.
 
 ## The download
 

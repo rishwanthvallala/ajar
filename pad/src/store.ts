@@ -97,12 +97,18 @@ export class Store {
     return (await res.json()) as Pad;
   }
 
-  /** Apply changes and return the new sequence number. */
-  async write(name: string, changes: Change[]): Promise<number> {
+  /**
+   * Apply changes and return the new sequence number. `leaving` is a save
+   * made as the page goes away, which the browser lets finish after it has
+   * gone — up to 64 KB of them, so a bigger one is sent as usual and may not.
+   */
+  async write(name: string, changes: Change[], leaving = false): Promise<number> {
+    const body = JSON.stringify({ writes: changes });
     const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       method: "PUT",
       headers: { "content-type": "application/json", ...this.headers(name) },
-      body: JSON.stringify({ writes: changes }),
+      body,
+      keepalive: leaving && new Blob([body]).size < 60_000,
     });
     if (!res.ok) await refuse(res);
     const { seq } = (await res.json()) as { seq: number };

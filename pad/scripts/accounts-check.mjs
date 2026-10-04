@@ -214,6 +214,14 @@ try {
   is(await owner.locator("#away").isVisible(), false, "and no viewer's banner");
   await typeAtEnd(owner, "main.py", "# by-the-owner\n");
   is(await storedHas(name, "main.py", "by-the-owner"), true, "the owner's typing is saved");
+  // Typing in a tab closed inside its save delay. The owner's first tab is in
+  // the room and has the text too, but only the typist saves.
+  const brief = await owner.context().newPage();
+  await brief.goto(`${ORIGIN}/${name}`);
+  await until(brief, () => window.__pad?.role() === "owner" && window.__pad?.docs().includes("main.py"), undefined, 30_000);
+  await typeAtEnd(brief, "main.py", "# closed-at-once\n");
+  await brief.close({ runBeforeUnload: true });
+  is(await storedHas(name, "main.py", "closed-at-once", 5000), true, "typing in a tab closed before its save comes is saved as the tab goes");
 
   // ---- the share dialog ----
   await owner.click("#share");

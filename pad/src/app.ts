@@ -854,10 +854,21 @@ export class App {
   private saveSoon(): void {
     if (this.viewer) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => void this.saveEdits(), 500);
+    // A save sends the whole file, and at a few megabytes that is a tenth of
+    // a second of the typist's editor, every pause. The room has each
+    // keystroke as it is typed either way; only the stored copy waits longer.
+    const biggest = Math.max(0, ...[...this.dirty].map((p) => this.models.get(p)?.getValueLength() ?? 0));
+    this.saveTimer = setTimeout(() => void this.saveEdits(), biggest > 1_000_000 ? 2000 : 500);
   }
 
-  private async saveEdits(): Promise<void> {
+  /** Whatever is waiting to be saved, now: the tab is going out of sight, or away. */
+  private flushSaves(): void {
+    if (!this.saveTimer) return;
+    clearTimeout(this.saveTimer);
+    void this.saveEdits(true);
+  }
+
+  private async saveEdits(leaving = false): Promise<void> {
     this.saveTimer = null;
     const paths = [...this.dirty];
     this.dirty.clear();
@@ -880,7 +891,7 @@ export class App {
         .filter((c) => this.known.get(c.path) !== c.content);
       if (changes.length === 0) return;
       try {
-        const seq = await this.store.write(this.name, changes);
+        const seq = await this.store.write(this.name, changes, leaving);
         this.storeSeq = Math.max(this.storeSeq, seq);
         for (const c of changes) this.known.set(c.path, c.content);
         // Do not copy an older completed save over text edited while its
@@ -1189,6 +1200,14 @@ export class App {
     addEventListener("beforeunload", (e) => {
       if (this.viewer && this.local.size > 0) e.preventDefault();
     }, { signal: this.events.signal });
+    // Typing still inside its save delay went nowhere when the tab closed —
+    // half a second of it, or two seconds in a big file — unless someone else
+    // in the room saved it. Hidden is the last moment a page can count on,
+    // and closing is the last at all.
+    addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.flushSaves();
+    }, { signal: this.events.signal });
+    addEventListener("pagehide", () => this.flushSaves(), { signal: this.events.signal });
     this.el.preview.onclick = () => void this.togglePreview();
     this.el.backToEditor.onclick = () => void this.togglePreview();
     addEventListener("keydown", (e) => {
