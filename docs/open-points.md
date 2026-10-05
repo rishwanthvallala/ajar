@@ -36,6 +36,15 @@ seven took 114 s from Run to output, with the python download done in 2.3 s.
 `scripts/perf/pad-visit.mjs` now prints every request and console line for a
 Run slower than 15 s or one that never finishes. The suspect is below.
 
+**A typed command's file never reached the tree, once, live.** On 5 October
+`app-check.mjs` against production typed `echo seeded-by-the-room > notes.txt`;
+the prompt came back, the status said "saved", and `notes.txt` was not in the
+tree 30 s later. The run straight after passed, as has every local run. A
+publish waits its turn in the page's write queue, so the likeliest reading is
+a store request ahead of it that stalled on the network — a store `fetch` has
+no deadline. (The run before that one failed too, but it spanned the laptop
+sleeping, and says nothing.)
+
 ### The pad's runtime cannot start without registry.wasmer.io
 
 Only the packages' bytes are mirrored. On every start the runtime asks
