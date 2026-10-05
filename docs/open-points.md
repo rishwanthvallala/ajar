@@ -374,7 +374,7 @@ and the one that keeps paying: `find .` listing five files nobody wrote, a pad
 opened from a link coming up empty, and the preview's own origin were all
 invisible locally.
 
-The recurring hazard is checks that pass for the wrong reason — twenty-seven so far,
+The recurring hazard is checks that pass for the wrong reason — twenty-eight so far,
 plus two that *failed* for the wrong reason and cost more than any of them. The
 pattern never changes: whenever the thing under test can produce the passing
 evidence by accident, the check proves nothing. Reverting the fix and watching
@@ -395,6 +395,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 | Typing inside the save delay was lost when its tab closed, unless someone else saved the file | `6de80ed` |
 | Every save of a multi-megabyte file stalled the typist's editor 80–165 ms | `6de80ed` |
+| Typing in flight when editing was locked was neither saved nor kept as the editor's own copy — the demotion looked for unsaved work while the save held it | this change |
 
 ## Closed on 2–3 October
 

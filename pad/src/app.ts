@@ -922,7 +922,11 @@ export class App {
         if (why.refused || why.gone) {
           for (const p of paths) this.dirty.add(p);
           this.say("error", why.message);
-          void this.refresh();
+          // Demoted while this save was in flight, the page looked for
+          // unsaved work to keep and found none — this save had it. Kept now;
+          // otherwise the re-read below demotes it, and keeps it then.
+          if (this.viewer) this.keepUnsaved();
+          else void this.refresh();
           return;
         }
         for (const p of paths) this.dirty.add(p);
@@ -1457,6 +1461,7 @@ export class App {
     this.applyingRemote = true;
     try {
       for (const path of [...this.dirty]) {
+        if (this.local.has(path)) continue;
         const text = this.current(path);
         if (text === undefined || text === this.known.get(path)) continue;
         this.closeDoc(path);

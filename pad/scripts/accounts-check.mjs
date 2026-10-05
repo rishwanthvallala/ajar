@@ -398,7 +398,22 @@ try {
   await owner.click("#share");
   await owner.waitForSelector(".share-dialog select");
   // The editor types and, before that can be saved, loses editing: what
-  // they typed exists nowhere else, and is kept as their own copy.
+  // they typed exists nowhere else, and is kept as their own copy. The race
+  // made certain rather than left to the runner's speed: the editor's save
+  // is held until the lock has reached it, so the demotion finds nothing
+  // unsaved — the save in flight has it — and the save is then refused.
+  // Left to chance, macOS CI lost that typing on 5 October.
+  let saveSeen;
+  const saveStarted = new Promise((r) => (saveSeen = r));
+  let releaseSave;
+  const saveHeld = new Promise((r) => (releaseSave = r));
+  await editor.route("**/api/pad/*", async (r) => {
+    if (r.request().method() === "PUT") {
+      saveSeen();
+      await saveHeld;
+    }
+    await r.continue().catch(() => {});
+  });
   await editor.click('#files .row.file[data-path="main.py"]');
   await editor.evaluate(() => {
     const e = window.monaco.editor.getEditors()[0];
@@ -407,9 +422,12 @@ try {
     e.setPosition(m.getPositionAt(m.getValueLength()));
     e.trigger("keyboard", "type", { text: "# typed-as-editing-ended\n" });
   });
+  await saveStarted;
   await owner.getByRole("dialog").getByLabel("Who can edit").selectOption("owner");
   await until(editor, () => window.__pad?.role() === "viewer", undefined, 15_000);
+  releaseSave();
   await until(editor, () => window.__pad?.local().includes("main.py") && window.__pad?.text("main.py").includes("typed-as-editing-ended"), undefined, 15_000);
+  await editor.unroute("**/api/pad/*");
   is((await stored(name))["main.py"].content.includes("typed-as-editing-ended"), false, "typing that lost the race with a lock is not saved to the pad");
   ok("but it is kept as the editor's own copy, not dropped");
   is(await editor.locator("#away .viewing-text").isVisible(), true, "locking editing turns an editor into a viewer, without a reload");

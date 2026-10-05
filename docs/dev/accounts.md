@@ -295,8 +295,10 @@ What the design left open, settled in the build:
 design, accessibility, and edge cases — and changed as a result:
 
 - **Work is never dropped when access changes.** An editor whose editing is
-  locked before their typing is saved keeps that typing as their own copy; a
-  command that finishes after the lock keeps its files the same way. Anyone
+  locked before their typing is saved keeps that typing as their own copy —
+  whether the lock lands before the save leaves or while it is in flight, the
+  order that lost it until 5 October; a command that finishes after the lock
+  keeps its files the same way. Anyone
   who loses access entirely — viewing closed, the pad deleted, their session
   ended — with work on the page that exists nowhere else keeps the page, with
   a "No access" banner and Save as my copy. With nothing unsaved, the page

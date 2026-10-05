@@ -213,7 +213,7 @@ Three ways these measured the wrong thing before they were fixed:
 
 ## Checks that passed for the wrong reason
 
-Twenty-seven so far, and they are the most transferable lesson in this repository.
+Twenty-eight so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -246,6 +246,7 @@ passing evidence by accident.**
 | A viewer converging after its editors left | With every seed under one client id, the new editor's typing is put against the viewer's characters of the same ids — but typed at the end of the file it lands at the end anyway. The fix was to type *inside* the seed, after its first character, with Cmd+Home and an arrow; Cmd+Home is not a Monaco binding on a Mac, the cursor never left the end, and it passed twice more. The cursor is now placed through Monaco's API, and the check asserts the editor's own text first |
 | Discard rejoining the live file | It waited for the room's next line to appear, which the stored copy also delivers, a save later. It now requires the live document itself |
 | A hosted session squatting an owned pad's name | It tried to squat a pad whose room had people in it, and the relay refuses a host there for its own reasons. With the fix removed it still passed. It now squats a pad whose room is empty — the attack — and then requires the owner to get in |
+| Typing kept when editing is locked mid-save | It passed whenever the lock reached the editor before its save left, which is every local run. The other order — the save in flight when the demotion lands, so the demotion finds nothing unsaved — lost the typing, and only CI's macOS runner was slow enough to hit it, on 5 October. The editor's save is now held until the lock has landed, so that order is the one tested |
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service
