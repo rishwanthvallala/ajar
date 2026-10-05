@@ -310,9 +310,9 @@ still open in it:
   newest accounts but changes nothing.
 - **Viewers are counted in the presence dots** like anybody else; whether
   editors should see them apart is undecided.
-- **Moving an anonymous pad into an account takes two steps.** Its maker
-  downloads it as a zip and imports it on the dashboard — a copy, not a claim,
-  and its text files only.
+- **An anonymous pad moves into an account as a copy, from the dashboard.**
+  Copy a pad takes its link and makes a pad of theirs with its files — a
+  copy, not a claim. There is no button for it on the pad itself yet.
 - **Left from the review of 4 October** (the rest was fixed — see
   [accounts](dev/accounts.md#as-built)):
   - An anonymous pad's name can still be held by a hosted session opened

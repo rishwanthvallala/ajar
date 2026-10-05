@@ -135,6 +135,18 @@
 .confirm-body h2 .mono { font-size: 0.95em; }
 .confirm-body p { margin: 0; color: var(--ink-2); font-size: 0.875rem; line-height: 1.5; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.3rem 1.2rem; }
+/* A text field in a dialog: Copy a pad's link, Delete account's word. */
+.field-label { display: block; margin: 0 0 0.35rem; font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); }
+.text-field {
+  width: 100%; height: 2.35rem; padding: 0 0.75rem; border-radius: var(--r-sm);
+  border: 1px solid var(--field-line); background: var(--surface); color: var(--ink); font: 500 0.875rem var(--mono);
+}
+.text-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.text-field[aria-invalid="true"] { border-color: var(--hard); }
+.field-hint { margin: 0.45rem 0 0; color: var(--ink-2); font-size: 0.8125rem; line-height: 1.5; }
+.field-problem { margin: 0.55rem 0 0; color: var(--hard); font-size: 0.8125rem; line-height: 1.5; }
+.form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.1rem; }
+.copy-dialog { width: min(30rem, calc(100vw - 1.5rem)); }
 .confirm-typed-label { display: block; margin: 0.9rem 0 0.35rem; color: var(--ink-2); font-size: 0.8125rem; }
 .confirm-typed-label strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
 .confirm-typed {
@@ -481,7 +493,7 @@
 .dash-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
 .empty-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
 @media (max-width: 40rem) {
-  #import-zip { height: 2.5rem; }
-  #import-zip .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  #import-zip { width: 2.5rem; padding: 0; }
+  #import-zip, #copy-pad { height: 2.5rem; }
+  #import-zip .btn-label, #copy-pad .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #import-zip, #copy-pad { width: 2.5rem; padding: 0; }
 }

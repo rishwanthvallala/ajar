@@ -6,11 +6,11 @@
  * them needs the runtime, the editor or the room, and the dashboard is where
  * someone arrives back from signing in. Styles are in accounts.css.
  */
-import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, PROVIDERS, size, type View } from "./access";
+import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, type PadLink, parsePadLink, PROVIDERS, size, type View } from "./access";
 import type { IconName } from "./icons";
 import { openShare } from "./share";
-import { Store } from "./store";
-import { brand, button, confirmDialog, el, icon, isBusy, providerButtons, setBusy, themeToggle, toast, toastRegions } from "./ui";
+import { type Change, type Pad, Store, StoreError } from "./store";
+import { brand, button, confirmDialog, el, icon, isBusy, modal, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
 import { leftOut, PAD_LIMITS, pickZip, prepareImport, readZip, ZipError } from "./zip";
 
 /** Reasons a provider sends someone back with, that are not failures. */
@@ -258,6 +258,8 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   create.id = "new-pad";
   const fromZip = button("Import a zip", { icon: "upload", title: "A new pad of yours, with a zip's files in it" });
   fromZip.id = "import-zip";
+  const fromLink = button("Copy a pad", { icon: "copy", title: "A new pad of yours, with the files of a pad you have a link to" });
+  fromLink.id = "copy-pad";
   const limits = me.limits;
   const full = () => !!limits && pads.length >= limits.pads;
 
@@ -283,9 +285,11 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     else create.removeAttribute("aria-disabled");
     // The empty state has its own button; two primaries would compete.
     create.hidden = pads.length === 0;
-    fromZip.hidden = pads.length === 0;
-    if (full()) fromZip.setAttribute("aria-disabled", "true");
-    else fromZip.removeAttribute("aria-disabled");
+    for (const b of [fromZip, fromLink]) {
+      b.hidden = pads.length === 0;
+      if (full()) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
+    }
     if (pads.length === 0) {
       list.replaceChildren(
         el(
@@ -299,6 +303,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
             { className: "empty-actions" },
             button("Make your first pad", { icon: "plus", className: "btn-primary", onClick: () => void makePad(create) }),
             button("Start from a zip", { icon: "upload", onClick: (e) => void makeFromZip(e.currentTarget as HTMLElement) }),
+            button("Copy a pad", { icon: "copy", onClick: () => copyFromLink() }),
           ),
         ),
       );
@@ -465,6 +470,105 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   };
   fromZip.onclick = () => void makeFromZip(fromZip);
 
+  /**
+   * The files of a pad this person can open, as last saved, read with the code
+   * the pasted link carries — or, for a bare name, one this browser already
+   * holds. Said in words when it cannot be read: deleted, private, or empty.
+   */
+  const readForCopy = async (link: PadLink): Promise<Change[]> => {
+    let source: Pad;
+    try {
+      source = await new Store("", () => link.code ?? codeFor(link.name)).read(link.name);
+    } catch (e) {
+      if (e instanceof StoreError && e.gone) throw new Error(`${link.name} was deleted by its owner.`);
+      if (e instanceof StoreError && e.refused) {
+        throw new Error(
+          /no longer works/.test(e.message)
+            ? "That link no longer works — its owner reset it or turned it off."
+            : `${link.name} is private. Paste the link its owner shared, with the code after the #.`,
+        );
+      }
+      throw e;
+    }
+    const files = Object.entries(source.files).map(([path, f]) => ({ path, content: f.content, encoding: f.encoding }));
+    if (!source.exists || files.length === 0) throw new Error(`There's no pad at ${link.name} yet — nothing has been saved there.`);
+    return files;
+  };
+
+  /**
+   * A new pad of theirs with another pad's files: a copy, as last saved, of
+   * any pad they can open — someone else's, an open one they found, or one of
+   * their own. The original is not touched. Like a zip, the new pad goes
+   * again if writing into it fails.
+   */
+  const copyFromLink = () => {
+    if (full()) return toast(`An account holds ${limits!.pads} pads — delete one to make another`, "error");
+    const { dialog, body } = modal("Copy a pad", "A new pad of yours, with another pad's files", "copy-dialog");
+    const inputId = uid("pad-link");
+    const hintId = uid("pad-link-hint");
+    const label = el("label", { className: "field-label" }, "Link to a pad");
+    label.htmlFor = inputId;
+    const input = el("input", { id: inputId, className: "text-field", type: "text" }) as HTMLInputElement;
+    input.placeholder = `${location.host}/amber-falcon-river`;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("aria-describedby", hintId);
+    const hint = el(
+      "p",
+      { className: "field-hint", id: hintId },
+      "Any pad you can open, with the code after the # if its link has one. Its files are copied as they were last saved; the original is not changed.",
+    );
+    const problem = el("p", { className: "field-problem", hidden: true });
+    problem.setAttribute("role", "alert");
+    const say = (text: string) => {
+      problem.textContent = text;
+      problem.hidden = !text;
+      if (text) input.setAttribute("aria-invalid", "true");
+      else input.removeAttribute("aria-invalid");
+    };
+    const go = button("Make a copy", { icon: "copy", className: "btn-primary", type: "submit" });
+    const cancel = button("Cancel", { onClick: () => dialog.close() });
+    const form = el("form", { className: "copy-form" }, label, input, hint, problem, el("div", { className: "form-actions" }, cancel, go));
+    form.addEventListener("input", () => say(""));
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      void (async () => {
+        if (isBusy(go)) return;
+        const link = parsePadLink(input.value);
+        if ("error" in link) {
+          say(link.error);
+          return input.focus();
+        }
+        setBusy(go, true, `Copying ${link.name}…`);
+        input.readOnly = true;
+        try {
+          const files = await readForCopy(link);
+          const now = await account.me();
+          if (now.user?.id !== me.user?.id) return location.reload();
+          const pad = await account.create();
+          try {
+            await new Store("", () => null).write(pad.name, files);
+          } catch (e) {
+            await account.remove(pad.name).catch(() => {});
+            throw e;
+          }
+          location.assign(`/${pad.name}?from=${encodeURIComponent(link.name)}&files=${files.length}`);
+        } catch (e) {
+          staleSession(e);
+          say((e as Error).message);
+          setBusy(go, false);
+          input.readOnly = false;
+          input.focus();
+        }
+      })();
+    });
+    body.append(form);
+    dialog.showModal();
+    input.focus();
+  };
+  fromLink.onclick = () => copyFromLink();
+
   const load = async () => {
     loading();
     try {
@@ -547,7 +651,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       el(
         "main",
         { className: "dash" },
-        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), el("div", { className: "dash-actions" }, fromZip, create)),
+        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), el("div", { className: "dash-actions" }, fromLink, fromZip, create)),
         list,
         accountPart,
       ),

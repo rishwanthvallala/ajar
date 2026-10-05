@@ -1687,6 +1687,18 @@ export class App {
       toast(`Made from your zip: ${imported} ${imported === "1" ? "file" : "files"}${skipped ? `, and ${skipped} binary ${skipped === 1 ? "file" : "files"} left out — a pad holds text` : ""}.`);
       return;
     }
+    // Made by Copy a pad on the dashboard. Only a name's shape is repeated.
+    const from = params.get("from");
+    if (from !== null) {
+      const files = params.get("files") ?? "";
+      params.delete("from");
+      params.delete("files");
+      history.replaceState(history.state, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
+      if (/^[a-z0-9-]{1,64}$/.test(from) && /^\d+$/.test(files)) {
+        toast(`Copied from ${from}: ${files} ${files === "1" ? "file" : "files"}, as last saved. ${from} itself is unchanged.`);
+      }
+      return;
+    }
     const copied = params.get("copied");
     if (!copied) return;
     params.delete("copied");

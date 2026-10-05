@@ -190,7 +190,12 @@ links and settings are in the share dialog, the same one the pad opens. New pad
 is the first button on the page, and Import a zip beside it (Start from a zip on an
 empty dashboard) makes the pad and writes the zip's text files into it before
 opening it — removing the pad again if that write fails, so a failed import
-does not leave an empty pad counting against the 20.
+does not leave an empty pad counting against the 20. **Copy a pad** beside
+them does the same from a pasted pad link (`parsePadLink` in `access.ts`): it
+reads the source through the store with the link's code, or one this browser
+already holds, so it copies exactly what this person may view; writes every
+file with its encoding into a new pad; and never stores the pasted code. It
+is all in the page — no relay change, and the original is only read.
 
 ## Limits and lifecycle
 
@@ -386,6 +391,5 @@ browsers: owner, editor, viewer), both in `scripts/check.sh`.
   and needs edit links to carry the key too, and sealed traffic in the room.
 - Whether editors see viewers in the presence count.
 - **An anonymous pad its maker wants to keep** is copied in, not claimed —
-  claiming would take editing away from everyone else. Today that is two
-  steps: download it as a zip, then Import a zip on the dashboard, text files
-  only (`85acfb3`). A one-step copy from the pad itself is still open.
+  claiming would take editing away from everyone else: **Copy a pad** on the
+  dashboard, with its link. A button for it on the pad itself is still open.

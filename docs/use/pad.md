@@ -150,8 +150,13 @@ who can, sign in — **Your pads**, top right, or `code.rishwanth.dev/dashboard`
 **New pad** makes one with a three-word name, like `amber-falcon-river`, and
 opens it. It is yours for as long as your account is: it never expires.
 **Import a zip**, beside it, does the same with a zip's text files in the new
-pad instead of the starter. Before you have any pads, the two are **Make your
-first pad** and **Start from a zip**.
+pad instead of the starter. **Copy a pad** does it with another pad's files:
+paste the link of any pad you can open — an open pad someone sent you, a
+private one with the code after its `#`, or one of your own — and the new pad
+gets its files as they were last saved. The original is not changed, and the
+code in the link is used for that one copy, not kept. Before you have any
+pads, the three are **Make your first pad**, **Start from a zip** and **Copy
+a pad**.
 
 Each pad has two settings, on its row in Your pads or under **Share** in the
 pad:

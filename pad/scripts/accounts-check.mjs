@@ -541,6 +541,78 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   await owner.goto(`${ORIGIN}/dashboard`);
   await owner.waitForSelector("text=No pads yet");
 
+  // ---- a pad copiedFiles from a link ----
+  // Anyone's pad this person can open becomes a new pad of theirs. Sources: an
+  // open pad, one of their own read through its edit link's code, and one
+  // that was deleted; refusals are faked at the store for the two answers a
+  // single account cannot produce here (someone else's private pad).
+  const api = (path, init = {}) => fetch(`${ORIGIN}${path}`, { ...init, headers: { cookie: ownerCookie, "x-ajar": "1", "content-type": "application/json", ...init.headers } });
+  const SOURCE = { "main.py": "print('from the source')\n", "lib/util.py": "X = 1\n" };
+  await fetch(`${ORIGIN}/api/pad/open-source-pad`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: Object.entries(SOURCE).map(([path, content]) => ({ path, content })) }) });
+  const coded = await (await api("/api/my/pads", { method: "POST" })).json();
+  await api(`/api/pad/${coded.name}`, { method: "PUT", body: JSON.stringify({ writes: [{ path: "only.txt", content: "coded\n" }] }) });
+  const codedEdit = coded.links.find((l) => l.role === "editor").code;
+  const gone = (await (await api("/api/my/pads", { method: "POST" })).json()).name;
+  await api(`/api/pad/${gone}`, { method: "PUT", body: JSON.stringify({ writes: [{ path: "x.txt", content: "x" }] }) });
+  await api(`/api/my/pads/${gone}`, { method: "DELETE" });
+  await owner.reload();
+  await owner.waitForSelector(".pad-card");
+  const madeBefore = (await (await api("/api/my/pads")).json()).length;
+
+  const copyDialog = () => owner.locator("dialog.copy-dialog");
+  const tryLink = async (text) => {
+    await copyDialog().getByLabel("Link to a pad").fill(text);
+    await copyDialog().getByRole("button", { name: "Make a copy" }).click();
+    return copyDialog().locator(".field-problem").waitFor({ state: "visible", timeout: 10_000 }).then(() => copyDialog().locator(".field-problem").textContent(), () => null);
+  };
+  await owner.getByRole("button", { name: "Copy a pad" }).click();
+  await copyDialog().waitFor();
+  is(await owner.evaluate(() => document.activeElement?.getAttribute("aria-describedby")?.startsWith("pad-link-hint")), true, "Copy a pad opens on its link field");
+  is(/not to a pad here/.test(await tryLink("https://elsewhere.example/amber-falcon-river") ?? ""), true, "a link to another site is refused in words");
+  // The dialog's own sentence: the store's refusal says "deleted by its owner" too.
+  is(await tryLink(`${ORIGIN}/${gone}`), `${gone} was deleted by its owner.`, "so is a deleted pad");
+  is(/no pad at nothing-saved-here yet/.test(await tryLink("nothing-saved-here") ?? ""), true, "and a name nobody has saved anything at");
+  await owner.route("**/api/pad/someone-elses-pad", (r) => r.fulfill({ status: 403, body: "this pad is private" }));
+  is(/is private\. Paste the link its owner shared/.test(await tryLink("someone-elses-pad") ?? ""), true, "a private pad asks for the link its owner shared");
+  await owner.route("**/api/pad/reset-link-pad", (r) => r.fulfill({ status: 403, body: "the link you opened no longer works" }));
+  is(/no longer works/.test(await tryLink(`reset-link-pad#${"A".repeat(22)}`) ?? ""), true, "and a reset link says it no longer works");
+  // A copy whose write is refused takes the pad it made with it.
+  await owner.route("**/api/pad/*", (r) => (r.request().method() === "PUT" ? r.fulfill({ status: 507, body: "an account holds at most 100 MB" }) : r.fallback()));
+  is(await tryLink(`${ORIGIN}/open-source-pad`), "an account holds at most 100 MB", "a copy that cannot be written says why");
+  await owner.unroute("**/api/pad/*");
+  is((await (await api("/api/my/pads")).json()).length, madeBefore, "none of those made a pad — the refused copy's pad went too");
+
+  // Its own pad by its edit link: the code goes with the read, and is not kept.
+  const sentCode = [];
+  owner.on("request", (r) => { if (r.url().endsWith(`/api/pad/${coded.name}`) && r.method() === "GET") sentCode.push(r.headers()["x-pad-code"] ?? null); });
+  await copyDialog().getByLabel("Link to a pad").fill(`${ORIGIN}/${coded.name}#${codedEdit}`);
+  await copyDialog().getByRole("button", { name: "Make a copy" }).click();
+  await owner.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname) && u.pathname !== `/${coded.name}`, { timeout: 15_000 });
+  const fromCoded = new URL(owner.url()).pathname.slice(1);
+  is(sentCode.includes(codedEdit), true, "a pasted link's code goes with the read");
+  is(await owner.evaluate((n) => localStorage.getItem(`pad.code.${n}`), coded.name), null, "and is not kept as this browser's");
+  is(JSON.stringify(Object.keys((await stored(fromCoded)) ?? {})), '["only.txt"]', "the copy has the source's files");
+
+  // An open pad, by its whole address.
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.getByRole("button", { name: "Copy a pad" }).click();
+  await copyDialog().getByLabel("Link to a pad").fill(`${ORIGIN}/open-source-pad`);
+  await copyDialog().getByRole("button", { name: "Make a copy" }).click();
+  await owner.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname), { timeout: 15_000 });
+  const copyName = new URL(owner.url()).pathname.slice(1);
+  await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const copyToast = await owner.waitForSelector(".toast:has-text('Copied from open-source-pad')", { timeout: 10_000 }).then((t) => t.textContent(), () => "");
+  is(/2 files, as last saved\. open-source-pad itself is unchanged/.test(copyToast), true, `Copy a pad makes a pad of yours and says where it came from (${copyName})`);
+  is(new URL(owner.url()).search, "", "and the address is the pad's own");
+  const copiedFiles = await stored(copyName);
+  is(JSON.stringify(Object.fromEntries(Object.entries(copiedFiles ?? {}).map(([p, f]) => [p, f.content]))), JSON.stringify(Object.fromEntries(Object.entries(SOURCE).sort())), "with the source's files, as saved");
+  is(await role(owner), "owner", "owned like any other pad of theirs");
+  const original = await (await fetch(`${ORIGIN}/api/pad/open-source-pad`)).json();
+  is(original.access?.role === "editor" && Object.keys(original.files).length === 2, true, "and the original is untouched — still open, still its own files");
+  for (const n of [copyName, fromCoded, coded.name]) await api(`/api/my/pads/${n}`, { method: "DELETE" });
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.waitForSelector("text=No pads yet");
+
   // ---- a viewer's document outliving its editors ----
   //
   // A pad nobody but a viewer has open, so nothing else can answer for it.

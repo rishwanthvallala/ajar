@@ -4,6 +4,7 @@
  * Node cannot run these — the python package fails wasm validation there — so
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
+import { parsePadLink } from "./access";
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { carryOver } from "./carry";
@@ -318,6 +319,35 @@ async function main() {
     is(stray.endState.equals(START), true, "and opens nothing");
     is(runs("a\tb, c", START, "\t").runs, "c0=a d=\t c1=b, c", "TSV splits on tabs, and a comma is text");
     is(runs("a,b,c,d,e,f,g,h,i").runs.split(" ").at(-1), "c0=i", "colours cycle after eight columns");
+  }
+
+  // ---- a pasted pad link ----
+  // Copy a pad takes whatever someone pastes. Each case is what a person
+  // might have in their clipboard; the answer is the name and code, or a
+  // reason in words.
+  {
+    const SITE = "https://code.example.com";
+    const CODE = "AbCdEfGhIjKlMnOpQrStUv";
+    const said = (text: string) => {
+      const r = parsePadLink(text, SITE);
+      return "error" in r ? `error: ${r.error}` : `${r.name} ${r.code ?? "-"}`;
+    };
+    for (const [text, want] of [
+      [`https://code.example.com/amber-falcon-river#${CODE}`, `amber-falcon-river ${CODE}`],
+      [`code.example.com/amber-falcon-river#${CODE}`, `amber-falcon-river ${CODE}`],
+      ["  https://code.example.com/Amber-Falcon-River/  ", "amber-falcon-river -"],
+      [`amber-falcon-river#${CODE}`, `amber-falcon-river ${CODE}`],
+      ["quiet-ember-4417", "quiet-ember-4417 -"],
+      ["https://code.example.com/notes#installation", "notes -"],
+      ["https://code.example.com/notes?x=1#" + encodeURIComponent(CODE), `notes ${CODE}`],
+      ["https://elsewhere.example/amber", "error: That's a link to elsewhere.example, not to a pad here."],
+      ["https://code.example.com/dashboard", "error: That link isn't to a pad."],
+      ["https://code.example.com/", "error: That link isn't to a pad."],
+      ["https://code.example.com/a/b", "error: That link isn't to a pad."],
+      ["", "error: Paste a link to a pad."],
+    ] as const) {
+      is(said(text), want, `a pasted link: ${JSON.stringify(text.slice(0, 50))}`);
+    }
   }
 
   // ---- zips, in and out ----

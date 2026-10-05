@@ -147,6 +147,46 @@ export function takeCode(name: string): boolean {
   return fresh;
 }
 
+/** The site's own pages. No pad sits at any of them. */
+const NOT_PADS = new Set(["dashboard", "login", "signup", "account", "settings", "admin", "privacy"]);
+
+export interface PadLink {
+  name: string;
+  /** The code after the `#`, when the link had one of a code's shape. */
+  code: string | null;
+}
+
+/**
+ * A pad link as somebody pasted it: the pad's name, and the code after the
+ * `#` when there is one. Takes a whole address, one without `https://`, or a
+ * bare name; anything else — another site, one of the site's own pages — says
+ * why instead. Nothing is remembered: the code is used for the one read it
+ * came for, not kept as this browser's.
+ */
+export function parsePadLink(text: string, origin = location.origin): PadLink | { error: string } {
+  const raw = text.trim();
+  if (!raw) return { error: "Paste a link to a pad." };
+  const here = new URL(origin);
+  let url: URL;
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) url = new URL(raw);
+    else if (/[./:]/.test(raw.split("#")[0]!)) url = new URL(`${here.protocol}//${raw}`);
+    else url = new URL(`/${raw}`, here);
+  } catch {
+    return { error: "That isn't a link." };
+  }
+  if (url.host !== here.host) return { error: `That's a link to ${url.host}, not to a pad here.` };
+  const name = url.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
+  if (!/^[a-z0-9-]{1,64}$/.test(name) || NOT_PADS.has(name)) return { error: "That link isn't to a pad." };
+  let hash = url.hash.replace(/^#/, "");
+  try {
+    hash = decodeURIComponent(hash).trim();
+  } catch {
+    hash = "";
+  }
+  return { name, code: /^[A-Za-z0-9_-]{22}$/.test(hash) ? hash : null };
+}
+
 export function codeFor(name: string): string | null {
   const known = held.get(name);
   if (known) return known;
