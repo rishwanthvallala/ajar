@@ -645,6 +645,30 @@ about first, in one dialog for all of them. An untouched starter — a new pad's
 **From the dashboard**, Import a zip reads and checks the zip first, then makes
 the pad and writes into it; a write that fails deletes the pad it just made.
 
+## Moving files
+
+Drag and drop in the tree (`files.ts`), and F2 with a typed path for the
+keyboard; both end in `App.move`. A move is **one store write** holding the
+new paths and `null` for the old ones, so nobody can read the pad between the
+two and see the file in both places or in neither. Then this page catches up
+the way an import does — the new paths' models, the editor following the open
+file, the old documents closed and their models disposed, the sandbox written
+if it is up — and the `moved` nudge sends everyone else to re-read, where the
+old path goes and the new one arrives like any other change. It never waits
+for the sandbox, so a move on a first visit is immediate.
+
+The text that moves is `current(path)` — the live document when there is one —
+so typing not yet saved goes along. A folder's binary files, which only the
+store holds, go in the same write. Moving onto a file that exists asks first;
+a folder into itself, or a file onto a folder's name, is refused in words.
+
+The tree is not redrawn while a drag is under way: the row being dragged has to
+outlive it, so a collapsed folder does not open on hover as it would in an
+editor — drop on it, and it opens after. Two things a move does not do for
+someone else on the pad: a person who had the old file open is moved to
+another file rather than following it, and typing they did in the old file in
+the moment between the move and their re-read is lost with it.
+
 ## What it does not do
 
 - **Empty folders do not persist.** Directories are derived from the paths

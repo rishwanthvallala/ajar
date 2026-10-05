@@ -63,6 +63,10 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .tree-bar-end { margin-left: auto; display: flex; gap: 2px; }
 /* A zip dragged over the files says where it will go. */
 .pad-shell .files.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+/* Moving within the tree: what is being dragged, and where it would land. */
+.pad-shell .row.dragging { opacity: 0.45; }
+.pad-shell .row.dir.drop-into { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.pad-shell .tree.drop-into { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
 .pad-shell .file-row > .delete svg { width: 0.8125rem; height: 0.8125rem; }
 .pad-shell .file-row:hover > :is(.delete, .get), .pad-shell .file-row > :is(.delete, .get):focus-visible { opacity: 1; }
 .pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }

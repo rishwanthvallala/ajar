@@ -456,6 +456,79 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await fresh.close();
   await rm(zips, { recursive: true, force: true });
 
+  // ---- moving in the tree ----
+  // Dragged as in an editor's file explorer, and by F2 for the keyboard. One
+  // store write each: the new path and the old one's removal together.
+  section = "moving in the tree";
+  const puts = [];
+  const onPut = (r) => { if (r.method() === "PUT" && r.url().includes("/api/pad/")) puts.push(JSON.parse(r.postData() ?? "{}").writes ?? []); };
+  page.on("request", onPut);
+  const row = (path, dir = false) => page.locator(`#files .row.${dir ? "dir" : "file"}[data-path="${path}"]`);
+  const treeHas = (want, without = []) => page.waitForFunction(([w, wo]) => {
+    const have = [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path);
+    return w.every((p) => have.includes(p)) && wo.every((p) => !have.includes(p));
+  }, [want, without], { timeout: 10_000 }).then(() => true, () => false);
+
+  puts.length = 0;
+  await row("todo.txt").dragTo(row("src", true));
+  const intoFolder = await treeHas(["src/todo.txt"], ["todo.txt"]);
+  const oneWrite = puts.some((w) => w.some((c) => c.path === "src/todo.txt" && c.content === "later\n") && w.some((c) => c.path === "todo.txt" && c.content === null));
+  await clear();
+  await typed("cat src/todo.txt; ls todo.txt 2>&1 | tail -1");
+  expect("a file dragged onto a folder moves into it — the store in one write, and the sandbox too",
+    intoFolder && oneWrite && (await shows(/later/)) && (await shows(/No such file/)), `${JSON.stringify(puts)} | ${await tail(3)}`);
+
+  await row("src/todo.txt").dragTo(row("main.py"));
+  expect("dropped on a file, it goes beside that file — back at the top", await treeHas(["todo.txt"], ["src/todo.txt"]), JSON.stringify(await paths()));
+
+  await open("util.py");
+  await row("src", true).dragTo(row("docs", true));
+  const folderMoved = await treeHas(["docs/src/util.py"], ["src/util.py"]);
+  const followed = await page.evaluate(() => window.__pad.active());
+  expect("a folder moves with everything in it, and the open file follows it",
+    folderMoved && followed === "docs/src/util.py" && (await editorText("docs/src/util.py")) === "def f():\n    return 42\n", `${followed} ${JSON.stringify(await paths())}`);
+
+  const treeBefore = JSON.stringify(await paths());
+  await row("docs", true).dragTo(row("docs/src/util.py"));
+  await wait(500);
+  expect("a folder cannot be dropped into itself", JSON.stringify(await paths()) === treeBefore, JSON.stringify(await paths()));
+
+  answer = "notes/renamed.txt";
+  await row("naïve.txt").focus();
+  await page.keyboard.press("F2");
+  answer = null;
+  expect("F2 moves and renames by a typed path — the keyboard's way to do it", await treeHas(["notes/renamed.txt"], ["naïve.txt"]), JSON.stringify(await paths()));
+
+  answer = "docs/readme.md";
+  await row("todo.txt").focus();
+  await page.keyboard.press("F2");
+  answer = null;
+  const asksFirst = await confirmShown();
+  if (asksFirst) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Cancel" }).click();
+  await wait(400);
+  const keptBoth = (await paths()).includes("todo.txt") && (await editorText("docs/readme.md")) === "# hi\n";
+  if (keptBoth) {
+    answer = "docs/readme.md";
+    await row("todo.txt").focus();
+    await page.keyboard.press("F2");
+    answer = null;
+    if (await confirmShown()) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Replace" }).click();
+  }
+  const replacedIt = (await treeHas(["docs/readme.md"], ["todo.txt"])) && (await editorText("docs/readme.md")) === "later\n";
+  expect("moving onto a file that is there asks first; Cancel keeps both, Replace replaces", asksFirst && keptBoth && replacedIt, `asked ${asksFirst}, kept ${keptBoth}, replaced ${replacedIt}`);
+
+  await open("helper.py");
+  await page.evaluate(() => {
+    const ed = window.monaco.editor.getEditors()[0];
+    ed.focus();
+    ed.setPosition(ed.getModel().getPositionAt(ed.getModel().getValueLength()));
+  });
+  await page.keyboard.type("# typed-just-before-moving");
+  await row("helper.py").dragTo(row("docs", true));
+  await treeHas(["docs/helper.py"], ["helper.py"]);
+  expect("typing not yet saved goes with the file", (await editorText("docs/helper.py"))?.includes("# typed-just-before-moving"), JSON.stringify((await editorText("docs/helper.py"))?.slice(-60)));
+  page.off("request", onPut);
+
   // ---- keys ----
   section = "keys";
   await page.evaluate(() => {

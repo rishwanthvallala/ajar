@@ -25,6 +25,32 @@ export interface TreeEvents {
   onImport?: (zip?: File) => void;
   /** Whether this page may add files at all — a viewer may not. */
   importable?: () => boolean;
+  /**
+   * A file or folder to a new path: dropped on a folder, or F2 and a path
+   * typed. `to` is the whole new path, not just the folder it lands in.
+   */
+  onMove?: (from: string, folder: boolean, to: string) => void;
+  /** Whether this page may move things — a viewer may not. */
+  movable?: () => boolean;
+}
+
+/** What a row being dragged carries, so a drag from anywhere else is not mistaken for one. */
+const DRAG = "application/x-pad-path";
+
+/** The folder something lands in when dropped on `row`: a folder itself, or a file's own folder. */
+function folderOf(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return cut === -1 ? "" : path.slice(0, cut);
+}
+
+/**
+ * Whether `what` may go into `folder`. Not where it already is — that moves
+ * nothing — and never a folder into itself or anything under it.
+ */
+export function canDrop(what: { path: string; folder: boolean }, folder: string): boolean {
+  if (folderOf(what.path) === folder) return false;
+  if (what.folder && (folder === what.path || folder.startsWith(`${what.path}/`))) return false;
+  return true;
 }
 
 interface Node {
@@ -80,6 +106,8 @@ export class FileTree {
   private active = "";
   /** Files that are this tab's own copy — a viewer's changes. */
   private local: ReadonlySet<string> = new Set();
+  /** The row being dragged, while it is. */
+  private dragging: { path: string; folder: boolean } | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -88,6 +116,23 @@ export class FileTree {
 
   addPendingFolder(path: string): void {
     this.pending.add(path);
+  }
+
+  /**
+   * After a move: empty folders made here, and folded ones, go with what
+   * moved, and the folder it went into opens so it can be seen there.
+   */
+  moved(from: string, to: string): void {
+    const shift = (set: Set<string>) => {
+      for (const p of [...set]) {
+        if (p !== from && !p.startsWith(`${from}/`)) continue;
+        set.delete(p);
+        set.add(to + p.slice(from.length));
+      }
+    };
+    shift(this.pending);
+    shift(this.collapsed);
+    for (let at = folderOf(to); at; at = folderOf(at)) this.collapsed.delete(at);
   }
 
   render(paths: string[], active: string, local: ReadonlySet<string> = this.local): void {
@@ -104,6 +149,7 @@ export class FileTree {
     const list = document.createElement("div");
     list.className = "tree";
     this.draw(root, list, active, 0);
+    if (this.events.movable?.()) this.acceptMoves(list);
 
     const bar = document.createElement("div");
     bar.className = "tree-bar";
@@ -139,15 +185,88 @@ export class FileTree {
     return b;
   }
 
+  /**
+   * Drag and drop within the tree, as in an editor's file explorer: onto a
+   * folder puts it inside, onto a file puts it beside that file, onto empty
+   * space puts it at the top. One set of listeners on the list rather than on
+   * every row, and the tree is not redrawn while a drag is under way — the
+   * row being dragged has to outlive it.
+   */
+  private acceptMoves(list: HTMLElement): void {
+    const targetOf = (e: DragEvent): string => {
+      const row = (e.target as Element | null)?.closest<HTMLElement>(".row");
+      if (!row) return "";
+      const path = row.dataset.path ?? "";
+      return row.classList.contains("dir") ? path : folderOf(path);
+    };
+    const mark = (folder: string | null) => {
+      for (const el of list.querySelectorAll(".drop-into")) el.classList.remove("drop-into");
+      list.classList.toggle("drop-into", folder === "");
+      if (folder) list.querySelector(`.row.dir[data-path="${CSS.escape(folder)}"]`)?.classList.add("drop-into");
+    };
+    list.addEventListener("dragstart", (e) => {
+      const row = (e.target as Element | null)?.closest<HTMLElement>(".row");
+      if (!row?.dataset.path || !e.dataTransfer) return;
+      this.dragging = { path: row.dataset.path, folder: row.classList.contains("dir") };
+      e.dataTransfer.setData(DRAG, row.dataset.path);
+      e.dataTransfer.setData("text/plain", row.dataset.path);
+      e.dataTransfer.effectAllowed = "move";
+      row.classList.add("dragging");
+    });
+    list.addEventListener("dragend", () => {
+      this.dragging = null;
+      mark(null);
+      for (const el of list.querySelectorAll(".dragging")) el.classList.remove("dragging");
+    });
+    list.addEventListener("dragover", (e) => {
+      // A file from the desktop is the zip drop's business, not a move.
+      if (!this.dragging || !e.dataTransfer?.types.includes(DRAG)) return;
+      const folder = targetOf(e);
+      if (!canDrop(this.dragging, folder)) return mark(null);
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      mark(folder);
+    });
+    list.addEventListener("dragleave", (e) => {
+      if (!(e.relatedTarget instanceof Element && list.contains(e.relatedTarget))) mark(null);
+    });
+    list.addEventListener("drop", (e) => {
+      const what = this.dragging;
+      if (!what || !e.dataTransfer?.types.includes(DRAG)) return;
+      e.preventDefault();
+      mark(null);
+      const folder = targetOf(e);
+      if (!canDrop(what, folder)) return;
+      const leaf = what.path.split("/").pop()!;
+      this.events.onMove?.(what.path, what.folder, folder ? `${folder}/${leaf}` : leaf);
+    });
+    // The keyboard's way to do the same: F2 on a row, then a path.
+    list.addEventListener("keydown", (e) => {
+      if (e.key !== "F2") return;
+      const row = (e.target as Element | null)?.closest<HTMLElement>(".row");
+      if (!row?.dataset.path) return;
+      e.preventDefault();
+      const from = row.dataset.path;
+      const to = prompt(`Move or rename ${from} — its new path:`, from);
+      if (to === null) return;
+      this.events.onMove?.(from, row.classList.contains("dir"), to);
+    });
+  }
+
   private draw(node: Node, into: HTMLElement, active: string, depth: number): void {
     const children = [...(node.children?.values() ?? [])].sort((a, b) => {
       const dirs = Number(b.children !== null) - Number(a.children !== null);
       return dirs || a.name.localeCompare(b.name);
     });
 
+    const movable = this.events.movable?.() ?? false;
     for (const child of children) {
       const row = document.createElement("button");
       row.style.paddingLeft = `${0.35 + depth * 0.75}rem`;
+      if (movable) {
+        row.draggable = true;
+        row.setAttribute("aria-keyshortcuts", "F2");
+      }
 
       if (child.children) {
         const open = !this.collapsed.has(child.path);

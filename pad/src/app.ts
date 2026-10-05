@@ -159,6 +159,8 @@ export class App {
   private starter = false;
   /** A zip being read or written in: one at a time. */
   private importing = false;
+  /** A move between its store write and the page catching up. */
+  private moving = false;
   /**
    * This page was the owner's, and the session behind it ended — signed out
    * in another tab, or expired. Their work stays here; signing in again, in
@@ -800,6 +802,8 @@ export class App {
       onDownloadAll: () => void this.downloadAll(),
       onImport: (zip) => void this.importZip(zip),
       importable: () => !this.viewer,
+      onMove: (from, folder, to) => void this.move(from, folder, to),
+      movable: () => !this.viewer,
     });
     this.tree.render([...this.models.keys()], this.active, this.local);
     this.ui?.setFileCount(this.models.size);
@@ -1651,6 +1655,101 @@ export class App {
       this.say("error", (e as Error).message);
     } finally {
       this.importing = false;
+    }
+  }
+
+  // ------------------------------------------------------------- moving
+
+  /**
+   * A file or folder to a new path, for everyone on the pad: dragged onto a
+   * folder in the tree, or F2 and a path typed. One store write carries the
+   * new paths and the old ones' removal together; then this page's editor,
+   * documents and sandbox follow, and everyone else's next read does the same
+   * for them. Like an import, it never waits for the sandbox to arrive.
+   */
+  private async move(from: string, folder: boolean, toRaw: string): Promise<void> {
+    if (this.viewer || this.moving) return;
+    const to = toRaw.trim().replace(/^\/+|\/+$/g, "");
+    if (!to || to === from) return;
+    const safe = to.split("/").every((p) => p && p !== "." && p !== ".." && !/[\u0000-\u001f\\]/.test(p)) && new TextEncoder().encode(to).length <= 512;
+    if (!safe) return this.say("error", `${to} is not a path a pad can hold`);
+    if (folder && to.startsWith(`${from}/`)) return this.say("error", "a folder cannot go inside itself");
+    const paths = [...this.models.keys()];
+    if (!folder && paths.some((p) => p.startsWith(`${to}/`))) return this.say("error", `there is already a folder called ${to}`);
+    if (folder && this.models.has(to)) return this.say("error", `there is already a file called ${to}`);
+    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then move it");
+
+    const pairs = paths.filter((p) => (folder ? p.startsWith(`${from}/`) : p === from)).map((p) => [p, to + p.slice(from.length)] as const);
+    // A folder made in this tab with nothing in it yet exists only here.
+    if (pairs.length === 0) {
+      this.tree?.moved(from, to);
+      return this.renderFiles();
+    }
+    const leaving = new Set(pairs.map(([p]) => p));
+    const replacing = pairs.filter(([, t]) => this.models.has(t) && !leaving.has(t));
+    if (replacing.length) {
+      const one = replacing.length === 1;
+      const yes = await confirmDialog({
+        title: one ? `Replace ${replacing[0]![1]}?` : `Replace ${replacing.length} files?`,
+        body: `${one ? "A file" : `${replacing.length} files`} with the same ${one ? "name is" : "names are"} already there. Moving ${from} replaces ${one ? "it" : "them"}, for everyone on this pad.`,
+        confirm: "Replace",
+      });
+      if (!yes) return;
+    }
+
+    this.moving = true;
+    this.say("saving", `moving ${from}…`);
+    try {
+      await this.queueWrite(async () => {
+        // The text as it stands here, typing not yet saved included.
+        const text = new Map(pairs.map(([p]) => [p, this.current(p) ?? ""]));
+        const changes: Change[] = [...pairs.map(([p, t]) => ({ path: t, content: text.get(p)! })), ...pairs.map(([p]) => ({ path: p, content: null }))];
+        // A folder's binary files are in the store only; they go with it.
+        if (folder && !this.lost) {
+          const pad = await this.store.read(this.name).catch(() => null);
+          for (const [p, f] of Object.entries(pad?.files ?? {})) {
+            if (f.encoding !== "base64" || !p.startsWith(`${from}/`)) continue;
+            changes.push({ path: to + p.slice(from.length), content: f.content, encoding: "base64" }, { path: p, content: null });
+          }
+        }
+        const seq = await this.store.write(this.name, changes);
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        const rt = this.runtimeReady ? await this.runtime : null;
+        const active = this.active;
+        this.applyingRemote = true;
+        try {
+          for (const [p, t] of pairs) {
+            this.closeDoc(t);
+            this.setFile(t, text.get(p)!);
+            this.known.set(t, text.get(p)!);
+            this.dirty.delete(t);
+          }
+          // Onto the new path before the old model goes from under the editor.
+          const followed = pairs.find(([p]) => p === active)?.[1];
+          if (followed) this.show(followed);
+          for (const [p] of pairs) {
+            this.dirty.delete(p);
+            this.known.delete(p);
+            this.closeDoc(p);
+            this.models.get(p)?.dispose();
+            this.models.delete(p);
+          }
+          for (const [p, t] of pairs) {
+            await rt?.write(t, text.get(p)!);
+            await rt?.remove(p).catch(() => {});
+          }
+        } finally {
+          this.applyingRemote = false;
+        }
+        this.tree?.moved(from, to);
+        this.renderFiles();
+        this.peers?.moved(seq);
+      });
+      this.say("", `moved ${from} to ${to}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    } finally {
+      this.moving = false;
     }
   }
 

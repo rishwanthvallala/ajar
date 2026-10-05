@@ -23,6 +23,14 @@ over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
 
+**Moving files.** Drag a file or a folder in the file list onto a folder to
+move it inside, onto a file to put it beside that file, or onto the empty
+space below to bring it to the top. With the keyboard, F2 on a file or folder
+asks for its new path, which also renames it. A move is for everyone on the
+pad, takes typing you have not saved yet with it, and asks first if it would
+replace a file that is already there. People viewing a pad cannot move
+anything.
+
 **Zips in and out.** Above the file list, the down arrow downloads the whole
 pad as `<pad-name>.zip`, its files in a folder of that name. On a folder's row
 it downloads that folder as a zip; on a file's row, that file as it is. The up

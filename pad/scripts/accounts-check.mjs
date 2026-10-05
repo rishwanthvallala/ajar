@@ -267,6 +267,25 @@ try {
   is(editorUrls.includes(editUrl) && editorUrls.includes(viewUrl), true, "an editor can pass on editing, and viewing while it is open");
   await editor.keyboard.press("Escape");
 
+  // ---- moving a file, seen by everyone ----
+  // The owner drags a file into a folder; the editor's tree follows on its
+  // next read, and the store holds it at the new path alone.
+  await fetch(`${ORIGIN}/api/pad/${name}`, {
+    method: "PUT",
+    headers: { cookie: ownerCookie, "content-type": "application/json" },
+    body: JSON.stringify({ writes: [{ path: "lib/keep.txt", content: "keep\n" }, { path: "move-me.txt", content: "moving\n" }] }),
+  });
+  await owner.reload();
+  await owner.waitForSelector('#files .row.file[data-path="move-me.txt"]', { timeout: 30_000 });
+  await until(owner, () => window.__pad?.role() === "owner");
+  await owner.locator('#files .row.file[data-path="move-me.txt"]').dragTo(owner.locator('#files .row.dir[data-path="lib"]'));
+  const seenThere = await until(editor, () => {
+    const have = [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path);
+    return have.includes("lib/move-me.txt") && !have.includes("move-me.txt");
+  }, undefined, 15_000).then(() => true, () => false);
+  const afterMove = await stored(name);
+  is(seenThere && afterMove?.["lib/move-me.txt"]?.content === "moving\n" && !("move-me.txt" in (afterMove ?? {})), true, "a file the owner drags into a folder moves there for the editor too, and in the store");
+
   // ---- a viewer, from the bare name ----
   const viewer = await person("viewer");
   await viewer.goto(viewUrl);
@@ -279,6 +298,7 @@ try {
   await typeAtEnd(owner, "main.py", "# live-one\n");
   await until(viewer, () => window.__pad?.text("main.py")?.includes("live-one"));
   ok("a viewer watches typing live");
+  is(await viewer.evaluate(() => [...document.querySelectorAll("#files .row")].every((r) => !r.draggable)), true, "a viewer cannot drag anything in the tree");
 
   await typeAtEnd(viewer, "main.py", "# the-viewers-own\n");
   await until(viewer, () => window.__pad?.local().includes("main.py"));
@@ -541,7 +561,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   await owner.goto(`${ORIGIN}/dashboard`);
   await owner.waitForSelector("text=No pads yet");
 
-  // ---- a pad copiedFiles from a link ----
+  // ---- a pad copied from a link ----
   // Anyone's pad this person can open becomes a new pad of theirs. Sources: an
   // open pad, one of their own read through its edit link's code, and one
   // that was deleted; refusals are faked at the store for the two answers a
