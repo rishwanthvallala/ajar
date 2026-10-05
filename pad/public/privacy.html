@@ -52,7 +52,7 @@
       <header><a href="/"><svg class="mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect width="24" height="24" rx="6.5"/><path d="M6.5 8h8.5M9 12h8.5M9 16h5" stroke-width="2" stroke-linecap="round" fill="none"/></svg>pad</a><span class="meta">code.rishwanth.dev</span></header>
 
       <h1>Privacy</h1>
-      <p class="meta">Effective 4 October 2026</p>
+      <p class="meta">Effective 5 October 2026</p>
 
       <p>
         pad is a code scratchpad at <code>code.rishwanth.dev</code>: open it, type, run, and send the link.
@@ -77,9 +77,10 @@
         <li><strong>From GitHub</strong> we receive your GitHub account id, your username, and your name and email address if you have made them public (the <code>read:user</code> permission).</li>
       </ul>
       <p>
-        We store which service you signed in with, that account id, your email address, your name, and when you
-        first signed in. They are used only to recognise you when you come back and to show you whose account you
-        are in. The access the service grants is used once, during sign-in, to read those details, and is not kept.
+        We store which service you signed in with, that account id, your email address, your name, when you
+        first signed in, and when each sign-in began. They are used only to recognise you when you come back, to
+        show you whose account you are in, and in the operator's view described below; an email address is also
+        how the operator is recognised as the operator. The access the service grants is used once, during sign-in, to read those details, and is not kept.
         We cannot see your contacts, files, repositories, or anything else in your Google or GitHub account.
       </p>
 
@@ -113,14 +114,15 @@
       <p>
         Our web server records each request — the IP address it came from, the address requested, the time, and the
         browser's description of itself — to keep the service secure, to limit abuse, and to fix problems. Older
-        entries are deleted automatically as the logs fill. IP addresses are also held in memory for a short time to
+        entries are deleted automatically as the logs fill. IP addresses are also held in memory for up to a day to
         apply rate limits.
       </p>
 
       <h2>On your device</h2>
       <p>
         Your browser keeps your settings — theme, layout, colours — and the codes of pad links you have opened, in its
-        own storage on your device. They stay there until you clear your browser's data.
+        own storage on your device. They stay there until you clear your browser's data; signing out, or deleting
+        your account, forgets the link codes.
       </p>
 
       <h2>What the person who runs pad sees</h2>
@@ -129,8 +131,8 @@
         nothing extra is collected for it. It shows totals: how many accounts and pads there are, how many people
         are in a pad right now, how much is stored, and sign-ups and new pads per day. And it lists accounts, with
         each one's name, email address, the service they signed in with, when they joined and last signed in, and
-        how many pads and how much space they use — for keeping the service within its limits and dealing with
-        abuse.
+        how many pads and how much space they use; and the ten largest pads, by name, with their size and when each
+        was last opened — for keeping the service within its limits and dealing with abuse.
       </p>
 
       <h2>Who else is involved</h2>
@@ -145,7 +147,8 @@
         pad's use and transfer of information received from Google APIs adheres to the
         <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
         including the Limited Use requirements. The information pad receives from Google — your account id, email
-        address and name — is used only to sign you in and to show you which account you are using. It is not
+        address and name — is used only to sign you in, to show you which account you are using, and in the
+        operator's view described above. It is not
         shared, sold, used for advertising, or used to train any model.
       </p>
 

@@ -95,8 +95,8 @@ suggestion. Both places a pad can change must check the role.
 1. **The store API** (`pad.rs`, behind `/api/pad/{name}`). Reads need viewer
    or better; writes need editor or owner. The owner is recognised by the
    session cookie, everyone else by `X-Pad-Code`.
-2. **The relay's peer room** (`ws.rs`, `session.rs`). Today every peer is
-   equal, and a browser applies whatever another sends. The `hello` carries the
+2. **The relay's peer room** (`ws.rs`, `session.rs`). Before accounts every
+   peer was equal, and a browser applied whatever another sent. The `hello` carries the
    code, and the WebSocket upgrade carries the cookie; the relay resolves a role
    and stamps it on the connection. Pad frames are plaintext, so it can read
    the first byte of a doc payload. From a **viewer** it forwards requests for
@@ -104,8 +104,10 @@ suggestion. Both places a pad can change must check the role.
    `moved`. Viewers answer `DOC_NONE` to requests, so a newcomer never takes a
    document from someone who could not have written it.
 
-**Revoking a link or rotating a code** closes every live connection that
-joined with it — the relay records which link each connection used.
+**Revoking a link or rotating a code** closes everyone in the room but the
+owner, as changing a setting does; they rejoin with what they hold now. (The
+design had the relay record which link each connection used and close only
+those; as built, it does not, and the wider close costs a reconnect.)
 
 ## Viewers watch live, and can still run
 
@@ -142,7 +144,8 @@ Suggestions and edit requests are later — see
 - OAuth with `state` and PKCE, both kept in a short-lived cookie on the
   browser that started the sign-in, so a callback only signs in the browser
   that asked. Google through OIDC; GitHub through an OAuth app. A user is the pair (provider, provider's user id); the email is stored
-  for display only, and two providers are two users until linking is built.
+  for display and to match an operator named in `AJAR_ADMINS`, and two
+  providers are two users until linking is built.
 - The session is a `__Host-` cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
   30 days, stored hashed. State-changing requests also need a custom header,
   which a cross-site form cannot send.
@@ -155,7 +158,7 @@ Suggestions and edit requests are later — see
 Litestream.**
 
 The constraints decide it: one 1.8 GB instance, an AWS account on credits that
-close it when spent, and a relay with no database today. SQLite is a file and a
+close it when spent, and a relay that had no database. SQLite is a file and a
 library — no process, little memory, transactions and indexes for the
 dashboard — and Litestream turns it into a backup costing cents. Postgres on the
 box costs hundreds of megabytes for nothing at this scale; a managed database
@@ -181,10 +184,10 @@ plus that key is every edit link; the key never goes to S3.
 
 ## The dashboard
 
-`code.rishwanth.dev/dashboard`, signed in. One row per pad: name, last opened,
-size, the two settings, and copy-view-link and copy-edit-link. From there you
-can make a link, revoke one, change a setting, or delete the pad. New pad is the
-first button on the page, and Import a zip beside it (Start from a zip on an
+`code.rishwanth.dev/dashboard`, signed in. One row per pad: name, file count,
+size, when it was made, chips for the two settings, and Share, Open and Delete;
+links and settings are in the share dialog, the same one the pad opens. New pad
+is the first button on the page, and Import a zip beside it (Start from a zip on an
 empty dashboard) makes the pad and writes the zip's text files into it before
 opening it — removing the pad again if that write fails, so a failed import
 does not leave an empty pad counting against the 20.
@@ -194,7 +197,7 @@ does not leave an empty pad counting against the 20.
 - **Per account:** 20 pads, 100 MB in all, and 25 MB / 500 files each as now.
   The disk has 15 GB free; these are the numbers to revisit, not a promise.
 - **No expiry** while the account exists. Deleting a pad deletes its files and
-  retires its name, as anonymous expiry already does.
+  retires its name for good — unlike anonymous expiry, which frees it.
 - **Deleting an account** deletes its pads. A read-only archive is the
   alternative, and costs storage for people who have left.
 - **Abuse.** Accounts make it attributable, which means a way to take a pad
@@ -232,7 +235,8 @@ in `main.rs` and at the peer room's door in `ws.rs`. See
 
 **The page.** `pad/src/access.ts` holds the code and the account API;
 `share.ts` the dialog; `dashboard.ts` the sign-in page, the dashboard and the
-private-pad screen; the viewer's behaviour is in `app.ts`. They are built from
+private-pad screen; `admin.ts` the operator's page; `zip.ts` zips in and out;
+the viewer's behaviour is in `app.ts`. They are built from
 one small kit — `ui.ts` (buttons, the provider buttons, modals, a confirm
 dialog, toasts, the theme switch), `icons.ts` (inline SVG, since the CSP allows
 images only from this origin) and `accounts.css`, which uses only the theme's
@@ -341,8 +345,9 @@ used, built from what the relay already keeps — accounts and sign-ups per day
 from the database, pads and when each was last opened from the store's files
 (their lease timestamps), who is in a room right now from the registry, and
 the relay's uptime and memory. Nothing is collected for it; the privacy page
-says what it shows. Only `AJAR_ADMINS` may open it (`http_admin.rs`), and to
-anyone else it is what it was — not a pad address.
+says what it shows. Only `AJAR_ADMINS` may open it (`http_admin.rs` serves
+the figures, `pad/src/admin.ts` draws them), and to anyone else it is what it
+was — not a pad address.
 
 **Signing out ends what the sign-in gave, in the room too** (4 October).
 Owner is the one role a room hands out from a sign-in, and it was decided at
@@ -380,6 +385,7 @@ browsers: owner, editor, viewer), both in `scripts/check.sh`.
   that also encrypts would make the server blind, the way ajar's sessions are —
   and needs edit links to carry the key too, and sealed traffic in the room.
 - Whether editors see viewers in the presence count.
-- What happens to an anonymous pad its maker wants to keep. Claiming it would
-  take edit away from everyone else, so it is a copy into the account, not a
-  seizure.
+- **An anonymous pad its maker wants to keep** is copied in, not claimed —
+  claiming would take editing away from everyone else. Today that is two
+  steps: download it as a zip, then Import a zip on the dashboard, text files
+  only (`85acfb3`). A one-step copy from the pad itself is still open.

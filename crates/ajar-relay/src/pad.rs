@@ -11,7 +11,7 @@
 //! nothing to migrate, and a pad is legible with `cat` when something is
 //! wrong. The caps are what keep that honest.
 //!
-//! **A lapsed name is free again.** A pad nobody writes to for a week is
+//! **A lapsed name is free again.** A pad nobody opens or writes to for 90 days is
 //! deleted, and whoever opens that name next starts an empty folder there.
 //!
 //! Until September 2026 the opposite was true: a lapse left a tombstone and the

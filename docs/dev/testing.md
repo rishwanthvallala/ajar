@@ -14,15 +14,15 @@ worse than no gate, because it still reports success.
 
 | | |
 |---|---|
-| `cargo test` | Frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions |
+| `cargo test` | Frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions, accounts — roles, links, quotas, sealing, deletion — and sign-in's PKCE and cookie state |
 | `npm run typecheck` / `build` | Both browser builds |
-| `pad/scripts/browser-check.mjs` | Drives `pad/src/check.ts` in headless Chromium — the runtime, the shell, every python shim against its real tool, the sandbox seed, the CSV tokenizer, and that the WISP transport loads. It cannot be a node test: the python package fails wasm validation there, and `SharedArrayBuffer` needs cross-origin isolation. Packages come through the mirror's service worker, as for a visitor; fetched from Wasmer's CDN instead, python's 62 MB stalled for minutes from one network and the check hung at the runtime's start |
+| `pad/scripts/browser-check.mjs` | Drives `pad/src/check.ts` in headless Chromium — the runtime, the shell, every python shim against its real tool, the sandbox seed, the CSV tokenizer, the zip reader and writer and what an imported zip becomes, typing carried over while a document arrives, the sync diff, the store over real HTTP, and that the WISP transport loads. It cannot be a node test: the python package fails wasm validation there, and `SharedArrayBuffer` needs cross-origin isolation. Packages come through the mirror's service worker, as for a visitor; fetched from Wasmer's CDN instead, python's 62 MB stalled for minutes from one network and the check hung at the runtime's start |
 | `pad/scripts/terminal-check.mjs` | The pad's terminal by real key presses, judged by what is on screen: history, Tab completion, Ctrl-R, the editing keys, clearing, a multi-line paste, a line longer than the terminal, Ctrl-C, and that errors reach the screen at all. The line editor is the page's own, so nothing else tests it. `PAD_ORIGIN` runs it against a deployment; the old editor failed 33 of its checks. In the gate |
-| `pad/scripts/user-check.mjs` | The pad as a person uses it: mistakes and their tracebacks, `input()`, Ctrl-C on a loop and on `input()`, Ctrl-D, the Stop button, `nano`, output without a final newline, Run after a `cd`, New file, threads, Ctrl-S. `PAD_ORIGIN` adds a real `pip install requests`. Against the code before 28 September it failed at the first check. In the gate |
+| `pad/scripts/user-check.mjs` | The pad as a person uses it: mistakes and their tracebacks, `input()`, Ctrl-C on a loop and on `input()`, Ctrl-D, the Stop button, `nano`, output without a final newline, Run after a `cd`, New file, threads, Ctrl-S, colours by language and Ctrl-F, deleting from the tree, and zips in and out — upload, a zip dropped on the file list, asking before replacing a changed file, junk and binaries left out, a pad's own zip round-tripping, and downloads read back by Python's `zipfile`. `PAD_ORIGIN` adds a real `pip install requests`. Against the code before 28 September it failed at the first check. In the gate |
 | dockerfile check | Every `COPY` source exists — the cheap half of `docker build` |
-| `scripts/test-ui.cjs` | Runs both layout checks below, then boots each app and requires no page errors |
-| `scripts/check-workspace-layout.cjs` | The session client: editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, preferences, preview isolation, lazy loading, disposal — and that a guest meeting a host on another protocol is told so instead of getting a dead session |
-| `scripts/check-pad-layout.cjs` | The pad against the same shared shell: resize, four viewports, drawer focus, status fixtures, and that pad preferences and network state stay isolated from the session client's |
+| `scripts/test-ui.cjs` | Runs both layout checks below, then boots each app and requires no page errors, then opens the built pad's editor: languages, the CSV tokenizer fetched only once a CSV opens, Colours, and the theme reaching Monaco and surviving a reload |
+| `scripts/check-workspace-layout.cjs` | The session client: editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, preferences, the theme toggle, preview isolation, lazy loading, disposal — and that a guest meeting a host on another protocol is told so instead of getting a dead session |
+| `scripts/check-pad-layout.cjs` | The pad against the same shared shell: resize, four viewports, drawer focus, status fixtures, the theme toggle, Colours hidden over a server preview, and that pad preferences and network state stay isolated from the session client's |
 | `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
 | `scripts/smoke-workspace.mjs` | Ignore rules, reads, path-traversal refusal, patches, an install-sized burst |
 | `scripts/smoke-editing.mjs` | Two people editing one file while the terminal rewrites it |
@@ -35,8 +35,8 @@ worse than no gate, because it still reports success.
 | `scripts/check-terminal.mjs` | A guest's terminal by real key presses, through the relay to a real bash on the host: history, the editing keys, Tab, Ctrl-R, clearing, Ctrl-C, a paste, the python REPL, unicode, and less, vi, nano and top drawing and quitting. The host's shell is pinned — prompt, inputrc, locale — so what is tested is the path, not the machine's bash. `AJAR_RELAY` and `AGENT` run it against a deployment. With the client dropping one byte, ESC, twelve of its thirty fail — needs `npm run build:ajar` |
 | `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco; and that a guest arriving to no terminals is given exactly one — needs `npm run build:ajar` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
-| `scripts/smoke-accounts.mjs` | Accounts at the relay, against a stand-in OAuth provider that checks PKCE: sign-in, the cookie's flags, a replayed callback, an off-site return address; then the store and the peer room as a stranger, a viewer, an editor and the owner — a viewer's edit dropped and its `DOC_NONE` passed, every setting, revoking, eviction of people already inside, both quotas, deletion, a restart, and no token or code in the database in the clear. Each enforcement point was reverted and the suite failed |
-| `pad/scripts/accounts-check.mjs` | Accounts in three browsers — owner, edit link, bare name: signing in, New pad, the share dialog's links, the code taken out of the address bar, live typing both ways, a viewer's copy-on-write, a command's file kept local, Discard rejoining the live document, Save as my copy, settings reaching people already inside, the private screen, the dashboard; and a viewer's document outliving its editors. In the gate |
+| `scripts/smoke-accounts.mjs` | Accounts at the relay, against a stand-in OAuth provider that checks PKCE: sign-in, the cookie's flags, a replayed callback, an off-site return address; then the store and the peer room as a stranger, a viewer, an editor and the owner — a viewer's edit dropped and its `DOC_NONE` passed, every setting, revoking, eviction of people already inside, both quotas, deletion, a restart, and no token or code in the database in the clear; the admin figures for the operator and a 404 for anyone else; signing out ending that sign-in's owner connections in the room and only those; deleting an account; and a relay with no provider set up. Each enforcement point was reverted and the suite failed |
+| `pad/scripts/accounts-check.mjs` | Accounts in three browsers — owner, edit link, bare name: signing in, New pad, the share dialog's links, the code taken out of the address bar, live typing both ways, a viewer's copy-on-write, a command's file kept local, Discard rejoining the live document, Save as my copy, settings reaching people already inside, the private screen, the dashboard; a viewer's document outliving its editors; a tab closed inside its save delay, Run in one file while another is typed in, `/admin`, a pad made from a zip, **Not live** on a name an ajar session holds and its backoff, signing out with the pad open as owner in another tab, and deleting the account behind its typed confirmation. In the gate |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 | `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
@@ -101,8 +101,11 @@ and experimenting in either fixture writes neither set.
 
 ## The pad's own harnesses
 
-Four, none of them in `check.sh` — each drives a real browser and moves real
-bytes, and the gate is already the slowest thing in the repository.
+`check.sh` does not run these in full — each drives a real browser and moves
+real bytes, and the gate is already the slowest thing in the repository. Of
+`npm run check`'s four, `terminal-check.mjs` and `user-check.mjs` are in the
+gate; `browser-check.mjs` and `app-check.mjs` are not, and neither are the
+rest below.
 
 ```sh
 npm run check --workspace=ajar-pad          # the pieces, then the product
@@ -165,7 +168,14 @@ scripts/perf/network.sh                        # the floor: DNS, TCP, TLS, first
 node scripts/perf/ajar-session.mjs             # host start, guest join, echo, output
 AGENT=target/release/ajar node scripts/perf/ajar-session.mjs   # a local build
 COLD=0,5000 WARM=3000,3000 node scripts/perf/pad-visit.mjs     # first and return visits
+node pad/scripts/typing-perf.mjs 125000 bursts                 # two people in one long file, locally
 ```
+
+`typing-perf.mjs` is the one that runs locally rather than against the site:
+two pages on one pad through a real relay, one typing into a long file, both
+watched for long tasks and timer lag. Its numbers are in
+[pad.md](pad.md#two-people-in-one-long-file); it needs `cargo build` and the
+pad built first.
 
 Run them one at a time — two browsers on one machine slow each other down. Each
 prints a JSON line per result and appends it to `$OUT` when that is set. A first

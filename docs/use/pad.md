@@ -11,8 +11,9 @@ Open the site. You get a folder with a name nobody had, a file in it, and a
 terminal. Paste something, press Run, send someone the link. They see the same
 folder and can carry on from where you left off.
 
-Or pick your own name — `code.rishwanth.dev/my-experiment` — and it is yours
-if nobody took it.
+Or pick your own name — `code.rishwanth.dev/my-experiment` — and if nobody
+took it, a new open pad starts there: like any open pad, it is anyone's who
+has the address. A pad that is only yours comes from signing in (below).
 
 ## What you can do
 
@@ -65,11 +66,13 @@ for f in *.txt; do echo "$f: $(wc -l < "$f")"; done
 diff old.txt new.txt > changes.patch
 find . -name '*.py' -exec wc -l {} +
 pip install six
-zip -r backup.zip .
+grep -rn TODO . > todo.txt
 ```
 
-Whatever a command writes appears in the folder, for you and for everyone else
-with the link.
+Whatever a command writes as text appears in the folder, for you and for
+everyone else with the link. **Binary files are not carried correctly yet:** an
+image or a `.zip` a command makes reaches the others — and the stored copy —
+garbled, so keep those to your own terminal for now.
 
 ### The keys
 
@@ -147,7 +150,8 @@ who can, sign in — **Your pads**, top right, or `code.rishwanth.dev/dashboard`
 **New pad** makes one with a three-word name, like `amber-falcon-river`, and
 opens it. It is yours for as long as your account is: it never expires.
 **Import a zip**, beside it, does the same with a zip's text files in the new
-pad instead of the starter.
+pad instead of the starter. Before you have any pads, the two are **Make your
+first pad** and **Start from a zip**.
 
 Each pad has two settings, on its row in Your pads or under **Share** in the
 pad:

@@ -100,6 +100,8 @@ Three restrictions matter as much as the hostname list:
   list.
 - UDP is off. pip does not need it, and open UDP is how a proxy becomes an
   amplification source.
+- Tunnels are capped — 64 open in all, 8 per address, in `wisp-server.mjs` —
+  since 32 streams per tunnel bounds nothing if the tunnels are unbounded.
 
 The hostname is checked, then resolved, then the *resolved* address is checked
 again, so a name pointing into private space is refused rather than followed.
@@ -152,7 +154,7 @@ an ssh binary nobody has published, `git clone` needs git at 85 MB, and
 `npm install` needs node at 74 MB. Network is necessary and nowhere near
 sufficient for those.
 
-## Ingress: three steps of four
+## Ingress: the four steps
 
 With `network: { mode: "http" }`:
 
@@ -169,12 +171,15 @@ was in a place nobody looked: the service worker answers a failure with
 `new Response(error.message, { status: 502 })`, so **the body is the error**.
 Reporting the status and stopping cost a session.
 
-**`python3 -m http.server` crashes the runtime.** A request arriving at it
-faults the worker with `RuntimeError: table index is out of bounds`, and the
-route then times out after five minutes. A hand-rolled accept-and-reply loop in
-the same sandbox serves fine. This matters because `http.server` is the first
-thing anyone reaches for, and the failure looks like the route being broken
-rather than the server being unusable.
+**`python3 -m http.server` does not serve.** When this was measured, a request
+arriving at it faulted the worker with `RuntimeError: table index is out of
+bounds`, and the route timed out after five minutes. The cause was found later:
+it handles each request on a thread, and a thread cannot start in this runtime
+(see [pad.md](pad.md)) — since 28 September `Thread.start()` raises instead of
+trapping. A hand-rolled accept-and-reply loop in the same sandbox serves fine.
+This matters because `http.server` is the first thing anyone reaches for, and
+the failure looks like the route being broken rather than the server being
+unusable.
 
 **A malformed response is refused, correctly.** The second error,
 `guest HTTP request failed: invalid internal data`, was a `Content-Length: 11`
@@ -200,7 +205,8 @@ it is blocked, and the failure surfaces as `the Wasmer HTTP host did not become
 ready` — which reads like the host being slow rather than the frame being
 refused. Adding the header turned that into a working route immediately.
 
-Deploying this means a second subdomain with those two files and those headers.
+Deploying it took a second subdomain with those two files and those headers —
+`preview.rishwanth.dev`, live since September.
 
 ### Two things that produced misleading failures
 
@@ -225,8 +231,10 @@ beginning, and useless for "share this with someone".
 A genuinely public URL needs a **reverse tunnel**: the pad opens an outbound
 connection to a server the user runs, and that server holds a public port and
 forwards inbound requests back down it. That is how ngrok works, and it is
-buildable once egress exists — a few hundred lines on each side. It is gated
-behind the WISP fix, like everything else.
+buildable now that egress exists — a few hundred lines on each side. What
+stands in the way is the allowlist: egress reaches PyPI and nothing else, so a
+tunnel would need the endpoint to reach the user's own server — the third row
+below, not a longer allowlist.
 
 ## Whose network it is
 
@@ -255,9 +263,9 @@ than a setting on the box.
 
 The third row is still the answer for anything wider than PyPI. If `git clone`
 or arbitrary egress is ever wanted, it is that, not a longer allowlist — and
-the note above about the endpoint URL being a credential applies then: pads are
-plaintext and readable by anyone with the link, so such a URL must live in the
-tab and never in a file.
+such a URL would be a credential: a pad is plaintext on the server and readable
+by anyone holding a link to it, so the URL must live in the tab and never in a
+file.
 
 ## Order to do it in
 
@@ -275,10 +283,10 @@ tab and never in a file.
 4. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
    your own browser.
-5. **Whatever makes a multi-dependency install survive.** `pip install six`
-   works; `pip install requests` kills the runtime. That is the next thing in
-   this area worth anyone's time, and it is the one item here with no diagnosis
-   behind it yet.
+5. ~~**Whatever makes a multi-dependency install survive.**~~ **Done** on 28
+   September: pip's progress bar starts a thread, which this runtime cannot;
+   with `PIP_PROGRESS_BAR=off`, `pip install requests` finishes in about 6 s,
+   and `user-check.mjs` installs and imports it against the live site.
 
 ## How wrong I was, in order
 
@@ -323,19 +331,19 @@ already ships so they can never be a different version from the client talking
 to them. Nothing is stored and nothing is proxied: with no pad open, that origin
 answers 404.
 
-`preview.rishwanth.dev` needs an A record to `13.207.222.42`. DNS for the zone
-is on NS1, not Route 53, so that record has to be added by hand — and until it
-exists the deploy sets `VITE_PREVIEW_ORIGIN` to an origin that does not
-resolve, so the button appears and expose fails. Set `AJAR_PREVIEW_ORIGIN=`
-empty to deploy without previews.
+`preview.rishwanth.dev` is an A record to `13.207.222.42`, added by hand on
+NS1, which holds the zone rather than Route 53. On a new domain, deploy with
+`AJAR_PREVIEW_ORIGIN=` empty until the record exists: otherwise the button
+appears and expose fails.
 
 ### Two things this found that were not the subject
 
-**`python3 -m http.server` crashes the runtime**, so the one server everybody
-reaches for first is the one that does not work. A plain accept loop is fine.
+**`python3 -m http.server` does not serve** (threads, above), so the one
+server everybody reaches for first is the one that does not work. A plain
+accept loop is fine.
 
-**A pad's stored files are empty in the sandbox until touched** — `ls` shows
-the name, `head` shows nothing. Pre-existing, reproduced with networking off,
-and recorded in [../open-points.md](../open-points.md). It matters more than the
-preview does: it means opening a shared link and running a file you did not
-edit silently does nothing.
+**A pad's stored files were empty in the sandbox until touched** — `ls` showed
+the name, `head` showed nothing — so opening a shared link and running a file
+you had not edited silently did nothing. Fixed on 15 September by seeding the
+sandbox from the store; see
+[pad.md](pad.md#seeding-the-sandbox-is-a-separate-problem-with-the-same-shape).

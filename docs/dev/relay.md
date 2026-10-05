@@ -1,10 +1,14 @@
 # The relay
 
 `crates/ajar-relay`. It routes frames, owns session lifecycle, meters
-addresses, and — for the pad only — keeps folders on disk.
+addresses, and — for the pad only — keeps folders and the accounts database on
+disk.
 
 It parses nine bytes of each frame and forwards the rest. See
-[protocol.md](protocol.md) for why that matters and what it buys.
+[protocol.md](protocol.md) for why that matters and what it buys. One
+exception, since 4 October: from a viewer in an account pad's room it reads
+the first byte of a doc payload, to let through only a request for a
+document's state.
 
 ## Backpressure
 
@@ -32,16 +36,19 @@ named after that failure.
 
 ## Reconnect keeps unsealed frames
 
-Frames parked for a reconnecting socket are stored **unsealed** and sealed on
-the way out. Sealing before parking binds each frame to a nonce and a header
+The relay never seals anything; this is its client's half of a reconnect. The
+session client (`web/src/connection.ts`) parks frames for a reconnecting
+socket **unsealed** and seals them on the way out. Sealing before parking binds each frame to a nonce and a header
 that may no longer be correct by the time it is actually sent, and the result
 was dropped keystrokes after a reconnect.
 
 ## The pad store
 
-`crates/ajar-relay/src/pad.rs` is the one durable thing in a binary whose
-whole design is that a restart losing everything is correct. It exists because
-the pad has no agent, so the files have to live somewhere.
+`crates/ajar-relay/src/pad.rs` and `accounts.rs` are the durable things in a
+binary whose whole design is that a restart losing everything is correct. The
+store exists because the pad has no agent, so the files have to live
+somewhere; the accounts database because owning a pad has to outlive a
+restart.
 
 ### Concurrent writes
 
@@ -59,8 +66,9 @@ colliding on the temp path.
 
 A pad read does not load the pad. `Store::open_for_read` checks the lease from
 the file's modification time, then hands back the open file positioned past its
-opening brace, and the handler sends `{"exists":true,` followed by the file. The stored document already is the response; the only difference was
-that one field. One descriptor serves the check and the bytes, so they are the
+opening brace, and the handler sends `{"exists":true,"access":{…},` followed
+by the file. The stored document already is the response; the only difference
+is those two fields — `access` is who the caller is to the pad. One descriptor serves the check and the bytes, so they are the
 same version even if a write renames a new file into place meanwhile.
 
 It used to parse, rebuild and re-serialise the whole pad per read — three copies
@@ -136,6 +144,19 @@ workers too), and `http_accounts.rs` the routes: `/auth/{provider}/start`,
 Who you are to a pad is `Accounts::access(name, user, code)`, and the two
 places that ask are `read_pad`/`write_pad` in `main.rs` and the peer join in
 `ws.rs`. A pad with no row is anonymous and everyone is an editor, as before.
+In the room, a viewer's frames are dropped unless they ask for a document's
+state or say they have none.
+
+`http_admin.rs` is `/api/admin/stats`, for the people named in `AJAR_ADMINS`
+and a 404 to everyone else.
+
+When who may open a pad changes — a setting, a revoked or reset link —
+everyone in its room but its owners is closed with a `closed` notice and
+rejoins on what they hold now (`Registry::evict_peers`); when the pad or its
+account is deleted, everyone is, owners too, and rejoining finds it gone.
+Signing out closes every room connection that sign-in made an owner: the room
+keeps owners by their session's hash (`Registry::evict_session`).
+
 The rest is in [accounts](accounts.md) and
 [security.md](security.md#pads-that-belong-to-an-account).
 
@@ -143,7 +164,10 @@ The rest is in [accounts](accounts.md) and
 
 See [protocol.md](protocol.md#session-shapes). The relay is where the rule is
 enforced: `join_peer` refuses a hosted session and the hosted join path refuses
-a peer, both with `wrong_shape`.
+a peer, both with `wrong_shape`. A host or guest naming a pad that belongs to
+an account is refused the same way before anything is created, so nobody can
+hold an owned pad's room shut. A pad page refused this way shows **Not live**
+and keeps retrying, backing off to 8 s.
 
 ## What the relay serves
 
@@ -155,8 +179,13 @@ Besides `/ws`:
 | `/j/<session>` | The session client |
 | `/install.sh`, `/run.sh` | Compiled into the binary, rewritten to point at this relay |
 | `/api/pad/*` | The pad store |
-| `/packages/*` | Mirrored WASIX packages, pre-compressed |
+| `/auth/*` | Signing in and out |
+| `/api/me`, `/api/my/pads…` | The signed-in account and its pads |
+| `/api/admin/stats` | The operator's view |
 | `/healthz` | Liveness |
+
+The mirrored WASIX packages, `/packages/*`, are not the relay's: Caddy serves
+them off disk, pre-compressed.
 
 `install.sh` is compiled in rather than deployed alongside, so the published
 installer cannot drift from the binary that was built. The relay rewrites the

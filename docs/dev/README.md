@@ -14,13 +14,13 @@ are touching.
 | [protocol.md](protocol.md) | The wire format, routing, and session shapes |
 | [security.md](security.md) | The sandbox, end-to-end encryption, resource limits, rate limits |
 | [agent.md](agent.md) | The agent: terminals, the file tree, editing, the offline copy |
-| [relay.md](relay.md) | The relay: sessions, backpressure, the durable pad store |
+| [relay.md](relay.md) | The relay: sessions, backpressure, the durable pad store, accounts |
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
-| [accounts.md](accounts.md) | Accounts and pad links — designed, not built: three-word names, view and edit links, the dashboard, sign-in, storage |
+| [accounts.md](accounts.md) | Accounts and pad links, as designed and as built: three-word names, view and edit links, roles, the dashboard, Google and GitHub sign-in, deleting an account, the operator's view |
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share, the bundle measurements behind it, and what was deliberately not shared |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
-| [operations.md](operations.md) | Deploying, reaching the server, setting up a new machine, the AWS account, cutting a release |
+| [operations.md](operations.md) | Deploying, signing in and its secrets, reaching the server, setting up a new machine, the AWS account, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
 | [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A 22-finding review of the whole tree, and [what was done about each](../code-review-fixes-2026-09-16.md) |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |

@@ -11,14 +11,16 @@ are shaped so differently.
 
 `ajar` puts a process on the host's machine. It owns the folder, the
 terminals, the documents and the key. The relay is left with nothing to do but
-forward bytes it cannot read: 1,500 lines, no database, no plaintext, and a
-restart that drops every session is *correct* rather than merely tolerable.
+forward bytes it cannot read: for a hosted session it keeps nothing on disk
+and sees no plaintext, and a restart that drops every session is *correct*
+rather than merely tolerable.
 
 The pad has no agent. Nobody lends a machine, so the compute moved into each
 visitor's tab — and everything the agent used to own had to go somewhere. The
-files went to the server, which means the relay grew the one durable thing in
-it, plus an origin, cross-origin isolation headers, and 124 MB of mirrored
-WebAssembly to serve.
+files went to the server, which means the relay grew durable state — the pad
+store, and since 4 October the accounts database that says who owns which
+pad — plus an origin, cross-origin isolation headers, and 66.5 MB of mirrored
+WebAssembly (15.1 MB compressed) for the web server in front of it to serve.
 
 That is the trade, stated plainly: the pad is easier to use and the server
 does more work and can read your files.
@@ -42,8 +44,10 @@ and the only one that decides what a guest is allowed to do. The relay routes
 on nine bytes of header and forwards the rest untouched.
 
 That constraint was there from the first commit and it paid: **turning on
-end-to-end encryption required zero changes to the relay.** The word "crypto"
-does not appear in it.
+end-to-end encryption required zero changes to the relay.** It holds no
+session key and has no code that opens a frame; the cryptography it does
+carry, since 4 October, belongs to accounts — sealed link codes and hashed
+session tokens.
 
 ## pad: sharing a folder
 
@@ -83,14 +87,16 @@ In a hosted session, guests never address each other. Anything a guest needs
 from another guest — presence, who is here — goes through the host, which is
 the authority on session state. Peers have no such authority, so each peer
 stamps its own participant id on every frame and the relay broadcasts to
-everyone else.
+everyone else. A pad that belongs to an account is the exception: the relay
+asks the accounts database who may come in and as what, and drops everything
+a viewer sends except asking for a document's state.
 
 ## Three origins, and why none of them can merge
 
 | | |
 |---|---|
 | `ajar.rishwanth.dev` | The relay and the session client |
-| `code.rishwanth.dev` | The pad |
+| `code.rishwanth.dev` | The pad, its dashboard and sign-in |
 | `preview.rishwanth.dev` | What somebody is running in their folder |
 
 The pad cannot be a path under the session client: WASIX threads need
@@ -108,6 +114,8 @@ load-bearing. See [operations.md](operations.md#the-three-origins).
 
 Two paths on the pad's origin are not the pad. `/wisp` is the egress endpoint
 and `/dns-query` forwards DNS, both proxied by Caddy to processes on loopback.
+(`/api` and `/auth` go to the relay — the store and signing in — and
+`/privacy` is a static page; those are the pad's own.)
 They live on this origin rather than a fourth one for the same reason the
 preview cannot: the page's own `connect-src 'self'` has to reach them, and
 widening that policy to admit somebody else's host is the thing being avoided.
@@ -138,16 +146,17 @@ would leave a browser confidently out of step with no way to notice.
 |---|---|
 | `crates/ajar-proto` | Frame codec, channels, roles, sealing. Shared by agent and relay |
 | `crates/ajar` | The agent. Terminals, workspace scanning, documents, sandbox, panel |
-| `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store |
+| `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store, accounts and sign-in, the operator's view |
 | `web/src` | The session client |
 | `pad/src` | The browser tier, including the WASIX runtime and the shell |
 | `packages/workspace-ui` | `WorkspaceShell` and the theme both products' layouts are built from |
 
 **One shared package, and it is a narrow one.** `@ajar/workspace-ui` exports a
 `WorkspaceShell` — the panel arrangement, the resizing, the drawer, the theme
-tokens — and nothing else. Both `web/src/workspace.ts` and `pad/src/workspace.ts`
-build on it: `web/src/workspace.ts` went from 262 lines to 84, and the pad's
-equivalent is 126 where it previously had none of its own.
+tokens — plus the theme switch, the one `languageFor`, and CSV/TSV
+highlighting. Both `web/src/workspace.ts` and `pad/src/workspace.ts` build on
+it: `web/src/workspace.ts` went from 262 lines to 84 (88 now), and the pad's
+equivalent is 159 where it previously had none of its own.
 
 It is worth being precise about how this differs from the shared package that
 was tried and reverted, because the earlier attempt is still on record in

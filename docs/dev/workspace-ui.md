@@ -44,16 +44,16 @@ runtime dependency.
 | `packages/workspace-ui` | Shared shell, layout state, accessible drawer/resizers, theme and panel styles |
 | `web/src/workspace.ts` | Ajar adapter and lazy `EditorPane`; Ajar session code still owns host controls and terminal tabs |
 | `pad/src/workspace.ts` | Pad action/file/editor/preview/terminal mount points over the shared shell |
-| `pad/src/app.ts` | Monaco models, Yjs peers, durable saves, WASIX runtime, xterm console, Run/Share and server preview |
+| `pad/src/app.ts` | Monaco models, Yjs peers, durable saves, WASIX runtime, xterm console, Run/Share and server preview; the Share dialog itself is `pad/src/share.ts` |
 
 Ajar continues to restore `ajar.sidebar`, `ajar.sidebarWidth`, and `ajar.split`.
 Pad uses the corresponding `pad.*` keys. Storage access is guarded so denied or
 invalid values fall back to a usable 15 rem sidebar and 60/40 editor-terminal
 split. Layout notifications refit Monaco and xterm without remounting them.
 
-Pad now mounts Run, Preview, Share, active filename, connection/save status,
-presence, file creation, Monaco, xterm, and server preview into the shared
-regions. The server iframe replaces Monaco inside the upper region and exposes
+Pad now mounts Run, Preview, Share, Your pads, active filename,
+connection/save status, presence, file creation, Monaco, xterm, server
+preview, and for a viewer a Viewing bar, into the shared regions. The server iframe replaces Monaco inside the upper region and exposes
 an explicit **Back to editor** control. The iframe still uses the separately
 configured preview origin. Hidden preview content is asserted to occupy no row
 at boot.
@@ -70,10 +70,10 @@ prefix: `ajar.theme` / `pad.theme` (`system`, `light` or `dark`) and
   `[data-theme="dark"]`. Each product's `main.ts` calls `applyStoredTheme()`
   first thing, because both CSPs forbid an inline head script. Monaco and
   xterm follow through `onThemeChange()`; Monaco uses `ajar-light` /
-  `ajar-dark`, which are `vs` / `vs-dark` plus the CSV column colours. The one
-  other stylesheet rule that reads `prefers-color-scheme` — dark text on
-  ajar's accent buttons, in `web/src/style.css` — honours the attribute the
-  same way.
+  `ajar-dark`, which are `vs` / `vs-dark` plus the CSV column colours. The
+  other stylesheet rules that read `prefers-color-scheme` — dark text on
+  ajar's accent buttons in `web/src/style.css`, and the pad's account pages
+  in `pad/src/accounts.css` — honour the attribute the same way.
 - **Languages.** `src/languages.ts` is the one `languageFor`, read from Monaco's
   registry. Ajar's viewer had its own 25-extension map until this change.
   `src/delimited.ts` registers `csv` and `tsv`; `delimited-tokens.ts` is fetched

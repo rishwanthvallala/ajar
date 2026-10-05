@@ -1,15 +1,20 @@
 # Operations
 
 One small ARM box in `ap-south-1` serves both `ajar.rishwanth.dev` and
-`code.rishwanth.dev`. The relay has no database; sessions live in memory and
-die with them. The only durable thing is the pad store.
+`code.rishwanth.dev`. ajar sessions live in memory and die with the relay. Two
+things are durable: the pad store, and the accounts database with its key
+([what is on disk](#what-is-on-disk)).
 
 ## Deploying
 
 ```sh
-./deploy/deploy.sh ajar-relay --bootstrap   # first time on a fresh box
-./deploy/deploy.sh ajar-relay               # every time after
+./deploy/deploy.sh ajar-relay --bootstrap     # first time on a fresh box
+./deploy/deploy.sh ajar-relay                 # every time after
+./deploy/deploy.sh ajar-relay --config-only   # the Caddyfile alone; AJAR_CADDY_RESTART=1 restarts rather than reloads
 ```
+
+It builds from the working tree, not from a commit: deploy what CI passed, and
+do not edit while a deploy is waiting to run.
 
 Cross-compiles the relay for `aarch64-unknown-linux-gnu`, builds both browser
 clients, ships everything, and restarts the service. Idempotent.
@@ -115,7 +120,7 @@ a POSIX special built-in, so a redirect error exits the shell.
 | | Serves |
 |---|---|
 | `ajar.rishwanth.dev` | The relay, the session client, `/install.sh`, `/ws` |
-| `code.rishwanth.dev` | The pad. Cross-origin isolated, which WASIX threads require |
+| `code.rishwanth.dev` | The pad, its dashboard and `/admin`, sign-in at `/auth`, the store at `/api`, `/privacy`. Cross-origin isolated, which WASIX threads require |
 | `preview.rishwanth.dev` | Whatever somebody is running inside their folder |
 
 The separation is forced rather than chosen. Cross-origin isolation is a
@@ -142,12 +147,20 @@ An empty value compiles the pad with previews disabled, and the button never
 appears. A value pointing at an origin that does not resolve is worse than
 none: the button appears and pressing it fails.
 
+The rest of a new domain is three more settings. `AJAR_DOMAIN` replaces
+`ajar.rishwanth.dev` in the Caddyfile; `AJAR_WISP_URL` (default
+`wss://code.rishwanth.dev/wisp`) is compiled into the pad; and
+`AJAR_PUBLIC_ORIGIN` in `/etc/ajar/relay.env` is the origin sign-in returns to.
+`AJAR_TARGET` and `AJAR_WISP_VERSION` pick the relay's build target and the
+egress endpoint's version, and rarely need changing.
+
 ## Signing in
 
 Accounts — pads you own, with view and edit links — need sign-in with Google
 or GitHub, and that needs an OAuth app at each. **Until the ids are on the
 box, nobody is offered sign-in**: the dashboard says it is not set up, and
-everything else works as before. Design and behaviour: [accounts](accounts.md).
+everything else works as before. Production has had both since 4 October
+2026, and the Google app is published. Design and behaviour: [accounts](accounts.md).
 
 ### The apps
 
@@ -195,7 +208,10 @@ see [accounts](accounts.md#as-built).
 ```sh
 #   AJAR_ADMINS=you@example.com,github:583231
 sudo systemctl restart ajar-relay
-``` Rotating a secret is the same edit and a restart; sessions survive it.
+```
+
+Rotating a secret is the same edit and a restart; sign-ins survive it, since
+they are kept in the accounts database.
 
 ### What is on disk
 
@@ -207,8 +223,9 @@ either alone is not. Neither is backed up yet — Litestream to S3 is the plan
 Losing the key costs only the dashboard's copies of existing links: owners
 reset them and share again.
 
-The limits — 20 pads and 100 MB per account — are relay flags,
-`--account-max-pads` and `--account-max-bytes`, in the unit.
+The limits — 20 pads and 100 MB per account — are the defaults of two relay
+flags, `--account-max-pads` and `--account-max-bytes`; to change them, add the
+flags to `ExecStart` in the unit.
 
 ## Reaching the server
 
@@ -234,6 +251,10 @@ piece was only ever the IAM role.
 
 Everything below is per machine; nothing is shared between them but the AWS
 account.
+
+**Install Go.** Every deploy builds Caddy, and `deploy.sh` stops and points
+here when `go` is missing; the version and its checksum are under
+[From an x86_64 machine](#from-an-x86_64-machine).
 
 **Sign in with `aws login`, not access keys.** It needs AWS CLI 2.32 or later.
 It reuses the console sign-in and hands the CLI credentials that last at most
@@ -521,8 +542,8 @@ WebSocket handshake failure rather than a 404.
 
 ## Caddy, built with the rate-limit plugin
 
-The packaged Caddy cannot rate-limit, and the files it serves off disk — 19 MB
-of wasm to every cache-cold pad visitor — are the one thing the relay never
+The packaged Caddy cannot rate-limit, and the files it serves off disk — about
+15 MB of wasm to every cache-cold pad visitor — are the one thing the relay never
 sees. So the server runs a Caddy built from `deploy/caddy`: stock Caddy plus
 [`mholt/caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit), and
 nothing else. What the limits are and why is in

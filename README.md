@@ -14,7 +14,9 @@ end-to-end with a key the relay never sees.
 agent, no machine lent: the compute runs in each visitor's own tab as
 WebAssembly, and the server holds the files. Open a URL, paste, press Run,
 send the link. A real bash with about 140 commands, an editor, and
-`pip install` — which reaches PyPI and nothing else.
+`pip install` — which reaches PyPI and nothing else. Sign in with Google or
+GitHub to keep pads of your own, and decide who can view them and who can
+edit; download any pad as a zip, or start one from a zip.
 
 > **A sandbox is not a virtual machine.** A guest runs real commands on a real
 > machine with your toolchain, your network and whatever the shared folder can
@@ -65,7 +67,8 @@ the way it is. Start with [architecture](docs/dev/architecture.md).
 | `crates/ajar-proto` | Wire format shared by agent and relay |
 | `crates/ajar` | The agent — owns the folder, the ptys, the documents, the link |
 | `crates/ajar-relay` | Routes frames. Parses the 9-byte header and nothing else |
-| `crates/ajar-relay/src/pad.rs` | The one durable thing in the relay: folders for the browser tier |
+| `crates/ajar-relay/src/pad.rs` | Folders for the browser tier, on disk |
+| `crates/ajar-relay/src/accounts.rs` | Accounts, owned pads and their links — the relay's other durable thing (SQLite) |
 | `web` | The session client — Vite, TypeScript, xterm.js, Monaco |
 | `pad` | The browser tier — same stack, plus a WASIX runtime |
 | `packages/workspace-ui` | The workspace shell and theme both clients build their layout from |

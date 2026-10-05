@@ -204,7 +204,7 @@ ssh "$HOST" "$SUDO mv /tmp/ajar-relay.service /etc/systemd/system/ajar-relay.ser
 
 # Sign-in's settings. Made once, with the public origin and nothing secret;
 # the OAuth client ids and secrets are added on the box by hand (see
-# docs/operations.md) and this never touches the file again.
+# docs/dev/operations.md) and this never touches the file again.
 ssh "$HOST" "$SUDO bash -euo pipefail -s" <<'RELAYENV'
 mkdir -p /etc/ajar
 if [ ! -f /etc/ajar/relay.env ]; then

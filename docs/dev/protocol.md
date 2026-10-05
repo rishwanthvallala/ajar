@@ -13,6 +13,12 @@ bytes 9..    payload    opaque to the relay
 whole design rests on. It was there from the first commit, and the payoff
 arrived later: adding end-to-end encryption required no relay changes at all.
 
+Two exceptions, both readable by design. The relay reads the `Store`
+channel's envelope, to count an offered copy's bytes against a limit before
+accepting it — the copy itself is sealed. And from a viewer in an account
+pad's room it reads the first byte of a `Doc` payload, which a pad leaves
+unsealed, to forward only a request for a document's state.
+
 Keep it. Anything that makes the relay parse a payload — a "smarter" routing
 rule, a server-side feature, a metric that needs to know what a frame contains
 — trades this away, and it does not come back.
@@ -26,11 +32,12 @@ rule, a server-side feature, a metric that needs to know what a frame contains
 | `Fs` 0x03 | The file tree, file contents, reads | Yes |
 | `Presence` 0x04 | Names, who is watching which terminal | Yes |
 | `Doc` 0x05 | Yjs document updates and awareness | Yes |
-| `Store` 0x06 | The sealed offline copy | Yes |
+| `Store` 0x06 | The sealed offline copy | The copy, not its envelope |
 
 The control channel is readable by design. The relay has to know who is
 joining what, and pretending otherwise would mean the relay could not route.
-Everything with content in it is sealed.
+In a hosted session everything with content in it is sealed; a pad's peer
+frames are not, since a pad has no key — the server holds its files anyway.
 
 ## Routing
 
@@ -44,7 +51,9 @@ Hosted sessions are four cells and stay four cells:
 Peer sessions are one rule: a peer must stamp its own participant id on every
 frame, and the relay broadcasts to everyone else. A frame that is not stamped
 with the sender's own id is dropped — a peer cannot address anyone, so a
-target that is not itself is either a bug or an attempt.
+target that is not itself is either a bug or an attempt. A peer's control
+frames are dropped too, and a viewer of a pad that belongs to an account may
+send only a request for a document's state, or say it has none.
 
 ## Session shapes
 
@@ -54,7 +63,13 @@ the host; peer sessions start at 1 because there is no host.
 
 A join whose role does not match the session's shape is refused with
 `wrong_shape`. This is enforced in both directions and tested against the
-deployed relay, not just locally.
+deployed relay, not just locally. A host or guest naming a pad that belongs
+to an account is refused with `wrong_shape` too, before any session exists.
+
+A peer's `hello` may carry `code`, the part of a pad link after the `#`, left
+off the wire when there is none. The relay refuses a peer with `private` when
+the pad's settings and that code give it nothing, and with `gone` when the
+pad was deleted.
 
 ## What survives what
 
@@ -66,6 +81,7 @@ deployed relay, not just locally.
 | Host never returns | The relay reaps the session and tells guests why |
 | Host presses ctrl-c | `Control::Close` — immediate, no grace |
 | Relay process dies | The agent dials back in and re-opens the same session id |
+| Who may open a pad changes | Everyone in its room but its owners gets `Closed`, rejoins, and is let in on what they hold now; deleting the pad closes everyone. Signing out closes the room connections that sign-in made owner |
 
 Frames the agent tries to send while disconnected are **dropped, not queued**.
 The ring buffers already hold the terminal output a guest needs, and queueing

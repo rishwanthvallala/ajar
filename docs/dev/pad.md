@@ -9,7 +9,7 @@ Every finding below cost real time and none of it is documented upstream.
 
 ```sh
 npm ci
-node pad/scripts/fetch-packages.mjs   # mirrors ~124 MB of wasm; needed once
+node pad/scripts/fetch-packages.mjs   # mirrors ~66 MB of wasm, with .zst and .gz copies beside it; needed once
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -72,7 +72,8 @@ live in `src/tools/box.py` and dispatch on their first argument — the same
 multi-call shape as the coreutils binary, and unlike that one everything listed
 is present. One file rather than twenty-three because the shell writes and
 aliases these before the first prompt; all twenty-eight aliases go out in a
-single `run` for the same reason, along with the two `export`s below. A warm
+single `run` for the same reason, along with `clear` and the shell's exports —
+the two below among them. A warm
 command costs **142 ms**.
 
 Those exports are `PIP_TARGET` and `PYTHONPATH`, both pointing at
@@ -247,12 +248,15 @@ so what a running program reads is echoed by the terminal. That division is
 why the page draws the prompt and echoes while composing a line, never during
 a command, and strips the echo of what it sent.
 
-**ctrl-c ends the shell, not merely the command.** The output stream stays
-open afterwards, so a shell that can serve nothing more still looks healthy
-and every later command hangs against it. The console tears it down
-deliberately and starts a fresh one.
+**A shell that has exited still looks alive.** The output stream stays open
+after bash dies, so `watchForExit()` waits on the process instead, and the
+console replaces a dead shell before the next command and says so.
 
-**ctrl-d does nothing** — there is no canonical mode, so there is no EOF.
+**ctrl-d closes the program's input.** The byte alone does nothing — there is
+no canonical mode to turn it into end-of-file — so the page closes stdin
+instead. That is a real EOF, and bash's own stdin too, so bash exits once the
+program does and the next command starts a fresh shell. At the prompt it
+deletes forward; to `nano`, both ctrl-c and ctrl-d are just keys.
 
 **`FileStat` carries `kind` and `size` and nothing else** — no modification
 time, no hash — so the sync diff must read every file to know what changed.
@@ -339,10 +343,14 @@ One shell per session. A sentinel is appended to the command **on the same
 line**:
 
 ```ts
-const trimmed = command.trimEnd();
-const joiner = trimmed.endsWith("&") ? " " : "; ";
-const line = `${trimmed}${joiner}printf '\001%s\001' "$?"`;
+const quoted = `'${command.trimEnd().replaceAll("'", `'\\''`)}'`;
+const line = `eval ${quoted} 2>&1; printf '\\001%s\\001' "$?"`;
 ```
+
+The command goes through `eval` as one single-quoted word, so a `#`, an
+unclosed quote or an unfinished `if` cannot swallow the sentinel; `eval` runs
+in this shell, so `cd`, variables and a trailing `&` behave as typed. `2>&1`
+puts errors in the same stream as the output and the sentinel, in order.
 
 As a *second* line it gets eaten by anything reading stdin — which is how
 `cat` with no arguments appeared to hang. `dropEcho()` searches for the echo
@@ -525,9 +533,9 @@ relies on the hidden moment, which comes first.
 
 ## The download
 
-Wasmer's CDN sends `.webc` with no content encoding at all: **62 MB raw** for
-the ten files the runtime fetches, after trimming — 84 MB as published. From
-this origin, pre-compressed with zstd, the set is **14.2 MB**, and an immutable
+Wasmer's CDN sends `.webc` with no content encoding at all: **66.5 MB raw**
+for the ten files the runtime fetches, after trimming — 84 MB as published.
+From this origin, pre-compressed with zstd, the set is **15.1 MB**, and an immutable
 cache header makes any later visit free. (An earlier figure here, 124 MB, was
 `du` over a directory that also holds the `.zst` and `.gz` copies.)
 
@@ -540,7 +548,7 @@ fetches without the page having to.
 
 ### What is in it, and what is trimmed
 
-Python is 48 MB of the 62 once trimmed, and 61.7 MB as published. Unpacked on
+Python is 48 MB of the 66.5 once trimmed, and 61.7 MB as published. Unpacked on
 25 September, the published package is:
 
 | | raw | zstd | |
@@ -622,7 +630,9 @@ so it can be checked on its own:
   before sending, so nothing is written that the store would refuse half-way.
 - Text in, binary out: strict UTF-8 with no NUL byte. The store can hold base64
   files, but nothing puts one in the sandbox or shows it in the tree, so an
-  imported image would be a file only Download could find.
+  imported image would be a file only Download could find. (A binary file a
+  *command* writes is not held to this rule yet, and is shared garbled — see
+  [open points](../open-points.md#a-binary-file-a-command-writes-is-shared-garbled).)
 
 **Importing into an open pad** is one store write, in `queueWrite` behind any
 save, then each file applied the way a peer's change would be: through the
@@ -639,8 +649,11 @@ the pad and writes into it; a write that fails deletes the pad it just made.
 
 - **Empty folders do not persist.** Directories are derived from the paths
   under them, so one with nothing in it has nothing to imply it.
-- **No accounts, no locks, no encryption.** Deliberate — the trade for a clean
-  shareable URL. See [security.md](security.md#what-the-pad-does-not-have).
+- **An anonymous pad has no locks.** Deliberate — the trade for a clean
+  shareable URL. A pad owned by an account has roles — owner, editor, viewer —
+  through its view and edit links; see [accounts.md](accounts.md). **Neither
+  kind is encrypted:** the server can read every pad. See
+  [security.md](security.md#what-the-pad-does-not-have).
 - **The network reaches PyPI and nowhere else.** `pip install` works, through
   an endpoint we run that allows those two hostnames on 443 and refuses the
   rest. No `git clone`, no `curl`, no reaching your own machines. See

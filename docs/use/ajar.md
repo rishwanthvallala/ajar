@@ -70,7 +70,7 @@ they are running, and what it costs.
 ┌ here ──────────────────┐┌ running on your machine ─────────────────┐
 │ 2  priya  3m · 2 term  ││ 1  priya   7% cpu   184M · 3 proc        │
 └────────────────────────┘└──────────────────────────────────────────┘
- [k] kick   [x] lock   [l] read-only   [d] stop copy   [q] close
+ [k] kick   [x] lock   [l] read-only   [q] close — ends every terminal and stops the link
 ```
 
 | Key | What it does |
@@ -78,7 +78,7 @@ they are running, and what it costs.
 | `k` | Disconnect a guest — type the number beside their name, then Enter |
 | `x` | Lock the session — nobody new can join, people already in stay |
 | `l` | Read-only — guests can look, not type in a terminal or edit a file |
-| `d` | Stop keeping the offline copy, and forget the one already stored |
+| `d` | Stop keeping the offline copy, and forget the one already stored; press it again to keep one again. Offered as `[d] stop` on the line that says what is being kept |
 | `q` | Close — ends every terminal and kills the link |
 
 Useful flags: `--read-only` to start that way, `--no-network` to cut the
@@ -109,8 +109,9 @@ the terminals never stopped running.
       git restore --source=a98a3195 --worktree -- .
 ```
 
-It restores tracked files only. Anything a guest created is left where it is —
-deleting unknown files on your behalf is not a favour.
+It puts back every file that was there when the session started, committed
+or not, except ones git ignores. Anything a guest created is left where it
+is — deleting unknown files on your behalf is not a favour.
 
 ## Running your own relay
 

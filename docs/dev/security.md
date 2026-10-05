@@ -364,14 +364,13 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
 - **The admin figures are the operator's alone.** `/api/admin/stats` answers
   404 to anyone not in `AJAR_ADMINS` — signed out, or signed in as anyone
   else — so even its existence is not given away. An admin is matched by
-  `provider:id`, or by an email the provider vouches for: Google's only when
-  it says the address is verified, since an unverified one could be anyone's.
+  `provider:id`, or by an email the provider gives: Google's is dropped when
+  Google says the address is unverified, since that one could be anyone's.
+  An answer that does not say either way keeps it — Google's userinfo always
+  says.
 
 What does not hold, yet:
 
-- **Signing out does not close a room connection** the session opened; that
-  socket keeps its role until it drops. The next request it makes to the
-  store is refused.
 - **Anonymous pads can still be squatted** the same way owned ones could: a
   hosted session opened under an anonymous pad's name holds the name while
   it lasts. Nobody's access is at stake there, only the live room.
@@ -460,7 +459,7 @@ minute.
 
 ### At the edge
 
-The pad's runtime — 106 files, about 22 MB as a browser receives it — is served by
+The pad's runtime — 161 files, about 19 MB as a browser receives it — is served by
 Caddy off disk, so the relay never sees the requests and nothing in it can
 limit them. Until 25 September nothing did: one address could pull files as
 fast as the instance's network allowed. Caddy now carries
@@ -552,8 +551,9 @@ being downloaded, so the allowlist is the only control.
 
 **What bounds it.** 32 streams inside a tunnel, 8 tunnels open per address and
 64 in all, in `wisp-server.mjs`; 30 tunnels opened a minute per address, in the
-Caddyfile. What it does not have is a limit on bytes: a pad is anonymous, so
-there is nothing to attribute a download to beyond its address.
+Caddyfile. What it does not have is a limit on bytes: a tunnel carries no pad
+and no account, so there is nothing to attribute a download to beyond its
+address.
 
 **The DNS proxy is a smaller version of the same thing.** `/dns-query` forwards
 to Cloudflare so the sandbox's DoH lookups are same-origin, which keeps them

@@ -25,7 +25,7 @@ Environment=RUST_LOG=ajar_relay=info
 # Signing in: the public origin, and each provider's client id and secret.
 # Kept on the box, root-only, and never in the repository; the deploy creates
 # it with the origin alone and never overwrites it. Without the ids, nobody is
-# offered sign-in and the site works as it did. See docs/operations.md.
+# offered sign-in and the site works as it did. See docs/dev/operations.md.
 EnvironmentFile=-/etc/ajar/relay.env
 
 # Creates /var/lib/ajar owned by the service user, so the pad store needs no

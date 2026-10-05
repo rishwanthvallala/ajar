@@ -4,12 +4,12 @@ A folder you can open, edit and run in a browser tab, with nobody's machine
 involved but the one you are sitting at. Live at
 **[code.rishwanth.dev](https://code.rishwanth.dev)**.
 
-This is the second product in the repository and shares only the relay with
-the first.
+This is the second product in the repository and shares the relay and the
+workspace shell (`packages/workspace-ui`) with the first.
 
 ```sh
 npm ci                                 # from the repository root
-node pad/scripts/fetch-packages.mjs    # mirrors ~124 MB of wasm; needed once
+node pad/scripts/fetch-packages.mjs    # mirrors ~66 MB of wasm, with .zst and .gz copies; needed once
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -28,13 +28,22 @@ npm run check --workspace=ajar-pad
 | `src/shell.ts` | One shell per session, and how a command's end is detected |
 | `src/console.ts` | The prompt, the echo, the line editing — all of it the page's job |
 | `src/editing.ts` | Yjs bound to Monaco, lifted from ajar's session client |
+| `src/carry.ts` | Typing done before a file's shared document arrived, carried into it |
 | `src/peers.ts` | The relay connection: presence, nudges, document updates |
 | `src/store.ts` | The durable folder over HTTP |
 | `src/sync.ts` | What a command changed, and what never gets published |
 | `src/seed.ts` | What the sandbox starts with — store, model, document, in that order |
 | `src/files.ts` | The file tree, with folders derived from paths |
+| `src/zip.ts` | Zips in and out — read, written and checked in the browser |
+| `src/monaco-languages.ts` | The formats the editor colours, each tokenizer fetched on first use |
 | `src/app.ts` | Everything wired together |
-| `src/bootstrap.ts` | The entry: mints or reads the name, raises the shell, then starts the app |
+| `src/bootstrap.ts` | The entry: sends `/dashboard` and `/admin` to their pages, takes a link's code out of the address bar, mints or reads the name, then starts the app |
+| `src/access.ts` | Who you are to a pad, link codes, and the account API |
+| `src/dashboard.ts` | Your pads, signing in, and the private and deleted screens |
+| `src/share.ts` | The Share dialog: settings and links |
+| `src/admin.ts` | `/admin`, the operator's view |
+| `src/ui.ts`, `src/icons.ts`, `src/accounts.css` | The small kit those pages are built from — buttons, dialogs, toasts, the theme switch, inline icons |
+| `public/privacy.html` | `/privacy` |
 | `src/workspace.ts` | The pad's layout, built on the shared `WorkspaceShell` |
 | `src/workspace-preview.ts` | The layout on its own, for `?preview=workspace` and the layout checks |
 | `src/tools/awk.py` | An awk, because none is published for this runtime |
@@ -45,6 +54,10 @@ npm run check --workspace=ajar-pad
 | `src/check.ts` | What has to be true for any of this to work, asserted in a real browser |
 | `scripts/browser-check.mjs` | Runs that page under headless Chromium and reports what it found |
 | `scripts/app-check.mjs` | The product as a person uses it — locally, or against live with `PAD_ORIGIN` |
+| `scripts/terminal-check.mjs` | The terminal by real key presses |
+| `scripts/user-check.mjs` | Mistakes, ctrl-c, Stop, `nano`, the editor, zips — the pad as a person uses it |
+| `scripts/accounts-check.mjs` | Owner, editor and viewer in three browsers, against a real relay and a stand-in OAuth provider |
+| `scripts/typing-perf.mjs` | Two people in one long file: a measurement, not a check |
 | `scripts/ingress-check.mjs` | Drives that, with the second origin it requires |
 | `scripts/preview-check.mjs` | The Preview button, end to end — locally, or against live with `PAD_ORIGIN` |
 | `src/wisp-probe.ts` | Egress, and the limits on it, measured inside the sandbox |
@@ -53,3 +66,4 @@ npm run check --workspace=ajar-pad
 | `scripts/probe-packages.mjs` | Installs each candidate package and exercises it |
 | `public/sw.js` | Serves the wasm packages from this origin instead of Wasmer's CDN |
 | [`../crates/ajar-relay/src/pad.rs`](../crates/ajar-relay/src/pad.rs) | The durable store, on the server |
+| `../crates/ajar-relay/src/accounts.rs`, `auth.rs`, `http_accounts.rs`, `http_admin.rs` | Accounts, sign-in, their routes, and the operator's figures |

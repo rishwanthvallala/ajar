@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 2 October 2026. The relay, both browser clients and the deploy
+*Kept as of 5 October 2026. The relay, both browser clients and the deploy
 config were deployed from `5b14947` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
 reads, freed pad names and the 90-day lease. The fifth step, per-address limits
@@ -12,9 +12,9 @@ toolchain setup a host's rc files name — without it every guest terminal on
 Linux opened with `Permission denied`.*
 
 *On 2–3 October every item here that code could close was closed — see
-[the list at the end](#closed-on-23-october). The agent's share of that reaches
-hosts with the release after v0.0.5; the relay, both clients and Caddy deploy
-as usual.*
+[the list at the end](#closed-on-23-october). The agent's share of that shipped
+in v0.0.6 on 3 October. Accounts were deployed on 4 October with sign-in
+live; what closed then is in [its own list](#closed-on-4-october).*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -44,6 +44,20 @@ publish waits its turn in the page's write queue, so the likeliest reading is
 a store request ahead of it that stalled on the network — a store `fetch` has
 no deadline. (The run before that one failed too, but it spanned the laptop
 sleeping, and says nothing.)
+
+### A binary file a command writes is shared garbled
+
+Found on 5 October while checking the docs. `sync.ts` skips any file it
+cannot read as text — binary, the comment says, "skipped rather than guessed
+at". But `readText` does not refuse binary: it decodes it, replacing what is
+not UTF-8. So `printf '\x89PNG…' > b.png` or `zip z.zip t.txt` in the terminal
+puts a mangled text copy in the store and in everyone else's tree and sandbox,
+and Download as zip hands that copy back. Only the tab that ran the command
+keeps the real bytes, until something rewrites them. The fix is either what
+the comment meant — read bytes, and skip anything that is not valid UTF-8 — or
+carrying binary files properly: the store already has a base64 encoding,
+but nothing seeds one into another tab's sandbox or shows it in the tree.
+The user guide says binary files are not carried correctly yet.
 
 ### The pad's runtime cannot start without registry.wasmer.io
 
@@ -202,14 +216,15 @@ Console works, but it needs a password on an OS user.
 These are scope, not defects. They are listed because "we chose this" and "we
 missed this" look identical a month later.
 
-**No accounts, no locks, no vanity names.** Everything is open to whoever has
-the link, and a folder nobody opens or edits for 90 days is deleted (it was a
-week, counting only edits, until 25 September). The design in
-[`personal-tier.md`](history/personal-tier.md) — a week-long lease without an account, a
-permanent claim with one, per-account limits and some IP-based ceiling on
-anonymous locks — is designed and unbuilt. A lapsed name is free again, so an
-old link opens an empty folder or somebody else's newer one; until 24 September
-it was sealed for good instead, which turned `/demo` into a permanent 410.
+**Anonymous pads have no owner and no locks.** Everything in one is open to
+whoever has the link, and a folder nobody opens or edits for 90 days is deleted
+(it was a week, counting only edits, until 25 September). Owned pads — roles,
+three-word names, no expiry — came with accounts on 4 October
+([dev/accounts.md](dev/accounts.md)), in place of the claim-a-name plan in
+[`personal-tier.md`](history/personal-tier.md): an anonymous pad is copied into
+an account, never claimed. A lapsed name is free again, so an old link opens an
+empty folder or somebody else's newer one; until 24 September it was sealed for
+good instead, which turned `/demo` into a permanent 410.
 
 **Empty folders do not survive a reload.** Directories are derived from the
 paths under them, so one with nothing inside has nothing to imply it. The tab
@@ -260,19 +275,15 @@ destinations refused in the software filter and again by the unit's
 
 What is still open about it:
 
-**A multi-dependency install stops the sandbox.** `pip install six` is
-reliable. `pip install requests`, which pulls four more packages, ends with the
-SDK worker dying — `WebAssembly.Module.imports(): Argument 0 must be a
-WebAssembly.Module`, after a run of `received a DATA packet for a stream which
-doesn't exist` from the wisp client. The runtime goes with it and the tab needs
-a reload. It is not asserted in `wisp-check.mjs` because it does not fail there,
-it hangs, and takes every check after it. Whether this is concurrency in the
-wisp client, memory, or the SDK's worker is unknown.
+~~**A multi-dependency install stops the sandbox.**~~ Solved on 28 September
+(`2dede1f`): pip's progress bar starts a thread, which this runtime cannot, and
+with `PIP_PROGRESS_BAR=off` `pip install requests` finishes in about 6 s —
+`user-check.mjs` installs and imports it against the live site.
 
 **Nothing limits the bytes.** Streams, open tunnels and new tunnels are all
 bounded — 32 per tunnel, 8 open per address, 30 opened a minute — but not what
-flows through them. A pad is anonymous, so there is nothing to attribute a
-download to beyond its address.
+flows through them. A tunnel carries no pad and no account, so there is
+nothing to attribute a download to beyond its address.
 
 **`bind()` under the wisp policy is unmeasured.** The preview works in
 production, which is the ingress that matters, but that syscall has not been
@@ -299,9 +310,9 @@ still open in it:
   newest accounts but changes nothing.
 - **Viewers are counted in the presence dots** like anybody else; whether
   editors should see them apart is undecided.
-- **An anonymous pad cannot be moved into an account.** Its maker downloads it
-  as a zip and makes a pad of theirs from that zip on the dashboard — two
-  steps rather than one, and its text files only.
+- **Moving an anonymous pad into an account takes two steps.** Its maker
+  downloads it as a zip and imports it on the dashboard — a copy, not a claim,
+  and its text files only.
 - **Left from the review of 4 October** (the rest was fixed — see
   [accounts](dev/accounts.md#as-built)):
   - An anonymous pad's name can still be held by a hosted session opened
@@ -312,8 +323,9 @@ still open in it:
     editing is on everyone else's screen and in no one's save: only the
     typist saves a file, and theirs was refused. The typist keeps it as
     their own copy; the room's copy goes when the room empties, unless the
-    owner types in that file. The same holds for anyone who leaves mid-typing
-    and was the only one to have typed.
+    owner types in that file. Closing or hiding the tab now saves what is
+    waiting first (`6de80ed`); typing is still lost if the connection drops
+    mid-typing and the typist was the only one to have typed.
   - Two sign-ins started at once in one browser share the cookie: the first
     to come back is refused as "started elsewhere", and lands where the
     second was going.
@@ -362,7 +374,7 @@ and the one that keeps paying: `find .` listing five files nobody wrote, a pad
 opened from a link coming up empty, and the preview's own origin were all
 invisible locally.
 
-The recurring hazard is checks that pass for the wrong reason — twenty-one so far,
+The recurring hazard is checks that pass for the wrong reason — twenty-seven so far,
 plus two that *failed* for the wrong reason and cost more than any of them. The
 pattern never changes: whenever the thing under test can produce the passing
 evidence by accident, the check proves nothing. Reverting the fix and watching
@@ -381,6 +393,8 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | No way to delete an account; the privacy page promised it by email, which meant editing the database by hand | `e2786ae` |
 | A pad page refused from its room as the wrong shape retried four times a second and never said so; it backs off and shows **Not live** | `eadbd53` |
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
+| Typing inside the save delay was lost when its tab closed, unless someone else saved the file | `6de80ed` |
+| Every save of a multi-megabyte file stalled the typist's editor 80–165 ms | `6de80ed` |
 
 ## Closed on 2–3 October
 
