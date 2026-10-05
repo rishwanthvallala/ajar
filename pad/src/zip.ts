@@ -12,7 +12,7 @@
  * are checked against the pad's limits before anything is inflated — and
  * again while inflating, since a hostile zip can say anything.
  */
-import { ignored } from "./sync";
+import { ignored, textOf, toBase64 } from "./sync";
 
 export interface ZipEntry {
   path: string;
@@ -37,11 +37,9 @@ export function pickZip(): Promise<File | null> {
 }
 
 /** What an import left out, in words — empty when it left nothing out. */
-export function leftOut(p: { binary: string[]; unsafe: string[] }): string {
-  const parts: string[] = [];
-  if (p.binary.length) parts.push(`${p.binary.length} binary ${p.binary.length === 1 ? "file" : "files"} (a pad holds text)`);
-  if (p.unsafe.length) parts.push(`${p.unsafe.length} with ${p.unsafe.length === 1 ? "a path" : "paths"} outside the folder`);
-  return parts.length ? `left out ${parts.join(" and ")}` : "";
+export function leftOut(p: { unsafe: string[] }): string {
+  if (!p.unsafe.length) return "";
+  return `left out ${p.unsafe.length} with ${p.unsafe.length === 1 ? "a path" : "paths"} outside the folder`;
 }
 
 // ------------------------------------------------------------------ crc
@@ -220,9 +218,9 @@ export async function readZip(blob: Blob, limits: ReadLimits): Promise<ZipEntry[
 // --------------------------------------------------------------- import
 
 export interface Prepared {
-  /** Text files, ready to write into a pad. */
-  files: { path: string; content: string }[];
-  /** Binary files left out — a pad and its sandbox hold text. */
+  /** Every file kept, ready to write into a pad: text as text, the rest as base64. */
+  files: { path: string; content: string; encoding: "utf8" | "base64" }[];
+  /** Which of them are not text — they go in the tree, not the editor. */
   binary: string[];
   /** Paths that cannot be a pad's — `..`, absolute — left out. */
   unsafe: string[];
@@ -258,21 +256,20 @@ export function prepareImport(entries: ZipEntry[]): Prepared {
   const wrapped = tops.size === 1 && kept.length > 0 && kept.every((e) => e.path.includes("/"));
   const root = wrapped ? [...tops][0]! : null;
   const result: Prepared = { files: [], binary: [], unsafe: [], root };
-  const text = new TextDecoder("utf-8", { fatal: true });
   for (const e of kept) {
     const path = root ? e.path.slice(root.length + 1) : e.path;
     if (!safe(path)) {
       result.unsafe.push(e.path);
       continue;
     }
-    let content: string | null = null;
-    try {
-      content = e.data.includes(0) ? null : text.decode(e.data);
-    } catch {
-      content = null;
+    // The same rule a command's files are sorted by. Binary files used to be
+    // left out here, while a pad could not carry them.
+    const content = textOf(e.data);
+    if (content !== null) result.files.push({ path, content, encoding: "utf8" });
+    else {
+      result.files.push({ path, content: toBase64(e.data), encoding: "base64" });
+      result.binary.push(path);
     }
-    if (content === null) result.binary.push(path);
-    else result.files.push({ path, content });
   }
   return result;
 }

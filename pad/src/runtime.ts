@@ -179,7 +179,7 @@ export class Runtime {
    * choose silently would be a way for the two to drift.
    */
   static async start(
-    files: Record<string, string> = {},
+    files: Record<string, string | Uint8Array> = {},
     install?: { shell?: string; packages?: string[]; network?: SandboxOptions["network"] },
   ): Promise<Runtime> {
     const { Wasmer } = await sdk();
@@ -231,6 +231,19 @@ export class Runtime {
 
   read(path: string): Promise<string> {
     return this.box.fs.readText(`/${path}`);
+  }
+
+  /** A file as it is, for the files that are not text. */
+  readBytes(path: string): Promise<Uint8Array> {
+    return this.box.fs.readFile(`/${path}`);
+  }
+
+  async writeBytes(path: string, bytes: Uint8Array): Promise<void> {
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
+    }
+    await this.box.fs.writeFile(`/${path}`, bytes);
   }
 
   async write(path: string, contents: string): Promise<void> {

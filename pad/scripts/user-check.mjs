@@ -334,10 +334,16 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
 `, join(zips, file), JSON.stringify(entries)]);
     return join(zips, file);
   };
+  // Text as text; anything else as {"hex": …}, so a binary file can be compared byte for byte.
   const unzip = (file) => JSON.parse(execFileSync("python3", ["-c", `
 import json, sys, zipfile
+def show(b):
+    try:
+        return b.decode()
+    except UnicodeDecodeError:
+        return {"hex": b.hex()}
 with zipfile.ZipFile(sys.argv[1]) as z:
-    print(json.dumps({"bad": z.testzip(), "files": {n: z.read(n).decode() for n in z.namelist()}}))
+    print(json.dumps({"bad": z.testzip(), "files": {n: show(z.read(n)) for n in z.namelist()}}))
 `, file]).toString());
   const proj = zipOf("proj.zip", {
     "proj/": "",
@@ -369,13 +375,14 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 
   await upload(proj);
   if (await confirmShown()) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Replace" }).click();
-  await page.waitForFunction(() => /added 3 files/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).catch(() => {});
+  await page.waitForFunction(() => /added 4 files/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).catch(() => {});
   const after = await paths();
-  expect("its text files come in without the folder that wrapped them",
-    ["main.py", "naïve.txt", "src/util.py"].every((p) => after.includes(p)) && !after.some((p) => /proj|logo|DS_Store|MACOSX/.test(p)),
+  expect("its files come in without the folder that wrapped them, the image too, and the junk left out",
+    ["main.py", "naïve.txt", "src/util.py", "logo.png"].every((p) => after.includes(p)) && !after.some((p) => /proj|DS_Store|MACOSX/.test(p))
+      && (await page.locator('#files .row.file[data-path="logo.png"]').getAttribute("class")).includes("binary"),
     JSON.stringify(after));
   expect("Replace replaces", (await editorText("main.py")) === "print('from the zip')\n", JSON.stringify(await editorText("main.py")));
-  expect("the status says what came in and what was left out", /added 3 files from proj\.zip — left out 1 binary file/.test(await status()), `"${await status()}"`);
+  expect("the status says what came in", /added 4 files from proj\.zip$/.test(await status()), `"${await status()}"`);
   await clear();
   await typed("cat src/util.py naïve.txt");
   expect("they are in the terminal's folder too", (await shows(/return 42/)) && (await shows(/café/)), await tail());
@@ -421,6 +428,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   expect("Download as zip is the whole pad, in a folder named after it, and a zip anything can read",
     whole.name === `${padName}.zip` && all.bad === null && inPad("src/util.py") === "def f():\n    return 42\n" && inPad("naïve.txt") === "café\n" && inPad("docs/readme.md") === "# hi\n" && inPad("page.html") !== undefined && Object.keys(all.files).every((p) => p.startsWith(`${padName}/`)),
     `${whole.name}: ${JSON.stringify(Object.keys(all.files))}`);
+  expect("and its image byte for byte", inPad("logo.png")?.hex === "89504e470d0a1a0a0000000d", JSON.stringify(inPad("logo.png")));
   await page.hover('#files .dir-row:has(.row.dir:text-is("src"))');
   const folder = await got(() => page.locator('#files button[aria-label="Download src as a zip"]').click());
   const one = unzip(folder.to);
@@ -455,6 +463,36 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     JSON.stringify(await fresh.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort())));
   await fresh.close();
   await rm(zips, { recursive: true, force: true });
+
+  // ---- a binary file a command makes ----
+  // Read back as text until 5 October, which replaced what was not UTF-8: an
+  // image or a zip made in the terminal reached the store, and everyone else,
+  // garbled. Now it goes as its bytes, shows in the tree, and downloads whole.
+  section = "binary output";
+  const binPuts = [];
+  const onBinPut = (r) => { if (r.method() === "PUT" && r.url().includes("/api/pad/")) binPuts.push(JSON.parse(r.postData() ?? "{}").writes ?? []); };
+  page.on("request", onBinPut);
+  await clear();
+  await typed("printf 'text\\n' > t.txt; printf '\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\xff\\xfe' > b.png; zip z.zip t.txt");
+  const binaryRows = await page.waitForFunction(() => ["b.png", "z.zip"].every((p) => document.querySelector(`#files .row.file.binary[data-path="${p}"]`)), null, { timeout: 15_000 }).then(() => true, () => false);
+  const sentPng = binPuts.flat().find((c) => c.path === "b.png");
+  const pngHex = sentPng?.encoding === "base64" ? Buffer.from(sentPng.content, "base64").toString("hex") : JSON.stringify(sentPng);
+  expect("a binary file a command makes is in the tree as one, and sent as its bytes", binaryRows && pngHex === "89504e470d0a1a0a0000fffe", pngHex);
+  await page.locator('#files .row.file[data-path="b.png"]').click();
+  expect("clicking it says it is not text, rather than opening garbage", /b\.png is not text/.test(await status()), `"${await status()}"`);
+  await page.hover('#files .file-row:has(.row.file[data-path="b.png"])');
+  const gotPng = await got(() => page.locator('#files button[aria-label="Download b.png"]').click());
+  expect("and downloads byte for byte", (await readFile(gotPng.to)).toString("hex") === "89504e470d0a1a0a0000fffe", (await readFile(gotPng.to)).toString("hex"));
+  await page.hover('#files .file-row:has(.row.file[data-path="z.zip"])');
+  const gotZip = await got(() => page.locator('#files button[aria-label="Download z.zip"]').click());
+  const madeZip = unzip(gotZip.to);
+  expect("a zip made in the terminal downloads as a zip that opens", madeZip.bad === null && madeZip.files["t.txt"] === "text\n", JSON.stringify(madeZip));
+  binPuts.length = 0;
+  await page.locator('#files .row.file[data-path="z.zip"]').dragTo(page.locator('#files .row.dir[data-path="src"]'));
+  const movedZip = await page.waitForFunction(() => document.querySelector('#files .row.file.binary[data-path="src/z.zip"]') && !document.querySelector('#files .row.file[data-path="z.zip"]'), null, { timeout: 10_000 }).then(() => true, () => false);
+  const movedSent = binPuts.flat().find((c) => c.path === "src/z.zip");
+  expect("and moves like any file, still as its bytes", movedZip && movedSent?.encoding === "base64" && Buffer.from(movedSent.content, "base64").subarray(0, 2).toString() === "PK", JSON.stringify(movedSent?.encoding));
+  page.off("request", onBinPut);
 
   // ---- moving in the tree ----
   // Dragged as in an editor's file explorer, and by F2 for the keyboard. One

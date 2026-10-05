@@ -12,7 +12,7 @@ import { cssString, participantId } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
 import { seedFiles } from "./seed";
-import { diff, ignored, knownFrom } from "./sync";
+import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 
 const results: string[] = [];
@@ -376,8 +376,10 @@ async function main() {
     is(read.some((e) => e.path === "proj-main/naïve.txt" && text(e.data) === "café\n"), true, "a zip made by Python's zipfile reads, UTF-8 names and all");
     const prepared = prepareImport(read);
     is(prepared.root, "proj-main", "a zip wrapped in one folder is unwrapped");
-    is(prepared.files.map((f) => f.path).sort().join(","), "main.py,naïve.txt,src/util.py", "its text files come in, junk and binary left out");
-    is(prepared.binary.join(","), "logo.png", "a binary file is left out by name");
+    is(prepared.files.map((f) => f.path).sort().join(","), "logo.png,main.py,naïve.txt,src/util.py", "its files come in, binary ones too, and junk is left out");
+    is(prepared.binary.join(","), "logo.png", "a binary file is named as one");
+    const logo = prepared.files.find((f) => f.path === "logo.png");
+    is(logo?.encoding === "base64" && [...fromBase64(logo.content).subarray(0, 4)].join() === "137,80,78,71", true, "and kept as its bytes, in base64");
     is(prepared.unsafe.join(","), "proj-main/../evil.txt", "a path that climbs out of the folder is refused");
     // 200 characters, 600 bytes: the relay counts bytes.
     const long = prepareImport([{ path: `${"字".repeat(200)}.txt`, data: bytes("x") }, { path: "ok.txt", data: bytes("y") }]);
@@ -475,19 +477,23 @@ async function main() {
 
   // ---- the diff, which decides what anyone else ever sees ----
   let known = knownFrom({});
-  const first = await diff(rt, known);
+  // Earlier checks left gzip and tar output in the sandbox: binary, carried
+  // between runs like the text is.
+  let bins = new Map<string, string>();
+  const first = await diff(rt, known, bins);
   is(
     first.changes.some((c) => c.path === "from-shell.txt"),
     true,
     "a file the shell made shows up as a change",
   );
   known = first.next;
+  bins = first.nextBinaries;
 
-  const quiet = await diff(rt, known);
+  const quiet = await diff(rt, known, bins);
   is(quiet.changes.length, 0, "running the diff again finds nothing to send");
 
   await sh.run("python -c \"open('note.txt','w').write('hello')\"");
-  const added = await diff(rt, known);
+  const added = await diff(rt, known, bins);
   is(
     added.changes.filter((c) => c.path === "note.txt").length,
     1,
@@ -497,7 +503,7 @@ async function main() {
 
   // The case size alone cannot catch, and the reason this reads every file.
   await sh.run("python -c \"open('note.txt','w').write('HELLO')\"");
-  const rewritten = await diff(rt, known);
+  const rewritten = await diff(rt, known, bins);
   is(
     rewritten.changes.find((c) => c.path === "note.txt")?.content,
     "HELLO",
@@ -506,7 +512,7 @@ async function main() {
   known = rewritten.next;
 
   await sh.run("rm note.txt");
-  const removed = await diff(rt, known);
+  const removed = await diff(rt, known, bins);
   is(
     removed.changes.find((c) => c.path === "note.txt")?.content,
     null,
@@ -514,9 +520,39 @@ async function main() {
   );
   known = removed.next;
 
+  // A binary file a command makes goes as its bytes, base64. It used to be
+  // read as text, which replaced what was not UTF-8, and everyone else got a
+  // garbled copy.
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0xff, 0xfe];
+  await sh.run(`printf '${PNG.map((b) => `\\x${b.toString(16).padStart(2, "0")}`).join("")}' > pic.png`);
+  const madeBinary = await diff(rt, known, bins);
+  const pic = madeBinary.changes.find((c) => c.path === "pic.png");
+  is(pic?.encoding, "base64", "a binary file a command makes is sent as base64");
+  is(pic?.content ? [...fromBase64(pic.content)].join() : "", PNG.join(), "with its bytes exactly");
+  is(madeBinary.next.has("pic.png"), false, "and is not remembered as text");
+  known = madeBinary.next;
+  bins = madeBinary.nextBinaries;
+  is((await diff(rt, known, bins)).changes.length, 0, "running the diff again finds nothing to send");
+  // A file that changes kind is one change, not a removal and an addition.
+  await sh.run("printf 'now text\\n' > pic.png");
+  const toText = await diff(rt, known, bins);
+  is(JSON.stringify(toText.changes.filter((c) => c.path === "pic.png")), JSON.stringify([{ path: "pic.png", content: "now text\n" }]), "a binary file rewritten as text is one text change");
+  known = toText.next;
+  bins = toText.nextBinaries;
+  await sh.run("rm pic.png");
+  const binaryGone = await diff(rt, known, bins);
+  is(binaryGone.changes.find((c) => c.path === "pic.png")?.content, null, "and removing it is a removal");
+  known = binaryGone.next;
+  bins = binaryGone.nextBinaries;
+  const all = Uint8Array.from({ length: 256 * 3 }, (_, i) => i % 256);
+  is([...fromBase64(toBase64(all))].join() === [...all].join(), true, "base64 goes there and back, every byte value");
+  is(textOf(new TextEncoder().encode("naïve ✓")), "naïve ✓", "UTF-8 text reads as text");
+  is(textOf(Uint8Array.of(0x61, 0x00, 0x62)), null, "a NUL makes it binary");
+  is(textOf(Uint8Array.of(0xff, 0xfe)), null, "and so do bytes that are not UTF-8");
+
   // Tool droppings stay out of the shared folder.
   await rt.write("__pycache__/x.pyc", "bytecode");
-  const noise = await diff(rt, known);
+  const noise = await diff(rt, known, bins);
   is(noise.changes.length, 0, "generated files are not published");
   is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
 

@@ -37,8 +37,8 @@ it downloads that folder as a zip; on a file's row, that file as it is. The up
 arrow — or dropping a `.zip` on the file list — adds a zip's files to the pad,
 for everyone on it:
 
-- Only text files come in. Images and other binary files are left out, and
-  the status line says how many: a pad holds text.
+- Every file comes in, images and other binary files too; those are listed
+  in italics and are not opened in the editor.
 - A zip that is all one folder — `my-project/…`, as GitHub's **Download ZIP**
   and macOS's **Compress** make — comes in without that folder, so the files
   land at the top. A pad's own zip goes back in exactly as it was.
@@ -77,10 +77,10 @@ pip install six
 grep -rn TODO . > todo.txt
 ```
 
-Whatever a command writes as text appears in the folder, for you and for
-everyone else with the link. **Binary files are not carried correctly yet:** an
-image or a `.zip` a command makes reaches the others — and the stored copy —
-garbled, so keep those to your own terminal for now.
+Whatever a command writes appears in the folder, for you and for everyone
+else with the link. A file that is not text — an image, a chart a script
+saved, a `.zip` — is listed in *italics*: it is in everyone's terminal folder
+and you can download, move or delete it, but the editor does not open it.
 
 ### The keys
 
@@ -157,7 +157,7 @@ who can, sign in — **Your pads**, top right, or `code.rishwanth.dev/dashboard`
 
 **New pad** makes one with a three-word name, like `amber-falcon-river`, and
 opens it. It is yours for as long as your account is: it never expires.
-**Import a zip**, beside it, does the same with a zip's text files in the new
+**Import a zip**, beside it, does the same with a zip's files in the new
 pad instead of the starter. **Copy a pad** does it with another pad's files:
 paste the link of any pad you can open — an open pad someone sent you, a
 private one with the code after its `#`, or one of your own — and the new pad

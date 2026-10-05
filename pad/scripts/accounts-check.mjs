@@ -567,12 +567,13 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   const zipped = new URL(owner.url()).pathname.slice(1);
   await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
   const told = await owner.waitForSelector(".toast:has-text('Made from your zip')", { timeout: 10_000 }).then((t) => t.textContent(), () => "");
-  is(/2 files, and 1 binary file left out/.test(told), true, `Start from a zip makes a pad and says what came in (${zipped}: "${told}")`);
+  is(/Made from your zip: 3 files\.$/.test(told.trim()), true, `Start from a zip makes a pad and says what came in (${zipped}: "${told}")`);
   is(new URL(owner.url()).search, "", "and the address is the pad's own, without the count");
   const zippedFiles = await stored(zipped);
-  is(JSON.stringify(Object.keys(zippedFiles ?? {}).sort()), '["app.js","lib/a.py"]', "the pad holds the zip's text files, out of their folder, and no starter");
+  is(JSON.stringify(Object.keys(zippedFiles ?? {}).sort()), '["app.js","img.png","lib/a.py"]', "the pad holds the zip's files, out of their folder, and no starter");
+  is(zippedFiles?.["img.png"]?.encoding === "base64" && Buffer.from(zippedFiles["img.png"].content, "base64").toString("hex") === "89504e470000000d", true, "the image as its bytes");
   is(zippedFiles?.["lib/a.py"]?.content, "A = 1\n", "as they were in the zip");
-  is(await owner.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort().join()), "app.js,lib/a.py", "and the page shows them");
+  is(await owner.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort().join()), "app.js,img.png,lib/a.py", "and the page shows them");
   is(await role(owner), "owner", "a pad of the account's, like New pad's");
   await fetch(`${ORIGIN}/api/my/pads/${zipped}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
   await rm(zipDir, { recursive: true, force: true });

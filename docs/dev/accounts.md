@@ -188,7 +188,7 @@ plus that key is every edit link; the key never goes to S3.
 size, when it was made, chips for the two settings, and Share, Open and Delete;
 links and settings are in the share dialog, the same one the pad opens. New pad
 is the first button on the page, and Import a zip beside it (Start from a zip on an
-empty dashboard) makes the pad and writes the zip's text files into it before
+empty dashboard) makes the pad and writes the zip's files into it before
 opening it — removing the pad again if that write fails, so a failed import
 does not leave an empty pad counting against the 20. **Copy a pad** beside
 them does the same from a pasted pad link (`parsePadLink` in `access.ts`): it

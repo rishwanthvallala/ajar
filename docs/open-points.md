@@ -45,20 +45,6 @@ a store request ahead of it that stalled on the network — a store `fetch` has
 no deadline. (The run before that one failed too, but it spanned the laptop
 sleeping, and says nothing.)
 
-### A binary file a command writes is shared garbled
-
-Found on 5 October while checking the docs. `sync.ts` skips any file it
-cannot read as text — binary, the comment says, "skipped rather than guessed
-at". But `readText` does not refuse binary: it decodes it, replacing what is
-not UTF-8. So `printf '\x89PNG…' > b.png` or `zip z.zip t.txt` in the terminal
-puts a mangled text copy in the store and in everyone else's tree and sandbox,
-and Download as zip hands that copy back. Only the tab that ran the command
-keeps the real bytes, until something rewrites them. The fix is either what
-the comment meant — read bytes, and skip anything that is not valid UTF-8 — or
-carrying binary files properly: the store already has a base64 encoding,
-but nothing seeds one into another tab's sandbox or shows it in the tree.
-The user guide says binary files are not carried correctly yet.
-
 ### The pad's runtime cannot start without registry.wasmer.io
 
 Only the packages' bytes are mirrored. On every start the runtime asks
@@ -395,6 +381,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 | Typing inside the save delay was lost when its tab closed, unless someone else saved the file | `6de80ed` |
 | Every save of a multi-megabyte file stalled the typist's editor 80–165 ms | `6de80ed` |
+| A binary file a command made was published as garbled text — to the store, everyone's tree and sandbox, and every download. It is carried as base64 now, and zips keep their images | this change |
 | Typing in flight when editing was locked was neither saved nor kept as the editor's own copy — the demotion looked for unsaved work while the save held it | `aab1a48` |
 
 ## Closed on 2–3 October

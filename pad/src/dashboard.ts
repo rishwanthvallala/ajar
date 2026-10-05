@@ -456,12 +456,12 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       if (now.user?.id !== me.user?.id) return location.reload();
       const pad = await account.create();
       try {
-        await new Store("", codeFor).write(pad.name, prepared.files.map((f) => ({ path: f.path, content: f.content })));
+        await new Store("", codeFor).write(pad.name, prepared.files.map((f) => ({ path: f.path, content: f.content, encoding: f.encoding })));
       } catch (e) {
         await account.remove(pad.name).catch(() => {});
         throw e;
       }
-      location.assign(`/${pad.name}?imported=${prepared.files.length}&skipped=${prepared.binary.length}`);
+      location.assign(`/${pad.name}?imported=${prepared.files.length}&skipped=${prepared.unsafe.length}`);
     } catch (e) {
       staleSession(e);
       toast((e as Error).message, "error");

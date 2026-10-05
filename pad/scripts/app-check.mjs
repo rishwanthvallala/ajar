@@ -290,6 +290,27 @@ try {
   );
   ok("a change made in one browser reaches the other");
 
+  // A binary file, the same way, and it arrives as its bytes: the other
+  // browser's sandbox and the server's copy both hold exactly what was made.
+  // Until 5 October it was read back as text and reached both garbled.
+  await second.evaluate(() => {
+    window.monaco?.editor?.getModels?.()[0]?.setValue("open('pic.bin','wb').write(bytes([0x89,0x50,0x4e,0x47,0,0,0xff,0xfe]))\nprint('done')\n");
+  });
+  await second.click("#run");
+  await second.waitForFunction(() => document.getElementById("status")?.textContent === "done", null, { timeout: 120_000 });
+  // The row, whatever it is, and then what it is: garbled, it arrives as text.
+  await page.waitForSelector('#files .row.file[data-path="pic.bin"]', { timeout: 30_000 });
+  const picListed = await page.locator('#files .row.file[data-path="pic.bin"]').getAttribute("class");
+  const storedPic = (await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json())).files["pic.bin"];
+  await page.click("#terminal");
+  await page.keyboard.type(`python3 -c "print('PICHEX=' + open('pic.bin','rb').read().hex())"\n`);
+  const picHere = await page.waitForFunction(() => /PICHEX=([0-9a-f]+)/.exec(document.getElementById("terminal")?.textContent ?? "")?.[1] ?? null, null, { timeout: 30_000 }).then((h) => h.jsonValue(), () => null);
+  is(
+    picListed.includes("binary") && storedPic?.encoding === "base64" && Buffer.from(storedPic.content, "base64").toString("hex") === "89504e470000fffe" && picHere === "89504e470000fffe",
+    true,
+    `a binary file made in one browser reaches the other's tree, sandbox and the server byte for byte (listed "${picListed}", stored ${storedPic?.encoding}, there ${picHere})`,
+  );
+
   await second.close();
   await page.waitForFunction(
     () => !document.getElementById("presence")?.textContent?.includes("2 here"),
@@ -564,6 +585,7 @@ try {
     .then(() => loading.evaluate(() => document.getElementById("terminal")?.textContent ?? ""), () => null);
   if (listed === null || listed.includes("out.csv")) results.push(`note: its terminal ${JSON.stringify(listed?.slice(-300) ?? "never listed")}`);
   is(listed !== null && !listed.includes("out.csv"), true, "and its sandbox, once that runtime arrives");
+  is(listed?.includes("pic.bin") ?? false, true, "a binary file made before it arrived is in its sandbox too");
   const afterDelete = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is("out.csv" in afterDelete.files, false, "and the server's copy of the folder");
 

@@ -24,7 +24,7 @@ import { confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
-import { diff, type Known, knownFrom } from "./sync";
+import { type Binaries, binariesFrom, diff, fromBase64, type Known, knownFrom } from "./sync";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -91,6 +91,11 @@ export class App {
   private cols = 80;
   private rows = 24;
   private known: Known = new Map();
+  /**
+   * The pad's binary files, as the store keeps them. Never in the editor;
+   * in the tree, the sandbox, a download and a move like any other file.
+   */
+  private binaries: Binaries = new Map();
   /** Latest durable revision applied by this tab. */
   private storeSeq = 0;
   private prefetched = false;
@@ -240,6 +245,7 @@ export class App {
 
     const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
     this.known = knownFrom(pad.files);
+    this.binaries = binariesFrom(pad.files);
     this.storeSeq = pad.seq;
 
     this.joinPeers();
@@ -406,8 +412,20 @@ export class App {
       this.models.delete(path);
       if (rt) await rt.remove(path).catch(() => {});
     }
+    // Binary files after text ones: a file that became binary was removed as
+    // text just above, and is written back here as what it is now.
+    const incomingBinaries = binariesFrom(pad.files);
+    for (const [path, base64] of incomingBinaries) {
+      if (this.binaries.get(path) === base64 || this.local.has(path)) continue;
+      if (rt) await rt.writeBytes(path, fromBase64(base64));
+    }
+    for (const path of this.binaries.keys()) {
+      if (incomingBinaries.has(path) || incoming.has(path) || this.local.has(path)) continue;
+      if (rt) await rt.remove(path).catch(() => {});
+    }
     this.applyingRemote = false;
     this.known = incoming;
+    this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
     if (!this.models.has(this.active)) {
       const first = [...this.models.keys()].sort()[0];
@@ -792,6 +810,10 @@ export class App {
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => {
+        if (this.binaries.has(path) && !this.models.has(path)) {
+          const kb = Math.max(1, Math.round((this.binaries.get(path)!.length * 3) / 4 / 1024));
+          return this.say("", `${path} is not text (${kb} KB) — download it with the arrow beside it`);
+        }
         this.show(path);
         if (this.ui?.fileSelected()) this.editor?.focus();
       },
@@ -805,8 +827,9 @@ export class App {
       onMove: (from, folder, to) => void this.move(from, folder, to),
       movable: () => !this.viewer,
     });
-    this.tree.render([...this.models.keys()], this.active, this.local);
-    this.ui?.setFileCount(this.models.size);
+    const binary = new Set([...this.binaries.keys()].filter((p) => !this.models.has(p)));
+    this.tree.render([...this.models.keys(), ...binary], this.active, this.local, binary);
+    this.ui?.setFileCount(this.models.size + binary.size);
   }
 
   /**
@@ -819,6 +842,7 @@ export class App {
    * compares, and would put this one straight back.
    */
   private async deleteFile(path: string): Promise<void> {
+    if (this.binaries.has(path) && !this.models.has(path)) return this.deleteBinary(path);
     if (this.models.size <= 1) {
       this.say("error", "a folder keeps at least one file");
       return;
@@ -846,6 +870,21 @@ export class App {
     }
   }
 
+
+  /** A binary file, the same way: gone from the sandbox, and the diff after publishes it. */
+  private async deleteBinary(path: string): Promise<void> {
+    if (this.viewer) return this.say("error", "only people who can edit can delete the pad's files that are not text");
+    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish");
+    if (!confirm(`Delete ${path}? It goes for everyone with the link.`)) return;
+    try {
+      const rt = await this.ensureRuntime();
+      await rt.remove(path);
+      await this.publish(rt);
+      this.say("", `deleted ${path}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    }
+  }
 
   /**
    * Save what has been typed, shortly.
@@ -1007,6 +1046,7 @@ export class App {
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
       const files = seedFiles(this.known, this.models, this.docs);
+      const binaries = new Map(this.binaries);
       // wisp carries egress *and* the http ingress the preview needs, so it
         // supersedes the http policy rather than sitting beside it. Without a
         // configured endpoint this falls back to http, which is what every
@@ -1023,12 +1063,14 @@ export class App {
           : PREVIEW_ORIGIN
             ? { mode: "http" }
             : undefined;
-        const rt = await Runtime.start(files, network ? { network } : undefined);
+        const seed: Record<string, string | Uint8Array> = { ...files };
+        for (const [path, base64] of binaries) seed[path] = fromBase64(base64);
+        const rt = await Runtime.start(seed, network ? { network } : undefined);
       // Without a network policy the sandbox cannot listen at all, so this is
       // what makes a dev server started in the folder possible. It grants no
       // egress: `connect` is still refused. See docs/dev/networking.md.
       if (PREVIEW_ORIGIN) this.watchForServers(rt);
-      await this.catchUp(rt, files);
+      await this.catchUp(rt, files, binaries);
       return rt;
     })();
     return this.runtime;
@@ -1045,19 +1087,24 @@ export class App {
    * marked ready in the same step as that last look, so a change cannot land
    * between the two and be left out.
    */
-  private async catchUp(rt: Runtime, seeded: Record<string, string>): Promise<void> {
+  private async catchUp(rt: Runtime, seeded: Record<string, string>, seededBinaries: Binaries): Promise<void> {
     let applied = seeded;
+    let appliedBinaries = seededBinaries;
     for (;;) {
       const now = seedFiles(this.known, this.models, this.docs);
+      const nowBinaries = new Map(this.binaries);
       const writes = Object.entries(now).filter(([path, text]) => applied[path] !== text);
-      const removals = Object.keys(applied).filter((path) => !(path in now));
-      if (writes.length === 0 && removals.length === 0) {
+      const binaryWrites = [...nowBinaries].filter(([path, base64]) => appliedBinaries.get(path) !== base64);
+      const removals = [...Object.keys(applied), ...appliedBinaries.keys()].filter((path) => !(path in now) && !nowBinaries.has(path));
+      if (writes.length === 0 && binaryWrites.length === 0 && removals.length === 0) {
         this.runtimeReady = true;
         return;
       }
-      for (const [path, text] of writes) await rt.write(path, text);
       for (const path of removals) await rt.remove(path).catch(() => {});
+      for (const [path, text] of writes) await rt.write(path, text);
+      for (const [path, base64] of binaryWrites) await rt.writeBytes(path, fromBase64(base64));
       applied = now;
+      appliedBinaries = nowBinaries;
     }
   }
 
@@ -1313,7 +1360,7 @@ export class App {
     if (this.viewer) return this.keepLocally(rt);
     return this.queueWrite(async () => {
       await this.flushModels(rt);
-      const { changes, next } = await diff(rt, this.known);
+      const { changes, next, nextBinaries } = await diff(rt, this.known, this.binaries);
       if (changes.length === 0) return;
       let seq: number;
       try {
@@ -1329,8 +1376,14 @@ export class App {
       }
       this.storeSeq = Math.max(this.storeSeq, seq);
       this.known = next;
+      this.binaries = nextBinaries;
       for (const change of changes) {
-        if (change.content === null) {
+        // Gone, or now binary: either way, no longer the editor's.
+        if (change.content === null || change.encoding === "base64") {
+          if (this.active === change.path) {
+            const other = [...this.models.keys()].filter((p) => p !== change.path).sort()[0];
+            if (other) this.show(other);
+          }
           this.closeDoc(change.path);
           this.models.get(change.path)?.dispose();
           this.models.delete(change.path);
@@ -1536,15 +1589,8 @@ export class App {
   private async collect(under = ""): Promise<ZipEntry[]> {
     const inside = (p: string) => !under || p.startsWith(`${under}/`);
     const out = new Map<string, Uint8Array>();
-    if (!this.lost) {
-      try {
-        const pad = await this.store.read(this.name);
-        for (const [path, f] of Object.entries(pad.files)) {
-          if (f.encoding === "base64" && inside(path) && !this.local.has(path)) out.set(path, Uint8Array.from(atob(f.content), (c) => c.charCodeAt(0)));
-        }
-      } catch {
-        // What is on the page is still worth having.
-      }
+    for (const [path, base64] of this.binaries) {
+      if (inside(path) && !this.local.has(path) && !this.models.has(path)) out.set(path, fromBase64(base64));
     }
     const enc = new TextEncoder();
     for (const path of this.models.keys()) if (inside(path)) out.set(path, enc.encode(this.current(path) ?? ""));
@@ -1604,12 +1650,18 @@ export class App {
       const { files } = prepared;
       const skipped = leftOut(prepared);
       if (!files.length) return this.say("error", `nothing in ${zip.name} a pad can hold${skipped ? ` — ${skipped}` : ""}`);
-      const starter = this.untouchedStarter();
-      const after = new Set([...this.models.keys(), ...files.map((f) => f.path)]);
+      // The starter makes way only for text: a zip of images alone would
+      // leave the editor nothing to show.
+      const starter = this.untouchedStarter() && files.some((f) => f.encoding === "utf8");
+      const after = new Set([...this.models.keys(), ...this.binaries.keys(), ...files.map((f) => f.path)]);
       if (starter && !files.some((f) => f.path === "main.py")) after.delete("main.py");
       if (after.size > PAD_LIMITS.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${PAD_LIMITS.maxFiles}`);
 
-      const replacing = files.filter((f) => this.models.has(f.path) && !(f.path === "main.py" && starter) && this.current(f.path) !== f.content);
+      const replacing = files.filter((f) =>
+        f.encoding === "base64"
+          ? (this.binaries.has(f.path) && this.binaries.get(f.path) !== f.content) || this.models.has(f.path)
+          : (this.models.has(f.path) && !(f.path === "main.py" && starter) && this.current(f.path) !== f.content) || this.binaries.has(f.path),
+      );
       if (replacing.length) {
         const yes = await confirmDialog({
           title: replacing.length === 1 ? `Replace ${replacing[0]!.path}?` : `Replace ${replacing.length} files?`,
@@ -1621,12 +1673,26 @@ export class App {
 
       this.say("saving", `adding ${files.length} ${files.length === 1 ? "file" : "files"}…`);
       await this.queueWrite(async () => {
-        const seq = await this.store.write(this.name, files.map((f) => ({ path: f.path, content: f.content })));
+        const seq = await this.store.write(this.name, files.map((f) => ({ path: f.path, content: f.content, encoding: f.encoding })));
         this.storeSeq = Math.max(this.storeSeq, seq);
         const rt = this.runtimeReady ? await this.runtime : null;
         this.applyingRemote = true;
         try {
           for (const f of files) {
+            if (f.encoding === "base64") {
+              // Not the editor's: into the tree and the sandbox as it is.
+              if (this.models.has(f.path)) {
+                if (this.active === f.path) this.active = "";
+                this.closeDoc(f.path);
+                this.models.get(f.path)?.dispose();
+                this.models.delete(f.path);
+                this.known.delete(f.path);
+              }
+              this.binaries.set(f.path, f.content);
+              await rt?.writeBytes(f.path, fromBase64(f.content));
+              continue;
+            }
+            this.binaries.delete(f.path);
             this.known.set(f.path, f.content);
             this.dirty.delete(f.path);
             // A file someone has open changes as their typing would, so the
@@ -1653,7 +1719,10 @@ export class App {
         this.starter = false;
         this.peers?.moved(seq);
       });
-      if (!this.models.has(this.active)) this.show(files.map((f) => f.path).sort()[0]!);
+      if (!this.models.has(this.active)) {
+        const first = files.filter((f) => f.encoding === "utf8").map((f) => f.path).sort()[0] ?? [...this.models.keys()].sort()[0];
+        if (first) this.show(first);
+      }
       this.renderFiles();
       this.say("", `added ${files.length} ${files.length === 1 ? "file" : "files"} from ${zip.name}${skipped ? ` — ${skipped}` : ""}`);
     } catch (e) {
@@ -1679,9 +1748,11 @@ export class App {
     const safe = to.split("/").every((p) => p && p !== "." && p !== ".." && !/[\u0000-\u001f\\]/.test(p)) && new TextEncoder().encode(to).length <= 512;
     if (!safe) return this.say("error", `${to} is not a path a pad can hold`);
     if (folder && to.startsWith(`${from}/`)) return this.say("error", "a folder cannot go inside itself");
-    const paths = [...this.models.keys()];
+    const isBinary = (p: string) => this.binaries.has(p) && !this.models.has(p);
+    const exists = (p: string) => this.models.has(p) || this.binaries.has(p);
+    const paths = [...this.models.keys(), ...[...this.binaries.keys()].filter(isBinary)];
     if (!folder && paths.some((p) => p.startsWith(`${to}/`))) return this.say("error", `there is already a folder called ${to}`);
-    if (folder && this.models.has(to)) return this.say("error", `there is already a file called ${to}`);
+    if (folder && exists(to)) return this.say("error", `there is already a file called ${to}`);
     if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then move it");
 
     const pairs = paths.filter((p) => (folder ? p.startsWith(`${from}/`) : p === from)).map((p) => [p, to + p.slice(from.length)] as const);
@@ -1691,7 +1762,7 @@ export class App {
       return this.renderFiles();
     }
     const leaving = new Set(pairs.map(([p]) => p));
-    const replacing = pairs.filter(([, t]) => this.models.has(t) && !leaving.has(t));
+    const replacing = pairs.filter(([, t]) => exists(t) && !leaving.has(t));
     if (replacing.length) {
       const one = replacing.length === 1;
       const yes = await confirmDialog({
@@ -1706,40 +1777,54 @@ export class App {
     this.say("saving", `moving ${from}…`);
     try {
       await this.queueWrite(async () => {
-        // The text as it stands here, typing not yet saved included.
-        const text = new Map(pairs.map(([p]) => [p, this.current(p) ?? ""]));
-        const changes: Change[] = [...pairs.map(([p, t]) => ({ path: t, content: text.get(p)! })), ...pairs.map(([p]) => ({ path: p, content: null }))];
-        // A folder's binary files are in the store only; they go with it.
-        if (folder && !this.lost) {
-          const pad = await this.store.read(this.name).catch(() => null);
-          for (const [p, f] of Object.entries(pad?.files ?? {})) {
-            if (f.encoding !== "base64" || !p.startsWith(`${from}/`)) continue;
-            changes.push({ path: to + p.slice(from.length), content: f.content, encoding: "base64" }, { path: p, content: null });
-          }
-        }
+        // The text as it stands here, typing not yet saved included; a
+        // binary file as the store has it.
+        const binaryPairs = pairs.filter(([p]) => isBinary(p));
+        const textPairs = pairs.filter(([p]) => !isBinary(p));
+        const text = new Map(textPairs.map(([p]) => [p, this.current(p) ?? ""]));
+        const changes: Change[] = [
+          ...textPairs.map(([p, t]) => ({ path: t, content: text.get(p)! })),
+          ...binaryPairs.map(([p, t]): Change => ({ path: t, content: this.binaries.get(p)!, encoding: "base64" })),
+          ...pairs.map(([p]) => ({ path: p, content: null })),
+        ];
         const seq = await this.store.write(this.name, changes);
         this.storeSeq = Math.max(this.storeSeq, seq);
         const rt = this.runtimeReady ? await this.runtime : null;
         const active = this.active;
         this.applyingRemote = true;
         try {
-          for (const [p, t] of pairs) {
+          for (const [p, t] of binaryPairs) {
+            const base64 = this.binaries.get(p)!;
+            // Replacing a text file: it is not the editor's any more.
+            if (this.models.has(t)) {
+              this.closeDoc(t);
+              this.models.get(t)?.dispose();
+              this.models.delete(t);
+              this.known.delete(t);
+            }
+            this.binaries.delete(p);
+            this.binaries.set(t, base64);
+            await rt?.writeBytes(t, fromBase64(base64));
+            await rt?.remove(p).catch(() => {});
+          }
+          for (const [p, t] of textPairs) {
+            this.binaries.delete(t);
             this.closeDoc(t);
             this.setFile(t, text.get(p)!);
             this.known.set(t, text.get(p)!);
             this.dirty.delete(t);
           }
           // Onto the new path before the old model goes from under the editor.
-          const followed = pairs.find(([p]) => p === active)?.[1];
+          const followed = textPairs.find(([p]) => p === active)?.[1];
           if (followed) this.show(followed);
-          for (const [p] of pairs) {
+          for (const [p] of textPairs) {
             this.dirty.delete(p);
             this.known.delete(p);
             this.closeDoc(p);
             this.models.get(p)?.dispose();
             this.models.delete(p);
           }
-          for (const [p, t] of pairs) {
+          for (const [p, t] of textPairs) {
             await rt?.write(t, text.get(p)!);
             await rt?.remove(p).catch(() => {});
           }
@@ -1788,7 +1873,7 @@ export class App {
       params.delete("imported");
       params.delete("skipped");
       history.replaceState(history.state, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
-      toast(`Made from your zip: ${imported} ${imported === "1" ? "file" : "files"}${skipped ? `, and ${skipped} binary ${skipped === 1 ? "file" : "files"} left out — a pad holds text` : ""}.`);
+      toast(`Made from your zip: ${imported} ${imported === "1" ? "file" : "files"}${skipped ? `, and ${skipped} left out — ${skipped === 1 ? "its path was" : "their paths were"} outside the folder` : ""}.`);
       return;
     }
     // Made by Copy a pad on the dashboard. Only a name's shape is repeated.
@@ -1863,10 +1948,13 @@ export class App {
    */
   private async keepLocally(rt: Runtime): Promise<void> {
     await this.flushModels(rt);
-    const { changes } = await diff(rt, this.known);
+    const { changes } = await diff(rt, this.known, this.binaries);
     this.applyingRemote = true;
     try {
       for (const change of changes) {
+        // A viewer's binary files stay in their sandbox, where they made them:
+        // the tree here shows the pad's, and the editor cannot hold them.
+        if (change.encoding === "base64" || this.binaries.has(change.path)) continue;
         const doc = this.docs.get(change.path);
         if (doc && change.content === doc.contents()) continue;
         if (this.local.has(change.path) && this.models.get(change.path)?.getValue() === change.content) continue;
@@ -1956,6 +2044,7 @@ export class App {
         for (const [path, f] of Object.entries(pad.files)) files.set(path, { path, content: f.content, encoding: f.encoding });
       } else {
         for (const [path, model] of this.models) files.set(path, { path, content: model.getValue() });
+        for (const [path, base64] of this.binaries) if (!files.has(path)) files.set(path, { path, content: base64, encoding: "base64" });
       }
       // Live documents are ahead of the stored copy.
       for (const [path, doc] of this.docs) if (doc.hasState) files.set(path, { path, content: doc.contents() });

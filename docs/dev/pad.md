@@ -628,11 +628,9 @@ so it can be checked on its own:
   that folder: `src.zip` holds `src/…` alone, which unwraps.
 - The relay's path rule (`pad::check_path`), byte length included, applied
   before sending, so nothing is written that the store would refuse half-way.
-- Text in, binary out: strict UTF-8 with no NUL byte. The store can hold base64
-  files, but nothing puts one in the sandbox or shows it in the tree, so an
-  imported image would be a file only Download could find. (A binary file a
-  *command* writes is not held to this rule yet, and is shared garbled — see
-  [open points](../open-points.md#a-binary-file-a-command-writes-is-shared-garbled).)
+- Text as text, everything else as base64: strict UTF-8 with no NUL byte is
+  text (`textOf`, the same rule a command's files are sorted by — see
+  [binary files](#binary-files)). Binary files used to be left out here.
 
 **Importing into an open pad** is one store write, in `queueWrite` behind any
 save, then each file applied the way a peer's change would be: through the
@@ -644,6 +642,32 @@ about first, in one dialog for all of them. An untouched starter — a new pad's
 
 **From the dashboard**, Import a zip reads and checks the zip first, then makes
 the pad and writes into it; a write that fails deletes the pad it just made.
+
+## Binary files
+
+The store has always had two encodings, `utf8` and `base64`; until 5 October
+only text reached it from the page. After a command, `diff` read every file
+with `readText`, which does not refuse a binary — it replaces what is not
+UTF-8 — so an image or a zip made in the terminal was published as garbled
+text, and everyone else's tree, sandbox and download got the garbled copy.
+
+Now `diff` reads bytes (`readBytes`) and sorts them with `textOf`: strict
+UTF-8 with no NUL is text, anything else goes as base64. The page keeps two
+maps of what the store holds — `known` for text, `binaries` for the rest — and
+a file that changes kind is one change, not a removal and an addition.
+Binary files travel everywhere text does, except into the editor:
+
+- **The sandbox**: seeded with them as bytes when it starts, caught up with
+  any that change while it loads, and written with `writeBytes` when another
+  browser's change arrives.
+- **The tree**: listed in italics; clicking one says it is not text and how
+  big it is. They download, move and delete like any file. A viewer's binary
+  files stay in their own sandbox, and a viewer cannot delete the pad's.
+- **Zips**: imported as they are, and in every download.
+
+The cost is reading each binary file's bytes and encoding them as base64 after
+every command — the diff already read every file as text, and a pad is capped
+at 25 MB; base64 makes a binary file a third larger against that cap.
 
 ## Moving files
 

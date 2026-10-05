@@ -106,6 +106,8 @@ export class FileTree {
   private active = "";
   /** Files that are this tab's own copy — a viewer's changes. */
   private local: ReadonlySet<string> = new Set();
+  /** Files that are not text: shown, downloadable, movable, never opened in the editor. */
+  private binary: ReadonlySet<string> = new Set();
   /** The row being dragged, while it is. */
   private dragging: { path: string; folder: boolean } | null = null;
 
@@ -135,10 +137,11 @@ export class FileTree {
     for (let at = folderOf(to); at; at = folderOf(at)) this.collapsed.delete(at);
   }
 
-  render(paths: string[], active: string, local: ReadonlySet<string> = this.local): void {
+  render(paths: string[], active: string, local: ReadonlySet<string> = this.local, binary: ReadonlySet<string> = this.binary): void {
     this.shown = paths;
     this.active = active;
     this.local = local;
+    this.binary = binary;
     // A directory with something in it is no longer pending — it exists
     // because its contents imply it.
     for (const p of [...this.pending]) {
@@ -289,7 +292,9 @@ export class FileTree {
         if (open) this.draw(child, into, active, depth + 1);
       } else {
         const mine = this.local.has(child.path);
-        row.className = `row file${child.path === active ? " on" : ""}${mine ? " local" : ""}`;
+        const binary = this.binary.has(child.path);
+        row.className = `row file${child.path === active ? " on" : ""}${mine ? " local" : ""}${binary ? " binary" : ""}`;
+        if (binary) row.title = "Not text — download it to open it";
         row.innerHTML = `<span class="chev"></span><span class="ico">${ICONS.file}</span>`;
         row.append(child.name);
         if (mine) {

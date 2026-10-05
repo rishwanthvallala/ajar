@@ -23,18 +23,54 @@
 import type { Runtime } from "./runtime";
 import type { Change, StoredFile } from "./store";
 
-/** What the server is believed to hold, by path. */
+/** What the server is believed to hold, by path: the text files. */
 export type Known = Map<string, string>;
+
+/** The binary files the server holds, by path, as the base64 it keeps them in. */
+export type Binaries = Map<string, string>;
 
 export function knownFrom(files: Record<string, StoredFile>): Known {
   const known: Known = new Map();
   for (const [path, file] of Object.entries(files)) {
-    // Only text round-trips through the editor and the shell. A base64 file is
-    // carried but never compared, because decoding every binary on every
-    // command is exactly the cost this module exists to avoid.
     if (file.encoding === "utf8") known.set(path, file.content);
   }
   return known;
+}
+
+export function binariesFrom(files: Record<string, StoredFile>): Binaries {
+  const binaries: Binaries = new Map();
+  for (const [path, file] of Object.entries(files)) {
+    if (file.encoding === "base64") binaries.set(path, file.content);
+  }
+  return binaries;
+}
+
+const strict = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * A file's bytes as text, or null when they are not text: not UTF-8, or with
+ * a NUL in them, which text does not have and nearly every binary format does.
+ * The same rule a zip's files are sorted by.
+ */
+export function textOf(bytes: Uint8Array): string | null {
+  if (bytes.includes(0)) return null;
+  try {
+    return strict.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+export function toBase64(bytes: Uint8Array): string {
+  let out = "";
+  // In pieces: one call per byte is slow, and one call for all of them can
+  // pass more arguments than a function may take.
+  for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(out);
+}
+
+export function fromBase64(text: string): Uint8Array {
+  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 }
 
 /**
@@ -62,6 +98,7 @@ export interface Diff {
   changes: Change[];
   /** The new state to remember, applied only once the server accepts. */
   next: Known;
+  nextBinaries: Binaries;
 }
 
 /**
@@ -71,30 +108,39 @@ export interface Diff {
  * most commands read rather than write, and an empty PUT would still bump the
  * sequence number and wake every other browser for nothing.
  */
-export async function diff(rt: Runtime, known: Known): Promise<Diff> {
+export async function diff(rt: Runtime, known: Known, binaries: Binaries = new Map()): Promise<Diff> {
   const changes: Change[] = [];
   const next: Known = new Map();
+  const nextBinaries: Binaries = new Map();
 
   for (const entry of await rt.list()) {
     if (ignored(entry.path)) continue;
-    let content: string;
+    let bytes: Uint8Array;
     try {
-      content = await rt.read(entry.path);
+      bytes = await rt.readBytes(entry.path);
     } catch {
-      // Unreadable as text: almost certainly binary. Skipped rather than
-      // guessed at — v0 carries text, and a silent mangling would be worse
-      // than an absence the user can see.
+      // Gone between the listing and the read, or not readable at all.
       continue;
     }
-    next.set(entry.path, content);
-    if (known.get(entry.path) !== content) {
-      changes.push({ path: entry.path, content });
+    // Read as bytes and sorted here. It used to be read as text, which does
+    // not refuse a binary: it replaces what is not UTF-8, so an image a
+    // command made was published as garbled text, to everyone and to the
+    // store, until 5 October.
+    const text = textOf(bytes);
+    if (text !== null) {
+      next.set(entry.path, text);
+      if (known.get(entry.path) !== text) changes.push({ path: entry.path, content: text });
+    } else {
+      const base64 = toBase64(bytes);
+      nextBinaries.set(entry.path, base64);
+      if (binaries.get(entry.path) !== base64) changes.push({ path: entry.path, content: base64, encoding: "base64" });
     }
   }
 
-  for (const path of known.keys()) {
-    if (!next.has(path)) changes.push({ path, content: null });
+  // Gone, as text or as binary — a file that only changed kind is not.
+  for (const path of [...known.keys(), ...binaries.keys()]) {
+    if (!next.has(path) && !nextBinaries.has(path)) changes.push({ path, content: null });
   }
 
-  return { changes, next };
+  return { changes, next, nextBinaries };
 }
