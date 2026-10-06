@@ -127,9 +127,21 @@ export class DocSession {
    * from outside the editor: a zip's version of it.
    */
   replace(text: string) {
+    // Only the stretch that differs, as `replaceText` does for a model: a
+    // delete-everything-and-insert reached everyone with the file open as a
+    // whole new file, and sent them back to its first line.
+    const old = this.ytext.toString();
+    if (old === text) return;
+    const limit = Math.min(old.length, text.length);
+    let start = 0;
+    while (start < limit && old.charCodeAt(start) === text.charCodeAt(start)) start++;
+    let end = 0;
+    while (end < limit - start && old.charCodeAt(old.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
     this.ydoc.transact(() => {
-      this.ytext.delete(0, this.ytext.length);
-      this.ytext.insert(0, text);
+      const gone = old.length - end - start;
+      if (gone > 0) this.ytext.delete(start, gone);
+      const added = text.slice(start, text.length - end);
+      if (added) this.ytext.insert(start, added);
     }, "local");
   }
 
@@ -248,6 +260,9 @@ export class DocSession {
   }
 
   /** Attach to an editor. Returns a function that detaches everything. */
+  // (The model is brought up to the document with `replaceText`, not
+  // `setValue`: a file that changed while somebody looked elsewhere opened
+  // again at its first line, wherever they had been.)
   bind(
     /** The loaded module. `Range` and the stickiness enum are values. */
     api: typeof monaco,
@@ -256,9 +271,7 @@ export class DocSession {
   ) {
     this.api = api;
     // The document is the truth; the model starts from it.
-    if (model.getValue() !== this.ytext.toString()) {
-      model.setValue(this.ytext.toString());
-    }
+    replaceText(api, model, this.ytext.toString());
     this.decorations = editor.createDecorationsCollection([]);
 
     const onRemote = (event: Y.YTextEvent, tr: Y.Transaction) => {
@@ -399,4 +412,25 @@ export class DocSession {
     this.awareness.destroy();
     this.ydoc.destroy();
   }
+}
+
+/**
+ * Make a model's text `text` by replacing only what differs — the stretch
+ * between the longest common start and the longest common end — rather than
+ * all of it. `setValue` throws away where the view and the cursor were and
+ * opens at line 1; an edit keeps them, and moves them only as far as the text
+ * before them changed.
+ */
+export function replaceText(api: typeof monaco, model: monaco.editor.ITextModel, text: string): void {
+  const old = model.getValue();
+  if (old === text) return;
+  const limit = Math.min(old.length, text.length);
+  let start = 0;
+  while (start < limit && old.charCodeAt(start) === text.charCodeAt(start)) start++;
+  let end = 0;
+  while (end < limit - start && old.charCodeAt(old.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
+  // Never split a surrogate pair: back off to the start of one.
+  if (start > 0 && start < old.length && /[\udc00-\udfff]/.test(old[start]!)) start--;
+  const range = api.Range.fromPositions(model.getPositionAt(start), model.getPositionAt(old.length - end));
+  model.applyEdits([{ range, text: text.slice(start, text.length - end) }]);
 }

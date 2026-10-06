@@ -746,6 +746,44 @@ try {
   is(afterReload.dirs.includes("kept-empty") && afterReload.dirs.includes("kept-empty/prune-me") && afterReload.files.includes("kept-empty-2/blank.md"), true, "and empty ones survive a reload");
   await watching.close();
 
+  // ---- a command's change to a file open elsewhere ----
+  // This page has had the file open (it has its live document) but is looking
+  // at another; somebody else has it on screen. The command's change used to
+  // reach the store and stop there: not into the document, so not to them —
+  // and back on this page, the stale document put the old text back.
+  await page.click("#terminal");
+  await page.keyboard.type("printf 'one\\ntwo\\nthree\\n' > shared.txt; seq 4 3000 >> shared.txt\n");
+  await page.waitForSelector('#files .row.file[data-path="shared.txt"]', { timeout: 30_000 });
+  await page.click('#files .row.file[data-path="shared.txt"]');
+  await page.waitForFunction(() => window.__pad.active() === "shared.txt" && window.__pad.docs().includes("shared.txt"), null, { timeout: 15_000 });
+  await page.click('#files .row.file[data-path="main.py"]');
+  const onScreen = await browser.newPage();
+  watchLimits(onScreen, "on screen");
+  await onScreen.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await onScreen.waitForSelector('#files .row.file[data-path="shared.txt"]', { timeout: 30_000 });
+  await onScreen.click('#files .row.file[data-path="shared.txt"]');
+  await onScreen.waitForFunction(() => window.__pad?.active() === "shared.txt" && window.__pad.docs().includes("shared.txt") && (window.__pad.text("shared.txt") ?? "").includes("two"), null, { timeout: 30_000 });
+  // Down at line 1000, where the command's change is not.
+  await onScreen.evaluate(() => {
+    const ed = window.monaco.editor.getEditors()[0];
+    ed.setPosition({ lineNumber: 1000, column: 1 });
+    ed.revealLineInCenter(1000);
+  });
+  await onScreen.waitForTimeout(200);
+  const theirTop = await onScreen.evaluate(() => window.monaco.editor.getEditors()[0].getVisibleRanges()[0]?.startLineNumber);
+  await page.click("#terminal");
+  await page.keyboard.type("sed -i '2s/.*/TWO-BY-COMMAND/' shared.txt\n");
+  const reachedThem = await onScreen.waitForFunction(() => (window.monaco?.editor.getEditors()[0]?.getModel()?.getValue() ?? "").includes("TWO-BY-COMMAND"), null, { timeout: 20_000 }).then(() => true, () => false);
+  const theirs = await onScreen.evaluate(() => { const ed = window.monaco.editor.getEditors()[0]; return { top: ed.getVisibleRanges()[0]?.startLineNumber, cursor: ed.getPosition()?.lineNumber }; });
+  is(theirs.top === theirTop && theirs.cursor === 1000, true, `and it does not move them from where they are in it (top ${theirTop} → ${theirs.top}, cursor ${theirs.cursor})`);
+  await page.click('#files .row.file[data-path="shared.txt"]');
+  const stayedHere = await page.waitForFunction(() => window.__pad.active() === "shared.txt" && (window.monaco.editor.getEditors()[0].getModel().getValue()).includes("TWO-BY-COMMAND"), null, { timeout: 10_000 }).then(() => true, () => false);
+  is(reachedThem && stayedHere, true, `a command's change to a file open elsewhere reaches whoever has it on screen, and stays when it is shown here again (there ${reachedThem}, here ${stayedHere})`);
+  await onScreen.close();
+  await page.click('#files .row.file[data-path="main.py"]');
+  // Back in the terminal: what follows types into it.
+  await page.click("#terminal");
+
   // The deployed policy has to carry the same hash as the page, or the import
   // map is blocked in production only — where nobody would see it until WISP
   // was switched on and did not work.

@@ -310,6 +310,52 @@ try {
   expect("ctrl-f opens find", await page.waitForSelector(".monaco-editor .find-widget.visible", { timeout: 5000 }).then(() => true, () => false));
   await page.keyboard.press("Escape");
 
+  // Where a file was left is where it opens again: scrolled to line 1000 of
+  // 3000, away to another file, back. It opened at line 1 every time until 6
+  // October, and at line 1 too after anything changed it meanwhile.
+  await newFile("long.txt", Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  const placeIn = () => page.evaluate(() => {
+    const ed = window.monaco.editor.getEditors()[0];
+    return { top: ed.getVisibleRanges()[0]?.startLineNumber ?? 0, cursor: ed.getPosition()?.lineNumber ?? 0 };
+  });
+  await page.evaluate(() => {
+    const ed = window.monaco.editor.getEditors()[0];
+    ed.setPosition({ lineNumber: 1000, column: 1 });
+    ed.revealLineInCenter(1000);
+  });
+  await wait(200);
+  const leftAt = await placeIn();
+  await open("main.py");
+  await open("long.txt");
+  const cameBack = await placeIn();
+  expect("a file opens again where it was left — scrolled to and the cursor",
+    cameBack.cursor === 1000 && cameBack.top === leftAt.top && leftAt.top > 900, `left ${JSON.stringify(leftAt)}, back ${JSON.stringify(cameBack)}`);
+  await open("main.py");
+  await clear();
+  await typed("sed -i '2s/.*/line two, rewritten by a command/' long.txt");
+  await page.waitForFunction(() => (window.__pad.text("long.txt") ?? "").includes("rewritten by a command"), null, { timeout: 15_000 }).catch(() => {});
+  await open("long.txt");
+  const afterCommand = await placeIn();
+  const rewritten = (await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLineContent(2))) === "line two, rewritten by a command";
+  expect("and after a command changed it meanwhile, it is still there — with the change",
+    rewritten && afterCommand.cursor === 1000 && afterCommand.top === leftAt.top, `rewritten ${rewritten}, ${JSON.stringify(afterCommand)}`);
+  // And a command changing it while it is on screen does not move the view.
+  await page.click("#terminal");
+  await typed("sed -i '3s/.*/line three, rewritten on screen/' long.txt");
+  await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getModel().getLineContent(3) === "line three, rewritten on screen", null, { timeout: 15_000 }).catch(() => {});
+  const onScreen = await placeIn();
+  const changedOnScreen = (await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLineContent(3))) === "line three, rewritten on screen";
+  expect("a command changing the file on screen does not move the view", changedOnScreen && onScreen.top === leftAt.top, `changed ${changedOnScreen}, ${JSON.stringify(onScreen)}`);
+  // Moved while open, the place goes with it.
+  answer = "long-moved.txt";
+  await page.locator('#files .row.file[data-path="long.txt"]').focus();
+  await page.keyboard.press("F2");
+  answer = null;
+  await page.waitForFunction(() => window.__pad.active() === "long-moved.txt", null, { timeout: 10_000 }).catch(() => {});
+  await wait(300);
+  const afterMove = await placeIn();
+  expect("and moving the open file keeps the place in it", afterMove.cursor === 1000 && afterMove.top === leftAt.top, JSON.stringify(afterMove));
+
   // ---- deleting from the tree ----
   section = "deleting from the tree";
   answer = "yes";

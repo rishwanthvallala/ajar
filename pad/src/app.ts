@@ -13,7 +13,7 @@ import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDe
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
 import { carryOver } from "./carry";
 import { Console } from "./console";
-import { colourFor, DocSession } from "./editing";
+import { colourFor, DocSession, replaceText } from "./editing";
 import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
@@ -166,6 +166,8 @@ export class App {
   private importing = false;
   /** A move between its store write and the page catching up. */
   private moving = false;
+  /** Where each file was left in the editor: scrolled to, the cursor, folds. */
+  private viewStates = new Map<string, Monaco.editor.ICodeEditorViewState>();
   /**
    * This page was the owner's, and the session behind it ended — signed out
    * in another tab, or expired. Their work stays here; signing in again, in
@@ -656,7 +658,8 @@ export class App {
     if (!this.monaco) return;
     const existing = this.models.get(path);
     if (existing) {
-      if (existing.getValue() !== content) existing.setValue(content);
+      // Only what differs, so where somebody was in the file survives it.
+      replaceText(this.monaco, existing, content);
       return;
     }
     const model = this.monaco.editor.createModel(content, this.languageOf(path));
@@ -702,10 +705,19 @@ export class App {
   private show(path: string): void {
     const model = this.models.get(path);
     if (!model || !this.editor || !this.monaco) return;
+    // Where this file was left — scrolled to, the cursor, what was folded —
+    // so coming back to it is coming back to there, not to its first line.
+    const leaving = this.active;
+    if (leaving && leaving !== path && this.editor.getModel()) {
+      const state = this.editor.saveViewState();
+      if (state) this.viewStates.set(leaving, state);
+    }
     this.active = path;
     this.el.editor.dataset.active = path;
     this.ui?.setActiveFile(path);
     this.editor.setModel(model);
+    const back = this.viewStates.get(path);
+    if (back) this.editor.restoreViewState(back);
     this.unbind?.();
     this.unbind = null;
     // Bound once the document is ready, which may mean waiting for another
@@ -1486,6 +1498,14 @@ export class App {
           this.models.get(change.path)?.dispose();
           this.models.delete(change.path);
         } else if (!isMarker(change.path, change.content)) {
+          // A file with a live document that is not the one on screen: the
+          // command's change goes into the document too. Into the model alone,
+          // it was undone here the moment the file was shown again — bound to
+          // the document, which still had the old text — and never reached
+          // anybody else in the room, whose next save could undo it for good.
+          // (The one on screen carries it through its binding.)
+          const doc = this.docs.get(change.path);
+          if (doc && !doc.bound && doc.hasState) doc.replace(change.content);
           this.setFile(change.path, change.content);
         }
       }
@@ -1928,9 +1948,19 @@ export class App {
             this.known.set(t, text.get(p)!);
             this.dirty.delete(t);
           }
-          // Onto the new path before the old model goes from under the editor.
+          // Onto the new path before the old model goes from under the editor,
+          // and where it was in the file with it.
           const followed = textPairs.find(([p]) => p === active)?.[1];
-          if (followed) this.show(followed);
+          if (followed) {
+            const state = this.editor?.saveViewState();
+            if (state) this.viewStates.set(followed, state);
+            this.show(followed);
+          }
+          for (const [p, t] of textPairs) {
+            const state = this.viewStates.get(p);
+            if (state && !this.viewStates.has(t)) this.viewStates.set(t, state);
+            this.viewStates.delete(p);
+          }
           for (const [p] of textPairs) {
             this.dirty.delete(p);
             this.known.delete(p);

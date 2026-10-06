@@ -669,6 +669,30 @@ The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
 at 25 MB; base64 makes a binary file a third larger against that cap.
 
+## Where a file was left
+
+`show` keeps each file's view state — `saveViewState` on the way out,
+`restoreViewState` on the way back — so a file opens where it was left. Until
+6 October it opened at line 1 every time.
+
+Keeping the view is not enough if the text is then replaced under it: a file
+changed while somebody looked elsewhere was brought up to date with
+`setValue`, which throws the view and the cursor away. Two places did that —
+binding a document to its model, and `setFile` — and both now replace only
+the stretch that differs (`replaceText` in `editing.ts`: the longest common
+start and end kept, the middle edited), which moves the view only as far as
+the text before it changed. `DocSession.replace` does the same for a
+document, so a change made that way reaches everyone with the file open as an
+edit, not as a new file that sends them to its top.
+
+Fixing this found a bug of the room's. A command's change to a file this page
+had a live document for, but was not showing, went into the model and the
+store and not into the document — so not to anybody in the room with it on
+screen, whose next save could put the old text back, and not to this page
+either: showing the file again bound it to the stale document, which put the
+old text back here. `publish` now sends it into the document too, as an
+import does.
+
 ## Back, and the back-forward cache
 
 A browser keeps a page it leaves in its back-forward cache, frozen as it is,

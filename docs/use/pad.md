@@ -25,6 +25,11 @@ over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
 
+**Where you were stays where you were.** Switch to another file and back, and
+each opens where you left it — scrolled to the same place, the cursor where it
+was, folds as they were — even if somebody else or a command changed it
+meanwhile.
+
 **Moving files.** Drag a file or a folder in the file list onto a folder to
 move it inside, onto a file to put it beside that file, or onto the empty
 space below to bring it to the top. With the keyboard, F2 on a file or folder

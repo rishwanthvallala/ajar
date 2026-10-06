@@ -269,6 +269,49 @@ try {
   is(editorUrls.includes(editUrl) && editorUrls.includes(viewUrl), true, "an editor can pass on editing, and viewing while it is open");
   await editor.keyboard.press("Escape");
 
+  // ---- where a file was left, while someone else edits it ----
+  {
+    const long = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { cookie: ownerCookie, "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "long.txt", content: long }] }) });
+    await owner.reload();
+    await owner.waitForSelector('#files .row.file[data-path="long.txt"]', { timeout: 30_000 });
+    await until(owner, () => window.__pad?.role() === "owner");
+    const openIn = async (tab, path) => {
+      await tab.click(`#files .row.file[data-path="${path}"]`);
+      await until(tab, (p) => window.__pad?.active() === p && window.__pad?.docs().includes(p), path);
+      await tab.waitForTimeout(400);
+    };
+    const placeOf = (tab) => tab.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0];
+      return { top: ed.getVisibleRanges()[0]?.startLineNumber ?? 0, cursor: ed.getPosition()?.lineNumber ?? 0 };
+    });
+    await openIn(owner, "long.txt");
+    await owner.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0];
+      ed.setPosition({ lineNumber: 1000, column: 1 });
+      ed.revealLineInCenter(1000);
+    });
+    await owner.waitForTimeout(200);
+    const leftAt = await placeOf(owner);
+    await openIn(owner, "main.py");
+    // The editor types near the top while the owner is in another file.
+    await editor.waitForSelector('#files .row.file[data-path="long.txt"]', { timeout: 15_000 });
+    await openIn(editor, "long.txt");
+    await editor.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0];
+      ed.setPosition({ lineNumber: 5, column: 1 });
+      ed.focus();
+    });
+    await editor.keyboard.type("// edited meanwhile ");
+    await until(owner, () => (window.__pad?.text("long.txt") ?? "").includes("edited meanwhile"), undefined, 15_000);
+    await openIn(owner, "long.txt");
+    const back = await placeOf(owner);
+    const hasEdit = (await owner.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLineContent(5))).includes("edited meanwhile");
+    is(hasEdit && back.cursor === 1000 && back.top === leftAt.top, true, `a file someone else edited while the owner was in another opens again where the owner left it, with their edit (left ${JSON.stringify(leftAt)}, back ${JSON.stringify(back)}, edit ${hasEdit})`);
+    await openIn(editor, "main.py");
+    await openIn(owner, "main.py");
+  }
+
   // ---- moving a file, seen by everyone ----
   // The owner drags a file into a folder; the editor's tree follows on its
   // next read, and the store holds it at the new path alone.
