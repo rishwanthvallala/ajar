@@ -212,6 +212,7 @@ export class App {
       text: (p: string) => this.docs.get(p)?.contents() ?? this.models.get(p)?.getValue(),
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
+      room: () => this.peers?.seen,
       shellBusy: () => this.console?.busy ?? false,
       role: () => this.access.role,
       local: () => [...this.local].sort(),

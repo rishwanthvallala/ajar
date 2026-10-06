@@ -406,6 +406,9 @@ try {
   await looking.keyboard.press("Escape");
   await cached.close();
   await strangerCtx.close();
+  // Not left idling to the end: one more browser is load the runner can do without.
+  await cacheBrowser.close();
+  cacheBrowser = null;
 
   // ---- a viewer, from the bare name ----
   const viewer = await person("viewer");
@@ -930,6 +933,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
       local: window.__pad?.local?.(),
       status: document.getElementById("status")?.textContent,
       banner: document.getElementById("away")?.textContent,
+      room: window.__pad?.room?.(),
     })).catch(() => null);
     results.push(`note: ${label} ${JSON.stringify(seen)}`);
   }

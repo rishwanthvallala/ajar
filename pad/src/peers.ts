@@ -137,6 +137,8 @@ export class Peers {
   private retry: ReturnType<typeof setTimeout> | null = null;
   /** Doc frames in and out, for the browser checks. */
   readonly counts = { docOut: 0, docIn: 0, dropped: 0 };
+  /** The room's last refusal, and how many welcomes since the page opened — for the checks, when a page never hears. */
+  readonly seen = { refusal: null as string | null, welcomes: 0 };
   private arrived: (() => void) | null = null;
   /**
    * Resolves once the relay has said who else is here.
@@ -226,6 +228,7 @@ export class Peers {
         | { t: "left"; participant_id: number }
         | { t: string };
       if (msg.t === "welcome") {
+        this.seen.welcomes += 1;
         this.attempt = 0;
         if (this.shut) {
           this.shut = false;
@@ -249,6 +252,7 @@ export class Peers {
         // Refused at the door. Knocking again every few seconds would be
         // refused the same way for as long as the page stayed open.
         const refusal = msg as { code?: string; message?: string };
+        this.seen.refusal = refusal.code ?? "unknown";
         if (refusal.code === "private" || refusal.code === "gone") {
           this.closed = true;
           this.arrived?.();
