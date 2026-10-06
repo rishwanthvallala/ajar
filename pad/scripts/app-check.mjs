@@ -681,6 +681,71 @@ try {
   );
   ok("and the file inside it is nested under it");
 
+  // ---- empty files and folders ----
+  // Paths are all the store has, so an empty folder had nothing to imply it,
+  // and an empty new file had nothing typed to save it: both were gone on
+  // reload until 6 October. A folder is kept now by an empty `.keep` the tree
+  // never shows; an empty file is saved as it is made.
+  const storedPaths = async () => Object.keys((await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json())).files ?? {}).sort();
+  const treeOf = (tab) => tab.evaluate(() => ({ files: [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path), dirs: [...document.querySelectorAll("#files .row.dir")].map((b) => b.dataset.path) }));
+  const onServer = async (want, without = [], ms = 15_000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const have = await storedPaths();
+      if (want.every((p) => have.includes(p)) && without.every((p) => !have.includes(p))) return true;
+      if (Date.now() > end) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  };
+  page.once("dialog", (d) => d.accept("kept-empty"));
+  await page.click('#files button[aria-label="New folder"]');
+  await page.waitForTimeout(300);
+  page.once("dialog", (d) => d.accept("kept-empty-2/blank.md"));
+  await page.click('#files button[aria-label="New file"]');
+  is(await onServer(["kept-empty/.keep", "kept-empty-2/blank.md"]), true, "a new empty folder and a new empty file are stored as they are made, with no command run");
+  await page.keyboard.press("Escape");
+  await page.click("#terminal");
+  await page.keyboard.type("mkdir -p shell-empty prune-me\n");
+  is(await onServer(["shell-empty/.keep", "prune-me/.keep"]), true, "an empty folder made in the shell is stored when the command ends");
+  const watching = await browser.newPage();
+  watchLimits(watching, "watching");
+  await watching.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
+  await watching.waitForSelector('#files .row.dir[data-path="shell-empty"]', { timeout: 30_000 });
+  const seen = await treeOf(watching);
+  is(["kept-empty", "kept-empty-2", "shell-empty", "prune-me"].every((d) => seen.dirs.includes(d)) && seen.files.includes("kept-empty-2/blank.md") && !seen.files.some((f) => f.endsWith(".keep")),
+    true, `another browser opening the pad sees them all, as folders — no .keep in the tree (${JSON.stringify(seen)})`);
+
+  // Moved by somebody else, an empty folder must not come back from this
+  // page's sandbox: left there, its next command would publish it again.
+  await watching.locator('#files .row.dir[data-path="prune-me"]').dragTo(watching.locator('#files .row.dir[data-path="kept-empty"]'));
+  is(await onServer(["kept-empty/prune-me/.keep"], ["prune-me/.keep"]), true, "another browser drags an empty folder into another");
+  await page.waitForSelector('#files .row.dir[data-path="kept-empty/prune-me"]', { timeout: 15_000 });
+  await page.click("#terminal");
+  await page.keyboard.type("true\n");
+  await page.waitForTimeout(2500);
+  is(await onServer(["kept-empty/prune-me/.keep"], ["prune-me/.keep"], 3000), true, "and this page's next command does not publish the old one back");
+
+  // Deleting a folder, from its row: for everyone, and from the sandbox.
+  page.once("dialog", (d) => d.accept());
+  await page.hover('#files .dir-row:has(.row.dir[data-path="shell-empty"])');
+  await page.locator('#files button[aria-label="Delete shell-empty"]').click();
+  await page.locator("dialog.modal-confirm").getByRole("button", { name: "Delete" }).click();
+  const deletedEverywhere = await onServer([], ["shell-empty/.keep"]);
+  const folderGoneThere = await watching.waitForFunction(() => !document.querySelector('#files .row.dir[data-path="shell-empty"]'), null, { timeout: 15_000 }).then(() => true, () => false);
+  await page.click("#terminal");
+  // A token only the shell's arithmetic makes, so the echo of the command cannot match it.
+  await page.keyboard.type('[ -e shell-empty ] && echo "DIR=$((40+2))still" || echo "DIR=$((40+2))gone"\n');
+  const noDir = await page.waitForFunction(() => /DIR=42(still|gone)/.exec(document.getElementById("terminal")?.textContent ?? "")?.[1] ?? null, null, { timeout: 15_000 })
+    .then((h) => h.jsonValue().then((v) => v === "gone"), () => false);
+  is(deletedEverywhere && folderGoneThere && noDir, true, `a folder deleted from its row goes for everyone, and from the sandbox (stored ${deletedEverywhere}, other tab ${folderGoneThere}, sandbox ${noDir})`);
+
+  // And after a reload, still there.
+  await watching.reload();
+  await watching.waitForSelector('#files .row.dir[data-path="kept-empty"]', { timeout: 30_000 });
+  const afterReload = await treeOf(watching);
+  is(afterReload.dirs.includes("kept-empty") && afterReload.dirs.includes("kept-empty/prune-me") && afterReload.files.includes("kept-empty-2/blank.md"), true, "and empty ones survive a reload");
+  await watching.close();
+
   // The deployed policy has to carry the same hash as the page, or the import
   // map is blocked in production only — where nobody would see it until WISP
   // was switched on and did not work.

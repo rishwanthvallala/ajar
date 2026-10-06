@@ -163,6 +163,8 @@ export interface Ran {
 export interface Entry {
   path: string;
   size: number;
+  /** A directory with nothing in it, when the listing was asked for those. */
+  emptyDir?: boolean;
 }
 
 export class Runtime {
@@ -258,6 +260,26 @@ export class Runtime {
     await this.box.fs.remove(`/${path}`);
   }
 
+  /** A directory and everything in it. */
+  async removeTree(path: string): Promise<void> {
+    await this.box.fs.remove(`/${path}`, { recursive: true });
+  }
+
+  /**
+   * A file that went elsewhere, and the folders it leaves empty. Folders are
+   * the pad's only when something — a file, or an empty folder's marker —
+   * implies them, so one emptied by somebody else's move or deletion goes
+   * here too; left behind, the next command would publish it back.
+   */
+  async removeAndPrune(path: string): Promise<void> {
+    await this.remove(path).catch(() => {});
+    for (let dir = path.slice(0, Math.max(0, path.lastIndexOf("/"))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
+      const inside = await this.box.fs.readDir(`/${dir}`).catch(() => null);
+      if (!inside || inside.length > 0) return;
+      await this.box.fs.remove(`/${dir}`).catch(() => {});
+    }
+  }
+
   /**
    * Every file in the sandbox, recursively.
    *
@@ -266,12 +288,15 @@ export class Runtime {
    * a first filter and must read anything it cannot rule out. That is
    * affordable because the folder is capped; it would not be otherwise.
    */
-  async list(dir = ""): Promise<Entry[]> {
+  async list(dir = "", emptyDirs = false): Promise<Entry[]> {
     const out: Entry[] = [];
     for (const entry of await this.box.fs.readDir(`/${dir}`)) {
       const path = dir ? `${dir}/${entry.name}` : entry.name;
       if (entry.kind === "directory") {
-        out.push(...(await this.list(path)));
+        const inner = await this.list(path, emptyDirs);
+        // With empty directories reported, nothing inside means nothing at all.
+        if (emptyDirs && inner.length === 0) out.push({ path, size: 0, emptyDir: true });
+        else out.push(...inner);
       } else {
         out.push({ path, size: entry.size });
       }

@@ -12,7 +12,7 @@
  * are checked against the pad's limits before anything is inflated — and
  * again while inflating, since a hostile zip can say anything.
  */
-import { ignored, textOf, toBase64 } from "./sync";
+import { ignored, MARKER, textOf, toBase64 } from "./sync";
 
 export interface ZipEntry {
   path: string;
@@ -173,6 +173,7 @@ export async function readZip(blob: Blob, limits: ReadLimits): Promise<ZipEntry[
 
   const utf8 = new TextDecoder();
   const found: { path: string; method: number; packed: number; size: number; crc: number; local: number }[] = [];
+  const dirs: string[] = [];
   let declared = 0;
   for (let i = 0; i < count; i++) {
     if (at + 46 > buf.length || view.getUint32(at, true) !== 0x02014b50) throw new ZipError("that zip is damaged");
@@ -188,7 +189,11 @@ export async function readZip(blob: Blob, limits: ReadLimits): Promise<ZipEntry[
     const raw = buf.subarray(at + 46, at + 46 + nameLen);
     const path = flags & 0x0800 ? utf8.decode(raw) : cp437(raw);
     at += 46 + nameLen + extraLen + commentLen;
-    if (path.endsWith("/")) continue; // a directory: implied by what is in it
+    // A directory: returned as itself, empty, so an empty one is not lost.
+    if (path.endsWith("/")) {
+      dirs.push(path);
+      continue;
+    }
     if (flags & 0x0001) throw new ZipError("that zip is password-protected");
     if (method !== 0 && method !== 8) throw new ZipError(`that zip uses a compression a browser cannot open (method ${method})`);
     declared += size;
@@ -212,6 +217,7 @@ export async function readZip(blob: Blob, limits: ReadLimits): Promise<ZipEntry[
     if (crc32(data) !== f.crc) throw new ZipError(`that zip is damaged (${f.path})`);
     out.push({ path: f.path, data });
   }
+  for (const path of dirs) out.push({ path, data: new Uint8Array() });
   return out;
 }
 
@@ -256,8 +262,13 @@ export function prepareImport(entries: ZipEntry[]): Prepared {
   const wrapped = tops.size === 1 && kept.length > 0 && kept.every((e) => e.path.includes("/"));
   const root = wrapped ? [...tops][0]! : null;
   const result: Prepared = { files: [], binary: [], unsafe: [], root };
+  const dirs: string[] = [];
   for (const e of kept) {
     const path = root ? e.path.slice(root.length + 1) : e.path;
+    if (e.path.endsWith("/")) {
+      if (path) dirs.push(path.slice(0, -1));
+      continue;
+    }
     if (!safe(path)) {
       result.unsafe.push(e.path);
       continue;
@@ -270,6 +281,14 @@ export function prepareImport(entries: ZipEntry[]): Prepared {
       result.files.push({ path, content: toBase64(e.data), encoding: "base64" });
       result.binary.push(path);
     }
+  }
+  // A directory with nothing in it comes in as an empty folder, kept by its
+  // marker. Most zips list every directory; only the empty ones need one.
+  for (const dir of dirs) {
+    const marker = `${dir}/${MARKER}`;
+    // Anything under it — a file, or a deeper empty folder's marker — implies it.
+    if (!safe(marker) || result.files.some((f) => f.path.startsWith(`${dir}/`)) || dirs.some((d) => d.startsWith(`${dir}/`))) continue;
+    result.files.push({ path: marker, content: "", encoding: "utf8" });
   }
   return result;
 }

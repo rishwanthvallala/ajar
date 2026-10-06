@@ -6,10 +6,11 @@
  * any structure reads as a list of long strings, and a directory made in the
  * shell looks like it did not happen.
  *
- * Directories are therefore *derived* from the paths rather than stored. The
- * consequence is worth stating: an empty directory cannot survive a reload,
- * because there is no file in it to imply it. `pending` carries the ones made
- * in this tab so they are at least visible until something lands inside.
+ * Directories are therefore *derived* from the paths rather than stored. An
+ * empty one is kept by a marker — an empty `.keep`, never drawn — and arrives
+ * here as one of `folders`. `pending` carries a viewer's, made in this tab
+ * and kept only there, and the moment between New folder and its marker
+ * being stored.
  */
 
 export interface TreeEvents {
@@ -17,6 +18,8 @@ export interface TreeEvents {
   onNewFile: (inDirectory: string) => void;
   onNewFolder: (inDirectory: string) => void;
   onDelete: (path: string) => void;
+  /** A folder and everything in it. */
+  onDeleteFolder?: (path: string) => void;
   /** A file as itself, or a folder as a zip. */
   onDownload: (path: string, folder: boolean) => void;
   /** The whole pad as a zip. */
@@ -108,6 +111,8 @@ export class FileTree {
   private local: ReadonlySet<string> = new Set();
   /** Files that are not text: shown, downloadable, movable, never opened in the editor. */
   private binary: ReadonlySet<string> = new Set();
+  /** Empty folders the pad keeps — by their markers — so shown though nothing implies them. */
+  private folders: readonly string[] = [];
   /** The row being dragged, while it is. */
   private dragging: { path: string; folder: boolean } | null = null;
 
@@ -118,6 +123,11 @@ export class FileTree {
 
   addPendingFolder(path: string): void {
     this.pending.add(path);
+  }
+
+  /** A folder this tab made that the pad now keeps, or one that is gone. */
+  forgetPending(path: string): void {
+    for (const p of [...this.pending]) if (p === path || p.startsWith(`${path}/`)) this.pending.delete(p);
   }
 
   /**
@@ -137,18 +147,19 @@ export class FileTree {
     for (let at = folderOf(to); at; at = folderOf(at)) this.collapsed.delete(at);
   }
 
-  render(paths: string[], active: string, local: ReadonlySet<string> = this.local, binary: ReadonlySet<string> = this.binary): void {
+  render(paths: string[], active: string, local: ReadonlySet<string> = this.local, binary: ReadonlySet<string> = this.binary, folders: readonly string[] = this.folders): void {
     this.shown = paths;
     this.active = active;
     this.local = local;
     this.binary = binary;
+    this.folders = folders;
     // A directory with something in it is no longer pending — it exists
     // because its contents imply it.
     for (const p of [...this.pending]) {
       if (paths.some((f) => f.startsWith(`${p}/`))) this.pending.delete(p);
     }
 
-    const root = build([...paths].sort(), [...this.pending]);
+    const root = build([...paths].sort(), [...this.pending, ...this.folders]);
     const list = document.createElement("div");
     list.className = "tree";
     this.draw(root, list, active, 0);
@@ -288,6 +299,11 @@ export class FileTree {
         const zip = this.iconButton("download", `Download ${child.path} as a zip`, () => this.events.onDownload(child.path, true));
         zip.classList.add("get");
         wrap.append(row, zip);
+        if (this.events.onDeleteFolder && movable) {
+          const del = this.iconButton("trash", `Delete ${child.path}`, () => this.events.onDeleteFolder?.(child.path));
+          del.classList.add("delete");
+          wrap.append(del);
+        }
         into.append(wrap);
         if (open) this.draw(child, into, active, depth + 1);
       } else {

@@ -57,6 +57,9 @@ body { background: var(--bg); color: var(--ink); }
 /* Download beside delete on a file's row; alone on a folder's. */
 .pad-shell .file-row > .get { right: 1.75rem; }
 .pad-shell .file-row.dir-row > .get { right: 0.3rem; }
+/* A folder with its delete as well: download beside it, as on a file's row. */
+.pad-shell .file-row.dir-row:has(> .delete) > .get { right: 1.75rem; }
+.pad-shell .file-row.dir-row:has(> .delete) > .row { padding-right: 3.2rem; }
 .pad-shell .file-row > .get svg { width: 0.8125rem; height: 0.8125rem; }
 .pad-shell .file-row > .get:hover { color: var(--accent); background: var(--surface-2); }
 .pad-shell .file-row.dir-row > .row { padding-right: 1.75rem; }

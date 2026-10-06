@@ -29,6 +29,24 @@ export type Known = Map<string, string>;
 /** The binary files the server holds, by path, as the base64 it keeps them in. */
 export type Binaries = Map<string, string>;
 
+/**
+ * An empty folder, as the store keeps it: an empty `.keep` inside it, as git
+ * users do. Paths are all the store has, so a folder with nothing in it had
+ * nothing to imply it and was lost on reload; the marker implies it. It is
+ * never shown in the tree — the folder is — and a sandbox may hold it as a
+ * real file or just as the empty directory.
+ */
+export const MARKER = ".keep";
+
+export function isMarker(path: string, content: string | null | undefined): boolean {
+  return content === "" && path.endsWith(`/${MARKER}`);
+}
+
+/** The folder a marker keeps. */
+export function markedFolder(path: string): string {
+  return path.slice(0, -(MARKER.length + 1));
+}
+
 export function knownFrom(files: Record<string, StoredFile>): Known {
   const known: Known = new Map();
   for (const [path, file] of Object.entries(files)) {
@@ -113,8 +131,17 @@ export async function diff(rt: Runtime, known: Known, binaries: Binaries = new M
   const next: Known = new Map();
   const nextBinaries: Binaries = new Map();
 
-  for (const entry of await rt.list()) {
+  for (const entry of await rt.list("", true)) {
     if (ignored(entry.path)) continue;
+    // An empty directory — `mkdir` in the terminal, or New folder — goes as
+    // its marker, which the sandbox need not hold as a file.
+    if (entry.emptyDir) {
+      const marker = `${entry.path}/${MARKER}`;
+      if (ignored(marker)) continue;
+      next.set(marker, "");
+      if (known.get(marker) !== "") changes.push({ path: marker, content: "" });
+      continue;
+    }
     let bytes: Uint8Array;
     try {
       bytes = await rt.readBytes(entry.path);

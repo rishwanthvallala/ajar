@@ -212,11 +212,6 @@ an account, never claimed. A lapsed name is free again, so an old link opens an
 empty folder or somebody else's newer one; until 24 September it was sealed for
 good instead, which turned `/demo` into a permanent 410.
 
-**Empty folders do not survive a reload.** Directories are derived from the
-paths under them, so one with nothing inside has nothing to imply it. The tab
-that made it keeps it visible until something lands there; nobody else ever
-sees it.
-
 **A process that never exits never syncs.** The folder is published at command
 exit, which is a real transaction boundary — it either ran or it did not, and a
 half-written file is never shared. The cost is that a dev server's output is
@@ -381,6 +376,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 | Typing inside the save delay was lost when its tab closed, unless someone else saved the file | `6de80ed` |
 | Every save of a multi-megabyte file stalled the typist's editor 80–165 ms | `6de80ed` |
+| Empty files and empty folders were lost on reload — New file saved nothing until typed in, New folder lived in one tab, an empty `mkdir` was invisible — and New folder's `.keep` showed up as a file once a command ran | this change |
 | A binary file a command made was published as garbled text — to the store, everyone's tree and sandbox, and every download. It is carried as base64 now, and zips keep their images | `e97ead6` |
 | Typing in flight when editing was locked was neither saved nor kept as the editor's own copy — the demotion looked for unsaved work while the save held it | `aab1a48` |
 

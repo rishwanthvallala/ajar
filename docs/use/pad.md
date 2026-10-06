@@ -17,8 +17,10 @@ has the address. A pad that is only yours comes from signing in (below).
 
 ## What you can do
 
-Make files and folders, edit them, and run shell commands. The bin icon beside
-a file deletes it — for everyone with the link. The editor colours Python and
+Make files and folders, edit them, and run shell commands. A new file or
+folder is saved as soon as you make it, empty or not, and so is an empty
+folder a command makes. The bin icon beside a file deletes it, and beside a
+folder deletes the folder and everything in it — for everyone with the link. The editor colours Python and
 over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
@@ -235,9 +237,6 @@ anywhere else.
 **No `git`, `make`, or compilers.** It is for scripts and text, not builds.
 
 **No `ssh`, `vim` or `less`.** `nano` is there; the other two are not.
-
-**Empty folders disappear on reload.** A folder needs something in it to
-survive.
 
 **Nothing is private** in a pad anyone opens: anyone with the link can read
 and change the folder. Pads you control decide who can, but every pad is

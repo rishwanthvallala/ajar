@@ -24,7 +24,7 @@ import { confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
-import { type Binaries, binariesFrom, diff, fromBase64, type Known, knownFrom } from "./sync";
+import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder } from "./sync";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -243,7 +243,8 @@ export class App {
     }
     this.adopt(pad.access);
 
-    const files = Object.entries(pad.files).filter(([, f]) => f.encoding === "utf8");
+    // Text for the editor; an empty folder's marker is the tree's, not a file.
+    const files = Object.entries(pad.files).filter(([path, f]) => f.encoding === "utf8" && !isMarker(path, f.content));
     this.known = knownFrom(pad.files);
     this.binaries = binariesFrom(pad.files);
     this.storeSeq = pad.seq;
@@ -395,6 +396,11 @@ export class App {
       if (this.known.get(path) === content) continue;
       // A viewer's own copy keeps what they made of it.
       if (this.local.has(path)) continue;
+      // An empty folder: in the sandbox, not the editor.
+      if (isMarker(path, content)) {
+        if (rt) await rt.write(path, "");
+        continue;
+      }
       // A file with a live document is owned by the CRDT, which already has
       // every keystroke. Writing the store's copy over it would undo whatever
       // has been typed since that copy was saved.
@@ -410,7 +416,9 @@ export class App {
       this.closeDoc(path);
       this.models.get(path)?.dispose();
       this.models.delete(path);
-      if (rt) await rt.remove(path).catch(() => {});
+      // And the folders that leaves empty: kept, the next command would put
+      // them back for everyone.
+      if (rt) await rt.removeAndPrune(path);
     }
     // Binary files after text ones: a file that became binary was removed as
     // text just above, and is written back here as what it is now.
@@ -421,7 +429,7 @@ export class App {
     }
     for (const path of this.binaries.keys()) {
       if (incomingBinaries.has(path) || incoming.has(path) || this.local.has(path)) continue;
-      if (rt) await rt.remove(path).catch(() => {});
+      if (rt) await rt.removeAndPrune(path);
     }
     this.applyingRemote = false;
     this.known = incoming;
@@ -746,23 +754,49 @@ export class App {
     // Into the sandbox too, so `python notes.py` works without pressing Run
     // first to bring the file into existence.
     void this.runtime?.then((rt) => rt.write(name, ""));
+    // Saved now, empty as it is. Nothing changes in a file nobody has typed
+    // in yet, so nothing used to save it: gone on reload, and never seen by
+    // anyone else, until a command happened to publish it.
+    if (!this.viewer) {
+      this.dirty.add(name);
+      this.saveSoon();
+    }
     this.editor?.focus();
   }
 
   /**
-   * Make a directory.
+   * Make a directory, for everyone.
    *
-   * It exists in the sandbox immediately, but cannot be *stored* until
-   * something is in it — the folder is derived from its contents, and an empty
-   * one has none. The tree shows it meanwhile so the click is not silent.
+   * Folders are derived from the paths under them, so an empty one is stored
+   * as its marker — an empty `.keep` inside it — and drawn as the folder. It
+   * used to exist only in the tab that made it until something landed inside.
+   * A viewer's stays in their tab, as their files do.
    */
   private addFolder(inDirectory = ""): void {
     const name = this.askFor("New folder", "data", inDirectory);
     if (!name) return;
     this.tree?.addPendingFolder(name);
-    void this.runtime?.then((rt) => rt.write(`${name}/.keep`, "").catch(() => {}));
+    void this.runtime?.then((rt) => rt.write(`${name}/${MARKER}`, "").catch(() => {}));
     this.renderFiles();
-    this.say("", "empty folders are not saved until something is in them");
+    if (this.viewer) return this.say("", "a new folder here stays in this tab");
+    void this.keepFolder(name);
+  }
+
+  private async keepFolder(name: string): Promise<void> {
+    const marker = `${name}/${MARKER}`;
+    try {
+      await this.queueWrite(async () => {
+        const seq = await this.store.write(this.name, [{ path: marker, content: "" }]);
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        this.known.set(marker, "");
+        this.tree?.forgetPending(name);
+        this.renderFiles();
+        this.peers?.moved(seq);
+      });
+      this.say("", `made ${name}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    }
   }
 
   /** One prompt, one set of rules, so both buttons refuse the same paths. */
@@ -820,6 +854,7 @@ export class App {
       onNewFile: (dir) => this.addFile(dir),
       onNewFolder: (dir) => this.addFolder(dir),
       onDelete: (path) => void this.deleteFile(path),
+      onDeleteFolder: (path) => void this.deleteFolder(path),
       onDownload: (path, folder) => void this.download(path, folder),
       onDownloadAll: () => void this.downloadAll(),
       onImport: (zip) => void this.importZip(zip),
@@ -828,8 +863,13 @@ export class App {
       movable: () => !this.viewer,
     });
     const binary = new Set([...this.binaries.keys()].filter((p) => !this.models.has(p)));
-    this.tree.render([...this.models.keys(), ...binary], this.active, this.local, binary);
+    this.tree.render([...this.models.keys(), ...binary], this.active, this.local, binary, this.keptFolders());
     this.ui?.setFileCount(this.models.size + binary.size);
+  }
+
+  /** The empty folders the pad keeps, by their markers. */
+  private keptFolders(): string[] {
+    return [...this.known].filter(([path, content]) => isMarker(path, content)).map(([path]) => markedFolder(path));
   }
 
   /**
@@ -861,7 +901,7 @@ export class App {
       this.closeDoc(path);
       this.models.get(path)?.dispose();
       this.models.delete(path);
-      await rt.remove(path);
+      await rt.removeAndPrune(path);
       this.renderFiles();
       await this.publish(rt);
       this.say("", `deleted ${path}`);
@@ -870,6 +910,63 @@ export class App {
     }
   }
 
+
+  /**
+   * A folder and everything in it, for everyone: one store write, like a
+   * move. The pad keeps at least one file the editor can show, as deleting a
+   * file does. Without this, an empty folder the pad keeps could only be
+   * removed from the terminal.
+   */
+  private async deleteFolder(path: string): Promise<void> {
+    if (this.viewer) return this.say("error", "only people who can edit can delete folders");
+    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish");
+    const under = (p: string) => p.startsWith(`${path}/`);
+    const text = [...this.models.keys()].filter(under);
+    const binary = [...this.binaries.keys()].filter((p) => under(p) && !this.models.has(p));
+    const markers = [...this.known].filter(([p, c]) => under(p) && isMarker(p, c)).map(([p]) => p);
+    if (text.length > 0 && text.length === this.models.size) return this.say("error", "a pad keeps at least one file the editor can open");
+    const count = text.length + binary.length;
+    // Made in this tab and never kept — a viewer's: nothing to tell anyone.
+    if (count === 0 && markers.length === 0) {
+      this.tree?.forgetPending(path);
+      return this.renderFiles();
+    }
+    const yes = await confirmDialog({
+      title: `Delete ${path}?`,
+      body: count ? `${count === 1 ? "The file" : `The ${count} files`} in it go too, for everyone with the link.` : "It is empty. It goes for everyone with the link.",
+      confirm: "Delete",
+      danger: true,
+    });
+    if (!yes) return;
+    this.say("saving", `deleting ${path}…`);
+    try {
+      await this.queueWrite(async () => {
+        const seq = await this.store.write(this.name, [...text, ...binary, ...markers].map((p) => ({ path: p, content: null })));
+        this.storeSeq = Math.max(this.storeSeq, seq);
+        if (under(this.active)) {
+          const other = [...this.models.keys()].filter((p) => !under(p)).sort()[0];
+          if (other) this.show(other);
+        }
+        for (const p of text) {
+          this.dirty.delete(p);
+          this.known.delete(p);
+          this.closeDoc(p);
+          this.models.get(p)?.dispose();
+          this.models.delete(p);
+        }
+        for (const p of binary) this.binaries.delete(p);
+        for (const p of markers) this.known.delete(p);
+        const rt = this.runtimeReady ? await this.runtime : null;
+        await rt?.removeTree(path).catch(() => {});
+        this.tree?.forgetPending(path);
+        this.renderFiles();
+        this.peers?.moved(seq);
+      });
+      this.say("", `deleted ${path}`);
+    } catch (e) {
+      this.say("error", (e as Error).message);
+    }
+  }
 
   /** A binary file, the same way: gone from the sandbox, and the diff after publishes it. */
   private async deleteBinary(path: string): Promise<void> {
@@ -1100,7 +1197,7 @@ export class App {
         this.runtimeReady = true;
         return;
       }
-      for (const path of removals) await rt.remove(path).catch(() => {});
+      for (const path of removals) await rt.removeAndPrune(path);
       for (const [path, text] of writes) await rt.write(path, text);
       for (const [path, base64] of binaryWrites) await rt.writeBytes(path, fromBase64(base64));
       applied = now;
@@ -1387,7 +1484,7 @@ export class App {
           this.closeDoc(change.path);
           this.models.get(change.path)?.dispose();
           this.models.delete(change.path);
-        } else {
+        } else if (!isMarker(change.path, change.content)) {
           this.setFile(change.path, change.content);
         }
       }
@@ -1594,6 +1691,8 @@ export class App {
     }
     const enc = new TextEncoder();
     for (const path of this.models.keys()) if (inside(path)) out.set(path, enc.encode(this.current(path) ?? ""));
+    // An empty folder as its marker, so it survives a download and coming back.
+    for (const [path, content] of this.known) if (isMarker(path, content) && inside(path) && !out.has(path)) out.set(path, new Uint8Array());
     return [...out].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({ path, data }));
   }
 
@@ -1652,7 +1751,7 @@ export class App {
       if (!files.length) return this.say("error", `nothing in ${zip.name} a pad can hold${skipped ? ` — ${skipped}` : ""}`);
       // The starter makes way only for text: a zip of images alone would
       // leave the editor nothing to show.
-      const starter = this.untouchedStarter() && files.some((f) => f.encoding === "utf8");
+      const starter = this.untouchedStarter() && files.some((f) => f.encoding === "utf8" && !isMarker(f.path, f.content));
       const after = new Set([...this.models.keys(), ...this.binaries.keys(), ...files.map((f) => f.path)]);
       if (starter && !files.some((f) => f.path === "main.py")) after.delete("main.py");
       if (after.size > PAD_LIMITS.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${PAD_LIMITS.maxFiles}`);
@@ -1695,6 +1794,10 @@ export class App {
             this.binaries.delete(f.path);
             this.known.set(f.path, f.content);
             this.dirty.delete(f.path);
+            if (isMarker(f.path, f.content)) {
+              await rt?.write(f.path, "");
+              continue;
+            }
             // A file someone has open changes as their typing would, so the
             // room's documents take it rather than undoing it on the next save.
             const doc = this.docs.get(f.path);
@@ -1720,7 +1823,7 @@ export class App {
         this.peers?.moved(seq);
       });
       if (!this.models.has(this.active)) {
-        const first = files.filter((f) => f.encoding === "utf8").map((f) => f.path).sort()[0] ?? [...this.models.keys()].sort()[0];
+        const first = files.filter((f) => f.encoding === "utf8" && !isMarker(f.path, f.content)).map((f) => f.path).sort()[0] ?? [...this.models.keys()].sort()[0];
         if (first) this.show(first);
       }
       this.renderFiles();
@@ -1749,8 +1852,10 @@ export class App {
     if (!safe) return this.say("error", `${to} is not a path a pad can hold`);
     if (folder && to.startsWith(`${from}/`)) return this.say("error", "a folder cannot go inside itself");
     const isBinary = (p: string) => this.binaries.has(p) && !this.models.has(p);
+    const isKeep = (p: string) => isMarker(p, this.known.get(p)) && !this.models.has(p);
     const exists = (p: string) => this.models.has(p) || this.binaries.has(p);
-    const paths = [...this.models.keys(), ...[...this.binaries.keys()].filter(isBinary)];
+    const markers = [...this.known.keys()].filter(isKeep);
+    const paths = [...this.models.keys(), ...[...this.binaries.keys()].filter(isBinary), ...markers];
     if (!folder && paths.some((p) => p.startsWith(`${to}/`))) return this.say("error", `there is already a folder called ${to}`);
     if (folder && exists(to)) return this.say("error", `there is already a file called ${to}`);
     if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then move it");
@@ -1762,7 +1867,8 @@ export class App {
       return this.renderFiles();
     }
     const leaving = new Set(pairs.map(([p]) => p));
-    const replacing = pairs.filter(([, t]) => exists(t) && !leaving.has(t));
+    // An empty folder's marker merges quietly; only files are asked about.
+    const replacing = pairs.filter(([p, t]) => !isKeep(p) && exists(t) && !leaving.has(t));
     if (replacing.length) {
       const one = replacing.length === 1;
       const yes = await confirmDialog({
@@ -1780,11 +1886,13 @@ export class App {
         // The text as it stands here, typing not yet saved included; a
         // binary file as the store has it.
         const binaryPairs = pairs.filter(([p]) => isBinary(p));
-        const textPairs = pairs.filter(([p]) => !isBinary(p));
+        const markerPairs = pairs.filter(([p]) => isKeep(p));
+        const textPairs = pairs.filter(([p]) => !isBinary(p) && !isKeep(p));
         const text = new Map(textPairs.map(([p]) => [p, this.current(p) ?? ""]));
         const changes: Change[] = [
           ...textPairs.map(([p, t]) => ({ path: t, content: text.get(p)! })),
           ...binaryPairs.map(([p, t]): Change => ({ path: t, content: this.binaries.get(p)!, encoding: "base64" })),
+          ...markerPairs.map(([, t]) => ({ path: t, content: "" })),
           ...pairs.map(([p]) => ({ path: p, content: null })),
         ];
         const seq = await this.store.write(this.name, changes);
@@ -1805,7 +1913,12 @@ export class App {
             this.binaries.delete(p);
             this.binaries.set(t, base64);
             await rt?.writeBytes(t, fromBase64(base64));
-            await rt?.remove(p).catch(() => {});
+            if (!folder) await rt?.removeAndPrune(p);
+          }
+          for (const [p, t] of markerPairs) {
+            this.known.delete(p);
+            this.known.set(t, "");
+            await rt?.write(t, "");
           }
           for (const [p, t] of textPairs) {
             this.binaries.delete(t);
@@ -1826,8 +1939,10 @@ export class App {
           }
           for (const [p, t] of textPairs) {
             await rt?.write(t, text.get(p)!);
-            await rt?.remove(p).catch(() => {});
+            if (!folder) await rt?.removeAndPrune(p);
           }
+          // A folder goes whole, so nothing of it is left to be published back.
+          if (folder) await rt?.removeTree(from).catch(() => {});
         } finally {
           this.applyingRemote = false;
         }
@@ -1955,6 +2070,8 @@ export class App {
         // A viewer's binary files stay in their sandbox, where they made them:
         // the tree here shows the pad's, and the editor cannot hold them.
         if (change.encoding === "base64" || this.binaries.has(change.path)) continue;
+        // Empty folders a viewer makes stay in their sandbox too.
+        if (isMarker(change.path, change.content) || isMarker(change.path, this.known.get(change.path))) continue;
         const doc = this.docs.get(change.path);
         if (doc && change.content === doc.contents()) continue;
         if (this.local.has(change.path) && this.models.get(change.path)?.getValue() === change.content) continue;
@@ -2045,6 +2162,7 @@ export class App {
       } else {
         for (const [path, model] of this.models) files.set(path, { path, content: model.getValue() });
         for (const [path, base64] of this.binaries) if (!files.has(path)) files.set(path, { path, content: base64, encoding: "base64" });
+        for (const [path, content] of this.known) if (isMarker(path, content) && !files.has(path)) files.set(path, { path, content: "" });
       }
       // Live documents are ahead of the stored copy.
       for (const [path, doc] of this.docs) if (doc.hasState) files.set(path, { path, content: doc.contents() });

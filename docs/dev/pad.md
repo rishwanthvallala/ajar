@@ -669,6 +669,38 @@ The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
 at 25 MB; base64 makes a binary file a third larger against that cap.
 
+## Empty files and folders
+
+The store keeps paths and their contents, nothing else, so a folder exists
+only while a path implies it. Until 6 October that meant three losses: an
+empty file made with New file was never saved, since nothing in it had
+changed; a folder made with New folder lived only in the tab that made it;
+and an empty folder made with `mkdir` was invisible to the diff, which listed
+files. New folder also wrote a `.keep` into the sandbox, which the next
+command then published as a file in everyone's tree.
+
+Now an empty folder is kept by a **marker**: an empty `.keep` inside it, the
+git convention (`MARKER` in `sync.ts`). The tree draws the folder and never
+the marker. New file saves at once; New folder stores its marker at once; and
+`diff` lists empty directories (`Runtime.list(dir, true)`) and reports each as
+its marker — a sandbox may hold the marker as a real file, or only as the
+empty directory, and the diff says the same either way.
+
+Folders have to go as well as come. A removal that arrives from another
+browser goes through `removeAndPrune`, which also removes the folders it leaves
+empty: left behind, this page's next command would publish them back — an
+empty folder somebody moved elsewhere reappearing where it was. A folder
+moved or deleted here goes whole (`removeTree`). Deleting a file from the
+tree prunes the same way, so the folder goes from the sandbox as it goes from
+the tree. Folders now have a delete button too; without one, an empty folder
+the pad kept could be removed only from the terminal.
+
+Markers travel like files otherwise: in moves, in Save as my copy and Copy a
+pad, and in every download, so an empty folder survives a zip and coming back.
+A zip from elsewhere that lists an empty directory brings it in kept by a
+marker; one that lists every directory, as most do, gets markers only for the
+empty ones.
+
 ## Moving files
 
 Drag and drop in the tree (`files.ts`), and F2 with a typed path for the
@@ -695,8 +727,6 @@ the moment between the move and their re-read is lost with it.
 
 ## What it does not do
 
-- **Empty folders do not persist.** Directories are derived from the paths
-  under them, so one with nothing in it has nothing to imply it.
 - **An anonymous pad has no locks.** Deliberate — the trade for a clean
   shareable URL. A pad owned by an account has roles — owner, editor, viewer —
   through its view and edit links; see [accounts.md](accounts.md). **Neither

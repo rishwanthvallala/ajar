@@ -381,6 +381,16 @@ async function main() {
     const logo = prepared.files.find((f) => f.path === "logo.png");
     is(logo?.encoding === "base64" && [...fromBase64(logo.content).subarray(0, 4)].join() === "137,80,78,71", true, "and kept as its bytes, in base64");
     is(prepared.unsafe.join(","), "proj-main/../evil.txt", "a path that climbs out of the folder is refused");
+    // Directory entries: most zips list every folder, and only an empty one
+    // needs keeping — as its marker, an empty `.keep`.
+    const dirsIn = prepareImport([
+      { path: "a/", data: new Uint8Array() },
+      { path: "a/b/", data: new Uint8Array() },
+      { path: "a/b/c.txt", data: bytes("c") },
+      { path: "empty/", data: new Uint8Array() },
+      { path: "empty/inner/", data: new Uint8Array() },
+    ]);
+    is(dirsIn.files.map((f) => `${f.path}=${JSON.stringify(f.content)}`).sort().join(" "), 'a/b/c.txt="c" empty/inner/.keep=""', "a zip's empty folders come in kept by a marker, and full ones need none");
     // 200 characters, 600 bytes: the relay counts bytes.
     const long = prepareImport([{ path: `${"字".repeat(200)}.txt`, data: bytes("x") }, { path: "ok.txt", data: bytes("y") }]);
     is(long.unsafe.length === 1 && long.files.map((f) => f.path).join() === "ok.txt", true, "a path over the relay's 512 bytes is refused, however few characters");

@@ -422,6 +422,11 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     return { name: d.suggestedFilename(), to };
   };
   const padName = new URL(page.url()).pathname.slice(1);
+  // An empty folder, so the round trip below has one to bring back.
+  answer = "kept-in-zip";
+  await page.locator('#files button[aria-label="New folder"]').click();
+  answer = null;
+  await page.waitForSelector('#files .row.dir[data-path="kept-in-zip"]', { timeout: 5000 });
   const whole = await got(() => page.locator('#files button[aria-label="Download as zip"]').click());
   const all = unzip(whole.to);
   const inPad = (p) => all.files[`${padName}/${p}`];
@@ -429,6 +434,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     whole.name === `${padName}.zip` && all.bad === null && inPad("src/util.py") === "def f():\n    return 42\n" && inPad("naïve.txt") === "café\n" && inPad("docs/readme.md") === "# hi\n" && inPad("page.html") !== undefined && Object.keys(all.files).every((p) => p.startsWith(`${padName}/`)),
     `${whole.name}: ${JSON.stringify(Object.keys(all.files))}`);
   expect("and its image byte for byte", inPad("logo.png")?.hex === "89504e470d0a1a0a0000000d", JSON.stringify(inPad("logo.png")));
+  expect("and an empty folder, as its marker", inPad("kept-in-zip/.keep") === "", JSON.stringify(Object.keys(all.files).filter((p) => p.includes("kept"))));
   await page.hover('#files .dir-row:has(.row.dir:text-is("src"))');
   const folder = await got(() => page.locator('#files button[aria-label="Download src as a zip"]').click());
   const one = unzip(folder.to);
@@ -458,8 +464,9 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await fresh.locator('#files button[aria-label="Upload a zip"]').click();
   await (await againChooser).setFiles(whole.to);
   const roundTrip = await fresh.waitForFunction((want) => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort().join() === want, original.join(), { timeout: 10_000 }).then(() => true, () => false);
-  expect("a pad's own zip, uploaded into another, puts each file back where it was",
-    roundTrip && (await fresh.evaluate(() => window.__pad.text("src/util.py"))) === "def f():\n    return 42\n",
+  const freshDirs = await fresh.evaluate(() => [...document.querySelectorAll("#files .row.dir")].map((b) => b.dataset.path));
+  expect("a pad's own zip, uploaded into another, puts each file back where it was, empty folders too",
+    roundTrip && freshDirs.includes("kept-in-zip") && (await fresh.evaluate(() => window.__pad.text("src/util.py"))) === "def f():\n    return 42\n",
     JSON.stringify(await fresh.evaluate(() => [...document.querySelectorAll("#files .row.file")].map((b) => b.dataset.path).sort())));
   await fresh.close();
   await rm(zips, { recursive: true, force: true });
