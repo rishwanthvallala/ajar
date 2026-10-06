@@ -318,7 +318,11 @@ try {
   const backFromCache = async (page) => {
     const before = await page.evaluate(() => window.__restored).catch(() => 0);
     await page.goBack({ waitUntil: "commit" });
-    return page.waitForFunction((n) => window.__restored > n, before, { timeout: 15_000 }).then(() => true, () => false);
+    const restored = await page.waitForFunction((n) => window.__restored > n, before, { timeout: 15_000 }).then(() => true, () => false);
+    // Not kept: the browser says why, which is the only way to tell a page
+    // that cannot be cached from a browser that chose not to.
+    if (!restored) results.push(`note: not restored from the cache: ${await page.evaluate(() => JSON.stringify(performance.getEntriesByType("navigation")[0]?.notRestoredReasons ?? null)).catch((e) => e.message)}`);
+    return restored;
   };
   await tab.goto(`${ORIGIN}/${name}`);
   await until(tab, () => window.__pad?.role() === "owner" && window.__pad?.docs().length > 0, undefined, 30_000);
@@ -926,5 +930,8 @@ await rm(dir, { recursive: true, force: true });
 
 for (const line of results) console.log(`  ${line}`);
 const failed = results.filter((l) => l.startsWith("FAIL"));
+// Again, last: CI keeps only the end of a step's output in its summary, and
+// the list above is long enough that a failure in its middle was cut off.
+if (failed.length) console.log(`\n  failed:\n${failed.map((l) => `    ${l}`).join("\n")}`);
 console.log(failed.length ? `\n  ${failed.length} failed\n` : "\n  accounts work in the browser\n");
 process.exit(failed.length ? 1 : 0);
