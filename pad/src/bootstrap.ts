@@ -72,5 +72,14 @@ export async function startPad(): Promise<void> {
     },
   });
   await app.start();
-  addEventListener("pagehide", leave, { once: true });
+  // Leaving for good, or only into the back-forward cache: there the page is
+  // frozen as it is and may come back on Back. Torn down on the way in, it
+  // came back an empty editor that answered nothing — every listener
+  // aborted, the editor and the room gone — until 6 October.
+  addEventListener("pagehide", (e) => {
+    if (!e.persisted) leave();
+  });
+  addEventListener("pageshow", (e) => {
+    if (e.persisted) app?.resume();
+  });
 }

@@ -181,6 +181,15 @@ export function setBusy(b: HTMLElement, busy: boolean, label?: string): void {
 }
 export const isBusy = (b: HTMLElement) => b.getAttribute("aria-busy") === "true";
 
+/**
+ * Back from the browser's back-forward cache, a page is exactly as it was
+ * left — including any button an action marked busy just before it navigated
+ * away. Busy, it ignores every click: New pad, a copy, an import. Freed here.
+ */
+export function clearBusy(root: ParentNode = document): void {
+  for (const b of root.querySelectorAll<HTMLElement>('[aria-busy="true"]')) setBusy(b, false);
+}
+
 // --------------------------------------------------------------- dialogs
 
 /**

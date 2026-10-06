@@ -20,7 +20,7 @@ import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { Shell, type Finished } from "./shell";
 import { ICONS } from "./icons";
 import { openShare } from "./share";
-import { confirmDialog, toast, toastRegions } from "./ui";
+import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
@@ -2314,6 +2314,23 @@ export class App {
   private codeFontPx(): number {
     const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     return Math.max(11, Math.min(20, root * 0.8125));
+  }
+
+  /**
+   * The page came back from the browser's back-forward cache — Back from Your
+   * pads, say — exactly as it was left, editor and all. Only the world moved:
+   * the room's socket was closed while it was frozen, and the pad may have
+   * changed, or who this browser is to it — signed in or out meanwhile. So the
+   * room is dialled again and the pad read again, which says both.
+   */
+  resume(): void {
+    if (this.disposed) return;
+    // A copy that navigated away left these set; back here, they would stop
+    // Save as my copy for good.
+    this.copying = false;
+    clearBusy();
+    this.peers?.resume();
+    void this.refresh();
   }
 
   dispose(): void {

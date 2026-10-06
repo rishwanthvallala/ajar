@@ -669,6 +669,27 @@ The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
 at 25 MB; base64 makes a binary file a third larger against that cap.
 
+## Back, and the back-forward cache
+
+A browser keeps a page it leaves in its back-forward cache, frozen as it is,
+and shows it again on Back. The pad used to tear itself down on `pagehide` —
+editor, terminal, documents and room disposed, every listener aborted — which
+is right for a page leaving for good and wrong for one going into the cache:
+Back from Your pads brought back the file list over an empty editor that
+answered nothing. Until 6 October; no check saw it, because Playwright launches
+Chromium with `--disable-back-forward-cache`.
+
+`bootstrap.ts` now tears down only when `pagehide` says the page is not being
+kept (`persisted` false). On `pageshow` with `persisted`, `App.resume` puts
+back what the world changed while the page was frozen: the room gets a fresh
+socket — the old one was closed by the browser, though Chrome still calls it
+`OPEN` when `pageshow` runs, and a browser that never delivers that close
+would leave the room dead — and the pad is read again, which also says who
+this browser is to it now (signed in or out on Your pads meanwhile). Anything
+an action left busy as it navigated away — New pad, Save as my copy, Copy a
+pad's dialog — is freed, on the pad and on the dashboard, or it would ignore
+every click after Back.
+
 ## Empty files and folders
 
 The store keeps paths and their contents, nothing else, so a folder exists

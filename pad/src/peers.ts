@@ -133,6 +133,8 @@ export class Peers {
   private closed = false;
   private attempt = 0;
   private shut = false;
+  /** The next try after a dropped socket, while one is waiting. */
+  private retry: ReturnType<typeof setTimeout> | null = null;
   /** Doc frames in and out, for the browser checks. */
   readonly counts = { docOut: 0, docIn: 0, dropped: 0 };
   private arrived: (() => void) | null = null;
@@ -202,7 +204,10 @@ export class Peers {
       if (this.closed) return;
       const wait = Math.min(250 * 2 ** this.attempt, 8000);
       this.attempt += 1;
-      setTimeout(() => this.connect(), wait);
+      this.retry = setTimeout(() => {
+        this.retry = null;
+        this.connect();
+      }, wait);
     };
 
     ws.onerror = () => ws.close();
@@ -305,7 +310,34 @@ export class Peers {
 
   close(): void {
     this.closed = true;
+    if (this.retry) clearTimeout(this.retry);
     this.ws?.close();
+  }
+
+  /**
+   * Back from the browser's back-forward cache: a fresh socket, whatever the
+   * old one says. It was frozen there, and its state on the way back is not
+   * to be trusted — still `OPEN` when `pageshow` runs, in Chrome, with the
+   * close only queued; and a browser that never delivers that close would
+   * leave the room dead. The old socket's own close, if it comes, finds it
+   * is no longer the one in use and does nothing.
+   */
+  resume(): void {
+    if (this.closed) return;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
+    const old = this.ws;
+    this.ws = null;
+    this.id = null;
+    this.others.clear();
+    this.events.onPresence(0, null);
+    try {
+      old?.close();
+    } catch {
+      // Already closed.
+    }
+    this.attempt = 0;
+    this.connect();
   }
 }
 

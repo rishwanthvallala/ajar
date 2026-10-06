@@ -10,7 +10,7 @@ import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, type 
 import type { IconName } from "./icons";
 import { openShare } from "./share";
 import { type Change, type Pad, Store, StoreError } from "./store";
-import { brand, button, confirmDialog, el, icon, isBusy, modal, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
+import { brand, button, clearBusy, confirmDialog, el, icon, isBusy, modal, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
 import { leftOut, PAD_LIMITS, pickZip, prepareImport, readZip, ZipError } from "./zip";
 
 /** Reasons a provider sends someone back with, that are not failures. */
@@ -598,8 +598,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   // page shows — another tab signed out, or in as someone else — and its list
   // may be out of date. A different person reloads the page; the same one
   // gets the list as it stands.
-  document.addEventListener("visibilitychange", async () => {
-    if (document.visibilityState !== "visible") return;
+  const recheck = async () => {
     const now = await account.me().catch(() => null);
     if (!now) return;
     if (now.user?.id !== me.user?.id) return location.reload();
@@ -609,6 +608,21 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       pads = fresh;
       draw();
     }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void recheck();
+  });
+  // Back to this page from a pad — out of the back-forward cache, as it was
+  // left: the button that made the pad still busy, the copy dialog still
+  // open over it. Both cleared, then the list and the sign-in checked as for
+  // a tab come back to. (Chromium also fires `visibilitychange` after this,
+  // which re-reads them too; this one is for a browser that fires it first,
+  // while the dialog would still have stopped it.)
+  addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    clearBusy();
+    for (const d of document.querySelectorAll<HTMLDialogElement>("dialog[open]")) d.close();
+    void recheck();
   });
 
   /** Asked twice over — a dialog, and a word typed into it — then gone. */

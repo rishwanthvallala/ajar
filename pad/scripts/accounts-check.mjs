@@ -138,6 +138,8 @@ await new Promise((r) => server.listen(PORT, r));
 // ------------------------------------------------------------- helpers
 
 const browser = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
+/** A second browser with the back-forward cache left on — see "Back, into a page the browser kept". */
+let cacheBrowser = null;
 const pages = new Map();
 async function person(label) {
   const context = await browser.newContext();
@@ -285,6 +287,107 @@ try {
   }, undefined, 15_000).then(() => true, () => false);
   const afterMove = await stored(name);
   is(seenThere && afterMove?.["lib/move-me.txt"]?.content === "moving\n" && !("move-me.txt" in (afterMove ?? {})), true, "a file the owner drags into a folder moves there for the editor too, and in the store");
+
+  // ---- Back, into a page the browser kept ----
+  // Browsers keep a page they leave in a back-forward cache and show it again,
+  // frozen as it was, on Back. Playwright switches that cache off, so every
+  // check passed while a pad came back from Your pads empty and dead: it tore
+  // itself down on the way out. Here with the cache on, as a person has it.
+  cacheBrowser = await chromium.launch({ channel: "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
+  const cached = await cacheBrowser.newContext({ storageState: await owner.context().storageState() });
+  const tab = await cached.newPage();
+  pages.set("cached owner", tab);
+  tab.on("pageerror", (e) => fail(`cached owner: page error: ${e.message.slice(0, 160)}`));
+  await tab.addInitScript(() => {
+    window.__restored = 0;
+    addEventListener("pageshow", (e) => {
+      if (e.persisted) window.__restored += 1;
+    });
+    // Every socket the page opens, so the check can play a browser that does
+    // not say a cached page's socket closed.
+    const Real = window.WebSocket;
+    window.__sockets = [];
+    window.WebSocket = class extends Real {
+      constructor(...args) {
+        super(...args);
+        window.__sockets.push(this);
+      }
+    };
+  });
+  // Back, and proof the page came out of the cache rather than loading again.
+  const backFromCache = async (page) => {
+    const before = await page.evaluate(() => window.__restored).catch(() => 0);
+    await page.goBack({ waitUntil: "commit" });
+    return page.waitForFunction((n) => window.__restored > n, before, { timeout: 15_000 }).then(() => true, () => false);
+  };
+  await tab.goto(`${ORIGIN}/${name}`);
+  await until(tab, () => window.__pad?.role() === "owner" && window.__pad?.docs().length > 0, undefined, 30_000);
+  // Chrome closes the socket of a page it caches and says so on the way back,
+  // which the ordinary reconnect answers. A browser that closes it without
+  // saying would leave the room dead; the page dials again on its own.
+  await tab.evaluate(() => {
+    for (const s of window.__sockets) s.onclose = null;
+  });
+  await tab.click("#your-pads");
+  await tab.waitForSelector("text=Your pads", { timeout: 15_000 });
+  const fromCacheA = await backFromCache(tab);
+  const editorBack = await tab.evaluate(() => !!window.monaco?.editor.getEditors()[0]?.getModel() && !!document.querySelector(".monaco-editor .view-lines"));
+  is(fromCacheA && editorBack, true, `Back from Your pads, out of the cache, the pad is still there (cached ${fromCacheA}, editor ${editorBack})`);
+  await typeAtEnd(tab, "main.py", "# typed-after-back\n");
+  is(await storedHas(name, "main.py", "typed-after-back"), true, "and typing in it is saved");
+  await typeAtEnd(editor, "main.py", "# live-after-back\n");
+  is(await until(tab, () => window.__pad?.text("main.py").includes("live-after-back"), undefined, 15_000).then(() => true, () => false), true, "and its room is back: someone else's typing arrives live");
+
+  // The dashboard the same way: New pad navigates away with its button busy.
+  await tab.goto(`${ORIGIN}/dashboard`);
+  await tab.waitForSelector(".pad-card", { timeout: 15_000 });
+  const padsBefore = await tab.locator(".pad-card").count();
+  await tab.locator("#new-pad").click();
+  await tab.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+$/, { timeout: 15_000 });
+  const madeHere = new URL(tab.url()).pathname.slice(1);
+  await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const fromCacheB = await backFromCache(tab);
+  const newPadFree = await tab.locator("#new-pad").getAttribute("aria-busy");
+  const listed = await tab.waitForFunction((n) => document.querySelectorAll(".pad-card").length > n, padsBefore, { timeout: 15_000 }).then(() => true, () => false);
+  is(fromCacheB && newPadFree === null && listed, true, `Back to the dashboard, out of the cache, New pad works again and the new pad is listed (cached ${fromCacheB}, busy ${newPadFree}, listed ${listed})`);
+  // Copy a pad leaves from inside its dialog, which the dashboard's own
+  // return check waits out: the dialog closes, and the list is read again.
+  const padsNow = await tab.locator(".pad-card").count();
+  await tab.getByRole("button", { name: "Copy a pad" }).click();
+  await tab.locator("dialog.copy-dialog").getByLabel("Link to a pad").fill(`${ORIGIN}/${name}`);
+  await tab.locator("dialog.copy-dialog").getByRole("button", { name: "Make a copy" }).click();
+  await tab.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname) && u.pathname !== `/${name}`, { timeout: 15_000 });
+  const copiedHere = new URL(tab.url()).pathname.slice(1);
+  await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  const fromCacheD = await backFromCache(tab);
+  const dialogGone = await tab.waitForFunction(() => !document.querySelector("dialog[open]"), null, { timeout: 5000 }).then(() => true, () => false);
+  const copyListed = await tab.waitForFunction((n) => document.querySelectorAll(".pad-card").length > n, padsNow, { timeout: 15_000 }).then(() => true, () => false);
+  is(fromCacheD && dialogGone && copyListed, true, `and back from a copy, its dialog is closed and the copy is listed (cached ${fromCacheD}, closed ${dialogGone}, listed ${copyListed})`);
+  for (const n of [madeHere, copiedHere]) await fetch(`${ORIGIN}/api/my/pads/${n}`, { method: "DELETE", headers: { cookie: ownerCookie, "x-ajar": "1" } });
+
+  // And a viewer's Save as my copy, which also leaves the page as it goes.
+  const strangerCtx = await cacheBrowser.newContext();
+  const looking = await strangerCtx.newPage();
+  pages.set("cached viewer", looking);
+  looking.on("dialog", (d) => void d.accept());
+  await looking.addInitScript(() => {
+    window.__restored = 0;
+    addEventListener("pageshow", (e) => {
+      if (e.persisted) window.__restored += 1;
+    });
+  });
+  await looking.goto(viewUrl);
+  await until(looking, () => window.__pad?.role() === "viewer", undefined, 30_000);
+  await looking.click("#away button:has-text('Save as my copy')");
+  await looking.locator("dialog.modal-confirm").getByRole("button", { name: "Make an open pad" }).click();
+  await looking.waitForURL((u) => !u.pathname.endsWith(name), { timeout: 15_000 });
+  const fromCacheC = await backFromCache(looking);
+  await looking.click("#away button:has-text('Save as my copy')");
+  const asksAgain = await looking.locator("dialog.modal-confirm").waitFor({ timeout: 5000 }).then(() => true, () => false);
+  is(fromCacheC && asksAgain, true, `Back from a copy, Save as my copy answers again (cached ${fromCacheC}, asked ${asksAgain})`);
+  await looking.keyboard.press("Escape");
+  await cached.close();
+  await strangerCtx.close();
 
   // ---- a viewer, from the bare name ----
   const viewer = await person("viewer");
@@ -814,6 +917,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   }
 }
 
+await cacheBrowser?.close();
 await browser.close();
 server.close();
 provider.close();
