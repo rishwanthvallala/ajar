@@ -104,6 +104,13 @@ AJAR_CADDY_RESTART=1 ./deploy/deploy.sh ajar-relay --config-only
 else. **Check a Caddyfile change from outside after every deploy** — a route
 answering as the relay rather than with `index.html`, a header that changed —
 because a deploy that ends without one says nothing about whether it loaded.
+
+From 5 October the reload failed outright now and then — `Job for
+caddy.service failed`, two deploys in four — ending the deploy before its own
+check, with the previous config, identical, still serving. Why is in the
+journal on the box. The deploy now skips the reload when the Caddyfile there
+already matches and the binary has not changed, which is nearly every deploy,
+and prints the last of Caddy's journal when a reload it does make fails.
 Confirm the relay the same way: a WebSocket to `/ws` that never says hello is
 closed after ten seconds by any relay from v0.0.6 on, and the live asset hashes
 say whether the clients went out.

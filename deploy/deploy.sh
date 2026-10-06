@@ -37,7 +37,19 @@ push_caddyfile() {
     # Only the bare domain is rewritten, anchored, so a name that already carries a
     # prefix — code.rishwanth.dev — is left alone rather than becoming
     # code.<newdomain>.
-    sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile \
+    local rendered want have
+    rendered=$(sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" deploy/Caddyfile)
+    # Unchanged, and the binary too: nothing to reload. Every deploy reloaded
+    # anyway, and from 5 October that reload failed now and then — "Job for
+    # caddy.service failed" — stopping the deploy short of its own check with
+    # the old config still serving, identical to the new.
+    want=$(printf '%s\n' "$rendered" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    have=$(ssh "$HOST" "sha256sum /etc/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1" || true)
+    if [ "$want" = "$have" ] && [ -z "$CADDY_SWAPPED" ] && [ -z "${AJAR_CADDY_RESTART:-}" ]; then
+        printf '  the Caddyfile is unchanged; caddy left as it is\n'
+        return 0
+    fi
+    printf '%s\n' "$rendered" \
         | ssh "$HOST" "cat > /tmp/Caddyfile && $SUDO mv /tmp/Caddyfile /etc/caddy/Caddyfile"
     # Validated before it is loaded: a reload with a broken file leaves the old
     # config running, which looks like the deploy did nothing at all. By the binary
@@ -58,10 +70,14 @@ push_caddyfile() {
     # A new binary needs a restart. A reload would hand the new config to the old
     # process, which lacks the plugin, refuses it, and carries on with the old one.
     # AJAR_CADDY_RESTART=1 asks for one too: for a Caddy whose reloads are stuck.
-    if [ -n "$CADDY_SWAPPED" ] || [ -n "${AJAR_CADDY_RESTART:-}" ]; then
-        ssh "$HOST" "$SUDO systemctl restart caddy"
-    else
-        ssh "$HOST" "$SUDO systemctl reload-or-restart caddy"
+    local how="reload-or-restart"
+    if [ -n "$CADDY_SWAPPED" ] || [ -n "${AJAR_CADDY_RESTART:-}" ]; then how="restart"; fi
+    if ! ssh "$HOST" "$SUDO systemctl $how caddy"; then
+        # Say why, here: a reload that fails leaves the old config serving, and
+        # the reason is only in the journal on the box.
+        echo "  caddy did not $how; what it was running before is still serving. Its journal:" >&2
+        ssh "$HOST" "$SUDO journalctl -u caddy -n 30 --no-pager" >&2 || true
+        return 1
     fi
 }
 
