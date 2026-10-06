@@ -376,8 +376,8 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | Signing out left that session's room connections as owner until they dropped | `e2786ae` |
 | Typing inside the save delay was lost when its tab closed, unless someone else saved the file | `6de80ed` |
 | Every save of a multi-megabyte file stalled the typist's editor 80–165 ms | `6de80ed` |
-| A file opened at its first line every time it was switched back to, and after any change made to it meanwhile | this change |
-| A command's change to a file this page had open in the room but was not showing never reached the room — nor this page, which put the old text back on showing it | this change |
+| A file opened at its first line every time it was switched back to, and after any change made to it meanwhile | `ecf47f9` |
+| A command's change to a file this page had open in the room but was not showing never reached the room — nor this page, which put the old text back on showing it | `ecf47f9` |
 | Back from Your pads, or from any page the pad navigated to, showed an empty editor that answered nothing: the page tore itself down going into the back-forward cache | `344e0a0` |
 | Empty files and empty folders were lost on reload — New file saved nothing until typed in, New folder lived in one tab, an empty `mkdir` was invisible — and New folder's `.keep` showed up as a file once a command ran | `a05476b` |
 | A binary file a command made was published as garbled text — to the store, everyone's tree and sandbox, and every download. It is carried as base64 now, and zips keep their images | `e97ead6` |
