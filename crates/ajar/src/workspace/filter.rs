@@ -194,6 +194,29 @@ impl Filter {
         canonical.starts_with(&root).then_some(canonical)
     }
 
+    /// `resolve`, and also refused when the path — as written, or where it
+    /// leads — is one the tree never shows: `.git`, dependencies, anything
+    /// the ignore files name. A read asked for by path used to skip that
+    /// question, so a guest could fetch `.git/config` or a gitignored `.env`
+    /// by name, read-only guests too, who have no terminal to do it with.
+    pub fn resolve_shared(&self, rel: &str) -> Option<std::path::PathBuf> {
+        let canonical = self.resolve(rel)?;
+        if self.is_ignored(&self.root.join(rel), false) {
+            return None;
+        }
+        // Where it leads, measured against the root's canonical form, then
+        // asked about in the root's own spelling: `is_ignored` compares with
+        // `root` as given, and on a Mac a temp directory canonicalises from
+        // /var to /private/var.
+        let inside = canonical
+            .strip_prefix(self.root.canonicalize().ok()?)
+            .ok()?;
+        if self.is_ignored(&self.root.join(inside), false) {
+            return None;
+        }
+        Some(canonical)
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

@@ -246,6 +246,45 @@ directions run through their own promise chain rather than being awaited
 independently. Sealing concurrently would let a later keystroke overtake an
 earlier one — a bug that would surface once a week and never reproduce.
 
+## The host's place belongs to the agent that opened the session
+
+The relay authenticates nobody, and until 7 October that included the host.
+The only test for the host's place was whether a host socket was connected,
+so in the 45 s a dropped host is waited for, anyone who knew the session's
+name — every guest, from the link — could claim it with `role: "host"`. The
+relay welcomed them as the host coming back; the other guests saw `host_back`;
+the impostor held the same key as everyone, so it could send them anything,
+sealed and accepted as the host's; and the real agent, reconnecting a moment
+later, was told the place was taken and quit. A laptop lid closing was enough
+of a window.
+
+Now the agent makes a secret at startup — 256 bits, never shown, never in a
+link — and sends it in every `hello` (`host_key`). The relay keeps its hash
+from the hello that opened the session and lets only that key back into an
+away host's place; anything else is refused with `not_the_host`. A session
+opened by an agent from before the key keeps the old behaviour, so older
+hosts keep working. What remains: the relay keeps nothing across a restart,
+so in the moment after one, whoever claims a session's name first opens it —
+the agent, normally, which reconnects at once. Checked by `smoke-hostdrop.mjs`,
+which tries the takeover during a real agent's gap.
+
+## What a guest can read
+
+Only what the tree shows. The tree leaves out `.git`, dependencies and
+anything the ignore files name, but a read asked for by path — `Fs::Read`, and
+opening a document — used to check only that the path stayed inside the
+folder. So `.git/config`, with a remote's token in its URL, or a gitignored
+`.env`, came back to any guest who named them: read-only guests too, who have
+no terminal and for whom "a guest can `cat` it anyway" is not true. Reads now
+go through `Filter::resolve_shared`, which also refuses a path the tree hides
+— as written and where a symlink leads. A guest with a terminal can still
+read what the sandbox lets the shell read; that is the terminal's boundary,
+not the tree's.
+
+A guest may also hold only 16 documents open at once, and the host 256 in
+all: each is a file of up to 1 MB in the agent's memory, and nothing stopped
+a client opening every file in the folder.
+
 ## The credential scan is a warning, not a boundary
 
 Filenames by convention (`.env`, `*.pem`, `id_rsa`, `.npmrc`) and a

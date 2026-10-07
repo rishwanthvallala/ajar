@@ -66,6 +66,12 @@ A join whose role does not match the session's shape is refused with
 deployed relay, not just locally. A host or guest naming a pad that belongs
 to an account is refused with `wrong_shape` too, before any session exists.
 
+A host's `hello` carries `host_key`, a secret the agent made at startup: the
+relay keeps its hash from the hello that opened the session and lets only that
+key back into the host's place after a dropped socket (`not_the_host`
+otherwise). Guests and older agents leave it off. See
+[security.md](security.md#the-hosts-place-belongs-to-the-agent-that-opened-the-session).
+
 A peer's `hello` may carry `code`, the part of a pad link after the `#`, left
 off the wire when there is none. The relay refuses a peer with `private` when
 the pad's settings and that code give it nothing, and with `gone` when the

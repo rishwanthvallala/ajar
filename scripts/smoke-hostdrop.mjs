@@ -230,6 +230,22 @@ async function main() {
   gd.close();
   const gc = new Guest(WS, session, "cy", key);
   await gc.connect();
+  // A guest knows the session's name from the link. With the host away,
+  // claiming its place used to be enough to be welcomed as the host coming
+  // back — able to send the other guests anything, sealed with the key they
+  // all share — while the real agent, back a moment later, was told the place
+  // was taken and quit. Only the agent that opened the session gets back in.
+  const usurper = new Guest(WS, session, "mallory", key);
+  usurper.role = "host";
+  let usurped;
+  try {
+    await usurper.connect();
+    usurped = "welcomed as the host";
+  } catch (e) {
+    usurped = e.message;
+  }
+  if (!/^not_the_host:/.test(usurped)) fail(`a guest claiming the away host's place was not refused: ${usurped}`);
+  else ok("a guest claiming the away host's place is refused");
   await sleep(1500);
   proxy.restore();
 

@@ -30,6 +30,8 @@ async function main() {
   await writeFile(join(workdir, "src", "main.rs"), "fn main() {}\n");
   await writeFile(join(workdir, "README.md"), "# hello\n");
   await writeFile(join(workdir, ".gitignore"), "secrets/\n");
+  await mkdir(join(workdir, ".git"), { recursive: true });
+  await writeFile(join(workdir, ".git", "config"), "[remote \"origin\"]\n  url = https://user:token@example.com/x\n");
   await writeFile(join(workdir, "secrets", "key.pem"), "PRIVATE\n");
   await writeFile(join(workdir, "node_modules", "react", "index.js"), "module.exports={}\n");
   await writeFile(join(workdir, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]));
@@ -98,6 +100,17 @@ async function main() {
   } else {
     ok("path traversal was refused");
   }
+
+  // What the tree hides, a read by name must not hand over either: it did,
+  // to any guest, read-only ones too. The ordinary read above, from a temp
+  // folder whose path is not its canonical one on a Mac, says the check does
+  // not refuse everything.
+  for (const hidden of ["secrets/key.pem", "node_modules/react/index.js", ".git/config"]) {
+    guest.readFile(hidden);
+    await guest.waitUntil((g) => g.contents.has(hidden), `the answer for ${hidden}`);
+    if (guest.contents.get(hidden).t !== "read_error") fail(`${hidden} was readable by name though the tree hides it`);
+  }
+  ok("a gitignored, a dependency's and a .git file are refused when asked for by name");
 
   // ---- the watcher -----------------------------------------------------
   await writeFile(join(workdir, "src", "added.rs"), "// new\n");

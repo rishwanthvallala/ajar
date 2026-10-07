@@ -68,6 +68,7 @@ flood every guest with churn the scanner never showed them.
 | Also skipped | Anything the project's `.gitignore` or `.ignore` files match — nested ones too, and those above the folder up to the repository's top — plus `.git/info/exclude` and git's global excludes. The scanner and the watcher apply the same rules |
 | Shown | Dotfiles. A shared project usually wants its `.gitignore` visible |
 | Never sent | Binary content — flagged, not shipped. Over 1 MB is truncated |
+| Never read | Anything the two rows above leave out, asked for by path — refused as "not shared", read-only guests or not, through a symlink or not |
 | Refused | Any path escaping the workspace, including through a symlink |
 
 Change arrives as a `patch` a few times a second. Past ~500 touched paths in

@@ -248,6 +248,15 @@ pub enum Control {
         /// absent, so an agent's hello is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<String>,
+        /// A host's proof that it is the one that opened this session: a
+        /// secret the agent makes at startup and never shows anyone. The
+        /// relay keeps its hash from the opening hello and lets back into the
+        /// host's place, after a dropped socket, only whoever presents it
+        /// again. Without it, any guest — who knows the session's name from
+        /// the link — could take the host's place in the 45 s a dropped host
+        /// is waited for. Absent from older agents and from every guest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_key: Option<String>,
     },
     Welcome {
         participant_id: u32,
@@ -584,6 +593,7 @@ mod tests {
             locked: false,
             protocol: PROTOCOL_VERSION,
             code: None,
+            host_key: None,
         };
         let f = Frame::json(Channel::Control, TARGET_ALL, &msg).unwrap();
         let back = Frame::decode(&f.encode()).unwrap();
@@ -598,6 +608,27 @@ mod tests {
     }
 
     #[test]
+    fn a_hello_without_a_host_key_is_unchanged_on_the_wire() {
+        // Guests and older agents send no key; the field stays off the wire,
+        // and a hello from before it existed still parses.
+        let hello = serde_json::to_string(&Control::Hello {
+            session: "s".into(),
+            role: Role::Guest,
+            locked: false,
+            protocol: PROTOCOL_VERSION,
+            code: None,
+            host_key: None,
+        })
+        .unwrap();
+        assert!(!hello.contains("host_key"), "{hello}");
+        let old: Control = serde_json::from_str(
+            r#"{"t":"hello","session":"s","role":"host","locked":false,"protocol":2}"#,
+        )
+        .unwrap();
+        assert!(matches!(old, Control::Hello { host_key: None, .. }));
+    }
+
+    #[test]
     fn the_relay_never_learns_a_name() {
         // Names are content. If one could be serialised into a control frame
         // it would cross the wire in the clear.
@@ -607,6 +638,7 @@ mod tests {
             locked: false,
             protocol: PROTOCOL_VERSION,
             code: None,
+            host_key: None,
         })
         .unwrap();
         assert!(
@@ -657,6 +689,7 @@ mod tests {
                 locked: false,
                 protocol: PROTOCOL_VERSION,
                 code: None,
+                host_key: None,
             },
         )
         .unwrap();

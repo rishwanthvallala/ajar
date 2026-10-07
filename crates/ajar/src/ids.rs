@@ -28,6 +28,14 @@ const NOUNS: &[&str] = &[
     "haven", "islet", "jetty", "kiln", "loch", "mesa",
 ];
 
+/// The secret that proves to the relay this process opened its session, so a
+/// guest cannot take the host's place while the host's socket is down. 256
+/// random bits as hex; sent only to the relay, never shown or put in a link.
+pub fn host_key() -> String {
+    let bytes: [u8; 32] = rand::random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn generate() -> String {
     let mut rng = rand::rng();
     let adjective = ADJECTIVES.choose(&mut rng).copied().unwrap_or("quiet");

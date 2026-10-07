@@ -95,14 +95,15 @@ pub async fn handle(
         }
     };
 
-    let (session_id, role, locked, protocol, code) = match hello.parse_json::<Control>() {
+    let (session_id, role, locked, protocol, code, host_key) = match hello.parse_json::<Control>() {
         Ok(Control::Hello {
             session,
             role,
             locked,
             protocol,
             code,
-        }) => (session, role, locked, protocol, code),
+            host_key,
+        }) => (session, role, locked, protocol, code, host_key),
         _ => refuse!("expected_hello", "first frame must be a hello"),
     };
 
@@ -171,7 +172,13 @@ pub async fn handle(
     }
 
     let joined = match role {
-        Role::Host => registry.open_locked(&session_id, tx.clone(), locked, protocol),
+        Role::Host => registry.open_locked(
+            &session_id,
+            tx.clone(),
+            locked,
+            protocol,
+            host_key.as_deref(),
+        ),
         Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
@@ -183,6 +190,13 @@ pub async fn handle(
     let (me, resumed): (Participant, bool) = match joined {
         Ok(pair) => pair,
         Err(JoinError::HostTaken) => refuse!("host_taken", "this session already has a host"),
+        Err(JoinError::NotTheHost) => {
+            warn!(session = %session_id, %caller, "refused: a host claim without the key the session was opened with");
+            refuse!(
+                "not_the_host",
+                "this session belongs to the agent that opened it"
+            )
+        }
         Err(JoinError::NoSuchSession) => {
             refuse!("no_such_session", "no open session with that id")
         }

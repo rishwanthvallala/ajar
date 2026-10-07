@@ -95,6 +95,15 @@ pub struct Docs {
     next_id: u32,
 }
 
+/// Documents one guest may hold open at once. The page holds one — the file
+/// on screen — so this is a ceiling against a client opening every file in
+/// the folder, a megabyte of the host's memory apiece, not a limit anybody
+/// working meets.
+pub const MAX_DOCS_PER_READER: usize = 16;
+
+/// Documents open at once, everyone's together.
+pub const MAX_OPEN_DOCS: usize = 256;
+
 impl Default for Docs {
     fn default() -> Self {
         Self::new()
@@ -123,6 +132,28 @@ impl Docs {
     #[cfg(test)]
     pub fn is_open(&self, path: &str) -> bool {
         self.by_path.contains_key(path)
+    }
+
+    /// Whether `reader` may open `path` now, and why not. Asking again for
+    /// one it already has open is always fine.
+    pub fn may_open(&self, path: &str, reader: u32) -> Result<(), &'static str> {
+        let open = self.by_path.get(path).and_then(|id| self.docs.get(id));
+        if open.is_some_and(|d| d.readers.contains(&reader)) {
+            return Ok(());
+        }
+        if self
+            .docs
+            .values()
+            .filter(|d| d.readers.contains(&reader))
+            .count()
+            >= MAX_DOCS_PER_READER
+        {
+            return Err("too many files open at once — close one first");
+        }
+        if open.is_none() && self.docs.len() >= MAX_OPEN_DOCS {
+            return Err("too many files open on this machine right now");
+        }
+        Ok(())
     }
 
     /// Open a document, creating it from `contents` if this is the first
@@ -346,6 +377,34 @@ fn is_low_surrogate(u: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guest_cannot_open_every_file_in_the_folder() {
+        let mut docs = Docs::new();
+        for i in 0..MAX_DOCS_PER_READER {
+            let path = format!("f{i}.txt");
+            assert!(docs.may_open(&path, 7).is_ok());
+            docs.open(&path, "x", 7);
+        }
+        assert!(
+            docs.may_open("one-more.txt", 7).is_err(),
+            "past the ceiling"
+        );
+        assert!(
+            docs.may_open("f0.txt", 7).is_ok(),
+            "one it already has is fine"
+        );
+        assert!(
+            docs.may_open("one-more.txt", 8).is_ok(),
+            "someone else is not held to it"
+        );
+        let id = docs.id_for_path("f0.txt").unwrap();
+        docs.close(id, 7);
+        assert!(
+            docs.may_open("one-more.txt", 7).is_ok(),
+            "closing one makes room"
+        );
+    }
 
     fn apply(old: &str, s: &Splice) -> String {
         let a: Vec<u16> = old.encode_utf16().collect();

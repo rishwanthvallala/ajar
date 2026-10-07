@@ -300,6 +300,9 @@ async fn run() -> Result<()> {
             locked: false,
             protocol: ajar_proto::PROTOCOL_VERSION,
             code: None,
+            // Proves to the relay, on every reconnect, that this is the
+            // process that opened the session.
+            host_key: Some(ids::host_key()),
         },
         cipher,
         lock_state.clone(),
@@ -854,6 +857,9 @@ fn on_doc_open(path: &str, reader: u32, host: &mut Host) -> Result<()> {
         Ok(())
     };
 
+    if let Err(why) = host.docs.may_open(path, reader) {
+        return refuse(host, why);
+    }
     let contents = match host.workspace.read(path) {
         Fs::Content { binary: true, .. } => return refuse(host, "binary file"),
         Fs::Content {

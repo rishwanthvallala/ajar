@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use ajar_proto::{Participant, Role};
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 
 /// How long a session survives its host's socket dropping. Terminals keep
 /// running the whole time — the agent process never noticed. Long enough to
@@ -74,6 +75,9 @@ pub struct Session {
     pub owners: HashMap<u32, SessionKey>,
     /// Sealed by the host. New guests are refused; existing ones stay.
     pub locked: bool,
+    /// The hash of the key the host opened this session with, when it sent
+    /// one. Only that key brings a host back into an away host's place.
+    host_key: Option<Vec<u8>>,
     /// What the host speaks, from its handshake. Relayed to each guest so a
     /// version mismatch can be reported rather than felt.
     pub host_protocol: u32,
@@ -87,6 +91,7 @@ impl Session {
             host: None,
             snapshot: None,
             host_left_at: None,
+            host_key: None,
             guests: HashMap::new(),
             owners: Default::default(),
             locked: false,
@@ -157,6 +162,9 @@ impl Session {
 pub enum JoinError {
     /// A second socket claimed to be the host while one is already connected.
     HostTaken,
+    /// A claim on an existing session's host place, while its host is away,
+    /// without the key the session was opened with.
+    NotTheHost,
     /// A guest asked for a session that no host has opened.
     NoSuchSession,
     /// The host sealed the room.
@@ -200,7 +208,7 @@ impl Registry {
     /// inside the grace period.
     #[cfg(test)]
     pub fn open(&self, id: &str, tx: Tx) -> Result<(Participant, bool), JoinError> {
-        self.open_locked(id, tx, false, ajar_proto::PROTOCOL_VERSION)
+        self.open_locked(id, tx, false, ajar_proto::PROTOCOL_VERSION, None)
     }
 
     /// Open while atomically restoring the host's current admission state.
@@ -210,16 +218,34 @@ impl Registry {
         tx: Tx,
         locked: bool,
         protocol: u32,
+        host_key: Option<&str>,
     ) -> Result<(Participant, bool), JoinError> {
-        let mut entry = self
-            .sessions
-            .entry(id.to_string())
-            .or_insert_with(|| Session::new(Shape::Hosted));
+        let mut created = false;
+        let mut entry = self.sessions.entry(id.to_string()).or_insert_with(|| {
+            created = true;
+            Session::new(Shape::Hosted)
+        });
         if entry.shape != Shape::Hosted {
             return Err(JoinError::WrongShape);
         }
         if entry.host.is_some() {
             return Err(JoinError::HostTaken);
+        }
+        // The host's place, while its host is away, is the opener's alone.
+        // It used to be anybody's who asked first: every guest knows the
+        // session's name, and a guest that claimed the host role in the 45 s
+        // after a dropped socket was welcomed as the host coming back — able
+        // to send the other guests whatever it liked, sealed with the key they
+        // all share — while the real agent, back a moment later, was told the
+        // place was taken and quit. A session an older agent opened, without
+        // a key, keeps the old behaviour.
+        let presented = host_key.map(|k| Sha256::digest(k.as_bytes()).to_vec());
+        if created {
+            entry.host_key = presented;
+        } else if let Some(expected) = &entry.host_key {
+            if presented.as_ref() != Some(expected) {
+                return Err(JoinError::NotTheHost);
+            }
         }
         let resumed = entry.host_left_at.take().is_some();
         // The agent supplies this on every handshake. That restores the
@@ -528,6 +554,68 @@ mod tests {
         crate::outbox::channel()
     }
 
+    // ---- the host's place --------------------------------------------
+
+    #[test]
+    fn only_the_opener_comes_back_into_an_away_hosts_place() {
+        // A guest knows the session's name from the link. With the host's
+        // socket down, claiming the host role used to be enough to be
+        // welcomed as the host coming back.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        r.open_locked(
+            "s",
+            a,
+            false,
+            ajar_proto::PROTOCOL_VERSION,
+            Some("the-agents-key"),
+        )
+        .unwrap();
+        r.host_gone("s", HostExit::Dropped, b"");
+        let (b, _rb) = tx();
+        assert_eq!(
+            r.open_locked("s", b, false, ajar_proto::PROTOCOL_VERSION, None)
+                .err(),
+            Some(JoinError::NotTheHost),
+            "no key"
+        );
+        let (c, _rc) = tx();
+        assert_eq!(
+            r.open_locked("s", c, false, ajar_proto::PROTOCOL_VERSION, Some("a-guess"))
+                .err(),
+            Some(JoinError::NotTheHost),
+            "the wrong key"
+        );
+        let (d, _rd) = tx();
+        let (host, resumed) = r
+            .open_locked(
+                "s",
+                d,
+                false,
+                ajar_proto::PROTOCOL_VERSION,
+                Some("the-agents-key"),
+            )
+            .unwrap();
+        assert!(
+            resumed && host.id == 1,
+            "the opener comes back as the host it was"
+        );
+    }
+
+    #[test]
+    fn a_session_opened_without_a_key_resumes_as_it_always_did() {
+        // An agent from before the key: its sessions keep working.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        r.open_locked("old", a, false, ajar_proto::PROTOCOL_VERSION, None)
+            .unwrap();
+        r.host_gone("old", HostExit::Dropped, b"");
+        let (b, _rb) = tx();
+        assert!(r
+            .open_locked("old", b, false, ajar_proto::PROTOCOL_VERSION, None)
+            .is_ok());
+    }
+
     // ---- peer sessions ----------------------------------------------
 
     #[test]
@@ -720,7 +808,7 @@ mod tests {
     fn a_host_handshake_restores_lock_before_the_first_join() {
         let r = Registry::new();
         let (host, _rh) = tx();
-        r.open_locked("s", host, true, ajar_proto::PROTOCOL_VERSION)
+        r.open_locked("s", host, true, ajar_proto::PROTOCOL_VERSION, None)
             .unwrap();
         let (guest, _rg) = tx();
         assert_eq!(r.join("s", guest).err(), Some(JoinError::Locked));
@@ -733,15 +821,21 @@ mod tests {
         // the relay must carry that through as "older" rather than as current.
         let r = Registry::new();
         let (old_host, _a) = tx();
-        r.open_locked("old", old_host, false, ajar_proto::PROTOCOL_UNVERSIONED)
-            .unwrap();
+        r.open_locked(
+            "old",
+            old_host,
+            false,
+            ajar_proto::PROTOCOL_UNVERSIONED,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             r.with("old", |s| s.host_protocol),
             Some(ajar_proto::PROTOCOL_UNVERSIONED)
         );
 
         let (new_host, _b) = tx();
-        r.open_locked("new", new_host, false, ajar_proto::PROTOCOL_VERSION)
+        r.open_locked("new", new_host, false, ajar_proto::PROTOCOL_VERSION, None)
             .unwrap();
         assert_eq!(
             r.with("new", |s| s.host_protocol),
@@ -756,11 +850,11 @@ mod tests {
         // connected now, not from whatever opened the session first.
         let r = Registry::new();
         let (first, _a) = tx();
-        r.open_locked("s", first, false, ajar_proto::PROTOCOL_UNVERSIONED)
+        r.open_locked("s", first, false, ajar_proto::PROTOCOL_UNVERSIONED, None)
             .unwrap();
         r.host_gone("s", HostExit::Dropped, b"");
         let (second, _b) = tx();
-        r.open_locked("s", second, false, ajar_proto::PROTOCOL_VERSION)
+        r.open_locked("s", second, false, ajar_proto::PROTOCOL_VERSION, None)
             .unwrap();
         assert_eq!(
             r.with("s", |s| s.host_protocol),

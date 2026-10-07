@@ -161,8 +161,8 @@ impl Workspace {
     fn try_read(&self, rel: &str) -> Result<Fs> {
         let path = self
             .filter
-            .resolve(rel)
-            .with_context(|| format!("{rel} is not inside this workspace"))?;
+            .resolve_shared(rel)
+            .with_context(|| format!("{rel} is not shared"))?;
         let meta = std::fs::metadata(&path).context("reading file")?;
         if meta.is_dir() {
             bail!("{rel} is a directory");
@@ -259,6 +259,45 @@ mod tests {
             Fs::Tree { entries } => entries.iter().map(|e| e.path.clone()).collect(),
             _ => panic!("expected a tree"),
         }
+    }
+
+    #[test]
+    fn a_read_by_path_is_refused_what_the_tree_hides() {
+        // The tree never lists these; a read asked for by name used to return
+        // them anyway — `.git/config` with a remote's token in it, a
+        // gitignored `.env` — to read-only guests too.
+        let root = scratch("hidden-reads");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("secrets")).unwrap();
+        fs::write(
+            root.join(".git/config"),
+            "[remote] url = https://user:token@x",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), ".env\nsecrets/\n").unwrap();
+        fs::write(root.join(".env"), "PASSWORD=hunter2").unwrap();
+        fs::write(root.join("secrets/key.txt"), "TOP SECRET").unwrap();
+        fs::write(root.join("README.md"), "# shared").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join(".env"), root.join("innocent.txt")).unwrap();
+
+        let (ws, _) = Workspace::scan(&root, MAX_ENTRIES).unwrap();
+        let refused = |p: &str| matches!(ws.read(p), Fs::ReadError { .. });
+        assert!(refused(".git/config"), ".git/config was readable");
+        assert!(refused(".env"), "a gitignored file was readable");
+        assert!(
+            refused("secrets/key.txt"),
+            "a file in a gitignored folder was readable"
+        );
+        #[cfg(unix)]
+        assert!(
+            refused("innocent.txt"),
+            "a link to a hidden file was readable"
+        );
+        assert!(
+            matches!(ws.read("README.md"), Fs::Content { .. }),
+            "an ordinary file stopped being readable"
+        );
     }
 
     #[test]

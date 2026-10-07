@@ -142,12 +142,18 @@ async fn session(
     let (mut sink, mut source) = stream.split();
 
     let hello = match hello {
-        Control::Hello { session, role, .. } => Control::Hello {
+        Control::Hello {
+            session,
+            role,
+            host_key,
+            ..
+        } => Control::Hello {
             session: session.clone(),
             role: *role,
             locked: locked.load(Ordering::SeqCst),
             protocol: ajar_proto::PROTOCOL_VERSION,
             code: None,
+            host_key: host_key.clone(),
         },
         other => other.clone(),
     };
