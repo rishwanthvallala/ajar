@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 7 October 2026. The relay, both browser clients and the deploy
+*Kept as of 8 October 2026. The relay, both browser clients and the deploy
 config were deployed from `5b14947` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
 reads, freed pad names and the 90-day lease. The fifth step, per-address limits
@@ -24,6 +24,9 @@ were deployed that day, and the agent's share shipped in v0.0.7. A host still
 on v0.0.6 or older can have its place taken while it is away, and lets a guest
 read by name what the tree hides, until it reinstalls. The same day a pad's
 cap went to 60 MB, [for now](#a-pad-holds-60-mb-for-now).*
+
+*On 8 October a click on a file in the guest's tree stopped being lost to
+the folder changing — [its own list](#closed-on-8-october).*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -403,6 +406,12 @@ the previous build in place, and the check then measures the fix it was meant
 to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
+
+## Closed on 8 October
+
+| | |
+|---|---|
+| A click on a file in the guest's tree did nothing whenever anything in the folder changed between press and release — every change repainted every row — so in a folder a build was writing to, files could hardly be opened | `12b7381` |
 
 ## Closed on 7 October
 
