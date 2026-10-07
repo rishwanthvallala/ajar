@@ -189,20 +189,23 @@ async function main() {
   // Not with the connection dropped or the process growing: read off the wire
   // up to a limit and then refused, so the memory cost of a request is a number
   // somebody chose rather than whatever the sender felt like sending.
+  // Past the body limit, which is twice the per-pad cap plus a megabyte —
+  // 121 MiB while a pad holds 60 MiB. Sized from the cap, this check passed a
+  // body the relay was right to take once the cap went up.
   const huge = JSON.stringify({
-    writes: [{ path: "big.txt", content: "y".repeat(60 * 1024 * 1024) }],
+    writes: [{ path: "big.txt", content: "y".repeat(130 * 1024 * 1024) }],
   });
   const oversized = putStatus(`${HTTP}/api/pad/toobig`, huge);
 
-  // The status alone proves nothing. 60 MB of content is over the per-pad
-  // 25 MiB cap as well, so it comes back 413 whether or not there is an HTTP
+  // The status alone proves nothing. 130 MB of content is over the per-pad
+  // 60 MiB cap as well, so it comes back 413 whether or not there is an HTTP
   // body limit — an earlier version of this check passed with the limit raised
   // back to 151 MiB and was measuring the wrong refusal entirely.
   //
-  // What the body limit buys is that the relay stops *reading*. Measured: with
-  // it, curl uploads ~55 MB of a 63 MB body and is cut off; without it, all
-  // 63 MB go up and are buffered before anything rejects them. So the evidence
-  // is how much the server was willing to take.
+  // What the body limit buys is that the relay stops *reading*: with it, curl
+  // is cut off part way through the upload; without it, the whole body goes up
+  // and is buffered before anything rejects it. So the evidence is how much
+  // the server was willing to take.
   if (oversized.status !== 413) {
     fail(`an oversized body returned ${oversized.status}, not 413`);
   } else if (oversized.uploaded >= huge.length) {
