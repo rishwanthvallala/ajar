@@ -453,6 +453,8 @@ async function main() {
       await dan.locator(".term.shown .xterm").first().waitFor({ timeout: 20_000 });
       await open(dan, "long.txt");
       await settleMidway(dan);
+      // Where dan is now, for the comparison after the next Back.
+      Object.assign(danAt, await where(dan));
     }
   }
   if (check(restored, "Back returns the session page from the cache")) {
