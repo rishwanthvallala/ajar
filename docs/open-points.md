@@ -370,9 +370,9 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
-| A guest could take the host's place in the 45 s after the host's socket dropped — welcomed as the host coming back, able to send the others anything — and the real agent then quit | this change |
-| A guest could read what the tree hides by naming it — `.git/config`, gitignored files — read-only guests included | this change |
-| A guest could open every file in the folder as a document, a megabyte of the host's memory apiece | this change |
+| A guest could take the host's place in the 45 s after the host's socket dropped — welcomed as the host coming back, able to send the others anything — and the real agent then quit | `58fbdbe` |
+| A guest could read what the tree hides by naming it — `.git/config`, gitignored files — read-only guests included | `58fbdbe` |
+| A guest could open every file in the folder as a document, a megabyte of the host's memory apiece | `58fbdbe` |
 
 ## Closed on 4 October
 
