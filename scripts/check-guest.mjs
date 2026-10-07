@@ -352,8 +352,13 @@ async function main() {
 
   for (const [name, file, before] of [["mixed.txt", mixed, "one\r\ntwo\nthree\n"], ["bom.txt", bom, "﻿hello\nworld\n"]]) {
     await open(ana, name, { editable: false });
-    const title = await ana.locator("#viewer-title").textContent();
-    check(/read-only/.test(title), `${name} opens read-only, saying why`, JSON.stringify(title));
+    // The host's refusal titles it first, then the read-only copy it falls
+    // back to; a slow runner looked in between (CI run 139).
+    const title = await until(async () => {
+      const t = await ana.locator("#viewer-title").textContent();
+      return /read-only/.test(t) ? t : null;
+    }, 8000);
+    check(title, `${name} opens read-only, saying why`, JSON.stringify(await ana.locator("#viewer-title").textContent()));
     await ana.locator("#viewer .view-line").nth(1).click();
     await ana.keyboard.type("Y");
     await sleep(1200);
