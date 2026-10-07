@@ -279,20 +279,20 @@ mod tests {
             ws_url("http://localhost:8787").unwrap(),
             "ws://localhost:8787/ws"
         );
-        assert_eq!(ws_url("https://ajar.sh/").unwrap(), "wss://ajar.sh/ws");
-        assert_eq!(ws_url("wss://ajar.sh").unwrap(), "wss://ajar.sh/ws");
+        assert_eq!(ws_url("https://relay.example.com/").unwrap(), "wss://relay.example.com/ws");
+        assert_eq!(ws_url("wss://relay.example.com").unwrap(), "wss://relay.example.com/ws");
     }
 
     #[test]
     fn rejects_a_bare_host() {
-        assert!(ws_url("ajar.sh").is_err());
+        assert!(ws_url("relay.example.com").is_err());
     }
 
     #[test]
     fn builds_the_join_url() {
         assert_eq!(
-            join_url("https://ajar.sh/", "quiet-ember-4417"),
-            "https://ajar.sh/j/quiet-ember-4417"
+            join_url("https://relay.example.com/", "quiet-ember-4417"),
+            "https://relay.example.com/j/quiet-ember-4417"
         );
     }
 

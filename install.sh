@@ -1,7 +1,7 @@
 #!/bin/sh
 # ajar installer.
 #
-#   curl -sSf https://ajar.sh/install.sh | sh
+#   curl -sSf https://ajar.rishwanth.dev/install.sh | sh
 #
 # One binary, no runtime, nothing to configure. Installs to ~/.local/bin
 # unless AJAR_BIN_DIR says otherwise.
@@ -37,7 +37,7 @@ target() {
 
       wsl --install
       # then, in the WSL shell:
-      curl -sSf https://ajar.sh/install.sh | sh
+      curl -sSf https://ajar.rishwanth.dev/install.sh | sh
 
   Keep your projects in the WSL filesystem too. Sharing a folder on the
   Windows drive is roughly 20x slower for file operations."

@@ -616,12 +616,12 @@ async fn write_pad(
     Ok(Json(Wrote { seq: written.seq }))
 }
 
-/// `curl -sSf https://ajar.sh/install.sh | sh`
+/// `curl -sSf https://ajar.rishwanth.dev/install.sh | sh`
 ///
 /// Compiled in rather than served from disk: the installer and the relay ship
 /// together, so there is no way for the published script to drift from the
 /// version that was built, and nothing extra to deploy.
-/// `curl -sSf https://ajar.sh/run.sh | sh`
+/// `curl -sSf https://ajar.rishwanth.dev/run.sh | sh`
 ///
 /// Install-if-missing and run, for a machine with nothing on it. The script
 /// is rewritten to point at whichever relay served it: a self-hosted one

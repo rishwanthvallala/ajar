@@ -73,7 +73,7 @@ function renderLanding() {
       </p>
 
       <div class="install">
-        <code id="install-cmd">curl -sSf https://ajar.sh/install.sh | sh</code>
+        <code id="install-cmd">curl -sSf ${location.origin}/run.sh | sh</code>
         <button id="copy" title="Copy">copy</button>
       </div>
 
