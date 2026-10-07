@@ -5,7 +5,7 @@
 //! agent reconnects and rebuilds it, and a peer session's files were never
 //! kept here in the first place.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ajar_proto::{Participant, Role};
@@ -17,6 +17,21 @@ use sha2::{Digest, Sha256};
 /// cover a wifi handover or a laptop lid, short enough that an abandoned
 /// session doesn't linger.
 pub const HOST_GRACE: Duration = Duration::from_secs(45);
+
+/// Guests a session remembers having let in. Far past any real session; a
+/// bound only so a page minting secrets cannot grow it for ever.
+pub const MAX_ADMITTED: usize = 1024;
+
+/// Hex to bytes, or nothing for anything that is not hex.
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || text.len() > 128 {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
+}
 
 /// The sending half of a connection's bounded queue. Sends can fail — a
 /// socket that has fallen too far behind is closed rather than fed a lossy
@@ -78,6 +93,11 @@ pub struct Session {
     /// The hash of the key the host opened this session with, when it sent
     /// one. Only that key brings a host back into an away host's place.
     host_key: Option<Vec<u8>>,
+    /// Hashes of the `resume` secrets of every guest let in, less anyone
+    /// kicked: who a locked session still takes back after a blip.
+    admitted: HashSet<Vec<u8>>,
+    /// Which secret each guest here came in with, so a kick can revoke it.
+    passes: HashMap<u32, Vec<u8>>,
     /// What the host speaks, from its handshake. Relayed to each guest so a
     /// version mismatch can be reported rather than felt.
     pub host_protocol: u32,
@@ -92,6 +112,8 @@ impl Session {
             snapshot: None,
             host_left_at: None,
             host_key: None,
+            admitted: HashSet::new(),
+            passes: HashMap::new(),
             guests: HashMap::new(),
             owners: Default::default(),
             locked: false,
@@ -212,6 +234,7 @@ impl Registry {
     }
 
     /// Open while atomically restoring the host's current admission state.
+    #[cfg(test)]
     pub fn open_locked(
         &self,
         id: &str,
@@ -219,6 +242,22 @@ impl Registry {
         locked: bool,
         protocol: u32,
         host_key: Option<&str>,
+    ) -> Result<(Participant, bool), JoinError> {
+        self.open_hosted(id, tx, locked, protocol, host_key, &[])
+    }
+
+    /// Open, or re-open, a hosted session, restoring in one step everything
+    /// about who may come in: the lock, and who was already in — so that no
+    /// guest racing back to a restarted relay meets a lock that has not yet
+    /// heard of them.
+    pub fn open_hosted(
+        &self,
+        id: &str,
+        tx: Tx,
+        locked: bool,
+        protocol: u32,
+        host_key: Option<&str>,
+        admitted: &[String],
     ) -> Result<(Participant, bool), JoinError> {
         let mut created = false;
         let mut entry = self.sessions.entry(id.to_string()).or_insert_with(|| {
@@ -268,6 +307,12 @@ impl Registry {
         // Recorded on every handshake for the same reason as the lock: after a
         // relay restart a guest must still learn which version it is talking to.
         entry.host_protocol = protocol;
+        for hash in admitted.iter().filter_map(|h| decode_hex(h)) {
+            if entry.admitted.len() >= MAX_ADMITTED {
+                break;
+            }
+            entry.admitted.insert(hash);
+        }
         let participant = Participant {
             id: 1,
             role: Role::Host,
@@ -281,15 +326,36 @@ impl Registry {
 
     /// A guest joining. Allowed while the host is away — they will see the
     /// away state and their terminals reattach when it returns.
+    #[cfg(test)]
     pub fn join(&self, id: &str, tx: Tx) -> Result<Participant, JoinError> {
+        self.join_with(id, tx, None)
+    }
+
+    /// A guest joining with the secret its page keeps, if it has one. A
+    /// locked session takes back anyone it has let in before — it used to
+    /// shut out its own guests at their first blip, though "people already in
+    /// stay" is what locking promises.
+    pub fn join_with(
+        &self,
+        id: &str,
+        tx: Tx,
+        resume: Option<&str>,
+    ) -> Result<Participant, JoinError> {
         let mut entry = self.sessions.get_mut(id).ok_or(JoinError::NoSuchSession)?;
         if entry.shape != Shape::Hosted {
             return Err(JoinError::WrongShape);
         }
-        if entry.locked {
+        let pass = resume.map(|r| Sha256::digest(r.as_bytes()).to_vec());
+        if entry.locked && !pass.as_ref().is_some_and(|p| entry.admitted.contains(p)) {
             return Err(JoinError::Locked);
         }
         let pid = entry.take_id();
+        if let Some(pass) = pass {
+            if entry.admitted.len() < MAX_ADMITTED {
+                entry.admitted.insert(pass.clone());
+            }
+            entry.passes.insert(pid, pass);
+        }
         let participant = Participant {
             id: pid,
             role: Role::Guest,
@@ -523,16 +589,22 @@ impl Registry {
     pub fn drop_guest(&self, id: &str, pid: u32) {
         if let Some(mut s) = self.sessions.get_mut(id) {
             s.guests.remove(&pid);
+            // Their secret stays admitted: leaving is not being kicked, and
+            // a blip looks exactly like leaving.
+            s.passes.remove(&pid);
         }
     }
 
     /// Revoke membership and close the participant's socket after a final
     /// control notice has drained.
     pub fn kick_guest(&self, id: &str, pid: u32, notice: Vec<u8>) -> bool {
-        let conn = self
-            .sessions
-            .get_mut(id)
-            .and_then(|mut s| s.guests.remove(&pid));
+        let conn = self.sessions.get_mut(id).and_then(|mut s| {
+            // Out for good: their secret no longer gets them back in.
+            if let Some(pass) = s.passes.remove(&pid) {
+                s.admitted.remove(&pass);
+            }
+            s.guests.remove(&pid)
+        });
         let Some(conn) = conn else { return false };
         conn.tx.finish(notice);
         true
@@ -705,6 +777,73 @@ mod tests {
             r.open_locked("old", b, false, ajar_proto::PROTOCOL_VERSION, None)
                 .err(),
             Some(JoinError::HostTaken)
+        );
+    }
+
+    #[test]
+    fn a_locked_session_takes_back_its_own_guests_and_nobody_else() {
+        let r = Registry::new();
+        let (h, _rh) = tx();
+        r.open("s", h).unwrap();
+        let (a, _ra) = tx();
+        let ana = r.join_with("s", a, Some("ana-secret")).unwrap();
+        r.set_locked("s", true);
+        r.drop_guest("s", ana.id); // a blip
+        let (b, _rb) = tx();
+        assert!(
+            r.join_with("s", b, Some("ana-secret")).is_ok(),
+            "ana is back"
+        );
+        let (c, _rc) = tx();
+        assert_eq!(
+            r.join_with("s", c, Some("a-guess")).err(),
+            Some(JoinError::Locked)
+        );
+        let (d, _rd) = tx();
+        assert_eq!(r.join_with("s", d, None).err(), Some(JoinError::Locked));
+    }
+
+    #[test]
+    fn a_kicked_guest_is_not_taken_back() {
+        let r = Registry::new();
+        let (h, _rh) = tx();
+        r.open("s", h).unwrap();
+        let (a, _ra) = tx();
+        let bo = r.join_with("s", a, Some("bo-secret")).unwrap();
+        r.set_locked("s", true);
+        assert!(r.kick_guest("s", bo.id, Vec::new()));
+        let (b, _rb) = tx();
+        assert_eq!(
+            r.join_with("s", b, Some("bo-secret")).err(),
+            Some(JoinError::Locked)
+        );
+    }
+
+    #[test]
+    fn a_restarted_relay_learns_who_was_in_from_the_host() {
+        // The agent re-opens a locked session with the hashes of its guests'
+        // secrets; they get back in, a stranger does not.
+        let r = Registry::new();
+        let (h, _rh) = tx();
+        let hash: String = Sha256::digest(b"ana-secret")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        r.open_hosted(
+            "s",
+            h,
+            true,
+            ajar_proto::PROTOCOL_VERSION,
+            Some("k"),
+            &[hash, "not hex".into()],
+        )
+        .unwrap();
+        let (a, _ra) = tx();
+        assert!(r.join_with("s", a, Some("ana-secret")).is_ok());
+        let (b, _rb) = tx();
+        assert_eq!(
+            r.join_with("s", b, Some("someone-else")).err(),
+            Some(JoinError::Locked)
         );
     }
 

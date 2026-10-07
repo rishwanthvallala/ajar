@@ -124,6 +124,30 @@ impl Workspace {
         self.filter.clone()
     }
 
+    /// Files, not counting the folders they are in.
+    pub fn file_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|e| e.kind == EntryKind::File)
+            .count()
+    }
+
+    /// Everything at or under `path`, as the tree has it; `""` is everything.
+    pub fn under(&self, path: &str) -> Vec<Entry> {
+        if path.is_empty() {
+            return self.entries.values().cloned().collect();
+        }
+        let inside = format!("{path}/");
+        let mut out: Vec<Entry> = self.entries.get(path).cloned().into_iter().collect();
+        out.extend(
+            self.entries
+                .range(inside.clone()..)
+                .take_while(|(p, _)| p.starts_with(&inside))
+                .map(|(_, e)| e.clone()),
+        );
+        out
+    }
+
     /// The full snapshot, sent to whoever just arrived.
     pub fn tree(&self) -> Fs {
         Fs::Tree {

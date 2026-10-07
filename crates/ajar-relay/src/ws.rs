@@ -116,17 +116,22 @@ pub async fn handle(
         }
     };
 
-    let (session_id, role, locked, protocol, code, host_key) = match hello.parse_json::<Control>() {
-        Ok(Control::Hello {
-            session,
-            role,
-            locked,
-            protocol,
-            code,
-            host_key,
-        }) => (session, role, locked, protocol, code, host_key),
-        _ => refuse!("expected_hello", "first frame must be a hello"),
-    };
+    let (session_id, role, locked, protocol, code, host_key, resume, admitted) =
+        match hello.parse_json::<Control>() {
+            Ok(Control::Hello {
+                session,
+                role,
+                locked,
+                protocol,
+                code,
+                host_key,
+                resume,
+                admitted,
+            }) => (
+                session, role, locked, protocol, code, host_key, resume, admitted,
+            ),
+            _ => refuse!("expected_hello", "first frame must be a hello"),
+        };
 
     // Every connection is charged to something. It used to be only the
     // ones that *created* a session — guests were exempt outright and peers
@@ -197,14 +202,17 @@ pub async fn handle(
     }
 
     let joined = match role {
-        Role::Host => registry.open_locked(
+        Role::Host => registry.open_hosted(
             &session_id,
             tx.clone(),
             locked,
             protocol,
             host_key.as_deref(),
+            &admitted,
         ),
-        Role::Guest => registry.join(&session_id, tx.clone()).map(|p| (p, false)),
+        Role::Guest => registry
+            .join_with(&session_id, tx.clone(), resume.as_deref())
+            .map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
         Role::Peer => registry

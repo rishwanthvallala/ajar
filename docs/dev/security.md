@@ -273,6 +273,18 @@ its previous socket open — dead, but not yet noticed. Anyone else asking for a
 connected host's place is still refused `host_taken`; a session opened without
 a key keeps the old rule, which is that nobody may.
 
+## Locking, and who it lets back in
+
+Locking promises that nobody new joins and that people already in stay. Until
+7 October the second half held only while nobody's connection dropped: every
+reconnect was turned away like a stranger's. Now each tab makes a secret —
+128 random bits, kept in `sessionStorage`, so a reload keeps it and a new tab
+does not — and sends it with every hello. The relay keeps the SHA-256 of each
+it has let in, and a locked session admits only those. A kick removes that
+guest's. The agent learns each secret inside the sealed introduction and hands
+the hashes to a relay that has restarted, so a deploy does not empty a locked
+session. Someone who has the link but was never let in is refused, as before.
+
 ## What a guest can read
 
 Only what the tree shows. The tree leaves out `.git`, dependencies and

@@ -14,7 +14,9 @@
 //   node scripts/check-guest.mjs
 
 import { connect, createServer } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,6 +233,12 @@ async function main() {
   await writeFile(mixed, "one\r\ntwo\nthree\n");
   const bom = join(workdir, "bom.txt");
   await writeFile(bom, "﻿hello\nworld\n");
+  // For downloads: something the ignore rules hide, and something big enough
+  // to need more than one window of the transfer.
+  await writeFile(join(workdir, ".gitignore"), "secret.txt\n");
+  await writeFile(join(workdir, "secret.txt"), "not for guests\n");
+  await writeFile(join(workdir, "big.bin"), randomBytes(3 * 1024 * 1024));
+  await mkdir(join(workdir, "nothing-here"));
 
   let relay = await startRelay();
   const guestHop = cuttableProxy(GUEST_PORT, PORT);
@@ -247,6 +255,95 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   browsers.push(browser);
   const ana = await guestPage(browser, link, "ana");
+
+  // ---- links that cannot work ------------------------------------------------
+  // A key cut short — as an 80-column panel used to cut it — or missing, or
+  // whole but not this session's: the page joined anyway and sat on
+  // "Loading…" for good.
+  for (const [hash, title] of [
+    [`#k=${link.key.slice(0, 32)}`, "This link is incomplete"],
+    ["", "This link is incomplete"],
+    [`#k=${"A".repeat(43)}`, "This link's key doesn't fit"],
+  ]) {
+    const page = await browser.newPage();
+    await page.goto(`${GUEST}/j/${link.session}${hash}`);
+    if (await page.locator("#name").count()) {
+      await page.fill("#name", "keyless");
+      await page.click("#join button[type=submit]");
+    }
+    const shown = await page.locator(".gate h1", { hasText: title }).waitFor({ timeout: 15_000 }).then(() => true, () => false);
+    check(shown, `a link ${hash ? (hash.length < 40 ? "with its key cut short" : "with someone else's key") : "with no key"} says "${title}"`);
+    await page.close();
+  }
+  const dots = await ana.locator("#people .person-dot").count();
+  check(dots === (await ana.locator("#people [role=listitem]").count()) && dots >= 2, "each person has a dot in their cursor's colour", String(dots));
+  check(
+    await ana.locator('.tree-row.empty-folder[data-path="nothing-here/"]').waitFor({ timeout: 5000 }).then(() => true, () => false),
+    "an open folder with nothing in it says so",
+  );
+  const listed = await ana.locator("#people [role=listitem]").allTextContents();
+  check(listed.some((t) => /ana \(you\)/.test(t)) && listed.some((t) => /hosty \(host\)/.test(t)), "the people here are a list, with you and the host marked in words", JSON.stringify(listed));
+
+  // ---- by keyboard -------------------------------------------------------------
+  // The tree is one stop, moved through with the arrows; every row used to be
+  // a stop of its own, and a repaint dropped the focus once Tab got past the
+  // first screenful.
+  await ana.locator('#tree [role="tree"] [tabindex="0"]').focus();
+  const focused = () => ana.evaluate(() => document.activeElement?.dataset?.path ?? document.activeElement?.id ?? null);
+  await ana.keyboard.press("End");
+  const lastRow = await focused();
+  await ana.keyboard.press("Home");
+  const firstRow = await focused();
+  await ana.keyboard.press("ArrowDown");
+  const secondRow = await focused();
+  check(lastRow && firstRow && secondRow && firstRow !== lastRow && secondRow !== firstRow, "the file tree moves with Home, End and the arrows", JSON.stringify({ firstRow, secondRow, lastRow }));
+  const level = await ana.locator(`.tree-row[data-path="${firstRow}"]`).getAttribute("aria-level");
+  check(level === "1", "and says how deep each row is", String(level));
+  for (let i = 0; i < 12 && (await focused()) !== "note.txt"; i++) await ana.keyboard.press("ArrowDown");
+  await ana.keyboard.press("Enter");
+  check(
+    await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "note.txt", null, { timeout: 10_000 }).then(() => true, () => false),
+    "and Enter opens a file",
+  );
+  // A terminal takes every key, so focus that went in could not come out.
+  await ana.locator(".term.shown .xterm").first().click();
+  await ana.keyboard.press("F6");
+  const out = await focused();
+  check(out === "new-terminal" || out === "split", "F6 leaves the terminal", String(out));
+
+  // ---- downloads --------------------------------------------------------------
+  // Everything, as a zip the host makes from the tree's own list; and one
+  // file as itself. The zip is over a megabyte, so it only arrives whole if
+  // each window is acknowledged and the next one sent.
+  await ana.locator('.tree-row[data-path="note.txt"]').click();
+  const allButton = ana.locator("#sidebar-actions button.download");
+  await until(async () => (await allButton.textContent()) === "Download all", 5000);
+  const [zipDownload] = await Promise.all([ana.waitForEvent("download", { timeout: 30_000 }), allButton.click()]);
+  const zipPath = join(workdir, "..", `${zipDownload.suggestedFilename()}`);
+  await zipDownload.saveAs(zipPath);
+  let listing = "";
+  try {
+    execFileSync("unzip", ["-tq", zipPath]);
+    listing = execFileSync("unzip", ["-Z1", zipPath]).toString();
+  } catch (e) {
+    listing = `unzip failed: ${e.message}`;
+  }
+  const top = zipDownload.suggestedFilename().replace(/\.zip$/, "");
+  check(
+    listing.includes(`${top}/long.txt`) && listing.includes(`${top}/big.bin`) && !listing.includes("secret.txt"),
+    "Download all is a zip of the folder, intact, without what the ignore rules hide",
+    listing.split("\n").slice(0, 12).join(", "),
+  );
+  await rm(zipPath, { force: true });
+  await open(ana, "note.txt");
+  const [fileDownload] = await Promise.all([ana.waitForEvent("download", { timeout: 15_000 }), ana.locator("#editor-actions button.download").click()]);
+  const filePath = join(workdir, "..", `downloaded-${fileDownload.suggestedFilename()}`);
+  await fileDownload.saveAs(filePath);
+  check(
+    fileDownload.suggestedFilename() === "note.txt" && (await readFile(filePath, "utf8")) === (await readFile(join(workdir, "note.txt"), "utf8")),
+    "and the open file downloads as itself",
+  );
+  await rm(filePath, { force: true });
 
   // ---- files the editor must not edit ---------------------------------------
   await open(ana, "pic.bin", { editable: false });
@@ -390,6 +487,24 @@ async function main() {
   check((await onDisk(long, (t) => t.includes("AWAY "))).includes("AWAY "), "what was typed while the host was away reached the file, though another was open by then");
   check(!(await leaving()), "and once it has, leaving asks nothing");
 
+  // ---- a host whose machine is asleep -----------------------------------------
+  // Its socket stays open, so the relay counts it as here; it answers
+  // nothing. Someone arriving saw an empty, working session.
+  process.kill(agent.pid, "SIGSTOP");
+  const sam = await browser.newPage();
+  await sam.goto(`${GUEST}/j/${link.session}#k=${link.key}`);
+  await sam.fill("#name", "sam");
+  await sam.click("#join button[type=submit]");
+  const asleep = await sam.locator("#status", { hasText: "waiting for the host" }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+  const button = await sam.locator("#new-terminal").isDisabled();
+  check(asleep && button, "a host whose machine is asleep is waited for, not shown as an empty session", `status ${JSON.stringify(await sam.locator("#status").textContent())}, New terminal disabled ${button}`);
+  process.kill(agent.pid, "SIGCONT");
+  check(
+    await sam.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 15_000 }).then(() => true, () => false),
+    "and once it answers, the session is there",
+  );
+  await sam.close();
+
   // ---- the relay restarting -------------------------------------------------
   // The agent is held back, as it is when the guests' browsers notice first:
   // until it reconnects, the new relay has never heard of the session.
@@ -400,7 +515,7 @@ async function main() {
   await sleep(3000);
   agentHop.restore();
   const backAfterRestart = await until(async () => {
-    if (await ana.locator("h1", { hasText: "Can't join" }).count()) return "gave up";
+    if (await ana.locator(".gate").count()) return `gave up: ${await ana.locator(".gate h1").textContent()}`;
     return (await ana.locator("#status").textContent()) === "connected" && (await ana.locator("#away").isHidden()) ? "in" : null;
   }, 40_000, 250);
   check(backAfterRestart === "in", "a guest outlasts a relay restart that the host's agent is slow to notice", String(backAfterRestart));
@@ -535,10 +650,72 @@ async function main() {
   wire.close();
   await pat.close();
   lag.close();
+  panel.press("l");
+
+  // Locked, then the relay restarts — as it does at every deploy. The new
+  // relay has never heard of anyone; the agent vouches for those it let in,
+  // and the lock keeps out everyone else.
+  const quinn = await browser.newPage();
+  quinn.errors = [];
+  quinn.on("pageerror", (e) => quinn.errors.push(e.message));
+  await quinn.goto(`${RELAY}/j/${panelLink.session}#k=${panelLink.key}`);
+  await quinn.fill("#name", "quinn");
+  await quinn.click("#join button[type=submit]");
+  await quinn.locator(".term.shown .xterm").first().waitFor({ timeout: 30_000 });
+  await until(async () => /quinn/.test(panel.output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")), 8000);
+  panel.press("x");
+  await quinn.locator("#locked:not([hidden])").waitFor({ timeout: 10_000 });
+  check(
+    await quinn.locator(".toast", { hasText: "locked this session" }).waitFor({ timeout: 5000 }).then(() => true, () => false),
+    "locking is said in words, not only a badge",
+  );
+  procs.kill(relay);
+  await sleep(300);
+  relay = await startRelay();
+  const quinnBack = await until(async () => {
+    if (await quinn.locator(".gate").count()) return `turned away: ${await quinn.locator(".gate h1").textContent()}`;
+    return (await quinn.locator("#status").textContent()) === "connected" && (await quinn.locator("#locked").isVisible()) ? "in" : null;
+  }, 40_000, 250);
+  check(quinnBack === "in", "a locked session takes its guests back after the relay restarts", String(quinnBack));
+  const rex = await browser.newPage();
+  await rex.goto(`${RELAY}/j/${panelLink.session}#k=${panelLink.key}`);
+  await rex.fill("#name", "rex");
+  await rex.click("#join button[type=submit]");
+  check(
+    await rex.locator(".gate h1", { hasText: "This session is locked" }).waitFor({ timeout: 15_000 }).then(() => true, () => false),
+    "and still turns away someone new",
+  );
+  await rex.close();
+
+  // [k], quinn's number, Enter: the host's kick, pressed as the host would.
+  // The number is the one the panel shows beside quinn; it is read from the
+  // page, because the panel draws only what changed and its output cannot be
+  // read back as rows.
+  const number = await quinn.locator("#people .person.me").getAttribute("data-id");
+  if (check(number, "quinn has a number to be kicked by", String(number))) {
+    panel.press("k");
+    await sleep(200);
+    for (const digit of number) panel.press(digit);
+    panel.press("\r");
+    check(
+      await quinn.locator(".gate h1", { hasText: "You were removed from this session" }).waitFor({ timeout: 10_000 }).then(() => true, () => false),
+      "a guest the host kicks is told so",
+    );
+    await quinn.reload();
+    if (await quinn.locator("#name").count()) {
+      await quinn.fill("#name", "quinn");
+      await quinn.click("#join button[type=submit]");
+    }
+    check(
+      await quinn.locator(".gate h1", { hasText: "This session is locked" }).waitFor({ timeout: 15_000 }).then(() => true, () => false),
+      "and does not get back into the locked session by reloading",
+    );
+  }
+  await quinn.close();
   panel.press("q");
   await rm(panelDir, { recursive: true, force: true });
 
-  for (const [who, page] of [["ana", ana], ["dan", dan], ["pat", pat]]) {
+  for (const [who, page] of [["ana", ana], ["dan", dan], ["pat", pat], ["quinn", quinn]]) {
     check(page.errors.length === 0, `no page errors (${who})`, page.errors.join(" | "));
   }
 

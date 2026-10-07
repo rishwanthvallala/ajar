@@ -2,6 +2,31 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+
+// The session key, as a host puts it in the link: every frame on a content
+// channel is sealed with it, as the agent seals them. A page given no key now
+// stops at "This link is incomplete", which is right for people and meant
+// these fixtures had to speak like a real host.
+const sessionKey = crypto.randomBytes(32);
+const keyText = sessionKey.toString('base64url');
+const SEALED = new Set([2, 3, 4, 5]);
+const HOST_TO_GUEST = 0xa1, GUEST_TO_HOST = 0xa2;
+function seal(raw) {
+  if (!SEALED.has(raw[0])) return raw;
+  const header = raw.subarray(0, 9), nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey, nonce);
+  cipher.setAAD(Buffer.concat([Buffer.from([HOST_TO_GUEST]), header]));
+  return Buffer.concat([header, nonce, cipher.update(raw.subarray(9)), cipher.final(), cipher.getAuthTag()]);
+}
+function unseal(raw) {
+  if (!SEALED.has(raw[0])) return raw;
+  const header = raw.subarray(0, 9), body = raw.subarray(9);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey, body.subarray(0, 12));
+  decipher.setAAD(Buffer.concat([Buffer.from([GUEST_TO_HOST]), header]));
+  decipher.setAuthTag(body.subarray(body.length - 16));
+  return Buffer.concat([header, decipher.update(body.subarray(12, body.length - 16)), decipher.final()]);
+}
 const { createRequire } = require('node:module');
 const webRequire = createRequire(path.resolve(__dirname, '../web/package.json'));
 const { chromium } = process.env.AJAR_PLAYWRIGHT ? require(process.env.AJAR_PLAYWRIGHT) : webRequire('playwright');
@@ -32,7 +57,7 @@ async function main() {
   assert(await page.locator('#editor-empty').isVisible());
   assert(Math.abs((await box('#viewer-pane')).height - initial.height) < 1, 'close preserves editor height');
   assert(await page.locator('.xterm').isVisible(), 'close preserves terminal');
-  await page.getByRole('button', { name: 'src/greet.ts', exact: true }).click();
+  await page.locator('.tree-row[data-path=\"src/greet.ts\"]').click();
   await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/greet.ts');
 
   const separator = page.locator('#sidebar-splitter');
@@ -90,13 +115,13 @@ async function main() {
   await page.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size === 1).catch(() => {});
   assert.equal(await tokenKinds(), 1, 'Colours off shows plain text');
   assert.equal(await page.locator('#highlight-toggle').getAttribute('aria-pressed'), 'false');
-  await page.getByRole('button', { name: 'src/main.ts', exact: true }).click();
+  await page.locator('.tree-row[data-path=\"src/main.ts\"]').click();
   await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/main.ts');
   await settled();
   assert.equal(await tokenKinds(), 1, 'a file opened while Colours is off is plain text too');
   await page.locator('#highlight-toggle').click();
   await page.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= 3);
-  await page.getByRole('button', { name: 'src/greet.ts', exact: true }).click();
+  await page.locator('.tree-row[data-path=\"src/greet.ts\"]').click();
   await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/greet.ts');
 
   for (const [width, height] of [[1440, 900], [1024, 768], [640, 360], [390, 844]]) {
@@ -125,7 +150,7 @@ async function main() {
       await page.keyboard.press('Escape');
       assert.equal(await page.evaluate(() => document.activeElement?.id), 'side-toggle');
       await page.getByRole('button', { name: 'Files', exact: true }).click();
-      await page.getByRole('button', { name: 'src/main.ts', exact: true }).click();
+      await page.locator('.tree-row[data-path=\"src/main.ts\"]').click();
       assert.equal(await page.locator('#sidebar').isVisible(), false);
       await page.waitForFunction(() => document.activeElement?.closest('.monaco-editor'));
     }
@@ -177,7 +202,7 @@ async function main() {
   await tablePage.waitForFunction(() => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= 3);
   assert(!tableRequests.some(url => /delimited-tokens/.test(url)), 'no CSV tokenizer before a CSV is opened');
   for (const [file, kinds] of [['script.lua', 3], ['data.csv', 4]]) {
-    await tablePage.getByRole('button', { name: file, exact: true }).click();
+    await tablePage.getByRole('treeitem', { name: file, exact: true }).click();
     await tablePage.waitForFunction(name => document.querySelector('#viewer-title')?.textContent === name, file);
     await tablePage.waitForFunction(n => new Set([...document.querySelectorAll('.monaco-editor .view-lines span[class^="mtk"]')].map(s => s.className)).size >= n, kinds, { timeout: 10_000 }).catch(() => {});
     assert((await tableKinds()) >= kinds, `${file} is coloured: ${await tableKinds()} kinds of token`);
@@ -262,11 +287,11 @@ async function checkVersionMismatch() {
   const frame = (channel, data) => {
     const body = Buffer.from(JSON.stringify(data));
     const header = Buffer.alloc(9); header[0] = channel; header.writeUInt32LE(0, 1);
-    return Buffer.concat([header, body]);
+    return seal(Buffer.concat([header, body]));
   };
   await page.routeWebSocket('**/ws', ws => {
     ws.onMessage(data => {
-      const buffer = Buffer.from(data);
+      const buffer = unseal(Buffer.from(data));
       if (buffer.readUInt32LE(1)) return;
       const msg = JSON.parse(buffer.subarray(9).toString());
       // 0 is a current relay reporting an agent from before versioning.
@@ -276,16 +301,16 @@ async function checkVersionMismatch() {
       }
     });
   });
-  await page.goto(`${base}/j/version-check`);
+  await page.goto(`${base}/j/version-check#k=${keyText}`);
   await page.locator('#name').fill('Version check');
   await page.getByRole('button', { name: 'Join', exact: true }).click();
 
-  await page.getByRole('heading', { name: /older ajar/i }).waitFor({ timeout: 15000 });
+  await page.getByRole('heading', { name: /ajar is older than this page/i }).waitFor({ timeout: 15000 });
   const body = await page.locator('.centered').innerText();
   assert(/install\.sh/.test(body), 'the mismatch notice names the command that fixes it');
   // And it must not pretend to be a working session underneath the notice.
   assert(
-    !(await page.getByRole('button', { name: 'main.ts', exact: true }).isVisible()),
+    !(await page.getByRole('treeitem', { name: 'main.ts', exact: true }).isVisible()),
     'a mismatched session does not also render a file tree',
   );
   await page.close();
@@ -307,12 +332,12 @@ async function checkSession() {
   const frame = (channel, data, stream = 0) => {
     const body = Buffer.isBuffer(data) ? data : Buffer.from(JSON.stringify(data));
     const header = Buffer.alloc(9); header[0] = channel; header.writeUInt32LE(stream, 1);
-    return Buffer.concat([header, body]);
+    return seal(Buffer.concat([header, body]));
   };
   await page.routeWebSocket('**/ws', ws => {
     wire = ws;
     ws.onMessage(data => {
-      const buffer = Buffer.from(data), channel = buffer[0], stream = buffer.readUInt32LE(1);
+      const buffer = unseal(Buffer.from(data)), channel = buffer[0], stream = buffer.readUInt32LE(1);
       if (stream) { sent.push({ channel, stream, bytes: buffer.subarray(9) }); return; }
       const msg = JSON.parse(buffer.subarray(9).toString()); sent.push({ channel, ...msg });
       if (msg.t === 'hello') {
@@ -331,17 +356,17 @@ async function checkSession() {
   let releaseViewer;
   const viewerGate = new Promise(resolve => { releaseViewer = resolve; });
   await page.route('**/src/viewer.ts*', async route => { await viewerGate; await route.continue(); });
-  await page.goto(`${base}/j/layout-check`);
+  await page.goto(`${base}/j/layout-check#k=${keyText}`);
   await page.locator('#name').fill('Layout check');
   await page.getByRole('button', { name: 'Join', exact: true }).click();
-  await page.getByRole('button', { name: 'main.ts', exact: true }).waitFor();
-  await page.getByRole('button', { name: 'main.ts', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'main.ts', exact: true }).waitFor();
+  await page.getByRole('treeitem', { name: 'main.ts', exact: true }).click();
   await page.getByRole('button', { name: 'Close file', exact: true }).click();
   releaseViewer();
   await page.evaluate(() => import('/src/viewer.ts'));
   assert(await page.locator('#editor-empty').isVisible(), 'closing during lazy load stays empty');
   assert(!sent.some(msg => msg.channel === 5 && msg.t === 'open'), 'cancelled selection sends no open request');
-  await page.getByRole('button', { name: 'main.ts', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'main.ts', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('#viewer')?.getAttribute('aria-busy') !== 'true');
   // Deliver an editable document using the actual Yjs wire format.
   const Y = webRequire('yjs'), doc = new Y.Doc(); doc.getText('content').insert(0, 'const answer = 42;\n');

@@ -78,9 +78,11 @@ const COLUMNS = {
 
 /** Monaco's own light and dark themes, plus colours for the tokens only these products emit. */
 export function defineEditorThemes(editor: EditorThemes): void {
-  for (const [name, base, columns, delimiter] of [
-    ["ajar-light", "vs", COLUMNS.light, "8a94a2"],
-    ["ajar-dark", "vs-dark", COLUMNS.dark, "6c7684"],
+  // The editor's own background is the workspace's surface, so it sits in
+  // the page rather than on a slab of Monaco's grey.
+  for (const [name, base, columns, delimiter, surface] of [
+    ["ajar-light", "vs", COLUMNS.light, "8a94a2", "#ffffff"],
+    ["ajar-dark", "vs-dark", COLUMNS.dark, "6c7684", "#161a22"],
   ] as const) {
     editor.defineTheme(name, {
       base,
@@ -90,7 +92,7 @@ export function defineEditorThemes(editor: EditorThemes): void {
         { token: "delimiter.csv", foreground: delimiter },
         { token: "delimiter.tsv", foreground: delimiter },
       ],
-      colors: {},
+      colors: { "editor.background": surface, "editorGutter.background": surface },
     });
   }
 }

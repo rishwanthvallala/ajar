@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A jar with its lid tipped open. -->
+  <style>
+    .ink { fill: #2447c9; }
+    @media (prefers-color-scheme: dark) { .ink { fill: #8ca6ff; } }
+  </style>
+  <rect class="ink" x="5" y="2.5" width="17" height="5" rx="1.5" transform="rotate(-14 13.5 5)"/>
+  <path class="ink" d="M8 11h16a2 2 0 0 1 2 2v13a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V13a2 2 0 0 1 2-2zm3 5v9h10v-9z"/>
+</svg>

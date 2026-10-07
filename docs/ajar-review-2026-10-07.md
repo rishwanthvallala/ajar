@@ -36,7 +36,7 @@ Status: **fixed** (committed, with a check that fails without the fix),
 | C1 | Back to the session page showed a dead page, and its socket reconnected as a nameless "…" in everyone's roster; New terminal opened real shells nobody could see | fixed — not torn down when going into the back/forward cache; a fresh socket on the way back; `check-guest` with the cache on |
 | C2 | A relay restart ejected for good every guest whose browser got back before the agent ("no such session") | fixed — once in, that refusal and `rate_limited` are waited out; `check-guest` |
 | C3 | The agent quit, ending every terminal, on `host_taken` (a half-open socket the relay still held) or `rate_limited` (a flaky network); there was no keepalive on either side | fixed — the agent retries both and pings the relay, dropping a connection silent for 45 s; the relay pings every socket, lets the session's own key replace a stale host socket, and meters a resume as a join; `smoke-hostdrop`. Checked by hand: an agent from before this answers the relay's pings, idle for 95 s |
-| C4 | Locking the session evicted existing guests at their first blip, and after a relay restart | next — a resume token, so those already in stay in |
+| C4 | Locking the session evicted existing guests at their first blip, and after a relay restart | fixed — a per-tab secret the relay remembers, revoked by a kick, and vouched for by the agent to a restarted relay; unit tests, `smoke-control`, `check-guest` (a locked session through a relay restart) |
 | C5 | A guest joining while the host was away was told nothing: connected, no files, no terminals | fixed — the relay tells them, with the time left; `check-guest` |
 | C6 | A file opened while the host was away hung for good if the saved copy did not have it; one from the saved copy was unlabelled, and stayed stale and read-only after the host returned | fixed; `check-guest` |
 | C7 | With the host away the status said "open", and the countdown never moved | fixed; `check-guest` |
@@ -59,22 +59,74 @@ Status: **fixed** (committed, with a check that fails without the fix),
 | E8 | Read-only guests could open terminals | fixed; `smoke-control`. That a read-only session drops keystrokes into a terminal already open moved to `check-guest`, which can press `l` |
 | E9 | A folder renamed or moved in appeared empty, and the old name's contents stayed listed and counted | fixed; unit test, `smoke-workspace` |
 
-## Next, in order
+## The host's panel
 
-1. C4, the lock.
-2. The host's panel: the link cut at 80 columns, hidden warnings, the kick
-   prompt's digits, terminals credited to "you", directories counted as files.
-3. Accessibility: the terminal's keyboard trap, an ARIA tree for the files,
-   landmarks, live regions, contrast.
-4. Design and copy: pad-style dead-end screens, read-only and locked
-   explanations, presence dots, the editor and terminal following the theme,
-   the landing page's header, status and error wording.
-5. Downloading a file, folder or the whole workspace.
-6. Tests: the panel's other keys through the pty runner (lock, kick, quit),
-   fail fast when a port is already taken, and repeat failures at the end of
-   each suite.
+| | Finding | Status |
+|---|---|---|
+| P1 | At 80 columns the link was cut, losing the end of its key | fixed — it wraps, gets its rows first when the terminal is short, and `[c]` copies it (OSC 52); render tests at 80×24 |
+| P2 | Only the first two warnings were ever shown — the credentials one never | fixed — the box is as tall as what it holds; render test |
+| P3 | The sandbox and copy shared one line, and `[d] stop` was always the part cut off | fixed — the copy has its own line, `[d]` is in the keys row |
+| P4 | The kick prompt's digits fell off the end at 80 columns | fixed — the number comes first; render test |
+| P5 | Terminals of a guest who had left were credited to "you" | fixed — "dana (left)" |
+| P6 | Guests whose page could not read the session showed as "…" | fixed — after a few seconds, "someone with an incomplete link" |
+| P7 | "18 files shared" counted folders | fixed, on the panel and in the page |
+| P8 | Every reconnect logged the transport's error text | fixed — "lost the relay — reconnecting; terminals keep running" |
 
-## Verification of this batch
+## The page
+
+| | Finding | Status |
+|---|---|---|
+| G1 | A link with its key cut short, missing or wrong opened a session that never worked | fixed — a card that says so, before joining or once the first frames will not open; `check-guest` |
+| G2 | A host whose laptop was asleep looked like an empty, working session | fixed — "waiting for the host", New terminal off, and after ten seconds a line saying it connects when they wake; `check-guest` (the agent stopped with SIGSTOP) |
+| G3 | Dead ends were bare text: "Can't join", "Session ended", the version pages | fixed — the pad's card: what happened, the session's name, one action, the page's title and focus; relay codes and end reasons in words |
+| G4 | The landing page: a leaked `header` rule boxed its title, prose was monospace, information was red, and it said nothing is kept | fixed |
+| G5 | Lock and read-only were bare badges | fixed — said in a toast as they change, and on the badge |
+| G6 | xterm's black viewport showed under a smaller window's rows in the light theme; the editor and terminal were not the page's colours | fixed |
+| A1 | The terminal was a keyboard trap | fixed — F6 leaves it, Shift+F6 to the editor, and it says so; `check-guest` |
+| A2 | The file tree could not be reached past its first screenful by keyboard | fixed — an ARIA tree with one roving stop, levels, arrows, Home/End; `check-guest` |
+| A3 | End screens set no title and no focus | fixed |
+| A4 | Announcements came from a live region that started hidden | fixed — toasts come from one that is always there |
+| A5 | People were a span with an ignored label; "you" was an invisible outline | fixed — a list, "(you)" and "(host)" in words; `check-guest` |
+| A6 | The name field had only a placeholder, and a border at 1.24:1 | fixed — a label, and a 3:1 border |
+| A7 | No main landmark or heading; tab names ran into watchers' names | fixed |
+| A8 | Remote cursors were 1.9–3.1:1 in dark mode | fixed — a dark palette, following the theme |
+| A9 | The status re-announced every retry countdown | fixed — the countdown sits beside the live region |
+
+## Downloads
+
+| | Finding | Status |
+|---|---|---|
+| D1 | A guest could not take anything away but by copying it out of an editor | added — a file, a folder or the whole workspace; built off the agent's loop, sent a window at a time against acknowledgements, never anything the tree hides; unit tests, `check-guest` (a 3 MB file in the zip, checked with `unzip -t`) |
+
+## Finishing touches
+
+| | Finding | Status |
+|---|---|---|
+| F1 | Presence did not match the cursors, and pushed the header to three rows on a phone | fixed — a dot per person in their cursor's colour; on a phone, dots and a count; `check-guest` |
+| F2 | An open empty folder showed nothing, like one still loading | fixed — an "empty" row; `check-guest` |
+| F3 | The landing page had no theme switch and no icon; the tree's chevrons were 11 px glyphs | fixed |
+| T1 | The panel's keys were never pressed by any test | fixed — `check-guest` presses `l`, `x`, `k` and `q` through `scripts/lib/ptyrun.py` |
+| T2 | A suite's relay that died at start, its port taken, passed for a working one | fixed — `wire.mjs` notices and says so |
+| T3 | CI's annotation showed only a log's tail, often not the failure | fixed — every suite says its failures again at the end |
+| T4 | Acceptance #7 recorded "nothing re-ran" without looking; check-host-drop waited on a class Monaco never sets | fixed |
+
+## Not done, on purpose
+
+- Creating, renaming and deleting files from the tree. The shell does all of
+  it, and a second way to change the host's disk is a second thing to secure.
+- Uploading files from the browser, for the same reason.
+- Printing the link before the panel takes the screen: the link now wraps and
+  `[c]` copies it, which serve the same need while the panel is up.
+
+## Shipped
+
+| | Commit | Live |
+|---|---|---|
+| Security (S1–S3) | `58fbdbe` | 7 October, with the batch below |
+| The installer's domain (S4) | `0574a0c` | 7 October |
+| Losing work, staying connected, the editor and terminals | `e7d4c23` | relay and page 7 October; the agent's half needs a release |
+
+## Verification of the first batch
 
 Each fix was broken on purpose, one at a time, and its check run: every one
 failed, except that Back out of the cache still works without the page

@@ -257,6 +257,19 @@ pub enum Control {
         /// is waited for. Absent from older agents and from every guest.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host_key: Option<String>,
+        /// A guest's own secret, made by its page and kept for the tab. The
+        /// relay remembers who it has let in by it, so a locked session still
+        /// takes back someone already in it after a blip; locking used to
+        /// shut out everyone at their first reconnect. Absent from hosts and
+        /// from older pages.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
+        /// From the host: hex SHA-256 of every guest's `resume` it has met
+        /// in this session, less anyone kicked. A restarted relay knows
+        /// nobody, and a locked session would otherwise turn its own guests
+        /// away when they come back. Absent from guests and older agents.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        admitted: Vec<String>,
     },
     Welcome {
         participant_id: u32,
@@ -400,6 +413,33 @@ pub enum Fs {
     },
     /// Reading failed — gone, unreadable, outside the workspace.
     ReadError {
+        path: String,
+        message: String,
+    },
+    /// A guest asking to download a file, a folder, or with `""` the whole
+    /// workspace. A folder comes as a zip.
+    Download {
+        path: String,
+    },
+    /// The host's answer: what is coming, and how big. The bytes follow as
+    /// stream frames on this channel, `id` as their stream, in order.
+    Archive {
+        id: u32,
+        path: String,
+        /// What to save it as.
+        name: String,
+        bytes: u64,
+        files: u32,
+    },
+    /// The guest has `received` bytes of download `id`. The host sends a
+    /// window ahead of this and no further, so a download never fills the
+    /// relay's queue for a slow guest — which would cut them off.
+    Received {
+        id: u32,
+        received: u64,
+    },
+    /// The download cannot be made, and why.
+    DownloadError {
         path: String,
         message: String,
     },
@@ -552,6 +592,10 @@ pub enum Presence {
     /// A guest introducing themselves, once they are past the relay.
     Iam {
         name: String,
+        /// The `resume` this guest gave the relay, so the host can vouch for
+        /// it to a relay that has restarted. Sealed, like everything here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
     },
     /// The host's view of who is here, and what folder this is. Rebroadcast
     /// whenever it changes — the relay cannot assemble this, because it does
@@ -594,6 +638,8 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             code: None,
             host_key: None,
+            resume: None,
+            admitted: Vec::new(),
         };
         let f = Frame::json(Channel::Control, TARGET_ALL, &msg).unwrap();
         let back = Frame::decode(&f.encode()).unwrap();
@@ -618,6 +664,8 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             code: None,
             host_key: None,
+            resume: None,
+            admitted: Vec::new(),
         })
         .unwrap();
         assert!(!hello.contains("host_key"), "{hello}");
@@ -626,6 +674,32 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(old, Control::Hello { host_key: None, .. }));
+    }
+
+    #[test]
+    fn a_hello_without_resume_or_admitted_is_unchanged_on_the_wire() {
+        let hello = serde_json::to_string(&Control::Hello {
+            session: "s".into(),
+            role: Role::Host,
+            locked: true,
+            protocol: PROTOCOL_VERSION,
+            code: None,
+            host_key: Some("k".into()),
+            resume: None,
+            admitted: Vec::new(),
+        })
+        .unwrap();
+        assert!(
+            !hello.contains("resume") && !hello.contains("admitted"),
+            "{hello}"
+        );
+        let old: Control = serde_json::from_str(
+            r#"{"t":"hello","session":"s","role":"guest","locked":false,"protocol":3}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(old, Control::Hello { resume: None, ref admitted, .. } if admitted.is_empty())
+        );
     }
 
     #[test]
@@ -639,6 +713,8 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             code: None,
             host_key: None,
+            resume: None,
+            admitted: Vec::new(),
         })
         .unwrap();
         assert!(
@@ -690,6 +766,8 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 code: None,
                 host_key: None,
+                resume: None,
+                admitted: Vec::new(),
             },
         )
         .unwrap();

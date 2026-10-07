@@ -3,6 +3,7 @@
 //! v0: shared terminals over a link. No sandbox, no editing, no persistence.
 //! See the build spec for what that deliberately leaves out and why.
 
+mod archive;
 mod checkpoint;
 mod client;
 mod docs;
@@ -142,6 +143,18 @@ struct Host {
     exit_tx: mpsc::UnboundedSender<PtyExit>,
     outbound: mpsc::UnboundedSender<Frame>,
     lock_state: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Shared with the relay connection: every guest let in, by the hash of
+    /// their page's secret, less anyone kicked.
+    admitted: client::Admitted,
+    /// Which of those secrets each guest here introduced themselves with.
+    passes: HashMap<u32, String>,
+    /// Names of guests who have gone, for the terminals they left running.
+    departed: HashMap<u32, String>,
+    /// Downloads on their way out, by guest and id.
+    downloads: HashMap<(u32, u32), Transfer>,
+    next_download: u32,
+    /// Where a download being built off the loop comes back to it.
+    built_tx: mpsc::UnboundedSender<Built>,
 }
 
 impl Host {
@@ -158,7 +171,7 @@ impl Host {
             .iter()
             .map(|(id, name)| GuestRow {
                 id: *id,
-                name: name.clone(),
+                name: shown_name(name, self.joined_at.get(id)),
                 joined: self.joined_at.get(id).copied().unwrap_or_else(Instant::now),
                 terminals: self
                     .ptys
@@ -179,10 +192,13 @@ impl Host {
                 let by = self.ptys.get(*id)?.opened_by;
                 Some((
                     *id,
+                    // Never "you": the host opens no terminals here. A guest
+                    // who has gone keeps their name on what they started.
                     self.guests
                         .get(&by)
                         .cloned()
-                        .unwrap_or_else(|| "you".into()),
+                        .or_else(|| self.departed.get(&by).map(|n| format!("{n} (left)")))
+                        .unwrap_or_else(|| "someone who left".into()),
                 ))
             })
             .collect();
@@ -269,7 +285,7 @@ async fn run() -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| verdict.path.display().to_string());
 
-    let (workspace, scan) = open_workspace(&verdict.path, args.force)?;
+    let (workspace, _entries) = open_workspace(&verdict.path, args.force)?;
 
     // Both of these run before the link is minted, because both are about
     // what the host is agreeing to before anyone can arrive.
@@ -293,6 +309,7 @@ async fn run() -> Result<()> {
     // The agent seals its own snapshots, so it keeps a copy of the key.
     let cipher_for_host = cipher.clone();
     let lock_state = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let admitted = client::Admitted::default();
 
     let relay: RelayHandle = client::spawn(
         client::ws_url(&args.relay)?,
@@ -305,9 +322,12 @@ async fn run() -> Result<()> {
             // Proves to the relay, on every reconnect, that this is the
             // process that opened the session.
             host_key: Some(ids::host_key()),
+            resume: None,
+            admitted: Vec::new(),
         },
         cipher,
         lock_state.clone(),
+        admitted.clone(),
     );
     let shutdown = relay.shutdown_handle();
     let mut events = relay.events;
@@ -372,7 +392,8 @@ async fn run() -> Result<()> {
     let mut state = ui::State::new(
         folder.clone(),
         verdict.path.display().to_string(),
-        scan,
+        // Files: "18 files shared" used to be ten files and eight folders.
+        workspace.file_count(),
         sandbox.summary(),
         sandbox.is_confined(),
         link.clone(),
@@ -384,11 +405,12 @@ async fn run() -> Result<()> {
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<PtyOutput>();
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<PtyExit>();
+    let (built_tx, mut built_rx) = mpsc::unbounded_channel::<Built>();
     state.read_only = args.read_only;
     state.sync = if args.no_sync {
-        " · keeping no copy".into()
+        " · keeping no copy — guests lose the files while you are away".into()
     } else {
-        " · copy pending".into()
+        " · a sealed copy will be kept on the relay, so guests can read while you are away".into()
     };
     let mut host = Host {
         ptys: PtyRegistry::new(verdict.path.clone(), &sandbox, caps, withheld),
@@ -415,6 +437,12 @@ async fn run() -> Result<()> {
         exit_tx,
         outbound: relay.outbound.clone(),
         lock_state,
+        admitted,
+        passes: HashMap::new(),
+        departed: HashMap::new(),
+        downloads: HashMap::new(),
+        next_download: 1,
+        built_tx,
     };
 
     let mut online = false;
@@ -476,7 +504,8 @@ async fn run() -> Result<()> {
                     }
                     RelayEvent::Disconnected(why) => {
                         if online {
-                            host.log(format!("connection lost ({why}) — terminals keep running"));
+                            debug!("relay connection lost: {why}");
+                            host.log("lost the relay — reconnecting; terminals keep running");
                         } else if !warned_offline && !ever_online {
                             // Never connected at all. Without this the agent
                             // prints a link and sits there looking healthy
@@ -503,6 +532,11 @@ async fn run() -> Result<()> {
                     RelayEvent::Frame(frame) => handle_frame(frame, &mut host)?,
                 }
             }
+            built = built_rx.recv() => {
+                if let Some(built) = built {
+                    on_built(built, &mut host);
+                }
+            }
             output = out_rx.recv() => {
                 let Some(PtyOutput { pty_id, bytes }) = output else { break };
                 let _ = host.outbound.send(Frame::stream(Channel::Pty, pty_id, TARGET_ALL, bytes));
@@ -520,6 +554,12 @@ async fn run() -> Result<()> {
                 let Some(action) = action else { continue };
                 match host.state.kick_step(&action) {
                     KickStep::Chosen(id) => {
+                        // Out for good, past a relay restart too.
+                        if let Some(hash) = host.passes.remove(&id) {
+                            if let Ok(mut set) = host.admitted.lock() {
+                                set.remove(&hash);
+                            }
+                        }
                         if let Some(name) = host.guests.get(&id).cloned() {
                             let _ = host.outbound.send(Frame::json(
                                 Channel::Control,
@@ -597,6 +637,18 @@ async fn run() -> Result<()> {
                         } else {
                             "guests can type and edit again"
                         });
+                    }
+                    Action::CopyLink => {
+                        // OSC 52: the terminal puts it on the clipboard, if it
+                        // allows that — iTerm2, kitty, WezTerm, Windows
+                        // Terminal and tmux do; Terminal.app does not.
+                        use base64::Engine;
+                        use std::io::Write;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&host.state.link);
+                        let mut out = std::io::stdout();
+                        let _ = write!(out, "\x1b]52;c;{encoded}\x07");
+                        let _ = out.flush();
+                        host.log("link sent to the clipboard — if nothing pasted, this terminal does not allow it; select it above instead");
                     }
                     Action::Redraw => {}
                 }
@@ -748,13 +800,31 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             }
         }
 
-        Channel::Fs => {
-            if let Ok(Fs::Read { path }) = frame.parse_json::<Fs>() {
+        Channel::Fs => match frame.parse_json::<Fs>() {
+            Ok(Fs::Read { path }) => {
                 let content = host.workspace.read(&path);
                 host.outbound
                     .send(Frame::json(Channel::Fs, frame.target, &content)?)?;
             }
-        }
+            Ok(Fs::Download { path }) => start_download(path, frame.target, host),
+            Ok(Fs::Received { id, received }) => {
+                let key = (frame.target, id);
+                let done = host
+                    .downloads
+                    .get_mut(&key)
+                    .map(|t| {
+                        t.acked = t.acked.max(received);
+                        t.acked >= t.data.len() as u64
+                    })
+                    .unwrap_or(false);
+                if done {
+                    host.downloads.remove(&key);
+                } else {
+                    pump(key, host);
+                }
+            }
+            _ => {}
+        },
 
         // stream 0 is JSON; anything else is bytes belonging to that document.
         Channel::Doc if frame.stream_id == STREAM_CONTROL => match frame.parse_json::<DocMsg>()? {
@@ -842,8 +912,23 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
                     },
                 )?)?;
             }
-            Ok(Presence::Iam { name }) => {
+            Ok(Presence::Iam { name, resume }) => {
                 let name = name.chars().take(32).collect::<String>();
+                // Vouched for to a restarted relay, so that a locked session
+                // does not shut this guest out when they come back to it.
+                if let Some(resume) = resume.filter(|r| r.len() <= 128) {
+                    use sha2::{Digest, Sha256};
+                    let hash: String = Sha256::digest(resume.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    if let Ok(mut set) = host.admitted.lock() {
+                        if set.len() < 1024 {
+                            set.insert(hash.clone());
+                        }
+                    }
+                    host.passes.insert(frame.target, hash);
+                }
                 // A guest re-introduces itself whenever the host comes back,
                 // because an introduction made during the gap went nowhere.
                 // Only a new name is news.
@@ -907,12 +992,12 @@ fn on_doc_open(path: &str, reader: u32, host: &mut Host) -> Result<()> {
 /// The panel's one line about what is being kept, and how to stop.
 fn update_sync_line(host: &mut Host) {
     host.state.sync = match (host.syncing, host.synced) {
-        (false, _) => " · keeping no copy".into(),
+        (false, _) => " · keeping no copy — guests lose the files while you are away".into(),
         (true, Some((bytes, files))) => format!(
-            " · keeping {} of {files} files so guests can read while you are away  [d] stop",
+            " · keeping a sealed copy on the relay, {} in {files} files, so guests can read while you are away",
             crate::usage::human_bytes(bytes)
         ),
-        (true, None) => " · copy pending".into(),
+        (true, None) => " · a sealed copy will be kept on the relay, so guests can read while you are away".into(),
     };
 }
 
@@ -1215,6 +1300,12 @@ fn forget(participant_id: u32, host: &mut Host) {
         .unwrap_or_else(|| "someone".into());
     host.sizes.remove(&participant_id);
     host.joined_at.remove(&participant_id);
+    if who != "…" && who != "someone" {
+        host.departed.insert(participant_id, who.clone());
+    }
+    // Their secret stays vouched for: leaving looks exactly like a blip.
+    host.passes.remove(&participant_id);
+    host.downloads.retain(|(to, _), _| *to != participant_id);
     for (path, contents) in host.docs.drop_reader(participant_id) {
         write_last(&path, &contents, host);
     }
@@ -1365,7 +1456,8 @@ fn flush_resync(host: &mut Host) {
     }
 }
 
-fn send_fs(host: &Host, message: &Fs) {
+fn send_fs(host: &mut Host, message: &Fs) {
+    host.state.files = host.workspace.file_count();
     if let Ok(frame) = Frame::json(Channel::Fs, TARGET_ALL, message) {
         let _ = host.outbound.send(frame);
     }
@@ -1481,6 +1573,132 @@ fn farewell(root: &Path, mark: Option<&checkpoint::Checkpoint>) {
 /// Reads from the same `State` the panel draws rather than taking the same
 /// eight values a second time — two renderings of one set of facts is how
 /// they end up disagreeing.
+/// A download being sent, a window at a time.
+struct Transfer {
+    data: Vec<u8>,
+    sent: usize,
+    acked: u64,
+}
+
+/// A download built off the loop, coming back to be sent.
+struct Built {
+    target: u32,
+    id: u32,
+    path: String,
+    result: Result<archive::Download, String>,
+}
+
+/// How far ahead of what the guest has acknowledged a download runs. The
+/// relay closes a guest whose queue grows past 8 MB, and a download sent all
+/// at once to someone on a slow link did exactly that.
+const DOWNLOAD_WINDOW: usize = 1024 * 1024;
+const DOWNLOAD_CHUNK: usize = 128 * 1024;
+
+/// A guest asked for a file, a folder or everything. Reading and zipping
+/// happen off the loop: a large folder takes long enough to freeze every
+/// terminal while it is read.
+fn start_download(path: String, target: u32, host: &mut Host) {
+    // One at a time per guest; asking again replaces the last.
+    host.downloads.retain(|(to, _), _| *to != target);
+    let id = host.next_download;
+    host.next_download = host.next_download.wrapping_add(1).max(1);
+    let entries = host.workspace.under(&path);
+    let filter = host.workspace.filter();
+    let folder = host.state.folder.clone();
+    let tx = host.built_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = if entries.is_empty() {
+            Err(format!("{path} is not in the shared folder"))
+        } else {
+            archive::build(&filter, &folder, &path, &entries)
+        };
+        let _ = tx.send(Built {
+            target,
+            id,
+            path,
+            result,
+        });
+    });
+}
+
+fn on_built(built: Built, host: &mut Host) {
+    let Built {
+        target,
+        id,
+        path,
+        result,
+    } = built;
+    let download = match result {
+        Ok(download) => download,
+        Err(message) => {
+            if let Ok(f) = Frame::json(Channel::Fs, target, &Fs::DownloadError { path, message }) {
+                let _ = host.outbound.send(f);
+            }
+            return;
+        }
+    };
+    let who = host
+        .guests
+        .get(&target)
+        .cloned()
+        .unwrap_or_else(|| "someone".into());
+    host.log(format!(
+        "{who} downloaded {} ({})",
+        download.name,
+        crate::usage::human_bytes(download.bytes.len() as u64)
+    ));
+    if let Ok(f) = Frame::json(
+        Channel::Fs,
+        target,
+        &Fs::Archive {
+            id,
+            path,
+            name: download.name,
+            bytes: download.bytes.len() as u64,
+            files: download.files,
+        },
+    ) {
+        let _ = host.outbound.send(f);
+    }
+    host.downloads.insert(
+        (target, id),
+        Transfer {
+            data: download.bytes,
+            sent: 0,
+            acked: 0,
+        },
+    );
+    pump((target, id), host);
+}
+
+/// Send as much of a download as the window allows.
+fn pump(key: (u32, u32), host: &mut Host) {
+    let Some(transfer) = host.downloads.get_mut(&key) else {
+        return;
+    };
+    while transfer.sent < transfer.data.len()
+        && transfer.sent as u64 - transfer.acked.min(transfer.sent as u64) < DOWNLOAD_WINDOW as u64
+    {
+        let end = (transfer.sent + DOWNLOAD_CHUNK).min(transfer.data.len());
+        let chunk = transfer.data[transfer.sent..end].to_vec();
+        let _ = host
+            .outbound
+            .send(Frame::stream(Channel::Fs, key.1, key.0, chunk));
+        transfer.sent = end;
+    }
+}
+
+/// A guest's name as the host should read it. "…" is someone who has not
+/// said who they are; a few seconds on, they are not going to — their page
+/// cannot read the session, which is a link cut short.
+fn shown_name(name: &str, joined: Option<&Instant>) -> String {
+    if name == "…" && joined.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) {
+        "someone with an incomplete link".into()
+    } else {
+        name.to_string()
+    }
+}
+
 fn banner(state: &ui::State, caps: &limits::Limits) {
     println!();
     println!("{}", guard::notice(state.confined));

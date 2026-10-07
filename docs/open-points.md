@@ -45,6 +45,13 @@ a store request ahead of it that stalled on the network — a store `fetch` has
 no deadline. (The run before that one failed too, but it spanned the laptop
 sleeping, and says nothing.)
 
+**A pad page threw "Atomics.wait cannot be called in this context", once.**
+On 7 October, on the macOS runner (CI run 37622394950), the second editor
+`accounts-check` opens on a pad raised it as a page error; Linux passed the
+same commit and the rerun failed elsewhere. `Atomics.wait` on the main thread
+is the Wasmer SDK's, so the suspect is its start-up racing the page's first
+use of the runtime. Not reproduced locally.
+
 ### A pad holds 60 MB for now
 
 Raised from 25 MB on 7 October for public pads that need more, and meant to be
@@ -383,11 +390,11 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | A guest could read what the tree hides by naming it — `.git/config`, gitignored files — read-only guests included | `58fbdbe` |
 | A guest could open every file in the folder as a document, a megabyte of the host's memory apiece | `58fbdbe` |
 | The landing page and `install.sh` told people to pipe a script from `ajar.sh`, a domain nobody owns, to `sh` | `0574a0c` |
-| A change on disk to an open file deleted whatever had been typed since the last write, for everyone | this batch |
-| A paste into a terminal whose program was not reading froze the whole agent, ctrl-c included | this batch |
-| Editing a file with a byte-order mark or mixed line endings wrote every edit a character early; a Latin-1 file lost its accents | this batch |
-| The guest's page: Back showed a dead page and a nameless roster entry; a reconnect or a file switch went back to line 1; a relay restart ejected guests for good; the host away looked like "connected" | this batch |
-| The agent quit, ending every terminal, when the relay still held its dead socket or rate-limited a flaky network | this batch |
+| A change on disk to an open file deleted whatever had been typed since the last write, for everyone | `e7d4c23` |
+| A paste into a terminal whose program was not reading froze the whole agent, ctrl-c included | `e7d4c23` |
+| Editing a file with a byte-order mark or mixed line endings wrote every edit a character early; a Latin-1 file lost its accents | `e7d4c23` |
+| The guest's page: Back showed a dead page and a nameless roster entry; a reconnect or a file switch went back to line 1; a relay restart ejected guests for good; the host away looked like "connected" | `e7d4c23` |
+| The agent quit, ending every terminal, when the relay still held its dead socket or rate-limited a flaky network | `e7d4c23` |
 
 The whole review, with what is still to come, is in
 [ajar-review-2026-10-07.md](ajar-review-2026-10-07.md).

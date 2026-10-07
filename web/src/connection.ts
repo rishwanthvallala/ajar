@@ -9,7 +9,15 @@ export interface ConnOptions {
   /** Seals content channels. Absent for a link that carries no key. */
   sealer?: Sealer | null;
   role?: Role;
+  /**
+   * This tab's secret for the session. The relay lets back into a locked
+   * session anyone it has let in before by it — locking used to shut out
+   * everyone already in at their first blip.
+   */
+  resume?: string;
   onFrame: (f: Frame) => void;
+  /** Called once if the host's frames cannot be opened with this key. */
+  onUnreadable?: () => void;
   onState: (s: ConnState, detail?: string) => void;
 }
 
@@ -52,6 +60,9 @@ export class Connection {
    */
   private outbound: Promise<void> = Promise.resolve();
   private inbound: Promise<void> = Promise.resolve();
+  /** Sealed frames that would not open, while none ever has. */
+  private unreadable = 0;
+  private readable = false;
 
   constructor(private opts: ConnOptions) {
     this.open();
@@ -73,6 +84,7 @@ export class Connection {
           t: "hello",
           session: this.opts.session,
           role: this.opts.role ?? "guest",
+          ...(this.opts.resume ? { resume: this.opts.resume } : {}),
         }),
       );
       // Anything that still needs an identity goes straight back to waiting;
@@ -103,8 +115,15 @@ export class Connection {
         .then(async () => {
           const opened = await sealer.open(frame, SealDirection.HostToGuest);
           // Wrong key, or a frame that was interfered with. Neither is worth
-          // guessing at.
-          if (opened) this.deliver(opened);
+          // guessing at — but a run of them with nothing ever opening is a
+          // key that does not fit, and saying nothing left the page waiting
+          // on a session it could never read.
+          if (opened) {
+            if (isEncrypted(frame.channel)) this.readable = true;
+            this.deliver(opened);
+          } else if (!this.readable && ++this.unreadable === 3) {
+            this.opts.onUnreadable?.();
+          }
         })
         .catch((e) => console.warn("dropping a frame that could not be handled", e));
     };

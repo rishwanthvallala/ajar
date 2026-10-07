@@ -135,8 +135,12 @@ async function main() {
     await host.connect();
 
     const early = new Guest(WS, session, "early");
+    early.resume = "e".repeat(32);
     await early.connect();
     ok("a guest can join an open session");
+    const kicked = new Guest(WS, session, "kicked");
+    kicked.resume = "k".repeat(32);
+    await kicked.connect();
 
     host.send(json(CH_CONTROL, { t: "lock", locked: true }));
     await sleep(300);
@@ -162,6 +166,24 @@ async function main() {
       "guests to be told the session locked",
     );
     ok("guests are told the room was sealed");
+
+    // "People already in stay" — including after a blip. Every reconnect used
+    // to be turned away like a stranger's.
+    const back = await early.reconnect().then(() => "in", (e) => String(e));
+    if (back !== "in") fail(`a guest already in was locked out by a blip: ${back}`);
+    else ok("someone already in gets back in after a blip");
+    const stranger = new Guest(WS, session, "stranger");
+    stranger.resume = "s".repeat(32);
+    const strangerIn = await stranger.connect().then(() => true, () => false);
+    if (strangerIn) fail("a newcomer with a secret of their own got into a locked session");
+    else ok("a newcomer with a secret of their own still does not");
+    host.send(json(CH_CONTROL, { t: "kick", participant_id: kicked.participantId }));
+    await sleep(300);
+    const kickedAgain = new Guest(WS, session, "kicked-again");
+    kickedAgain.resume = "k".repeat(32);
+    const kickedBack = await kickedAgain.connect().then(() => true, () => false);
+    if (kickedBack) fail("a kicked guest got back into a locked session with their old secret");
+    else ok("someone kicked does not get back in");
 
     host.send(json(CH_CONTROL, { t: "lock", locked: false }));
     await sleep(300);

@@ -26,7 +26,9 @@
   display: flex; flex-wrap: wrap; align-items: center;
   border-bottom: 1px solid var(--rule); background: var(--surface);
 }
-.shell #workspace { min-width: 0; max-width: min(28rem, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; }
+/* The page's heading: what is being worked on. A heading for screen readers,
+   the same quiet line it always was to look at. */
+.shell #workspace { margin: 0; font-weight: 600; line-height: inherit; min-width: 0; max-width: min(28rem, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; }
 .shell .connection-status { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
 .shell .status { overflow-wrap: anywhere; letter-spacing: 0; font-size: 0.75rem; }
 .shell .people { margin-left: auto; max-width: 100%; flex-wrap: nowrap; overflow: auto; justify-content: flex-start; padding: 2px; }
@@ -102,3 +104,6 @@
   .shell .empty-symbol { display: none; }
   .shell .editor-empty strong { font-size: 0.875rem; }
 }
+
+/* There for screen readers, not the eye. */
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

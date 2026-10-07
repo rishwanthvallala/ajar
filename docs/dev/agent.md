@@ -47,6 +47,15 @@ shell — a guest running a build should show as a guest running a build.
 The panel degrades to plain lines when stdout is not a terminal. Nobody wants
 ANSI escapes in a log file, and the smoke tests depend on it.
 
+Input is written by a thread per terminal, through a queue capped at 1 MB. A
+pty takes only so much before the program on it reads — about a kilobyte on
+macOS — and a write past that blocks; written from the agent's one loop, a
+paste into a terminal running `sleep` or `tail -f` stopped every terminal,
+every document, the panel and ctrl-c. Now only that terminal waits, as in any
+terminal emulator. A ctrl-c, ctrl-\\ or ctrl-z drops whatever is still queued
+ahead of it. A read-only session opens no terminals for guests: a shell nobody
+may type into is a process for nothing.
+
 ### A hazard worth knowing about
 
 A shell that is still starting can swallow the first characters typed at it,
@@ -121,20 +130,25 @@ merged text is written back once things go quiet. If the shadow has lost track
 of the disk — a write that failed halfway — the old rule applies and the disk
 wins.
 
-## Terminals
-
-Input is written by a thread per terminal, through a queue capped at 1 MB. A
-pty takes only so much before the program on it reads — about a kilobyte on
-macOS — and a write past that blocks; written from the agent's one loop, a
-paste into a terminal running `sleep` or `tail -f` stopped every terminal,
-every document, the panel and ctrl-c. Now only that terminal waits, as in any
-terminal emulator. A ctrl-c, ctrl-\\ or ctrl-z drops whatever is still queued
-ahead of it. A read-only session opens no terminals for guests: a shell nobody
-may type into is a process for nothing.
-
 The Monaco binding is written here rather than taken from `y-monaco`, which
 has not been published since 2024 and predates this Monaco by several major
 versions.
+
+## Downloads
+
+A guest can download the open file, a folder, or the whole workspace. A file
+comes as itself; a folder as a zip named after it, which unzips to that one
+folder. What goes in is the tree's own list, each file read through the same
+rule as any guest read, so nothing the ignore rules hide is in it.
+
+| | |
+|---|---|
+| Built | Off the agent's loop, so reading a large folder freezes no terminal |
+| Format | Stored, not compressed — written by hand in `archive.rs`; deflating costs the host's CPU, which is busy with other things |
+| Limits | 100 MB and 20,000 files; past either it is refused with the reason |
+| Sent | In 128 KB pieces, never more than 1 MB ahead of what the guest has acknowledged. The relay closes a guest whose queue passes 8 MB, and a download sent all at once to a slow connection did that |
+| One at a time | Per guest: asking again replaces the last |
+| Read-only | Allowed — it is reading |
 
 ## The copy kept for when you drop
 

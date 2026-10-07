@@ -49,7 +49,7 @@ export class WorkspaceShell {
         <div class="preview-bar" id="preview-bar" hidden></div>
         <header class="workspace-head">
           <button class="side-toggle" id="side-toggle" aria-controls="sidebar">Files</button>
-          <strong id="workspace"></strong>
+          <h1 id="workspace" class="workspace-title"></h1>
           <div class="connection-status"><span class="dot" id="dot"></span><span class="status" id="status" role="status">connecting</span></div>
           <span class="badge" id="locked" hidden>locked</span>
           <span class="badge" id="readonly" hidden>read-only</span>
@@ -65,7 +65,7 @@ export class WorkspaceShell {
             <div id="tree"></div>
           </aside>
           <div class="sidebar-splitter" id="sidebar-splitter" role="separator" aria-orientation="vertical" aria-label="Resize file sidebar" tabindex="0"></div>
-          <div class="main">
+          <main class="main">
             <section class="viewer" id="viewer-pane" aria-label="Editor">
               <div class="viewer-head"><span class="region-label">Editor</span><span id="viewer-title">No file selected</span><div class="editor-actions" id="editor-actions"></div><button class="highlight-toggle" id="highlight-toggle"></button><button class="close-file" id="close-file" aria-label="Close file" hidden>Close</button></div>
               <div class="editor-content">
@@ -79,7 +79,7 @@ export class WorkspaceShell {
               <nav class="tabs" id="tabs" aria-label="Terminal tabs"></nav>
               <div class="terms" id="terms"><div class="empty" id="empty"><strong>No terminals yet</strong><span>Choose New terminal to open a shell.</span></div></div>
             </section>
-          </div>
+          </main>
         </div>
       </div>`;
     this.shell = app.querySelector<HTMLElement>(".shell")!;

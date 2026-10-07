@@ -140,8 +140,18 @@ export async function waitForHealth(httpBase, tries = 120) {
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(`${httpBase}/healthz`);
-      if (r.ok) return true;
-    } catch {}
+      if (r.ok) {
+        // Healthy — but whose health? Something already on the port answers
+        // too, while the relay this run started has died for want of it, and
+        // every result after is about a different binary. Said, not assumed.
+        await sleep(200);
+        const dead = started.find((p) => /relay/.test(p.label) && p.exitCode !== null && !p.killedOnPurpose);
+        if (dead) throw new Error(`${dead.label} exited at start — is something else on its port?\n${dead.output.slice(-600)}`);
+        return true;
+      }
+    } catch (e) {
+      if (/exited at start/.test(e.message)) throw e;
+    }
     await sleep(100);
   }
   throw new Error(`relay at ${httpBase} never became healthy`);
@@ -231,6 +241,8 @@ export class Guest {
             // The key an agent opens its session with, for tests that speak
             // as one.
             ...(this.hostKey ? { host_key: this.hostKey } : {}),
+            // A tab's own secret, which a locked session takes back.
+            ...(this.resume ? { resume: this.resume } : {}),
           }),
         );
       };
@@ -279,7 +291,7 @@ export class Guest {
             // The relay has no names. Introduce ourselves on the encrypted
             // channel, exactly as the browser client does.
             if (this.role !== "host") {
-              this.send(json(CH_PRESENCE, { t: "iam", name: this.name }));
+              this.send(json(CH_PRESENCE, { t: "iam", name: this.name, ...(this.resume ? { resume: this.resume } : {}) }));
             }
             resolve(this);
           } else if (msg.t === "error") {
@@ -556,6 +568,7 @@ export class Procs {
       throw new Error(`could not start ${label}: ${e.message}`);
     });
     this.list.push(p);
+    started.push(p);
     return p;
   }
 
@@ -566,6 +579,7 @@ export class Procs {
    * which one they mean.
    */
   kill(p, signal = "SIGKILL") {
+    p.killedOnPurpose = true;
     try {
       p.kill(signal);
     } catch {}
@@ -585,6 +599,10 @@ export class Procs {
 // ------------------------------------------------------------------ reporting
 
 let failed = false;
+/** Every failure, said again at the end: CI shows only a log's last lines. */
+const failures = [];
+/** Every process started, so a relay that died at birth can be noticed. */
+const started = [];
 
 export function ok(msg) {
   console.log(`  ok    ${msg}`);
@@ -592,12 +610,18 @@ export function ok(msg) {
 
 export function fail(msg) {
   failed = true;
+  failures.push(String(msg).split("\n")[0].slice(0, 300));
   console.error(`\n  FAIL  ${msg}\n`);
 }
 
 export function finish(procs, headline) {
   procs.killAll();
-  if (failed) process.exit(1);
+  if (failed) {
+    console.error(`\n  failed:`);
+    for (const f of failures) console.error(`    FAIL  ${f}`);
+    console.error(`  ${failures.length} failed\n`);
+    process.exit(1);
+  }
   console.log(`\n  ${headline}\n`);
   process.exit(0);
 }

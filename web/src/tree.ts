@@ -41,6 +41,8 @@ interface Node {
 interface Row {
   node: Node;
   expanded: boolean;
+  /** The line under an open folder with nothing in it, saying so. */
+  empty?: boolean;
 }
 
 export class FileTree {
@@ -48,6 +50,13 @@ export class FileTree {
   private expanded = new Set<string>();
   private rows: Row[] = [];
   private active: string | null = null;
+  /**
+   * The one row Tab lands on: the tree is a single stop, moved through with
+   * the arrow keys. Every row used to be its own stop, and once Tab reached
+   * the end of the painted window the repaint dropped focus to the page — a
+   * long tree could not be reached past its first screenful by keyboard.
+   */
+  private focusPath: string | null = null;
   private viewport: HTMLDivElement;
   private spacer: HTMLDivElement;
   private surface: HTMLDivElement;
@@ -69,6 +78,14 @@ export class FileTree {
     this.spacer.appendChild(this.surface);
     this.viewport.appendChild(this.spacer);
     this.host.appendChild(this.viewport);
+    this.viewport.setAttribute("role", "tree");
+    this.viewport.setAttribute("aria-label", "Files");
+    this.viewport.addEventListener("keydown", (e) => this.key(e), { signal: this.events.signal });
+    // Tab reached the tree while its focus row is scrolled out of the
+    // window: bring the row into view and give it the focus.
+    this.viewport.addEventListener("focus", () => {
+      if (document.activeElement === this.viewport) this.focusRow(this.focusIndex());
+    }, { signal: this.events.signal });
 
     this.rowPx = rowHeight(this.host);
     this.viewport.addEventListener("scroll", () => this.paint(), { passive: true, signal: this.events.signal });
@@ -118,6 +135,7 @@ export class FileTree {
 
   setActive(path: string | null) {
     this.active = path;
+    if (path) this.focusPath = path;
     // Open every directory on the way to the active file.
     if (path) {
       const parts = path.split("/");
@@ -128,8 +146,20 @@ export class FileTree {
     this.rebuild();
   }
 
+  /** The folder the tree's stop is on, if it is on one. */
+  get focusedFolder(): string | null {
+    const row = this.rows[this.focusIndex()];
+    return row?.node.dir ? row.node.path : null;
+  }
+
+  /** Called when the tree's stop moves, for anything that depends on it. */
+  onFocusMove: () => void = () => {};
+
+  /** Files, not counting the folders they are in. */
   get count(): number {
-    return this.entries.size;
+    let files = 0;
+    for (const e of this.entries.values()) if (e.kind === "file") files++;
+    return files;
   }
 
   // ------------------------------------------------------------- internals
@@ -170,6 +200,14 @@ export class FileTree {
       for (const node of nodes) {
         const open = node.dir && this.expanded.has(node.path);
         this.rows.push({ node, expanded: open });
+        if (open && node.children.length === 0) {
+          // An open folder that showed nothing looked like one still loading.
+          this.rows.push({
+            node: { path: `${node.path}/`, name: "empty", dir: false, depth: node.depth + 1, children: [] },
+            expanded: false,
+            empty: true,
+          });
+        }
         if (open) walk(node.children);
       }
     };
@@ -179,8 +217,68 @@ export class FileTree {
     this.paint();
   }
 
+  private focusIndex(): number {
+    const i = this.focusPath === null ? -1 : this.rows.findIndex((r) => r.node.path === this.focusPath);
+    return i >= 0 ? i : 0;
+  }
+
+  /** Move the tree's one stop to row `i`, scrolled into view and focused. */
+  private focusRow(i: number) {
+    if (!this.rows.length) return;
+    const index = Math.max(0, Math.min(this.rows.length - 1, i));
+    this.focusPath = this.rows[index].node.path;
+    this.onFocusMove();
+    const top = index * this.rowPx;
+    const height = this.viewport.clientHeight || 400;
+    if (top < this.viewport.scrollTop) this.viewport.scrollTop = top;
+    else if (top + this.rowPx > this.viewport.scrollTop + height) this.viewport.scrollTop = top + this.rowPx - height;
+    this.paint();
+    this.surface.querySelector<HTMLElement>(`[data-path="${CSS.escape(this.focusPath)}"]`)?.focus({ preventScroll: true });
+  }
+
+  private toggle(node: Node) {
+    if (this.expanded.has(node.path)) this.expanded.delete(node.path);
+    else this.expanded.add(node.path);
+    this.rebuild();
+  }
+
+  /** The tree's keys, as the ARIA tree pattern has them. */
+  private key(e: KeyboardEvent) {
+    if (!this.rows.length || e.altKey || e.ctrlKey || e.metaKey) return;
+    const i = this.focusIndex();
+    const { node, expanded } = this.rows[i];
+    const parent = () => {
+      const slash = node.path.lastIndexOf("/");
+      return slash === -1 ? -1 : this.rows.findIndex((r) => r.node.path === node.path.slice(0, slash));
+    };
+    let handled = true;
+    switch (e.key) {
+      case "ArrowDown": this.focusRow(i + 1); break;
+      case "ArrowUp": this.focusRow(i - 1); break;
+      case "Home": this.focusRow(0); break;
+      case "End": this.focusRow(this.rows.length - 1); break;
+      case "ArrowRight":
+        if (node.dir && !expanded) { this.toggle(node); this.focusRow(i); }
+        else if (node.dir) this.focusRow(i + 1);
+        break;
+      case "ArrowLeft":
+        if (node.dir && expanded) { this.toggle(node); this.focusRow(i); }
+        else if (parent() >= 0) this.focusRow(parent());
+        break;
+      case "Enter":
+      case " ":
+        if (node.dir) { this.toggle(node); this.focusRow(i); }
+        else if (!this.rows[i].empty) this.onOpen(node.path);
+        break;
+      default:
+        handled = false;
+    }
+    if (handled) e.preventDefault();
+  }
+
   private paint() {
     const focusedPath = this.surface.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : null;
+    const stop = this.rows[this.focusIndex()]?.node.path ?? null;
     const scrollTop = this.viewport.scrollTop;
     const height = this.viewport.clientHeight || 400;
     const first = Math.max(0, Math.floor(scrollTop / this.rowPx) - OVERSCAN);
@@ -193,14 +291,17 @@ export class FileTree {
     this.surface.replaceChildren();
 
     for (let i = first; i < last; i++) {
-      const { node, expanded } = this.rows[i];
-      const row = document.createElement("button");
-      row.type = "button";
+      const { node, expanded, empty } = this.rows[i];
+      const row = document.createElement("div");
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("aria-level", String(node.depth + 1));
+      row.tabIndex = node.path === stop ? 0 : -1;
       row.dataset.path = node.path;
-      row.setAttribute("aria-label", node.path);
+      row.setAttribute("aria-label", node.name);
       if (node.dir) row.setAttribute("aria-expanded", String(expanded));
-      else if (node.path === this.active) row.setAttribute("aria-current", "true");
-      row.className = "tree-row";
+      row.setAttribute("aria-selected", String(node.path === this.active));
+      row.className = empty ? "tree-row empty-folder" : "tree-row";
+      if (empty) row.setAttribute("aria-disabled", "true");
       if (node.path === this.active) row.classList.add("active");
       // Indent in em so it tracks the row's own font size.
       row.style.paddingLeft = `${0.4 + node.depth * 0.85}em`;
@@ -208,7 +309,11 @@ export class FileTree {
 
       const twisty = document.createElement("span");
       twisty.className = "twisty";
-      twisty.textContent = node.dir ? (expanded ? "▾" : "▸") : "";
+      // Drawn, not typed: the ▾ and ▸ glyphs were 11 px and came out a
+      // different size in every font.
+      if (node.dir) {
+        twisty.innerHTML = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="${expanded ? "M3 4.5l3 3 3-3" : "M4.5 3l3 3-3 3"}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      }
       row.appendChild(twisty);
 
       const label = document.createElement("span");
@@ -217,17 +322,17 @@ export class FileTree {
       row.appendChild(label);
 
       row.onclick = () => {
-        if (node.dir) {
-          if (this.expanded.has(node.path)) this.expanded.delete(node.path);
-          else this.expanded.add(node.path);
-          this.rebuild();
-        } else {
-          this.onOpen(node.path);
-        }
+        this.focusPath = node.path;
+        this.onFocusMove();
+        if (node.dir) this.toggle(node);
+        else if (!empty) this.onOpen(node.path);
       };
 
       this.surface.appendChild(row);
       if (node.path === focusedPath) row.focus({ preventScroll: true });
     }
+    // Tab must always have somewhere to land in the tree. When the stop is
+    // scrolled out of the window, the tree itself takes it and hands it on.
+    this.viewport.tabIndex = stop !== null && !this.surface.querySelector('[tabindex="0"]') ? 0 : -1;
   }
 }

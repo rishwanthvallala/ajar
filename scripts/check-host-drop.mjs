@@ -111,18 +111,18 @@ async function main() {
   ok("a guest arriving to no terminals is given one");
   await page.locator('.tree-row[data-path="note.txt"]').click();
   // Editable means the document is bound, not merely that text is showing.
+  // This used to wait for Monaco to drop a `read-only` class it never sets,
+  // and swallowed the timeout besides — so it waited for nothing.
   const lines = page.locator(".monaco-editor .view-lines");
   await lines.filter({ hasText: "one two three" }).waitFor({ timeout: 20_000 });
-  await page.waitForFunction(
-    () => !document.querySelector(".monaco-editor")?.classList.contains("read-only"),
-    null,
-    { timeout: 10_000 },
-  ).catch(() => {});
+  await page.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "note.txt", null, { timeout: 15_000 });
   ok("the browser has note.txt open for editing");
 
   const typeAtStart = async (text) => {
     await lines.click();
-    await page.keyboard.press("Control+Home");
+    // Control+Home is not a Monaco binding on a Mac, where it typed wherever
+    // the click had left the cursor.
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home");
     await page.keyboard.type(text);
   };
 

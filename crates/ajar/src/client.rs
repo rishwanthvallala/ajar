@@ -78,7 +78,18 @@ impl Shutdown {
 /// `cipher` seals everything on a content channel as it goes out and opens
 /// it as it comes in. Doing it here, at the one place frames touch the
 /// socket, is what keeps the rest of the agent unaware that it exists.
-pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool>) -> RelayHandle {
+/// Hashes of the secrets of guests this session has let in, which a
+/// restarted relay is told on the way back so a locked session still knows
+/// them.
+pub type Admitted = Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>;
+
+pub fn spawn(
+    url: String,
+    hello: Control,
+    cipher: Cipher,
+    locked: Arc<AtomicBool>,
+    admitted: Admitted,
+) -> RelayHandle {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<RelayEvent>();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -90,17 +101,10 @@ pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool
             if flag.load(Ordering::SeqCst) {
                 return;
             }
-            match session(
-                &url,
-                &hello,
-                &cipher,
-                &locked,
-                &mut out_rx,
-                &ev_tx,
-                &mut attempt,
-            )
-            .await
-            {
+            // Made afresh for each attempt: the lock, and who is in, may
+            // have changed since the last.
+            let current = hello_now(&hello, &locked, &admitted);
+            match session(&url, &current, &cipher, &mut out_rx, &ev_tx, &mut attempt).await {
                 Ok(Outcome::Closed) => {
                     let _ = ev_tx.send(RelayEvent::Disconnected("relay closed".into()));
                 }
@@ -153,7 +157,6 @@ async fn session(
     url: &str,
     hello: &Control,
     cipher: &Cipher,
-    locked: &AtomicBool,
     out_rx: &mut UnboundedReceiver<Frame>,
     ev_tx: &UnboundedSender<RelayEvent>,
     attempt: &mut u32,
@@ -164,22 +167,6 @@ async fn session(
     debug!("relay handshake: {}", response.status());
     let (mut sink, mut source) = stream.split();
 
-    let hello = match hello {
-        Control::Hello {
-            session,
-            role,
-            host_key,
-            ..
-        } => Control::Hello {
-            session: session.clone(),
-            role: *role,
-            locked: locked.load(Ordering::SeqCst),
-            protocol: ajar_proto::PROTOCOL_VERSION,
-            code: None,
-            host_key: host_key.clone(),
-        },
-        other => other.clone(),
-    };
     sink.send(Message::Binary(
         Frame::json(Channel::Control, ajar_proto::TARGET_ALL, &hello)?
             .encode()
@@ -259,6 +246,32 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+/// The host's hello as it stands now: the lock, the protocol, and the guests
+/// it vouches for.
+fn hello_now(hello: &Control, locked: &AtomicBool, admitted: &Admitted) -> Control {
+    match hello {
+        Control::Hello {
+            session,
+            role,
+            host_key,
+            ..
+        } => Control::Hello {
+            session: session.clone(),
+            role: *role,
+            locked: locked.load(Ordering::SeqCst),
+            protocol: ajar_proto::PROTOCOL_VERSION,
+            code: None,
+            host_key: host_key.clone(),
+            resume: None,
+            admitted: admitted
+                .lock()
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default(),
+        },
+        other => other.clone(),
     }
 }
 

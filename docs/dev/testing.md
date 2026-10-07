@@ -42,6 +42,14 @@ worse than no gate, because it still reports success.
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 | `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
 
+Two habits of `scripts/lib/wire.mjs`, which every ajar suite uses. A
+relay that dies at start — its port already taken, by a relay a killed run
+left behind — no longer passes for a working one: the health check answers
+from whatever holds the port, so after it does, the suite looks for a relay it
+started that has exited, and stops with "is something else on its port?". And
+`finish()` says every failure again at the end, because CI's annotation shows
+only a log's last few kilobytes.
+
 The browser tier is checked separately, because each run downloads the wasm
 packages and drives a real Chromium:
 

@@ -140,7 +140,7 @@ export interface Person {
 export const PROTOCOL_VERSION = 1;
 
 export type Control =
-  | { t: "hello"; session: string; role: Role; locked?: boolean; protocol?: number }
+  | { t: "hello"; session: string; role: Role; locked?: boolean; protocol?: number; resume?: string }
   | {
       t: "welcome";
       participant_id: number;
@@ -172,7 +172,11 @@ export type Fs =
   | { t: "patch"; added: Entry[]; changed: Entry[]; removed: string[] }
   | { t: "read"; path: string }
   | { t: "content"; path: string; text: string; truncated: boolean; binary: boolean }
-  | { t: "read_error"; path: string; message: string };
+  | { t: "read_error"; path: string; message: string }
+  | { t: "download"; path: string }
+  | { t: "archive"; id: number; path: string; name: string; bytes: number; files: number }
+  | { t: "received"; id: number; received: number }
+  | { t: "download_error"; path: string; message: string };
 
 export type Doc =
   | { t: "open"; path: string }
@@ -198,7 +202,7 @@ export interface SnapshotBody {
 export type Presence =
   | { t: "report"; active_pty: number | null }
   | { t: "update"; participant_id: number; active_pty: number | null }
-  | { t: "iam"; name: string }
+  | { t: "iam"; name: string; resume?: string }
   | { t: "roster"; workspace: string; people: Person[] };
 
 export type Pty =

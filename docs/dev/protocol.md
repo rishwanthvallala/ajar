@@ -72,6 +72,14 @@ key back into the host's place after a dropped socket (`not_the_host`
 otherwise). Guests and older agents leave it off. See
 [security.md](security.md#the-hosts-place-belongs-to-the-agent-that-opened-the-session).
 
+A guest's `hello` may carry `resume`, a secret its page makes and keeps for
+the tab. The relay remembers who it has let in by its hash, so a locked
+session takes them back after a blip; a kick forgets it. The guest also puts
+it in its sealed `iam`, and the agent sends the hashes of everyone it has met,
+less anyone kicked, as `admitted` in every hello — so a restarted relay, which
+knows nobody, still knows whom the lock is not for. Both are left off the wire
+when empty.
+
 A peer's `hello` may carry `code`, the part of a pad link after the `#`, left
 off the wire when there is none. The relay refuses a peer with `private` when
 the pad's settings and that code give it nothing, and with `gone` when the
@@ -110,6 +118,18 @@ the typing part in the real browser client.
 
 None of the resends is incremental, and none needs to be: a tree already means
 *replace everything*, and a Yjs state is idempotent to apply.
+
+## Downloads
+
+`Fs::Download { path }` asks for a file, a folder, or with `""` everything.
+The host answers `Archive { id, path, name, bytes, files }` and sends the
+bytes as stream frames on the Fs channel with `id` as their stream, sealed
+like everything else on it. The guest acknowledges with
+`Received { id, received }` and the host keeps no more than a megabyte
+unacknowledged in flight — the relay's queue for a slow guest would otherwise
+fill and the guest be cut off. `DownloadError { path, message }` says why
+not. An agent from before downloads ignores the request; the page says so
+after twenty seconds without an answer.
 
 ## Versions, because the agent is not ours to deploy
 

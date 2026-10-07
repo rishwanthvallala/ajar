@@ -50,6 +50,8 @@ code, kbd {
   margin: 0 auto;
   padding: clamp(2rem, 7vh, 4.5rem) 1.5rem clamp(3rem, 10vh, 6rem);
   line-height: 1.6;
+  /* Prose reads in a text face; code keeps the monospace. */
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 .landing-head { margin-bottom: 28px; }
@@ -97,22 +99,24 @@ code, kbd {
 .steps { padding-left: 20px; margin: 0 0 32px; color: var(--ink-2); font-size: 14.5px; }
 .steps li { margin-bottom: 8px; }
 
-.danger {
-  border: 1px solid var(--hard);
+/* Information, not an alarm: it was red, as if something had gone wrong. */
+.caveats {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
   border-radius: 6px;
   padding: 18px 20px;
   margin-bottom: 32px;
-  background: color-mix(in srgb, var(--hard) 7%, var(--surface));
+  background: var(--surface);
 }
-.danger h2 {
+.caveats h2 {
   margin: 0 0 10px;
   font-size: 16px;
-  color: var(--hard);
+  color: var(--ink);
   font-weight: 600;
 }
-.danger p { margin: 0 0 10px; font-size: 14.5px; color: var(--ink-2); }
-.danger p:last-child { margin-bottom: 0; }
-.danger strong { color: var(--ink); }
+.caveats p { margin: 0 0 10px; font-size: 14.5px; color: var(--ink-2); }
+.caveats p:last-child { margin-bottom: 0; }
+.caveats strong { color: var(--ink); }
 
 .facts h2 {
   font-size: 12px;
@@ -164,10 +168,13 @@ form {
   max-width: 100%;
 }
 
+.join-label { flex-basis: 100%; font-size: 13px; color: var(--ink-2); }
+
 input {
   font: inherit;
   padding: 9px 12px;
-  border: 1px solid var(--rule);
+  /* 3:1 against the page, which a field's outline needs to be found. */
+  border: 1px solid color-mix(in srgb, var(--ink) 38%, var(--surface));
   border-radius: 5px;
   background: var(--surface);
   color: var(--ink);
@@ -200,6 +207,73 @@ button {
 }
 
 button:disabled { opacity: 0.45; cursor: default; }
+
+/* ------------------------------------------------------- dead-end cards */
+
+.gate {
+  width: min(28rem, 100%);
+  padding: 2rem 1.8rem 1.8rem;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 10px 30px rgb(0 0 0 / 0.07);
+}
+.gate-icon {
+  display: grid;
+  place-items: center;
+  width: 3.2rem;
+  height: 3.2rem;
+  border-radius: 50%;
+  margin-bottom: 1rem;
+  color: var(--hard);
+  background: color-mix(in srgb, var(--hard) 12%, var(--surface));
+}
+.gate.info .gate-icon { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.gate-icon svg { width: 1.4rem; height: 1.4rem; }
+.gate h1 { margin: 0 0 0.6rem; font-size: 1.3rem; letter-spacing: -0.015em; }
+.gate h1:focus { outline: none; }
+.gate .name-chip {
+  margin: 0 0 0.9rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: 0.8125rem var(--mono);
+}
+.gate p.muted { margin: 0 0 0.75rem; line-height: 1.55; font-size: 0.875rem; color: var(--ink-2); }
+.gate-command { width: 100%; max-width: 100%; margin: 0.25rem 0 0.75rem; }
+.gate-command code { overflow-x: auto; white-space: nowrap; min-width: 0; }
+.gate-action { margin-top: 0.5rem; min-width: 9rem; }
+
+/* ------------------------------------------------------------- toasts */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: grid;
+  gap: 8px;
+  max-width: min(26rem, calc(100vw - 32px));
+  pointer-events: none;
+}
+.toast {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+}
+
+.status-detail { font-size: 0.75rem; color: var(--muted); }
+.term-hint { margin-left: auto; padding: 0 0.5rem; font-size: 0.6875rem; color: var(--muted); white-space: nowrap; }
+@media (max-width: 47.999rem) { .term-hint { display: none; } }
+.person-tag { color: var(--muted); }
 
 .notice {
   max-width: 42ch;
@@ -243,7 +317,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   background: var(--surface);
 }
 
-.side-head {
+.shell .side-head {
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--rule);
   font-size: var(--fs-xs);
@@ -359,7 +433,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   min-height: 0;
 }
 
-header {
+/* The session bar's. These were bare `header` rules, and the landing page's
+   header — a header too — got a white box and a rule behind its title. */
+.workspace-head {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -370,7 +446,7 @@ header {
   font-size: var(--fs-sm);
 }
 
-header strong {
+.workspace-head strong {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -526,6 +602,9 @@ header strong {
   background: var(--accent);
 }
 .term .xterm { height: 100%; }
+/* xterm paints its viewport black; below the rows a smaller window has set,
+   that showed as a black slab in the light theme. */
+.term, .term .xterm-viewport { background-color: var(--surface) !important; }
 
 .tab.shown { color: var(--ink-2); background: var(--surface-2); }
 
@@ -553,7 +632,8 @@ header strong {
   left: -1px;
   padding: 0 4px;
   border-radius: 3px 3px 3px 0;
-  color: #fff;
+  /* Dark on the lighter colours dark mode uses, light on the darker ones. */
+  color: var(--remote-label-ink, #fff);
   font-size: 10px;
   line-height: 1.5;
   white-space: nowrap;
@@ -564,3 +644,26 @@ header strong {
 .remote-selection {
   border-radius: 2px;
 }
+
+:root[data-theme="dark"] { --remote-label-ink: #0f1218; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --remote-label-ink: #0f1218; }
+}
+
+/* Each person's dot is their cursor's colour. On a phone the names give way
+   to the dots and a count, and the header stays one row. */
+.person-dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.35rem; vertical-align: 0.05em; }
+.person.me .person-dot { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--ink-2); }
+.people-count { display: none; font-size: 0.75rem; color: var(--muted); align-self: center; white-space: nowrap; }
+.shell.narrow .person { padding: 0.25rem 0.1rem; }
+.shell.narrow .person-name, .shell.narrow .person-tag { display: none; }
+.shell.narrow .people-count { display: inline; }
+.tree-row.empty-folder { color: var(--muted); font-style: italic; }
+
+.landing-head { position: relative; }
+.landing-theme {
+  position: absolute; top: 0; right: 0;
+  font-size: 12px; padding: 4px 10px;
+  background: var(--surface); color: var(--ink-2); border: 1px solid var(--rule);
+}
+.twisty svg { width: 0.75rem; height: 0.75rem; display: block; }

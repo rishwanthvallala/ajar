@@ -76,9 +76,10 @@ they are running, and what it costs.
 | Key | What it does |
 |---|---|
 | `k` | Disconnect a guest — type the number beside their name, then Enter |
-| `x` | Lock the session — nobody new can join, people already in stay |
+| `x` | Lock the session — nobody new can join; people already in stay, through a dropped connection, a reload or the relay restarting |
 | `l` | Read-only — guests can look, not type in a terminal, open a new one, or edit a file |
-| `d` | Stop keeping the offline copy, and forget the one already stored; press it again to keep one again. Offered as `[d] stop` on the line that says what is being kept |
+| `d` | Stop keeping the offline copy, and forget the one already stored; press it again to keep one again. The line under the sandbox's says what is being kept |
+| `c` | Copy the link to the clipboard, in terminals that allow it (iTerm2, kitty, WezTerm, Windows Terminal, tmux — not Terminal.app). The link wraps rather than being cut, so it can always be selected whole |
 | `q` | Close — ends every terminal and kills the link |
 
 Useful flags: `--read-only` to start that way, `--no-network` to cut the
@@ -90,6 +91,19 @@ Open terminals, browse the file tree, open files, and edit them. Two people
 can type in the same file at once, and their typing survives a terminal
 rewriting or appending to the file underneath them. Each file opens where you
 last left it.
+
+**Download** above the file tree saves the whole workspace as a zip — or,
+when the tree is on a folder, that folder; **Download** above the editor saves
+the open file. What the ignore rules hide is not in it, and anything over
+100 MB is refused.
+
+Everything works from the keyboard. The file tree is one stop: the arrow
+keys move through it, → and ← open and close folders, Enter opens a file.
+A terminal takes every key, so **F6** leaves it, and Shift+F6 goes back to the
+editor.
+
+A link that is cut short — everything after the `#` is the key that decrypts
+the session — says so, rather than opening a session that cannot be read.
 
 A few files open read-only, with the reason beside the name: binary files,
 files over 1 MB, and text the browser's editor would quietly change — not

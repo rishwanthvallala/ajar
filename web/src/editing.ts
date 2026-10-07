@@ -4,6 +4,8 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import { onThemeChange } from "@ajar/workspace-ui";
+import { colourFor } from "./colours";
 import { replaceText } from "./replace";
 
 /**
@@ -14,21 +16,6 @@ import { replaceText } from "./replace";
  * The binding is small enough that owning it costs less than tracking a stale
  * dependency, and cursor rendering is the part you always end up customising.
  */
-
-const COLOURS = [
-  "#2447c9",
-  "#9e5a15",
-  "#1c6a4b",
-  "#a63a2a",
-  "#5b3fa8",
-  "#0f6b63",
-  "#8a5a0b",
-  "#7a2f5f",
-];
-
-export function colourFor(id: number): string {
-  return COLOURS[id % COLOURS.length];
-}
 
 /**
  * A participant id from somebody else's awareness state, or null.
@@ -203,12 +190,16 @@ export class DocSession {
     const onAwareness = () => this.drawCursors(model);
     this.awareness.on("change", onAwareness);
     this.drawCursors(model);
+    // Their colours follow the theme.
+    const themed = new AbortController();
+    onThemeChange(onAwareness, themed.signal);
 
     this.binding = () => {
       this.ytext.unobserve(onRemote);
       onLocal.dispose();
       onCursor.dispose();
       this.awareness.off("change", onAwareness);
+      themed.abort();
       this.decorations?.clear();
       this.styleEl?.remove();
       this.styleEl = null;

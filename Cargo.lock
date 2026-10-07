@@ -58,6 +58,7 @@ version = "0.0.6"
 dependencies = [
  "ajar-proto",
  "anyhow",
+ "base64 0.23.1",
  "clap",
  "crossterm",
  "futures-util",
@@ -69,6 +70,7 @@ dependencies = [
  "ratatui",
  "rustls",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tokio",
  "tokio-tungstenite 0.30.0",

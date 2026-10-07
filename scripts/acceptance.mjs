@@ -108,7 +108,12 @@ async function main() {
   const back = new Guest(WS, session, "accept-again", key);
   await back.connect();
   await back.waitUntil((g) => g.screen.includes("shared-visible"), "replayed scrollback");
-  record(7, "reconnecting replays scrollback, nothing re-ran", true);
+  await sleep(800);
+  // Recorded as true without looking, once. The replay shows the command and
+  // its output exactly as often as someone watching live saw them; a re-run
+  // would show the output again.
+  const times = (screen) => screen.split("shared-visible").length - 1;
+  record(7, "reconnecting replays scrollback, nothing re-ran", times(back.screen) === times(second.screen), `${times(back.screen)} vs ${times(second.screen)} seen live`);
 
   // 9 — guardrails
   const refusals = [];
@@ -129,7 +134,9 @@ async function main() {
   }
   record(9, "ajar ~ and ajar / are refused", refusals.length === 0, refusals.join("; "));
 
-  // 10 — kick
+  // 10 — kick. This agent has no panel to press k on, so here the relay's
+  // half: the host's kick removes the guest, who is told why. The key itself
+  // is pressed, through a real terminal, in check-guest.mjs.
   const kicked = new Guest(WS, session, "gatecrasher", key);
   await kicked.connect();
   record(10, "a guest can join and be identified", kicked.participantId > 0);

@@ -200,6 +200,8 @@ pub enum Action {
     ToggleReadOnly,
     /// Stop or resume keeping a copy on the relay.
     ToggleSync,
+    /// Put the link on the clipboard, where the terminal allows it.
+    CopyLink,
     Redraw,
 }
 
@@ -318,6 +320,7 @@ fn interpret(key: KeyEvent) -> Option<Action> {
         (KeyCode::Char('x'), _) => Some(Action::ToggleLock),
         (KeyCode::Char('l'), _) => Some(Action::ToggleReadOnly),
         (KeyCode::Char('d'), _) => Some(Action::ToggleSync),
+        (KeyCode::Char('c'), _) => Some(Action::CopyLink),
         (KeyCode::Char(c), _) if c.is_ascii_digit() => c.to_digit(10).map(Action::Digit),
         (KeyCode::Enter, _) => Some(Action::Confirm),
         (KeyCode::Backspace, _) => Some(Action::Erase),
@@ -326,25 +329,84 @@ fn interpret(key: KeyEvent) -> Option<Action> {
 }
 
 fn render(f: &mut Frame, state: &State) {
-    let chunks = Layout::vertical([
-        Constraint::Length(7), // header, sandbox, link
-        Constraint::Length(4), // the warning nobody should be able to miss
-        Constraint::Min(6),    // who and what
-        Constraint::Length(ACTIVITY_LINES as u16 + 2),
-        Constraint::Length(1), // keys
-    ])
-    .split(f.area());
+    let area = f.area();
+    let width = area.width;
+    let status = status_lines(state);
+    let link = link_lines(state);
+    let warning = warning_lines(state);
+    let keys = keys_line(state);
 
-    header(f, chunks[0], state);
-    warning(f, chunks[1], state);
-    people_and_terminals(f, chunks[2], state);
-    activity(f, chunks[3], state);
-    keys(f, chunks[4], state);
+    // Rows go to what matters most first: the link and the keys, then the
+    // warnings, then the rest. A terminal too short for everything loses the
+    // activity log before it loses a character of the link.
+    let mut left = area.height;
+    let link_h = take(&mut left, rows(&link, width));
+    let keys_h = take(&mut left, rows(&keys, width));
+    let warning_h = take(&mut left, rows(&warning, width.saturating_sub(2)) + 2);
+    let status_h = take(&mut left, rows(&status, width));
+    // Who is here gets at least five rows, the activity log what is over.
+    let people_want = left.saturating_sub(ACTIVITY_LINES as u16 + 2).max(5);
+    let people_h = take(&mut left, people_want);
+    let activity_h = take(&mut left, ACTIVITY_LINES as u16 + 2);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(status_h),
+        Constraint::Length(link_h),
+        Constraint::Length(warning_h),
+        Constraint::Length(people_h),
+        Constraint::Length(activity_h),
+        Constraint::Length(keys_h),
+    ])
+    .split(area);
+
+    f.render_widget(Paragraph::new(status).wrap(Wrap { trim: false }), chunks[0]);
+    f.render_widget(Paragraph::new(link).wrap(Wrap { trim: false }), chunks[1]);
+    if warning_h > 2 {
+        f.render_widget(
+            Paragraph::new(warning).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(Color::Yellow)),
+            ),
+            chunks[2],
+        );
+    }
+    if people_h > 2 {
+        people_and_terminals(f, chunks[3], state);
+    }
+    if activity_h > 2 {
+        activity(f, chunks[4], state);
+    }
+    f.render_widget(Paragraph::new(keys).wrap(Wrap { trim: false }), chunks[5]);
 }
 
-fn header(f: &mut Frame, area: Rect, state: &State) {
+/// Up to `want` of the rows `left`, taken from it.
+fn take(left: &mut u16, want: u16) -> u16 {
+    let got = want.min(*left);
+    *left -= got;
+    got
+}
+
+/// How many rows `lines` take once wrapped at `width` — at least one each.
+fn rows(lines: &[Line], width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(width))
+        .sum::<usize>()
+        .try_into()
+        .unwrap_or(u16::MAX)
+}
+
+/// Who, where, and what a guest can reach.
+fn status_lines(state: &State) -> Vec<Line<'_>> {
     let dim = Style::new().fg(Color::DarkGray);
-    let lines = vec![
+    let posture = Style::new().fg(if state.confined {
+        Color::Green
+    } else {
+        Color::Yellow
+    });
+    vec![
         Line::from(vec![
             Span::styled("● ", Style::new().fg(state.status.colour())),
             Span::styled(
@@ -355,26 +417,43 @@ fn header(f: &mut Frame, area: Rect, state: &State) {
             Span::styled(&state.folder, Style::new().bold()),
             Span::styled(format!("  {}", state.path), dim),
         ]),
-        Line::from(Span::styled(format!("  {} files shared", state.files), dim)),
         Line::from(Span::styled(
-            format!("  {}{}", state.sandbox, state.sync),
-            Style::new().fg(if state.confined {
-                Color::Green
-            } else {
-                Color::Yellow
-            }),
+            format!(
+                "  {} {} shared",
+                state.files,
+                if state.files == 1 { "file" } else { "files" }
+            ),
+            dim,
         )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(&state.link, Style::new().fg(Color::Cyan).underlined()),
-            Span::styled("   ← send this", dim),
-        ]),
-    ];
-    f.render_widget(Paragraph::new(lines), area);
+        Line::from(Span::styled(format!("  {}", state.sandbox), posture)),
+        // Its own line: it used to share one with the sandbox, which cut it
+        // off at any width.
+        Line::from(Span::styled(
+            format!("  {}", state.sync.trim_start_matches([' ', '\u{b7}'])),
+            dim,
+        )),
+    ]
 }
 
-fn warning(f: &mut Frame, area: Rect, state: &State) {
+/// The link, whole. It wraps rather than being cut: at 80 columns,
+/// Terminal.app's default, it used to lose the end of its key, and a guest
+/// given that link got a page that never worked and never said why.
+fn link_lines(state: &State) -> Vec<Line<'_>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    vec![
+        Line::from(Span::styled(
+            format!("  {}", state.link),
+            Style::new().fg(Color::Cyan).underlined(),
+        )),
+        Line::from(Span::styled(
+            "  ← send this whole link, all of it after the #   [c] copies it",
+            dim,
+        )),
+    ]
+}
+
+/// The warning nobody should be able to miss, and every other one.
+fn warning_lines(state: &State) -> Vec<Line<'_>> {
     let headline = if state.confined {
         "a guest has your toolchain, confined to this folder — not a virtual machine"
     } else {
@@ -389,20 +468,16 @@ fn warning(f: &mut Frame, area: Rect, state: &State) {
             Color::Yellow
         }),
     ))];
+    // Every one of them. The box used to be two lines tall whatever it held,
+    // so the credentials warning — third, after the sandbox's — was never
+    // seen in the panel at any size.
     for w in &state.warnings {
         text.push(Line::from(Span::styled(
-            w.clone(),
-            Style::new().fg(Color::DarkGray),
+            format!("!  {w}"),
+            Style::new().fg(Color::Yellow),
         )));
     }
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(Color::Yellow)),
-        ),
-        area,
-    );
+    text
 }
 
 fn people_and_terminals(f: &mut Frame, area: Rect, state: &State) {
@@ -423,7 +498,7 @@ fn people_and_terminals(f: &mut Frame, area: Rect, state: &State) {
                 Row::new(vec![
                     format!("{}", g.id),
                     g.name.clone(),
-                    format!("{}  ·  {} term", ago(g.joined), g.terminals),
+                    format!("{} · {} term", ago(g.joined), g.terminals),
                 ])
             })
             .collect()
@@ -435,7 +510,7 @@ fn people_and_terminals(f: &mut Frame, area: Rect, state: &State) {
             [
                 Constraint::Length(3),
                 Constraint::Min(8),
-                Constraint::Length(20),
+                Constraint::Length(15),
             ],
         )
         .block(Block::default().borders(Borders::ALL).title(" here ")),
@@ -499,38 +574,49 @@ fn activity(f: &mut Frame, area: Rect, state: &State) {
     );
 }
 
-fn keys(f: &mut Frame, area: Rect, state: &State) {
-    let text = if let Some(typed) = &state.kicking {
-        Line::from(Span::styled(
-            format!(" kick which? type the number beside their name, then Enter — any other key cancels: {typed}_"),
+fn keys_line(state: &State) -> Vec<Line<'_>> {
+    if let Some(typed) = &state.kicking {
+        // The number first: at 80 columns the end of this line is what is
+        // cut, and it used to be exactly the digits being typed.
+        return vec![Line::from(Span::styled(
+            format!(
+                " kick #{typed}_ — the number beside their name, then Enter; any other key cancels"
+            ),
             Style::new().fg(Color::Yellow),
-        ))
-    } else {
-        let dim = Style::new().fg(Color::DarkGray);
-        let on = Style::new().fg(Color::Yellow);
-        Line::from(vec![
-            Span::styled(" [k] kick   ", dim),
-            Span::styled(
-                if state.locked {
-                    "[x] locked"
-                } else {
-                    "[x] lock"
-                },
-                if state.locked { on } else { dim },
-            ),
-            Span::styled("   ", dim),
-            Span::styled(
-                if state.read_only {
-                    "[l] terminals read-only"
-                } else {
-                    "[l] read-only"
-                },
-                if state.read_only { on } else { dim },
-            ),
-            Span::styled("   [q] close — ends every terminal and stops the link", dim),
-        ])
-    };
-    f.render_widget(Paragraph::new(text), area);
+        ))];
+    }
+    let dim = Style::new().fg(Color::DarkGray);
+    let on = Style::new().fg(Color::Yellow);
+    vec![Line::from(vec![
+        Span::styled(" [k] kick   ", dim),
+        Span::styled(
+            if state.locked {
+                "[x] locked"
+            } else {
+                "[x] lock"
+            },
+            if state.locked { on } else { dim },
+        ),
+        Span::styled("   ", dim),
+        Span::styled(
+            if state.read_only {
+                "[l] read-only: watching"
+            } else {
+                "[l] read-only"
+            },
+            if state.read_only { on } else { dim },
+        ),
+        Span::styled(
+            if state.sync.contains("keeping no copy") {
+                "   [d] keep a copy"
+            } else {
+                "   [d] stop the copy"
+            },
+            dim,
+        ),
+        Span::styled("   [c] copy link", dim),
+        Span::styled("   [q] close — ends every terminal and stops the link", dim),
+    ])]
 }
 
 fn ago(since: Instant) -> String {
@@ -578,11 +664,87 @@ mod tests {
             ('x', Action::ToggleLock),
             ('l', Action::ToggleReadOnly),
             ('d', Action::ToggleSync),
+            ('c', Action::CopyLink),
             ('q', Action::Quit),
         ] {
             let ev = KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE);
             assert_eq!(interpret(ev), Some(expected), "key {key} does nothing");
         }
+    }
+
+    /// The panel as drawn at `cols` × `rows`, one string per row.
+    fn drawn(state: &State, cols: u16, rows: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..rows)
+            .map(|y| {
+                (0..cols)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn realistic() -> State {
+        let mut s = State::new(
+            "api".into(),
+            "/Users/you/projects/api".into(),
+            412,
+            "sandboxed with seatbelt — writes confined to the shared folder, temp and build caches, \
+             credentials and shell history unreadable; the ssh, gpg and Docker sockets refused, network allowed"
+                .into(),
+            true,
+            "https://ajar.rishwanth.dev/j/quiet-ember-4417#k=XrlugaMUbs_Cy0hUdWNczbHNS5SW1R-NM0123456789a".into(),
+            vec![
+                "not a git repository — there is no history to roll back to if a guest changes something".into(),
+                "withheld from guests' shells, because they look like credentials: AWS_SECRET_ACCESS_KEY".into(),
+                "1 credential in this folder — .env. Readable by a guest, since they are inside the shared folder".into(),
+            ],
+        );
+        s.sync = " · keeping a sealed copy on the relay, 3.1 MB in 412 files, so guests can read while you are away".into();
+        s
+    }
+
+    #[test]
+    fn at_eighty_columns_the_whole_link_is_on_screen() {
+        // Terminal.app opens at 80×24. The link used to lose the end of its
+        // key there, and a guest given it got a page that never worked.
+        let s = realistic();
+        let screen = drawn(&s, 80, 24).join("");
+        let squeezed: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            squeezed.contains(&s.link),
+            "the link is cut:\n{}",
+            drawn(&s, 80, 24).join("\n")
+        );
+        assert!(screen.contains("send this whole link"));
+    }
+
+    #[test]
+    fn every_warning_is_on_screen() {
+        let s = realistic();
+        let screen: String = drawn(&s, 100, 40)
+            .join("")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        for w in &s.warnings {
+            let start: String = w.chars().filter(|c| !c.is_whitespace()).take(30).collect();
+            assert!(screen.contains(&start), "missing: {w}");
+        }
+        assert!(
+            screen.contains("sealedcopyontherelay"),
+            "the copy line is cut"
+        );
+    }
+
+    #[test]
+    fn the_number_being_typed_for_a_kick_is_on_screen_at_eighty_columns() {
+        let mut s = realistic();
+        s.kicking = Some("12".into());
+        let screen = drawn(&s, 80, 24).join("\n");
+        assert!(screen.contains("kick #12_"), "{screen}");
     }
 
     fn state() -> State {
