@@ -125,6 +125,7 @@ Status: **fixed** (committed, with a check that fails without the fix),
 | Security (S1–S3) | `58fbdbe` | 7 October, with the batch below |
 | The installer's domain (S4) | `0574a0c` | 7 October |
 | Losing work, staying connected, the editor and terminals | `e7d4c23` | relay and page 7 October; the agent's half needs a release |
+| The lock, the panel, the page, downloads, finishing touches | `1093ca9` | relay and page 7 October; the agent's half needs a release |
 
 ## Verification of the first batch
 
