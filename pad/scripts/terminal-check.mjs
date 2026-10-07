@@ -181,8 +181,16 @@ try {
   await press("Control+r"); await type("needle"); await settle();
   const searching = (await rows()).filter(Boolean).at(-1) ?? "";
   expect("ctrl-r finds a past command", /reverse-i-search\)`needle': echo needle-in-history/.test(searching), searching);
-  await press("Enter"); await settle(150); await idle();
-  expect("…and Enter runs it", (await rows()).filter((l) => l.trim() === "needle-in-history").length >= 2, (await rows()).filter(Boolean).slice(-2).join(" | "));
+  await press("Enter");
+  // Waited for, not looked at once: a macOS runner looked between the line
+  // being echoed and its output being drawn, and found only the echo.
+  const ranAgain = await page.waitForFunction(
+    () => (document.querySelector("#terminal .xterm-rows")?.innerText ?? "").split("\n").filter((l) => l.replace(/ /g, " ").trim() === "needle-in-history").length >= 2,
+    null,
+    { timeout: 8000 },
+  ).then(() => true, () => false);
+  await idle();
+  expect("…and Enter runs it", ranAgain, (await rows()).filter(Boolean).slice(-2).join(" | "));
   await press("Control+r"); await type("needle"); await press("Control+g"); await settle();
   expect("ctrl-g leaves the line as it was", (await promptLine()) === "$", await promptLine());
 
