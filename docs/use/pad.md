@@ -36,7 +36,7 @@ space below to bring it to the top. With the keyboard, F2 on a file or folder
 asks for its new path, which also renames it. A move is for everyone on the
 pad, takes typing you have not saved yet with it, and asks first if it would
 replace a file that is already there. People viewing a pad cannot move
-anything.
+anything, or import a zip.
 
 **Zips in and out.** Above the file list, the down arrow downloads the whole
 pad as `<pad-name>.zip`, its files in a folder of that name. On a folder's row
@@ -144,7 +144,8 @@ it, and anything it had not saved.
 ## Working together
 
 Send the link and you are both in the same folder. The top right shows a dot
-for each person here, yours ringed, and each person's cursor in the editor is
+for each person here, yours ringed, with a count beside them — nothing shows
+while you are the only one there — and each person's cursor in the editor is
 the colour of their dot.
 
 Two people typing in the same file both get their changes — the text merges
@@ -252,6 +253,9 @@ of yours. Opening the link
 counts, so a folder people keep visiting stays. Once one is deleted its name is
 free, so an old link opens an empty folder — or whatever somebody else has
 started there since. Keep anything you care about somewhere else too.
+
+**A pad holds 500 files and 60 MB.** A change that would take it past either
+is not saved, and the line under the editor says so.
 
 One address can add about 256 MB a day to the server. Editing what is already
 there never counts against that — only growing it does.

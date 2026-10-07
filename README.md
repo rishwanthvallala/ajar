@@ -20,8 +20,9 @@ edit; download any pad as a zip, or start one from a zip.
 
 > **A sandbox is not a virtual machine.** A guest runs real commands on a real
 > machine with your toolchain, your network and whatever the shared folder can
-> reach. It stops them writing outside that folder and reading your ssh and
-> cloud credentials; it does not make them harmless. Share with people you
+> reach. It stops them writing outside that folder, apart from temp
+> directories and build caches, and reading your ssh and cloud credentials; it
+> does not make them harmless. Share with people you
 > have some reason to trust — the agent says exactly what is and is not
 > covered before it prints the link.
 
@@ -54,8 +55,10 @@ VITE_RELAY=ws://127.0.0.1:8787/ws npm run dev:ajar
 cargo run -p ajar -- ~/some/project --relay http://127.0.0.1:8787
 ```
 
-The agent prints `http://127.0.0.1:8787/j/quiet-ember-4417`; in development
-open the same path on the Vite server instead, at `localhost:5173`.
+The agent prints `http://127.0.0.1:8787/j/quiet-ember-4417#k=…`; in
+development open the same address on the Vite server instead, at
+`localhost:5173`, keeping everything from the `#` on — without the key the
+page says the link is incomplete.
 
 **[The developer documentation](docs/dev/)** explains why everything is shaped
 the way it is. Start with [architecture](docs/dev/architecture.md).
@@ -78,3 +81,4 @@ the way it is. Start with [architecture](docs/dev/architecture.md).
 | `docs/dev/` | Why everything is the way it is |
 | `docs/history/` | Design records, kept because the reasoning outlived the decision |
 | [`docs/open-points.md`](docs/open-points.md) | What is unfinished, and what is deliberate |
+| `docs/*review*.md` | Review ledgers: what each review found, what was done about it, and the check that holds it |

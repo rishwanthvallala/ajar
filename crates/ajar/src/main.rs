@@ -86,8 +86,9 @@ struct Args {
     #[arg(long)]
     no_sandbox: bool,
 
-    /// Start with terminals read-only: guests watch, only the host types.
-    /// What a lecture or a demo wants. Toggle it later with `l`.
+    /// Start read-only: guests watch and read, but cannot type, open a
+    /// terminal or edit a file. What a lecture or a demo wants. Toggle it
+    /// later with `l`.
     #[arg(long)]
     read_only: bool,
 
@@ -152,6 +153,9 @@ struct Host {
     departed: HashMap<u32, String>,
     /// Downloads on their way out, by guest and id.
     downloads: HashMap<(u32, u32), Transfer>,
+    /// Each guest's latest download request, so an older one still being
+    /// built when they ask again is dropped rather than sent too.
+    latest_download: HashMap<u32, u32>,
     next_download: u32,
     /// Where a download being built off the loop comes back to it.
     built_tx: mpsc::UnboundedSender<Built>,
@@ -441,6 +445,7 @@ async fn run() -> Result<()> {
         passes: HashMap::new(),
         departed: HashMap::new(),
         downloads: HashMap::new(),
+        latest_download: HashMap::new(),
         next_download: 1,
         built_tx,
     };
@@ -492,7 +497,15 @@ async fn run() -> Result<()> {
                             }
                         }
                         if !first && !resumed {
-                            host.log("reconnected — the relay had let the session go, so guests rejoin it from scratch");
+                            host.log("reconnected — guests' pages rejoin by themselves");
+                            // A relay that let the session go — or restarted —
+                            // has no copy of the folder any more. It is offered
+                            // again rather than left claimed on the panel.
+                            if host.syncing {
+                                host.synced = None;
+                                host.snapshot_due = Some(Instant::now());
+                                update_sync_line(&mut host);
+                            }
                         }
                         // Before anything is resent: who is actually here. Joins
                         // and leaves during the gap were announced to nobody.
@@ -1306,6 +1319,7 @@ fn forget(participant_id: u32, host: &mut Host) {
     // Their secret stays vouched for: leaving looks exactly like a blip.
     host.passes.remove(&participant_id);
     host.downloads.retain(|(to, _), _| *to != participant_id);
+    host.latest_download.remove(&participant_id);
     for (path, contents) in host.docs.drop_reader(participant_id) {
         write_last(&path, &contents, host);
     }
@@ -1598,10 +1612,12 @@ const DOWNLOAD_CHUNK: usize = 128 * 1024;
 /// happen off the loop: a large folder takes long enough to freeze every
 /// terminal while it is read.
 fn start_download(path: String, target: u32, host: &mut Host) {
-    // One at a time per guest; asking again replaces the last.
+    // One at a time per guest; asking again replaces the last — whether it
+    // is being sent or still being built, which `on_built` checks.
     host.downloads.retain(|(to, _), _| *to != target);
     let id = host.next_download;
     host.next_download = host.next_download.wrapping_add(1).max(1);
+    host.latest_download.insert(target, id);
     let entries = host.workspace.under(&path);
     let filter = host.workspace.filter();
     let folder = host.state.folder.clone();
@@ -1628,6 +1644,11 @@ fn on_built(built: Built, host: &mut Host) {
         path,
         result,
     } = built;
+    // Asked for again, or gone, while this was being read: the guest no
+    // longer wants it, and two arriving would save two files.
+    if host.latest_download.get(&target) != Some(&id) {
+        return;
+    }
     let download = match result {
         Ok(download) => download,
         Err(message) => {

@@ -22,7 +22,7 @@ which is already tested.
 |---|---|
 | Accumulation cap | 8 MB, or 2,048 frames |
 | One large frame | Always allowed when the queue is empty — a snapshot is legitimately megabytes |
-| Inbound frames | Capped at 32 MB, above the 25 MB the store accepts |
+| Inbound frames | Capped at 32 MB, above the 25 MB a workspace snapshot may be (`MAX_SNAPSHOT_BYTES`) |
 
 Every socket is pinged every 20 s, and one silent for 60 s — pongs count — is
 treated as gone. Without it a socket dead without either end being told, a
@@ -79,6 +79,20 @@ same version even if a write renames a new file into place meanwhile.
 It used to parse, rebuild and re-serialise the whole pad per read — three copies
 in memory at once — and twelve concurrent reads of a 24 MiB pad grew the relay
 by 647 MiB. See [security.md](security.md#what-bounds-an-anonymous-caller).
+
+### Writes are read whole, two at a time
+
+A write is the opposite case: its body is read off the wire before anything
+can be checked, so its size is what it costs. The limit is
+`MAX_PAD_HTTP_BODY`, twice `pad::MAX_BYTES` plus 1 MiB — 121 MiB since a pad
+went to 60 MiB on 7 October — because JSON escaping doubles quotes, backslashes
+and newlines. `MAX_CONCURRENT_PAD_WRITES`, now two (it was four at 25 MiB),
+bounds how many are read at once. The permit is taken before the body is read,
+so a queued write costs a connection rather than 121 MiB. The two numbers only
+mean something together: `main.rs` asserts their product, 242 MiB, stays under
+256 MiB, which leaves the rest of the unit's `MemoryMax=512M` for sessions.
+Raising one alone does not compile. See
+[security.md](security.md#what-bounds-an-anonymous-caller).
 
 ### Reserved names
 
@@ -165,6 +179,17 @@ keeps owners by their session's hash (`Registry::evict_session`).
 The rest is in [accounts](accounts.md) and
 [security.md](security.md#pads-that-belong-to-an-account).
 
+## Session lifecycle
+
+What the relay does when a host or guest drops, comes back or is locked out is
+in [protocol.md](protocol.md#what-survives-what). In short: a dead host socket
+is replaced by the agent holding the session's key, not refused as
+`host_taken`. A host coming back is metered as a join, not as a new session. A
+guest who arrives while the host is away is told `host_away` with the time
+left. A locked session takes back the guests it let in, by the hash of their
+`resume` secret, until one is kicked; after a relay restart the agent's
+`admitted` list restores them.
+
 ## Session shapes
 
 See [protocol.md](protocol.md#session-shapes). The relay is where the rule is
@@ -180,9 +205,9 @@ Besides `/ws`:
 
 | Path | What |
 |---|---|
-| `/` | The landing page |
+| `/` | The landing page; its one-liner names the origin it was served from |
 | `/j/<session>` | The session client |
-| `/install.sh`, `/run.sh` | Compiled into the binary, rewritten to point at this relay |
+| `/install.sh`, `/run.sh` | Compiled into the binary. `run.sh` is rewritten to point at this relay; `install.sh` is served as written |
 | `/api/pad/*` | The pad store |
 | `/auth/*` | Signing in and out |
 | `/api/me`, `/api/my/pads…` | The signed-in account and its pads |
@@ -192,7 +217,12 @@ Besides `/ws`:
 The mirrored WASIX packages, `/packages/*`, are not the relay's: Caddy serves
 them off disk, pre-compressed.
 
-`install.sh` is compiled in rather than deployed alongside, so the published
-installer cannot drift from the binary that was built. The relay rewrites the
-address in it before serving, so a self-hosted relay hands out a one-liner for
-*its* address.
+Both scripts are compiled in rather than deployed alongside, so what is
+published cannot drift from the binary that was built. `run.sh` is the one
+that names a relay, and the relay rewrites that address to the origin that
+served it (from `Host` and `X-Forwarded-Proto`), so a self-hosted relay hands
+out a one-liner that dials *it* rather than quietly sending someone's session
+to ours. `install.sh` names no relay — it fetches the agent from GitHub
+releases — so it is served unchanged. The landing page's command is built
+from `location.origin` for the same reason: it names the origin the page came
+from. It used to name `ajar.sh`, a domain nobody owns.

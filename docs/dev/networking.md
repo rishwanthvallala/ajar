@@ -89,7 +89,7 @@ the list is `pypi.org` and `files.pythonhosted.org` on port 443 and nothing
 else. The patterns are anchored, because an unanchored `pypi\.org` also matches
 `pypi.org.example.com`, which is a host somebody else controls.
 
-Three restrictions matter as much as the hostname list:
+Four restrictions matter as much as the hostname list:
 
 - `allow_private_ips` and `allow_loopback_ips` stay false, which blocks the
   link-local range and so **169.254.169.254** — the instance metadata service,
@@ -205,7 +205,7 @@ it is blocked, and the failure surfaces as `the Wasmer HTTP host did not become
 ready` — which reads like the host being slow rather than the frame being
 refused. Adding the header turned that into a working route immediately.
 
-Deploying it took a second subdomain with those two files and those headers —
+Deploying it took a second subdomain with those files and those headers —
 `preview.rishwanth.dev`, live since September.
 
 ### Two things that produced misleading failures
@@ -271,14 +271,14 @@ file.
 
 1. ~~**`mode: "http"` plus a preview origin.**~~ **Built.** A Preview button
    appears when something in the folder starts listening and swaps the editor
-   for the running server. `scripts/preview-check.mjs` drives it end to end.
+   for the running server. `pad/scripts/preview-check.mjs` drives it end to end.
    The origin is compiled in as `VITE_PREVIEW_ORIGIN`; an empty value disables
    previews and is what a deploy without that subdomain should do. Whatever
    people run must not be `python3 -m http.server`.
 2. ~~**The import map for WISP.**~~ **Built**, and it needed the browser compat
    substitution alongside it — two specifiers, not one.
 3. ~~**An endpoint to point it at.**~~ **Built and live**, as an allowlist
-   rather than a proxy. `pip install` works from a pad; `scripts/wisp-check.mjs`
+   rather than a proxy. `pip install` works from a pad; `pad/scripts/wisp-check.mjs`
    asserts both that it reaches PyPI and that nothing else is reachable.
 4. **A reverse tunnel**, only if a public URL is still wanted after (1) — it
    often will not be, because most of the time "let me see my server" means
@@ -286,7 +286,7 @@ file.
 5. ~~**Whatever makes a multi-dependency install survive.**~~ **Done** on 28
    September: pip's progress bar starts a thread, which this runtime cannot;
    with `PIP_PROGRESS_BAR=off`, `pip install requests` finishes in about 6 s,
-   and `user-check.mjs` installs and imports it against the live site.
+   and `pad/scripts/user-check.mjs` installs and imports it against the live site.
 
 ## How wrong I was, in order
 
@@ -326,10 +326,10 @@ code**. Served from the pad's origin they could script it, read its storage and
 reach its service worker. On their own origin they can do none of that, and the
 SDK refuses to route anywhere else.
 
-The Caddy block serves exactly two files, both from the vendored SDK the pad
-already ships so they can never be a different version from the client talking
-to them. Nothing is stored and nothing is proxied: with no pad open, that origin
-answers 404.
+The Caddy block serves two files from the vendored SDK the pad already ships,
+so they can never be a different version from the client talking to them, plus
+the one-line control page that loads them, written inline. Nothing is stored
+and nothing is proxied: with no pad open, that origin answers 404.
 
 `preview.rishwanth.dev` is an A record to `13.207.222.42`, added by hand on
 NS1, which holds the zone rather than Route 53. On a new domain, deploy with

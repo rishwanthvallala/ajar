@@ -18,17 +18,18 @@ are touching.
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
 | [accounts.md](accounts.md) | Accounts and pad links, as designed and as built: three-word names, view and edit links, roles, the dashboard, Google and GitHub sign-in, deleting an account, the operator's view |
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
-| [workspace-ui.md](workspace-ui.md) | The shell both clients share, the bundle measurements behind it, and what was deliberately not shared |
+| [workspace-ui.md](workspace-ui.md) | The shell both clients share — layout, theme, languages and landmarks — the bundle measurements behind it, and what each product keeps for itself |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [operations.md](operations.md) | Deploying, signing in and its secrets, reaching the server, setting up a new machine, the AWS account, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
 | [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A 22-finding review of the whole tree, and [what was done about each](../code-review-fixes-2026-09-16.md) |
+| [../ajar-review-2026-10-07.md](../ajar-review-2026-10-07.md) | Four reviews of ajar on 7 October — security, parity with the pad, the guest's page, end-to-end flows — and what was done about each finding, with the check that holds it |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |
 
 ## The one thing to read if you read nothing else
 
-**Checks in this project have a habit of passing for the wrong reason.** More
-than twenty have — [testing.md](testing.md#checks-that-passed-for-the-wrong-reason)
+**Checks in this project have a habit of passing for the wrong reason.**
+Thirty-one have — [testing.md](testing.md#checks-that-passed-for-the-wrong-reason)
 keeps the list — and the pattern is always the same: the thing under test
 could produce the passing evidence by accident.
 

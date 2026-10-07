@@ -206,7 +206,7 @@ impl Quota {
 ///
 /// The per-pad cap bounds one folder and the store ceiling bounds all of them;
 /// nothing stopped one address filling the ceiling alone, a full pad at a time,
-/// in the few minutes 160 writes take. With a 90-day lease a store filled that way
+/// in the few minutes some seventy full writes take. With a 90-day lease a store filled that way
 /// stays full for a season, so the lease could only grow once this existed.
 ///
 /// 256 MiB is four full-size pads, or tens of thousands of the scripts people

@@ -312,6 +312,21 @@ async function main() {
   check(out === "new-terminal" || out === "split", "F6 leaves the terminal", String(out));
 
   // ---- downloads --------------------------------------------------------------
+  // On a fresh page, before anything in the tree has been chosen, Download all
+  // is everything — the tree's stop falls back to its first row, a folder
+  // here, and that folder alone was what came down.
+  {
+    const fresh = await guestPage(browser, link, "fresh");
+    const button = fresh.locator("#sidebar-actions button.download");
+    const label = await button.textContent();
+    const [first] = await Promise.all([fresh.waitForEvent("download", { timeout: 30_000 }), button.click()]);
+    check(
+      label === "Download all" && first.suggestedFilename() !== "nothing-here.zip",
+      "Download all on a fresh page downloads everything, not the first folder",
+      `${label} → ${first.suggestedFilename()}`,
+    );
+    await fresh.close();
+  }
   // Everything, as a zip the host makes from the tree's own list; and one
   // file as itself. The zip is over a megabyte, so it only arrives whole if
   // each window is acknowledged and the next one sent.
@@ -415,7 +430,7 @@ async function main() {
     await ana.locator("#viewer").click();
     await ana.keyboard.press(START);
   }
-  check(await until(() => ana.locator(".remote-caret").count(), 8000), "another guest's cursor shows");
+  check(await until(() => ana.locator(".remote-caret").count(), 15_000), "another guest's cursor shows");
   await ana.locator(".term.shown .xterm").first().click();
   const small = await ttySize(ana, "SMALL");
   check(small && before && small[1] < before[1], "a smaller guest narrows the terminal for everyone", `${before} → ${small}`);
@@ -527,6 +542,18 @@ async function main() {
   await ana.locator(".term.shown .xterm").first().click();
   await ana.keyboard.type("echo restarted-$((40+2))\r");
   check(await until(async () => (await screen(ana)).includes("restarted-42"), 10_000), "and their terminal works afterwards");
+  // The restarted relay lost the copy of the folder. The agent offers it
+  // again — it used to go on claiming one was kept until a file changed — so
+  // a host who drops now still leaves the files readable.
+  await sleep(7000);
+  agentHop.cut();
+  const copyAgain = await until(async () => {
+    const t = await ana.locator("#away").textContent();
+    return /saved copy/.test(t) ? t : /No copy/.test(t) ? `none: ${t}` : null;
+  }, 15_000);
+  check(/saved copy/.test(String(copyAgain)) && !/^none/.test(String(copyAgain)), "after a relay restart the folder's copy is kept again", String(copyAgain));
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
 
   // ---- an open file deleted on the host -------------------------------------
   // It stayed editable, and everything typed into it went nowhere.

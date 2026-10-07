@@ -1,7 +1,8 @@
 # Operations
 
-One small ARM box in `ap-south-1` serves both `ajar.rishwanth.dev` and
-`code.rishwanth.dev`. ajar sessions live in memory and die with the relay. Two
+One small ARM box in `ap-south-1` serves all three origins —
+`ajar.rishwanth.dev`, `code.rishwanth.dev` and `preview.rishwanth.dev`
+([below](#the-three-origins)). ajar sessions live in memory and die with the relay. Two
 things are durable: the pad store, and the accounts database with its key
 ([what is on disk](#what-is-on-disk)).
 
@@ -13,8 +14,11 @@ things are durable: the pad store, and the accounts database with its key
 ./deploy/deploy.sh ajar-relay --config-only   # the Caddyfile alone; AJAR_CADDY_RESTART=1 restarts rather than reloads
 ```
 
-It builds from the working tree, not from a commit: deploy what CI passed, and
-do not edit while a deploy is waiting to run.
+It builds from the working tree, not from a commit — the relay, the web client
+and the pad are all built by `deploy.sh` from whatever is on disk — so deploy
+from a clean tree at a commit CI passed, and do not edit while a deploy is
+waiting to run. Nothing in the script checks either: an uncommitted edit ships
+as if it had been tested.
 
 Cross-compiles the relay for `aarch64-unknown-linux-gnu`, builds both browser
 clients, ships everything, and restarts the service. Idempotent.
@@ -101,7 +105,9 @@ AJAR_CADDY_RESTART=1 ./deploy/deploy.sh ajar-relay --config-only
 ```
 
 `--config-only` pushes, validates and loads the Caddyfile and does nothing
-else. **Check a Caddyfile change from outside after every deploy** — a route
+else — unless the file on the box already matches, in which case it leaves
+Caddy alone (and still says "caddy reloaded", which is not true then).
+`AJAR_CADDY_RESTART=1` forces a restart either way. **Check a Caddyfile change from outside after every deploy** — a route
 answering as the relay rather than with `index.html`, a header that changed —
 because a deploy that ends without one says nothing about whether it loaded.
 
@@ -109,7 +115,7 @@ From 5 October the reload failed outright now and then — `Job for
 caddy.service failed`, two deploys in four — ending the deploy before its own
 check, with the previous config, identical, still serving. Why is in the
 journal on the box. The deploy now skips the reload when the Caddyfile there
-already matches and the binary has not changed, which is nearly every deploy,
+already matches and Caddy's own binary has not changed, which is nearly every deploy,
 and prints the last of Caddy's journal when a reload it does make fails.
 Confirm the relay the same way: a WebSocket to `/ws` that never says hello is
 closed after ten seconds by any relay from v0.0.6 on, and the live asset hashes
@@ -126,7 +132,7 @@ a POSIX special built-in, so a redirect error exits the shell.
 
 | | Serves |
 |---|---|
-| `ajar.rishwanth.dev` | The relay, the session client, `/install.sh`, `/ws` |
+| `ajar.rishwanth.dev` | The relay, the landing page and session client, `/install.sh`, `/run.sh`, `/ws` |
 | `code.rishwanth.dev` | The pad, its dashboard and `/admin`, sign-in at `/auth`, the store at `/api`, `/privacy`. Cross-origin isolated, which WASIX threads require |
 | `preview.rishwanth.dev` | Whatever somebody is running inside their folder |
 
@@ -136,9 +142,10 @@ session client. And the preview origin exists because the sandbox's HTTP
 responses are **somebody else's code** — served from the pad's origin they
 could script it, read its storage and reach its service worker.
 
-The preview origin serves exactly two files, both taken from the vendored SDK
-the pad already ships so they can never be a different version from the client
-talking to them, and 404 for everything else. Nothing is stored there and
+The preview origin serves two files taken from the vendored SDK the pad
+already ships, so they can never be a different version from the client
+talking to them, plus a one-line control page written inline in the
+Caddyfile, and 404 for everything else. Nothing is stored there and
 nothing is proxied.
 
 **`preview.rishwanth.dev` needs an A record to `13.207.222.42`.** DNS for the
@@ -233,6 +240,16 @@ reset them and share again.
 The limits — 20 pads and 100 MB per account — are the defaults of two relay
 flags, `--account-max-pads` and `--account-max-bytes`; to change them, add the
 flags to `ExecStart` in the unit.
+
+The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
+together) and `--pad-growth-per-address` (256 MiB a day per address — four
+full pads since a pad went to 60 MiB on 7 October). The size of one pad is not
+a flag, because memory depends on it: a write is read off the wire whole, up
+to 121 MiB, two at a time, and `main.rs` asserts that the 242 MiB they can hold
+together stays under 256 MiB of the unit's `MemoryMax=512M`. Lowering
+`MemoryMax` is therefore a code change as well, and so is putting a pad back
+to 25 MiB ([open points](../open-points.md)). An account's 100 MB holds one
+full pad and most of a second.
 
 ## Reaching the server
 
@@ -374,9 +391,17 @@ docker build -t ajar-relay .
 ```
 
 Release tarballs are `ajar-<target>.tar.gz` with a `.sha256` beside each; the
-installer verifies and refuses on a mismatch. `install.sh` is compiled into
-the relay and served at `/install.sh`, so the published installer cannot drift
-from the binary that was built.
+installer verifies and refuses on a mismatch (a missing checksum file is
+tolerated). `install.sh` is compiled into the relay and served at
+`/install.sh`, so the published installer cannot drift from the binary that
+was built.
+
+`install.sh` fetches the latest release unless `AJAR_VERSION` names a tag —
+`AJAR_VERSION=v0.0.6 sh install.sh`, with the `v`, because it is used as the
+tag in the download URL. That is how to reproduce a report against an older
+agent. A release is a `v*` tag on `main`: `.github/workflows/release.yml`
+builds the four targets and publishes them. The current release is v0.0.7
+(7 October).
 
 Try the whole install path without publishing:
 
@@ -411,7 +436,8 @@ don't conclude anything from the first answer.
 
 ### A wire change means the release goes first
 
-`install.sh` serves whatever the **latest release** holds. So when a change
+`install.sh` serves whatever the **latest release** holds, unless the person
+installing pins `AJAR_VERSION`. So when a change
 makes an older agent unable to talk to the current browser client — anything
 that bumps `PROTOCOL_VERSION` — the order is not a preference:
 
@@ -575,7 +601,10 @@ Three things that are easy to get wrong:
 1. **A new binary needs a restart, not a reload.** `systemctl reload` asks the
    *running* process to take the new config, and the old binary refuses
    `rate_limit` and carries on as it was — which looks like success. The
-   deploy restarts when it swapped the binary and reloads otherwise.
+   deploy restarts when it swapped the binary, reloads when only the
+   Caddyfile changed, and leaves Caddy alone when neither did. A reload that
+   fails prints the last of Caddy's journal, since that is the only place the
+   reason is.
 2. **Validate with the binary by path.** `/usr/bin/caddy` is still the apt
    package's, and it rejects this Caddyfile outright. The deploy runs
    `/usr/local/bin/caddy validate`.
@@ -588,8 +617,8 @@ Three things that are easy to get wrong:
 **The check.** `deploy/caddy/check.sh` runs the Caddyfile that ships against a
 real Caddy — hostnames turned into a local port, upstreams into a closed one —
 and requires every limit to let its allowance through and refuse the next
-request, from two source addresses. CI runs it on every push, after building for
-arm64 as well.
+request, from two source addresses. CI runs it on every push to `main` and on
+every pull request, after building for arm64 as well.
 
 **Going back to the packaged Caddy** is the config first, then the binary. The
 packaged one refuses to *start* on a Caddyfile with `rate_limit` in it, so

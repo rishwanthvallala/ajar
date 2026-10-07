@@ -90,6 +90,13 @@ Rebuilds are rate-limited to one a second and **deferred rather than
 dropped**. A dropped one would leave the tree permanently stale once a burst
 ended and no further events arrived.
 
+A folder that arrives whole — renamed, moved in, unpacked — is walked by the
+same rules as a full scan and sent with everything in it, up to the
+20,000-entry limit. The watcher reports the folder, not its contents, so it
+used to appear empty for good. A folder that goes takes everything listed
+under it; those entries used to stay in the tree, and in the file count, under
+a name that no longer existed.
+
 ## Editing
 
 Only open files get a CRDT. Twenty thousand documents for a repository nobody
@@ -107,7 +114,8 @@ The hard part is that the disk is not the document's private property:
 | Our own write comes back | Ignored — compared against *what we last wrote*, not what the document says now |
 | A binary or oversized file | Refused with a reason; falls back to read-only rather than being corrupted |
 | Not UTF-8, a byte-order mark, mixed or bare-CR line endings | Refused with a reason, read-only instead. The browser's editor would change bytes nobody typed |
-| The open file is deleted, moved, turns binary or outgrows 1 MB | The document closes for everyone who has it, with the reason; the page keeps the text on screen, read-only, to copy. Said once in the log |
+| The open file is deleted, moved, stops being shared, turns binary, outgrows 1 MB or stops being text the editor keeps byte for byte | The document closes for everyone who has it (`Doc::Closed`), with the reason; the page keeps the text on screen, read-only, to copy. Checked when the watcher reports the file and before every write, and said once in the log — it used to stay open, and every keystroke went nowhere while the log said so four times a second |
+| A write fails — a full disk, say | The document stays open and the write is tried again on the next tick; said once, not on every try |
 
 The third row is subtler than it looks. The watcher reports a write only after
 it lands, by which time the next keystroke has usually arrived — so comparing
@@ -147,8 +155,9 @@ rule as any guest read, so nothing the ignore rules hide is in it.
 | Format | Stored, not compressed — written by hand in `archive.rs`; deflating costs the host's CPU, which is busy with other things |
 | Limits | 100 MB and 20,000 files; past either it is refused with the reason |
 | Sent | In 128 KB pieces, never more than 1 MB ahead of what the guest has acknowledged. The relay closes a guest whose queue passes 8 MB, and a download sent all at once to a slow connection did that |
-| One at a time | Per guest: asking again replaces the last |
+| One at a time | Per guest: asking again replaces the last, whether it is being sent or still being read |
 | Read-only | Allowed — it is reading |
+| Leaving | A guest who goes takes their downloads with them |
 
 ## The copy kept for when you drop
 
@@ -161,7 +170,7 @@ goes away.
 | What is stored | Source files only — the same ignore rules, nothing binary or oversized |
 | Who can read it | Anyone with the link, because it is sealed with the session key. **Not the relay** |
 | When it is used | Only while the host is away, and only read-only |
-| When it is offered | After the folder has been still for five seconds |
+| When it is offered | After the folder has been still for five seconds, and again after a relay restart, which loses it |
 | Limits | 25 MB and 5,000 files. Over either, sync switches off and says so |
 | Lifetime | It dies with the session |
 
@@ -183,9 +192,44 @@ each is enforced where it cannot be argued with:
 
 | Control | Enforced by | Why there |
 |---|---|---|
-| kick | the relay | it owns the socket |
+| kick | the relay | it owns the socket; the guest's resume secret goes too, so a locked session does not take them back |
 | lock | the relay | it is the only thing that sees a connection *before* the host does |
-| read-only | the agent | a client that ignores the flag still gets its keystrokes and its edits to open files dropped; only cursors pass |
+| read-only | the agent | a client that ignores the flag still gets its keystrokes and its edits to open files dropped, and is refused a new terminal; only cursors pass |
 
 Locking seals the room without evicting anyone already in it, and everyone is
-told it happened.
+told it happened. Someone already in whose connection drops, or who reloads,
+is let back in — see [security.md](security.md#locking-and-who-it-lets-back-in).
+
+## The panel
+
+Rows go to what matters most first: the link and the keys, then the warnings,
+then the status lines, then who is here, and the activity log gets what is
+left. A terminal too short for everything loses the log before it loses a
+character of the link.
+
+The link wraps rather than being cut. At 80 columns, Terminal.app's default,
+it used to lose the end of its key, and a guest given that link got a page
+that never worked and never said why. `c` puts it on the clipboard through
+OSC 52 where the terminal allows that; Terminal.app does not.
+
+Every warning is shown, in a box as tall as they need. It used to be two lines
+whatever it held, so the credentials warning, third in the list, was never
+seen. The copy kept on the relay has its own line, and `d` turns it off or on.
+While a kick is being typed the number comes first on the line, because the
+end is what 80 columns cut.
+
+A guest who has not introduced themselves five seconds after joining is shown
+as "someone with an incomplete link": their page cannot read the session,
+which is nearly always a link cut short. A terminal keeps its opener's name
+after they leave, as "dana (left)" — it used to say "you", though the host
+opens no terminals here.
+
+## Staying connected
+
+The agent redials with backoff — 250 ms doubling to 8 s — and starts again
+from 250 ms each time the relay lets it in. It pings every 15 s and gives up
+on a connection silent for 45 s, since a socket can die with neither end told;
+the next hello carries the host key, which takes its place back from its own
+stale socket. `host_taken` and `rate_limited` are waited out, at least two
+seconds; any other refusal ends the session. See
+[protocol.md](protocol.md#what-survives-what).

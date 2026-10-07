@@ -85,7 +85,7 @@ if [ "$MODE" = "--config-only" ]; then
     CADDY_SWAPPED=""
     say "updating the Caddyfile, and nothing else"
     push_caddyfile
-    say "caddy reloaded"
+    say "caddy is up to date"
     exit 0
 fi
 

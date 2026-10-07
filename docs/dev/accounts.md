@@ -23,11 +23,11 @@ and you are typing.
 
 ## Names
 
-Three words from the EFF large wordlist (7,776 curated words): about 39 bits,
+Three words from the EFF large wordlist (7,775 words as vendored in `words.txt`): about 39 bits,
 against about 22 for today's `adjective-noun-1234` — 24 adjectives, 24 nouns
-and 9,000 numbers. Minted server-side, checked
-against every name ever issued — tombstones included, since names are never
-reused — and immutable once minted.
+and 9,000 numbers. Minted server-side, checked against every account pad ever
+made — deleted ones included, since their names stay retired — and against
+every pad in the store now, and immutable once minted.
 
 **A name is an address, not a secret.** 39 bits is enough that nobody stumbles
 onto a pad, and not enough to keep a pad private against someone guessing at
@@ -199,8 +199,12 @@ is all in the page — no relay change, and the original is only read.
 
 ## Limits and lifecycle
 
-- **Per account:** 20 pads, 100 MB in all, and 60 MB / 500 files each as now.
-  The disk has 15 GB free; these are the numbers to revisit, not a promise.
+- **Per account:** 20 pads, 100 MB in all, and 60 MB / 500 files each, the
+  same as an anonymous pad. A pad went from 25 MB to 60 MB on 7 October and the
+  account total did not move, so an account now holds one full pad and most of
+  a second rather than four. Every pad together is held to 4 GB by default,
+  whatever the accounts add up to. The disk has 15 GB free; these are the
+  numbers to revisit, not a promise.
 - **No expiry** while the account exists. Deleting a pad deletes its files and
   retires its name for good — unlike anonymous expiry, which frees it.
 - **Deleting an account** deletes its pads. A read-only archive is the

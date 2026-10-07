@@ -38,16 +38,19 @@ does more work and can read your files.
   └──────────────┘
 ```
 
-The agent holds every authority. It is the only party that can decrypt, the
-only one that knows anyone's name, the only one that can write to the folder,
+The agent holds every authority. It made the key, and only it and whoever
+holds the link can decrypt — never the relay. It is the only one that knows
+anyone's name, the only one that can write to the folder,
 and the only one that decides what a guest is allowed to do. The relay routes
 on nine bytes of header and forwards the rest untouched.
 
 That constraint was there from the first commit and it paid: **turning on
 end-to-end encryption required zero changes to the relay.** It holds no
-session key and has no code that opens a frame; the cryptography it does
-carry, since 4 October, belongs to accounts — sealed link codes and hashed
-session tokens.
+session key and has no code that opens a frame. The cryptography it does
+carry is hashing: since 4 October, for accounts — sealed link codes and hashed
+session tokens; since 7 October, the SHA-256 of the host's key, to know which
+agent opened a session, and of each guest's resume secret, to know whom a
+locked session already let in.
 
 ## pad: sharing a folder
 
@@ -74,9 +77,9 @@ One relay serves both, and the routing differs because the topologies do.
 |---|---|---|
 | Centre | The agent | None |
 | A guest may reach | The host only | Everyone |
-| `target = 0` means | "to the host" | nothing — peers always broadcast |
+| A guest's `target` is | its own id, checked; the frame goes to the host | its own id, checked; the frame goes to everyone else |
 | Session created by | The agent connecting | The first browser to open the name |
-| Restart | Agent re-opens the same id | Files survive; the room does not |
+| Restart | Agent re-opens the same id, and its hello restores the lock, the protocol version and whom the lock lets back in | Files survive; the room does not |
 
 **One session id is one shape for its whole life.** A peer walking into a
 hosted session would receive broadcast frames from an agent that believes it
@@ -85,11 +88,11 @@ in both directions.
 
 In a hosted session, guests never address each other. Anything a guest needs
 from another guest — presence, who is here — goes through the host, which is
-the authority on session state. Peers have no such authority, so each peer
-stamps its own participant id on every frame and the relay broadcasts to
-everyone else. A pad that belongs to an account is the exception: the relay
+the authority on session state. Every guest and peer stamps its own
+participant id on what it sends, and the relay checks it: a guest's frame goes
+to the host, a peer's to everyone else. A pad that belongs to an account is the exception: the relay
 asks the accounts database who may come in and as what, and drops everything
-a viewer sends except asking for a document's state.
+a viewer sends except asking for a document's state, or saying it has none.
 
 ## Three origins, and why none of them can merge
 
@@ -136,6 +139,10 @@ through the authority. In ajar that is the agent, which watches the folder and
 sends patches. In the pad there is no agent, so a peer broadcasts only that
 something *moved* and everyone re-reads from the store.
 
+A disk change to a file someone has open crosses over: the agent turns it into
+an edit of its own, made against what it last wrote, so typing and the disk's
+change both stay — see [agent.md](agent.md#editing).
+
 Shipping file contents over the peer channel would make the broadcast and the
 store two copies of one truth, and a frame dropped or arriving mid-reconnect
 would leave a browser confidently out of step with no way to notice.
@@ -145,7 +152,7 @@ would leave a browser confidently out of step with no way to notice.
 | | |
 |---|---|
 | `crates/ajar-proto` | Frame codec, channels, roles, sealing. Shared by agent and relay |
-| `crates/ajar` | The agent. Terminals, workspace scanning, documents, sandbox, panel |
+| `crates/ajar` | The agent. Terminals, workspace scanning, documents, downloads, the checkpoint and credential scan, sandbox, panel |
 | `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store, accounts and sign-in, the operator's view |
 | `web/src` | The session client |
 | `pad/src` | The browser tier, including the WASIX runtime and the shell |

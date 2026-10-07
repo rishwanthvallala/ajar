@@ -3,8 +3,9 @@
 //! Every message is one binary WebSocket frame:
 //!
 //! ```text
-//! byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE
-//! bytes 1..5   stream_id  u32  LE  pty id, or 0 for channel-level JSON
+//! byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE | DOC | STORE
+//! bytes 1..5   stream_id  u32  LE  pty, document or download id (1 for a
+//!                                  stored copy), or 0 for channel-level JSON
 //! bytes 5..9   target     u32  LE  host→guest destination, or authenticated
 //!                                  guest→host sender; 0 for broadcast
 //! bytes 9..    payload    opaque to the relay

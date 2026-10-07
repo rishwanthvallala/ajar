@@ -70,7 +70,14 @@ prefix: `ajar.theme` / `pad.theme` (`system`, `light` or `dark`) and
   `[data-theme="dark"]`. Each product's `main.ts` calls `applyStoredTheme()`
   first thing, because both CSPs forbid an inline head script. Monaco and
   xterm follow through `onThemeChange()`; Monaco uses `ajar-light` /
-  `ajar-dark`, which are `vs` / `vs-dark` plus the CSV column colours. The
+  `ajar-dark`, which are `vs` / `vs-dark` plus the CSV column colours and,
+  since 7 October, an editor and gutter background of the shell's `--surface`
+  (`#ffffff`, `#161a22`), so the editor sits in the page rather than on
+  Monaco's own grey. Those two are written out in `defineEditorThemes`, not
+  read from `theme.css`: a change to `--surface` has to be made in both. Each
+  product's terminal takes `--surface` from the stylesheet — the pad's since
+  September, ajar's since 7 October. ajar's landing page has its own theme
+  switch since 7 October, writing the same `ajar.theme`. The
   other stylesheet rules that read `prefers-color-scheme` — dark text on
   ajar's accent buttons in `web/src/style.css`, and the pad's account pages
   in `pad/src/accounts.css` — honour the attribute the same way.
@@ -106,7 +113,18 @@ fixture makes no API, peer WebSocket, Wasmer, mirrored-package, or service
 worker request. Vite eliminates the fixture from production: the production
 query follows the normal Pad flow and contains no fixture controls or chunk.
 
-## Final bundle comparison
+## Landmarks — 7 October 2026
+
+The shell's title is a heading now, `<h1 id="workspace">`, styled as the same
+quiet line it was as a `<strong>`, and the editor and terminals sit in
+`<main class="main">`, so a screen reader has a heading to land on and a main
+region to skip to. `workspace.css` also carries `.visually-hidden`, for words
+there for a screen reader and not the eye — ajar uses it so a terminal tab
+reads "terminal 1, also here: bob". What fills those regions is each product's
+own: ajar's file tree is an ARIA tree with one roving stop
+(`web/src/tree.ts`); the pad's rows are still buttons (`pad/src/files.ts`).
+
+## Final bundle comparison — 19 September 2026
 
 The comparable entry/controller assets from the locked production build are:
 
@@ -151,15 +169,9 @@ package in both manifest-install and source-build phases, but local image
 construction could not start because the Docker Desktop Linux engine is not
 running. These unavailable checks are not reported as passes.
 
-The one remaining OpenSpec task is the relay-dependent Pad verification. On a
-supported host with the Rust relay built, run:
-
-```sh
-npm run check --workspace=ajar-pad
-VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npm run build --workspace=ajar-pad
-node pad/scripts/preview-check.mjs
-```
-
-That gate exercises real edit/save/reload/share and two-peer behavior plus Run,
-stdin, Ctrl-C, and the server preview. It remains unchecked until those commands
-complete against a live relay.
+The relay-dependent Pad verification this left open is routine now:
+`check.sh` runs `pad/scripts/terminal-check.mjs`, `user-check.mjs` and
+`accounts-check.mjs` on every CI run, the last against a real relay with an
+owner, an editor and a viewer in one pad. `app-check.mjs` and
+`preview-check.mjs` are run by hand — see
+[testing.md](testing.md#the-pads-own-harnesses).

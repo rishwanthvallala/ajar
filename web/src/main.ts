@@ -397,11 +397,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     conn.send(jsonFrame(Channel.Fs, TARGET_ALL, { t: "download", path } satisfies Fs));
     toast(`Preparing ${path || "the whole workspace"} to download…`);
     if (downloadWait) clearTimeout(downloadWait);
-    // An agent from before downloads says nothing at all.
+    // An agent from before downloads says nothing at all. A minute, not
+    // less: a large folder is read whole before the host answers.
     downloadWait = setTimeout(() => {
       downloadWait = null;
-      toast("No answer from the host. Their ajar may be too old to send downloads — ask them to update.");
-    }, 20_000);
+      toast("No answer from the host after a minute. Their ajar may be too old to send downloads — ask them to update.");
+    }, 60_000);
   }
 
   function downloadAnswered() {
@@ -688,7 +689,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     const holding = left > 0
       ? `Holding this session for ${left < 60 ? `${left}s` : `${Math.floor(left / 60)}m ${String(left % 60).padStart(2, "0")}s`}`
       : "Still waiting";
-    awayEl.textContent = `The host's connection dropped. ${holding} — terminals are still running on their machine. Anything you type is kept and sent when they are back.${copyNote}`;
+    awayEl.textContent = `The host's connection dropped. ${holding} — terminals are still running on their machine, but take no typing until they are back. Typing in a file you have open is kept and sent when they return.${copyNote}`;
     awayEl.hidden = false;
   }
 
@@ -1474,7 +1475,7 @@ function ended(reason: string): GateOptions {
       title: "The host has been away too long",
       lines: [
         "The relay stopped waiting for them. Their terminals may still be running on their machine.",
-        "If they start sharing again with the same link, you can rejoin.",
+        "If their ajar is still running, it takes this link back when their machine reconnects, and you can rejoin then.",
       ],
       action: rejoin,
       tone: "info",

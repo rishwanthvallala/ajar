@@ -6,8 +6,9 @@ copy), and end-to-end flows with edge cases and test gaps. Every finding below
 was reproduced against built binaries unless it says otherwise. This file is
 the ledger: what was found, what was done about it, and how it is checked.
 
-Status: **fixed** (committed, with a check that fails without the fix),
-**next** (planned, in the order below), **open** (not yet planned).
+Status: **fixed** (committed; where a check is named, it was seen to fail
+with the fix reverted — a row that names none has no check of its own),
+**added** (new, not a repair).
 
 ## Security
 
@@ -102,9 +103,11 @@ Status: **fixed** (committed, with a check that fails without the fix),
 
 | | Finding | Status |
 |---|---|---|
-| F1 | Presence did not match the cursors, and pushed the header to three rows on a phone | fixed — a dot per person in their cursor's colour; on a phone, dots and a count; `check-guest` |
+| F1 | Presence did not match the cursors, and pushed the header to three rows on a phone | fixed — a dot per person in their cursor's colour; on a phone, dots and a count; `check-guest` (the dots) |
 | F2 | An open empty folder showed nothing, like one still loading | fixed — an "empty" row; `check-guest` |
 | F3 | The landing page had no theme switch and no icon; the tree's chevrons were 11 px glyphs | fixed |
+| F4 | On a fresh page, before anything in the tree was chosen, Download all downloaded the first folder alone | fixed; `check-guest` |
+| F5 | After a relay restart the folder's copy was not offered again until a file changed, while the panel said one was kept; a second download asked for while the first was being read was sent as well | fixed in the agent — reaches hosts with the next release; `smoke-reconnect` |
 | T1 | The panel's keys were never pressed by any test | fixed — `check-guest` presses `l`, `x`, `k` and `q` through `scripts/lib/ptyrun.py` |
 | T2 | A suite's relay that died at start, its port taken, passed for a working one | fixed — `wire.mjs` notices and says so |
 | T3 | CI's annotation showed only a log's tail, often not the failure | fixed — every suite says its failures again at the end |
@@ -122,10 +125,10 @@ Status: **fixed** (committed, with a check that fails without the fix),
 
 | | Commit | Live |
 |---|---|---|
-| Security (S1–S3) | `58fbdbe` | 7 October, with the batch below |
+| Security (S1–S3) | `58fbdbe` | relay 7 October; the agent's half — the key it opens a session with, hidden files refused by name, the cap on open documents — in v0.0.7, the same day. A host still on v0.0.6 or older has none of S1–S3 until it reinstalls |
 | The installer's domain (S4) | `0574a0c` | 7 October |
-| Losing work, staying connected, the editor and terminals | `e7d4c23` | relay and page 7 October; the agent's half needs a release |
-| The lock, the panel, the page, downloads, finishing touches | `1093ca9` | relay and page 7 October; the agent's half needs a release |
+| Losing work, staying connected, the editor and terminals | `e7d4c23` | relay and page 7 October; the agent's half in v0.0.7, the same day |
+| The lock, the panel, the page, downloads, finishing touches | `1093ca9` | relay and page 7 October; the agent's half in v0.0.7, the same day |
 
 ## Verification of the first batch
 
@@ -134,3 +137,10 @@ failed, except that Back out of the cache still works without the page
 replacing its socket at `pageshow` — the old socket's close arrives on the way
 back and the ordinary reconnect takes over. The replacement stays, because it
 saves a quarter-second of "reconnecting", and has no check of its own.
+
+## Verification of the second batch
+
+The same for `1093ca9`: each fix broken again on purpose and its check seen to
+fail. One fix has a second line of defence that hides it: the link checked for
+a whole key before the join form shows is checked again as the page joins, so
+removing the first check alone shows the same card a step later.

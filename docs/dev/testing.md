@@ -10,31 +10,40 @@ check ran. A missing browser is otherwise **fatal everywhere** — a gate that
 quietly downgrades itself on the machine where someone is about to commit is
 worse than no gate, because it still reports success.
 
+CI runs the same script on every push to `main` and every pull request, on
+`ubuntu-latest` and `macos-latest` (`.github/workflows/ci.yml`). It installs
+Playwright's Chromium first, so the UI suites cannot skip there, and gives the
+Mac runner a `~/.viminfo`, as a real Mac has — without one, vim failing to
+quit inside the sandbox stayed hidden. On a failure the end of the log becomes
+an annotation, which anyone can read through the API where the log needs a
+sign-in. Ubuntu then runs `scripts/linux-sandbox.sh`, and builds Caddy for
+both architectures and checks its rate limits (`deploy/caddy/check.sh`).
+
 ## What each suite proves
 
 | | |
 |---|---|
-| `cargo test` | Frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions, accounts — roles, links, quotas, sealing, deletion — and sign-in's PKCE and cookie state |
+| `cargo test` | Frame codec, guardrails, ring buffer, ids, backoff, session lifecycle, ignore rules, scanning, patches, panel keys, process accounting, the reconciler, secret detection, checkpoints, sandbox escapes, sealing, the store, quotas, guest limits, durable pads, peer sessions, accounts — roles, links, quotas, sealing, deletion — and sign-in's PKCE and cookie state; and a disk change merged with typing not yet written, which files the editor may edit, a terminal's input never blocking the agent, a folder renamed or moved in, the host's key and its stale socket, a locked session taking back its own guests and nobody kicked, download zips, and the panel drawn at 80×24 |
 | `npm run typecheck` / `build` | Both browser builds |
 | `pad/scripts/browser-check.mjs` | Drives `pad/src/check.ts` in headless Chromium — the runtime, the shell, every python shim against its real tool, the sandbox seed, the CSV tokenizer, the zip reader and writer and what an imported zip becomes, what a pasted pad link names, a zip's empty directories kept by markers, the diff sending a command's binary file as its exact bytes and a file that changes kind as one change, typing carried over while a document arrives, the sync diff, the store over real HTTP, and that the WISP transport loads. It cannot be a node test: the python package fails wasm validation there, and `SharedArrayBuffer` needs cross-origin isolation. Packages come through the mirror's service worker, as for a visitor; fetched from Wasmer's CDN instead, python's 62 MB stalled for minutes from one network and the check hung at the runtime's start |
 | `pad/scripts/terminal-check.mjs` | The pad's terminal by real key presses, judged by what is on screen: history, Tab completion, Ctrl-R, the editing keys, clearing, a multi-line paste, a line longer than the terminal, Ctrl-C, and that errors reach the screen at all. The line editor is the page's own, so nothing else tests it. `PAD_ORIGIN` runs it against a deployment; the old editor failed 33 of its checks. In the gate |
 | `pad/scripts/user-check.mjs` | The pad as a person uses it: mistakes and their tracebacks, `input()`, Ctrl-C on a loop and on `input()`, Ctrl-D, the Stop button, `nano`, output without a final newline, Run after a `cd`, New file, threads, Ctrl-S, colours by language and Ctrl-F, a long file opening where it was left — after a switch, after a command changed it meanwhile or while on screen, and after a move — deleting from the tree, and zips in and out — upload, a zip dropped on the file list, asking before replacing a changed file, junk and binaries left out, a pad's own zip round-tripping — empty folders too — and downloads read back by Python's `zipfile`; a binary file a command makes — listed as one, sent as its bytes, downloaded byte for byte, a zip made in the terminal that opens, and moved like any file; and moving in the tree — a file dragged into a folder in one store write, beside a file, a folder with the open file following it, never into itself, F2's typed path, asking before replacing, and unsaved typing going along. `PAD_ORIGIN` adds a real `pip install requests`. Against the code before 28 September it failed at the first check. In the gate |
 | dockerfile check | Every `COPY` source exists — the cheap half of `docker build` |
 | `scripts/test-ui.cjs` | Runs both layout checks below, then boots each app and requires no page errors, then opens the built pad's editor: languages, the CSV tokenizer fetched only once a CSV opens, Colours, and the theme reaching Monaco and surviving a reload |
-| `scripts/check-workspace-layout.cjs` | The session client: editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, preferences, the theme toggle, preview isolation, lazy loading, disposal — and that a guest meeting a host on another protocol is told so instead of getting a dead session |
+| `scripts/check-workspace-layout.cjs` | The session client: editor lifecycle, pointer and keyboard resize, four viewport sizes, drawer focus, preferences, the theme toggle, preview isolation, lazy loading, disposal, read-only refusing typing and reopening the file from the host's copy when it flips, a cursor id that cannot write the stylesheet — and that a guest meeting a host on another protocol is told so instead of getting a dead session. Its stand-in host seals every content frame with a key it puts in the link, as an agent does: since 7 October a page with no key stops at "This link is incomplete" |
 | `scripts/check-pad-layout.cjs` | The pad against the same shared shell: resize, four viewports, drawer focus, status fixtures, the theme toggle, Colours hidden over a server preview, and that pad preferences and network state stay isolated from the session client's |
-| `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence |
-| `scripts/smoke-workspace.mjs` | Ignore rules, reads, path-traversal refusal, patches, an install-sized burst |
-| `scripts/smoke-editing.mjs` | Two people editing one file while the terminal rewrites it |
-| `scripts/smoke-control.mjs` | Lock and read-only actually reach a guest |
+| `scripts/smoke.mjs` | relay + agent + a guest that runs a real command, sees replay, round-trips presence; the sandbox posture printed before the link; a paste into a terminal whose program is not reading holds up only that terminal; a session that does not exist is refused in words; and ctrl-c still ends the agent with the paste stuck |
+| `scripts/smoke-workspace.mjs` | Ignore rules, reads, path-traversal refusal, what the tree hides refused when asked for by name — a gitignored file, a dependency's, `.git/config` — patches, a folder renamed or moved in arriving with its contents and the old name gone, and an install-sized burst |
+| `scripts/smoke-editing.mjs` | Two people editing one file while the terminal rewrites it; typing not yet written surviving appends made on disk meanwhile, each once; an open file deleted underneath closing for its readers with the reason, said once in the host's log; Latin-1 and mixed line endings refused for editing, as a binary file is |
+| `scripts/smoke-control.mjs` | The host's controls as the agent and relay enforce them: a read-only session refuses a guest a terminal, saying why, and drops their file edits at the host; a locked session refuses newcomers and keeps those already in — through a blip too, by the secret each tab sends — refuses a stranger with a secret of their own and a kicked guest with their old one, and opens again on unlock; a guest's control frames never reach the host; a stored copy over 8 MB arrives whole; a socket that never says hello is closed |
 | `scripts/smoke-environment.mjs` | Credentials in the host's environment do not reach a guest's shell, and the socket warning matches what a guest can actually reach |
 | `scripts/smoke-encryption.mjs` | Wiretaps the wire and requires nothing readable crosses it |
 | `scripts/smoke-sync.mjs` | Kills the host mid-session; the guest can still read the folder |
 | `scripts/smoke-reconnect.mjs` | Kills the relay mid-session; the agent returns to the same link |
-| `scripts/smoke-hostdrop.mjs` | Cuts only the host's socket, through a proxy, and requires everything from the gap back: typing, disk changes, new files, joins and leaves |
+| `scripts/smoke-hostdrop.mjs` | Cuts only the host's socket, through a proxy, and requires everything from the gap back: typing, disk changes, new files, joins and leaves; a guest claiming the away host's place refused; the agent taking its place back from its own stale socket with its key, without guests being told the host left, and anyone else still refused; twenty-five resumes not counted as twenty-five new sessions |
 | `scripts/check-terminal.mjs` | A guest's terminal by real key presses, through the relay to a real bash on the host: history, the editing keys, Tab, Ctrl-R, clearing, Ctrl-C, a paste, the python REPL, unicode, and less, vi, nano and top drawing and quitting. The host's shell is pinned — prompt, inputrc, locale — so what is tested is the path, not the machine's bash. `AJAR_RELAY` and `AGENT` run it against a deployment. With the client dropping one byte, ESC, twelve of its thirty fail — needs `npm run build:ajar` |
 | `scripts/check-host-drop.mjs` | The same blip in the real browser client, typing into Monaco; and that a guest arriving to no terminals is given exactly one — needs `npm run build:ajar` |
-| `scripts/check-guest.mjs` | The guest's page through what goes wrong around it: its own connection cut, Back out of the back/forward cache (a browser launched with the cache on, which Playwright turns off), the relay restarted before the agent is back, the host away, guests arriving and leaving, files it must not edit, an open file deleted, the terminal limit — and the host's panel keys pressed through a real terminal (`scripts/lib/ptyrun.py`), which nothing else does |
+| `scripts/check-guest.mjs` | The guest's page through what goes wrong around it — `web/dist`, served by a real relay, with a real agent; each item was found broken by a browser in the review of 7 October while the wire-level suites passed. Links with the key cut short, missing or someone else's, each saying so; the people here as a list, "(you)" and "(host)" in words and a dot in each cursor's colour; an empty folder marked; the file tree by keyboard and F6 out of a terminal; Download all on a fresh page and from the tree, a zip over a megabyte that passes `unzip -t` and leaves out what the ignore rules hide, and the open file as itself; binary, mixed-ending and BOM files opening read-only; the place in a file kept across a switch and across the guest's own connection cut, the next keystroke landing there; another guest's cursor and smaller terminal, both gone when they leave; the terminal limit said in words; a terminal that ended while the guest was cut off gone from their tabs too; the host away — the status, the countdown, the leave prompt only while typing is unsent, someone arriving told, a file opened meanwhile labelled, the typing reaching disk once the host is back; a host whose machine is asleep (the agent stopped with `SIGSTOP`) waited for; the relay restarted before the agent is back; an open file deleted on the host; Back out of the back/forward cache, in a second Chromium launched with the cache on, which Playwright turns off. Then the agent as a person runs it, in a pseudo-terminal (`scripts/lib/ptyrun.py`), its keys pressed: `l` on and off while a guest 250 ms away is typing, and that guest's keystrokes dropped at the host; `x`, the locked session taking its guests back through a relay restart and still turning away someone new; `k` and a guest's number, the guest told and not let back in by reloading; `q`. Nothing else presses the panel's keys. Needs `npm run build:ajar` and `cargo build` |
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
 | `scripts/smoke-accounts.mjs` | Accounts at the relay, against a stand-in OAuth provider that checks PKCE: sign-in, the cookie's flags, a replayed callback, an off-site return address; then the store and the peer room as a stranger, a viewer, an editor and the owner — a viewer's edit dropped and its `DOC_NONE` passed, every setting, revoking, eviction of people already inside, both quotas, deletion, a restart, and no token or code in the database in the clear; the admin figures for the operator and a 404 for anyone else; signing out ending that sign-in's owner connections in the room and only those; deleting an account; and a relay with no provider set up. Each enforcement point was reverted and the suite failed |
 | `pad/scripts/accounts-check.mjs` | Accounts in three browsers — owner, edit link, bare name: signing in, New pad, the share dialog's links, the code taken out of the address bar, live typing both ways, a viewer's copy-on-write, a command's file kept local, Discard rejoining the live document, Save as my copy, settings reaching people already inside, the private screen, the dashboard; a long file opening where the owner left it after the editor typed in it meanwhile; a file the owner drags into a folder reaching the editor's tree and the store, and a viewer unable to drag; a viewer's document outliving its editors; a tab closed inside its save delay, Run in one file while another is typed in, `/admin`, a pad made from a zip, Copy a pad — the refusals in words, a failed write leaving no pad, a pasted code sent with the read and not kept, the original untouched — **Not live** on a name an ajar session holds and its backoff, signing out with the pad open as owner in another tab, Back out of the back-forward cache — to a pad, to the dashboard after New pad and after Copy a pad, and after a viewer's Save as my copy — and deleting the account behind its typed confirmation. In the gate |
@@ -49,6 +58,13 @@ from whatever holds the port, so after it does, the suite looks for a relay it
 started that has exited, and stops with "is something else on its port?". And
 `finish()` says every failure again at the end, because CI's annotation shows
 only a log's last few kilobytes.
+
+It also runs the agent as a person does: `startAgentInPanel` starts it inside
+a pseudo-terminal through `scripts/lib/ptyrun.py` (220×50 unless `COLS` and
+`ROWS` say otherwise), so the panel draws and `press()` sends it keys, and
+`linkOf` reads the link through the panel's escape sequences. And a `Guest`
+can carry `hostKey`, to speak as the agent that opened a session, and
+`resume`, the secret a tab sends so a locked session takes it back.
 
 The browser tier is checked separately, because each run downloads the wasm
 packages and drives a real Chromium:
@@ -94,10 +110,10 @@ Both workspace UIs can be opened without Rust, a relay, or a session at all:
 
 ```sh
 npm run dev:ajar
-# then http://localhost:5173/?preview=workspace
+# then http://127.0.0.1:5173/?preview=workspace
 
 npm run dev:pad
-# then http://localhost:5175/?preview=workspace
+# then http://127.0.0.1:5175/?preview=workspace
 ```
 
 The Ajar fixture has **Populated**, **Empty**, and **Disconnected** examples.
@@ -120,8 +136,9 @@ and experimenting in either fixture writes neither set.
 `check.sh` does not run these in full — each drives a real browser and moves
 real bytes, and the gate is already the slowest thing in the repository. Of
 `npm run check`'s four, `terminal-check.mjs` and `user-check.mjs` are in the
-gate; `browser-check.mjs` and `app-check.mjs` are not, and neither are the
-rest below.
+gate; `browser-check.mjs` and `app-check.mjs` are not. `accounts-check.mjs`,
+which `npm run check` does not run, is in the gate too. Of the rest below,
+only `smoke-abuse.mjs` is.
 
 ```sh
 npm run check --workspace=ajar-pad          # the pieces, then the product
@@ -229,7 +246,7 @@ Three ways these measured the wrong thing before they were fixed:
 
 ## Checks that passed for the wrong reason
 
-Twenty-nine so far, and they are the most transferable lesson in this repository.
+Thirty-one so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -262,8 +279,17 @@ passing evidence by accident.**
 | A viewer converging after its editors left | With every seed under one client id, the new editor's typing is put against the viewer's characters of the same ids — but typed at the end of the file it lands at the end anyway. The fix was to type *inside* the seed, after its first character, with Cmd+Home and an arrow; Cmd+Home is not a Monaco binding on a Mac, the cursor never left the end, and it passed twice more. The cursor is now placed through Monaco's API, and the check asserts the editor's own text first |
 | Discard rejoining the live file | It waited for the room's next line to appear, which the stored copy also delivers, a save later. It now requires the live document itself |
 | A hosted session squatting an owned pad's name | It tried to squat a pad whose room had people in it, and the relay refuses a host there for its own reasons. With the fix removed it still passed. It now squats a pad whose room is empty — the attack — and then requires the owner to get in |
-| Back from Your pads | Every pad check passed while a real browser's Back showed an empty, dead page: Playwright launches Chromium with `--disable-back-forward-cache`, so Back was always a fresh load and never the frozen page people get. `accounts-check.mjs` now runs those flows in a second Chromium with the cache on. The first Back must come out of the cache, or the section proves nothing; the browser may decline to keep a page under load — CI's did, now and then, failing the check where the product was fine — so a later miss is tried again and, still missed, noted with the browser's reasons |
+| Back from Your pads | Every pad check passed while a real browser's Back showed an empty, dead page: Playwright launches Chromium with `--disable-back-forward-cache`, so Back was always a fresh load and never the frozen page people get. `accounts-check.mjs` now runs those flows in a second Chromium with the cache on. The first Back must come out of the cache, or the section proves nothing; the browser may decline to keep a page under load — CI's did, now and then, failing the check where the product was fine — so a later miss is tried again and, still missed, noted with the browser's reasons. The guest's page in ajar had the same blind spot until 7 October; `check-guest.mjs` launches its second Chromium the same way |
+| Acceptance #7, "nothing re-ran" | It was recorded true without looking. It now counts the command's output in the replay against what a guest watching live saw |
+| check-host-drop's "open for editing" | It waited for Monaco to drop a `read-only` class Monaco never sets, and swallowed the timeout, so it waited for nothing. It now waits for `#viewer[data-editing]`, which the page sets only once the document is bound |
 | Typing kept when editing is locked mid-save | It passed whenever the lock reached the editor before its save left, which is every local run. The other order — the save in flight when the demotion lands, so the demotion finds nothing unsaved — lost the typing, and only CI's macOS runner was slow enough to hit it, on 5 October. The editor's save is now held until the lock has landed, so that order is the one tested |
+
+**Wait for what you check; never look once.** Three more on 7 October, all on
+the macOS runner: the pad's Ctrl-R check read the screen between the echo and
+the command's output; `check-guest` read a refused file's title between the
+host's reason and the read-only copy's; and after a Back that came back as a
+fresh load, it compared with a place from before the retry. The product was
+right each time.
 
 A fourth habit, from the same week: **read the failure, not the status.** A
 502 from the sandbox's HTTP route carries the error in its body — the service

@@ -4,7 +4,7 @@ Every message is one binary WebSocket frame.
 
 ```
 byte  0      channel    u8   CONTROL | PTY | FS | PRESENCE | DOC | STORE
-bytes 1..5   stream_id  u32  LE   pty or document id, or 0 for channel JSON
+bytes 1..5   stream_id  u32  LE   pty, document or download id (1 for a stored copy), or 0 for channel JSON
 bytes 5..9   target     u32  LE   destination, or the authenticated sender
 bytes 9..    payload    opaque to the relay
 ```
@@ -29,7 +29,7 @@ rule, a server-side feature, a metric that needs to know what a frame contains
 |---|---|---|
 | `Control` 0x01 | Handshake, join/leave, lock, close, errors | No — the relay routes on it |
 | `Pty` 0x02 | Terminal input and output | Yes |
-| `Fs` 0x03 | The file tree, file contents, reads | Yes |
+| `Fs` 0x03 | The file tree, file contents, reads, downloads | Yes |
 | `Presence` 0x04 | Names, who is watching which terminal | Yes |
 | `Doc` 0x05 | Yjs document updates and awareness | Yes |
 | `Store` 0x06 | The sealed offline copy | The copy, not its envelope |
@@ -45,8 +45,14 @@ Hosted sessions are four cells and stay four cells:
 
 | From | `target = 0` | `target = N` |
 |---|---|---|
-| guest | → host only | rejected |
+| guest | only on the unsealed `Store` channel — a `fetch`, which the relay answers itself | → host, and only when N is the guest's own id |
 | host | → every guest | → that participant |
+
+On a sealed channel a guest's `target` is the sender, not a destination: it
+stamps its own id, the id is part of the authenticated header, and the relay
+drops a frame carrying anyone else's — or 0 — rather than rewrite it, which
+would break the tag. A guest's control frames are dropped outright: after the
+handshake there is nothing a guest may tell the relay.
 
 Peer sessions are one rule: a peer must stamp its own participant id on every
 frame, and the relay broadcasts to everyone else. A frame that is not stamped
@@ -64,7 +70,8 @@ the host; peer sessions start at 1 because there is no host.
 A join whose role does not match the session's shape is refused with
 `wrong_shape`. This is enforced in both directions and tested against the
 deployed relay, not just locally. A host or guest naming a pad that belongs
-to an account is refused with `wrong_shape` too, before any session exists.
+to an account, or one whose owner deleted it, is refused with `wrong_shape`
+too, before any session exists.
 
 A host's `hello` carries `host_key`, a secret the agent made at startup: the
 relay keeps its hash from the hello that opened the session and lets only that
@@ -78,7 +85,9 @@ session takes them back after a blip; a kick forgets it. The guest also puts
 it in its sealed `iam`, and the agent sends the hashes of everyone it has met,
 less anyone kicked, as `admitted` in every hello — so a restarted relay, which
 knows nobody, still knows whom the lock is not for. Both are left off the wire
-when empty.
+when empty. Each side remembers at most 1,024, a bound only so a page minting
+secrets cannot grow it for ever. See
+[security.md](security.md#locking-and-who-it-lets-back-in).
 
 A peer's `hello` may carry `code`, the part of a pad link after the `#`, left
 off the wire when there is none. The relay refuses a peer with `private` when
@@ -91,14 +100,14 @@ pad was deleted.
 |---|---|
 | Guest's socket drops | Reconnects with backoff, reset only by a `welcome`; the host re-announces every terminal and replays its ring buffer, and the page closes any tab it did not name. The open file is reopened and what was typed meanwhile replayed onto it, the view where it was |
 | Guest's page goes into the back/forward cache | Kept as it is. Coming back, it opens a fresh socket at once — the one it had died while it was frozen |
-| Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away" |
+| Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away". The agent redials at 250 ms, doubling to 8 s, and starts again from 250 ms each time it is let in. Before 7 October the count only grew, so after a few blips in one long session every reconnect waited the full 8 s and "host away" lasted that much longer |
 | Host returns in the grace | `host_back`. The agent reconciles its guest list with the relay's, then resends the tree, every terminal and its replay, every open document's state and the roster. Each guest resends its name and its document's state |
 | A guest arrives while the host is away | The relay sends them `host_away` with the time left, after `welcome` |
-| Host's socket is dead but nobody was told | Both ends ping: the agent every 15 s, dropping a connection silent for 45 s; the relay every 20 s, treating 60 s of silence as the socket gone. The agent's next hello carries the session's key, and the relay lets it replace its own stale socket rather than refusing it as `host_taken`. That socket's end, when it comes, is not the host leaving |
+| Host's socket is dead but nobody was told | Both ends ping: the agent every 15 s, dropping a connection silent for 45 s; the relay every 20 s, treating 60 s of silence as the socket gone. The agent's next hello carries the session's key, and the relay lets it replace its own stale socket rather than refusing it as `host_taken`. That socket's end, when it comes, is not the host leaving. The relay pings guests and peers on the same terms, so a guest whose tab died silently is dropped within a minute and the host told they `left`, rather than lingering on everyone's roster |
 | Host never returns | The relay reaps the session and tells guests why |
 | Host presses ctrl-c | `Control::Close` — immediate, no grace |
 | Relay process dies | The agent dials back in and re-opens the same session id. Guests who get back first are refused `no_such_session`; a page that has been in the session waits that out, and `rate_limited`, rather than giving up |
-| The agent is refused `host_taken` or `rate_limited` | It waits and tries again: both are about the moment. Every other refusal ends it. A host coming back to a session the relay still has is metered as joining, not as starting a session |
+| The agent is refused `host_taken` or `rate_limited` | It waits — at least two seconds, since a relay holding a stale socket takes that long to let it go — and tries again: both are about the moment. Every other refusal ends it. A host coming back to a session the relay still has is metered as joining, not as starting a session |
 | Who may open a pad changes | Everyone in its room but its owners gets `Closed`, rejoins, and is let in on what they hold now; deleting the pad closes everyone. Signing out closes the room connections that sign-in made owner |
 
 Frames the agent tries to send while disconnected are **dropped, not queued**.
@@ -119,6 +128,29 @@ the typing part in the real browser client.
 None of the resends is incremental, and none needs to be: a tree already means
 *replace everything*, and a Yjs state is idempotent to apply.
 
+## Saying no on a sealed channel
+
+A guest's page must never wait on something that is not coming, so two
+answers exist only to end a wait.
+
+`Pty::Refused { reason }` goes to whoever asked for a terminal the host will
+not open: the session is at its terminal limit, or read-only — a shell nobody
+may type into is a process for nothing. The page shows the reason beside the
+terminals and as a toast. Until 7 October the agent sent it and the page had
+no branch for it, so the button silently did nothing.
+
+`Doc::Closed { doc_id, reason }` goes to everyone when the agent ends a
+document itself: its file was deleted or moved, stopped being shared, turned
+binary, grew past 1 MB, or stopped being text the editor keeps byte for byte.
+There is nothing left to save into. The page keeps the text on screen,
+read-only, with the reason in its title. The message existed before 7 October
+and nothing sent it; the document stayed open and every keystroke went nowhere.
+
+`Pty::ReadOnly` doubles as the end of a list. The host sends it straight after
+naming every live terminal — on arrival and after a gap, on the one ordered
+stream — and the page closes any tab not named before it. A newcomer who finds
+none opens one, unless the session is read-only.
+
 ## Downloads
 
 `Fs::Download { path }` asks for a file, a folder, or with `""` everything.
@@ -127,9 +159,11 @@ bytes as stream frames on the Fs channel with `id` as their stream, sealed
 like everything else on it. The guest acknowledges with
 `Received { id, received }` and the host keeps no more than a megabyte
 unacknowledged in flight — the relay's queue for a slow guest would otherwise
-fill and the guest be cut off. `DownloadError { path, message }` says why
+fill and the guest be cut off. The page acknowledges every 256 KB and at the
+end. `DownloadError { path, message }` says why
 not. An agent from before downloads ignores the request; the page says so
-after twenty seconds without an answer.
+after a minute without an answer — a minute, because a large folder is read
+whole before the host answers at all.
 
 ## Versions, because the agent is not ours to deploy
 
@@ -138,11 +172,14 @@ channels. It is bumped when a change makes an older peer's frames unreadable —
 version 1 is the direction byte in the sealed frame's authenticated data.
 
 This exists because of how the failure looks without it. Both ends drop what
-they cannot decrypt, and neither says anything: the agent logs at `debug!`, the
-browser has no branch for it at all. A guest joining an agent from the wrong
-side of that change gets a session that connects, draws a terminal, and
-silently discards every frame in both directions. It reads as the product being
-broken.
+they cannot decrypt. The agent says so only at `debug!`; the browser said
+nothing at all until 7 October, and now, after three frames that will not open
+with none opened before them, says the link's key does not fit — the right
+explanation for a mangled link and the wrong one for a version mismatch.
+Without the version, a guest joining an agent from the wrong side of that
+change got a session that connected, drew a terminal, and silently discarded
+every frame in both directions — and would now be told to ask for the link
+again, which would not help.
 
 The web client we deploy; **the agent lives on other people's machines** until
 they choose to reinstall, so old ones are permanently in the field. That makes

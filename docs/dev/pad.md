@@ -260,7 +260,9 @@ deletes forward; to `nano`, both ctrl-c and ctrl-d are just keys.
 
 **`FileStat` carries `kind` and `size` and nothing else** — no modification
 time, no hash — so the sync diff must read every file to know what changed.
-Affordable only under the 500-file cap; if that cap rises this breaks first.
+Affordable only under the pad's caps of 500 files and 60 MB — 25 MB until 7
+October, and nothing here times the diff at the new size; if either rises
+again this breaks first.
 
 **A binary cannot restore its working directory**, so the shipped `find`
 exited 1 after doing its work correctly and `find … && …` never ran its second

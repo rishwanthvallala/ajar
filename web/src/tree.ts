@@ -148,8 +148,12 @@ export class FileTree {
 
   /** The folder the tree's stop is on, if it is on one. */
   get focusedFolder(): string | null {
+    // Nothing chosen yet means nothing chosen: the stop falls back to the
+    // first row, which is a folder whenever there is one, and Download all
+    // on a fresh page downloaded that folder alone.
+    if (this.focusPath === null) return null;
     const row = this.rows[this.focusIndex()];
-    return row?.node.dir ? row.node.path : null;
+    return row?.node.dir && row.node.path === this.focusPath ? row.node.path : null;
   }
 
   /** Called when the tree's stop moves, for anything that depends on it. */

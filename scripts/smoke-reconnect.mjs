@@ -7,7 +7,7 @@
 //
 //   node scripts/smoke-reconnect.mjs
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,6 +27,8 @@ const startRelay = () =>
 
 async function main() {
   workdir = await mkdtemp(join(tmpdir(), "ajar-reconnect-"));
+  // Something for the copy the relay keeps to hold.
+  await writeFile(join(workdir, "kept.txt"), "kept\n");
 
   let relay = startRelay();
   await waitForHealth(HTTP);
@@ -54,6 +56,13 @@ async function main() {
     "output before the crash",
   );
   ok("terminal working before the crash");
+
+  // The copy the relay keeps, in place before it dies — so that one being
+  // there afterwards can only be the agent offering it again.
+  await sleep(7000);
+  guest.fetchSnapshot();
+  await guest.waitUntil((g) => g.snapshot || g.store.some((m) => m.t === "empty"), "the stored copy", 10_000);
+  if (!guest.snapshot) fail("no copy of the folder was kept before the restart — the check below proves nothing");
 
   // ---- phase 2: destroy the relay -------------------------------------
   procs.kill(relay);
@@ -140,6 +149,21 @@ async function main() {
     "input typed during the outage to arrive after reconnecting",
   );
   ok(`typing survived the blip (participant ${staleId} → ${rejoined.participantId})`);
+
+  // ------------------------------------------- the copy, after the restart
+  //
+  // A restarted relay holds no copy of the folder. The agent offered one only
+  // when a file changed, and nothing here has, so a host dropping now would
+  // have left guests nothing — while the panel said a copy was being kept.
+  await sleep(7000);
+  rejoined.fetchSnapshot();
+  await rejoined.waitUntil(
+    (g) => g.snapshot || g.store.some((m) => m.t === "empty"),
+    "an answer about the stored copy",
+    10_000,
+  );
+  if (!rejoined.snapshot) fail("after the relay restarted, no copy of the folder was kept again");
+  else ok("the folder's copy is kept again after the relay restarted");
 
   rejoined.close();
   finish(procs, "reconnect works: the relay died, the session did not");

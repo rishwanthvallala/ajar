@@ -619,11 +619,6 @@ async fn write_pad(
     Ok(Json(Wrote { seq: written.seq }))
 }
 
-/// `curl -sSf https://ajar.rishwanth.dev/install.sh | sh`
-///
-/// Compiled in rather than served from disk: the installer and the relay ship
-/// together, so there is no way for the published script to drift from the
-/// version that was built, and nothing extra to deploy.
 /// `curl -sSf https://ajar.rishwanth.dev/run.sh | sh`
 ///
 /// Install-if-missing and run, for a machine with nothing on it. The script
@@ -672,6 +667,12 @@ async fn run_script(headers: axum::http::HeaderMap) -> impl IntoResponse {
     )
 }
 
+/// `curl -sSf https://ajar.rishwanth.dev/install.sh | sh`
+///
+/// Compiled in rather than served from disk: the installer and the relay ship
+/// together, so there is no way for the published script to drift from the
+/// version that was built, and nothing extra to deploy. Served as written: it
+/// names no relay, only GitHub's releases, so there is nothing to rewrite.
 async fn install_script() -> impl IntoResponse {
     (
         [(

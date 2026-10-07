@@ -201,19 +201,35 @@ channels are sealed with AES-256-GCM and a fresh random nonce per frame.
 | Sealed | In the clear |
 |---|---|
 | Terminal input and output | Session id |
-| The file tree, and file contents | Participant ids and roles |
-| Document edits and cursors | Joins, leaves, locks |
+| The file tree, file contents and downloads | Participant ids and roles |
+| Document edits and cursors | Joins, leaves, locks, the host going and coming back |
 | Who is watching which terminal | Frame sizes and timing |
-| **Everyone's name** | |
+| **Everyone's name** | The stored copy's size and file count |
+| | The host's key and each guest's resume secret, on the way in — kept only as hashes |
+
+Neither secret is the session key. The host's key proves which agent opened a
+session and a resume secret which guest was let in; the relay can read nothing
+with either.
 
 Names were the last thing the relay could see. They used to ride in the
 handshake, because that was where the relay assembled the participant list.
-Now the handshake carries only a session id and a role, and a guest introduces
-itself on the encrypted channel afterwards. Assembling the roster moved to the
+Now the handshake carries no name: a session id, a role, the lock and the
+protocol version, and the secrets the relay checks — never reads — to say who
+may take the host's place and who may come back into a locked room. A guest
+introduces itself on the encrypted channel afterwards. Assembling the roster moved to the
 host, which is the only party that can.
 
 A relay operator can see that a session is busy. They cannot see what is in
 it — stated that precisely, rather than as "the server sees nothing".
+
+The page will not join on a link without the whole key — 43 characters after
+`#k=` — and says the link is incomplete: a narrow terminal used to cut it
+short, and the page joined anyway, read nothing and sat on "Loading…" for
+good. A key that is whole but not this session's is caught once three frames
+have failed to open and none has opened: the page stops and says the key does
+not fit. The agent sees the same mistake as a guest who never introduces
+themselves, and after five seconds the panel calls them "someone with an
+incomplete link".
 
 ### The header is authenticated, not just the payload
 
@@ -271,7 +287,11 @@ which tries the takeover during a real agent's gap.
 The key also lets the agent take its place back while the relay still holds
 its previous socket open — dead, but not yet noticed. Anyone else asking for a
 connected host's place is still refused `host_taken`; a session opened without
-a key keeps the old rule, which is that nobody may.
+a key keeps the old rule, which is that nobody may. The relay also notices on
+its own now: it pings every socket every 20 s and treats 60 s of silence as
+gone. When a replaced socket finally closes, the relay checks it is still the
+host's before marking the host away, so the old socket's end does not undo the
+new one.
 
 ## Locking, and who it lets back in
 
@@ -281,9 +301,12 @@ reconnect was turned away like a stranger's. Now each tab makes a secret —
 128 random bits, kept in `sessionStorage`, so a reload keeps it and a new tab
 does not — and sends it with every hello. The relay keeps the SHA-256 of each
 it has let in, and a locked session admits only those. A kick removes that
-guest's. The agent learns each secret inside the sealed introduction and hands
-the hashes to a relay that has restarted, so a deploy does not empty a locked
-session. Someone who has the link but was never let in is refused, as before.
+guest's. The agent learns each secret inside the sealed introduction and sends
+the hashes in every hello, so a relay that has restarted — and knows nobody —
+still takes a locked session's own guests back, and a deploy does not empty a
+locked session. Leaving is not being kicked: someone whose connection drops,
+or who reloads, keeps their place. Someone who has the link but was never let
+in is refused, as before.
 
 ## What a guest can read
 
@@ -297,6 +320,12 @@ go through `Filter::resolve_shared`, which also refuses a path the tree hides
 — as written and where a symlink leads. A guest with a terminal can still
 read what the sandbox lets the shell read; that is the terminal's boundary,
 not the tree's.
+
+Downloads go through the same door. What goes in is the tree's own list, each
+file read through `resolve_shared` like any other read, so a download cannot
+reach what a read cannot. A read-only guest may download — it is reading — up
+to 100 MB or 20,000 files at a time, which is the whole workspace for most
+projects: read-only stops changes, not copies.
 
 A guest may also hold only 16 documents open at once, and the host 256 in
 all: each is a file of up to 1 MB in the agent's memory, and nothing stopped
@@ -332,6 +361,11 @@ Opening is metered tightly and joining generously. Rationing the people a host
 invited would be limiting the wrong side, but leaving joins unmetered let one
 address hold unlimited sockets, which is why they have their own, much larger
 budget.
+
+A host coming back to a session the relay still holds is charged as a join,
+not an open: it is not a new session, and counted as one, an agent on a flaky
+network hit the open limit in about forty seconds and quit. The agent now
+waits out `rate_limited` rather than quitting on it.
 
 The slot is a `Drop` guard rather than a matching `release()` call, because the
 handshake has several ways to fail after a slot is taken and every one is a
@@ -452,8 +486,8 @@ meets it.
 | Sessions **joined** per address | 96 at once, 240/min | `quota.rs` `MAX_JOINS_PER_IP` |
 | Every pad together | 4 GB, `--max-store-bytes` | `pad.rs` `MAX_STORE_BYTES` |
 | What one address may add to the store | 256 MiB a day, growth only; `--pad-growth-per-address` | `quota.rs` `MAX_PAD_GROWTH_PER_IP` |
-| One pad write, off the wire | 51 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
-| Pad writes being read at once | 4 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
+| One pad write, off the wire | 121 MiB — twice a pad's 60 MiB, for JSON escaping, plus 1 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
+| Pad writes being read at once | 2 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
 | Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
 | A peer that stops reading | Closed by the kernel after 60 s of sent data going unacknowledged (`TCP_USER_TIMEOUT`, Linux), which ends the stream and frees its read slots | `main.rs` `STALLED_PEER` |

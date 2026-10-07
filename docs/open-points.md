@@ -1,6 +1,6 @@
 # Open points
 
-*Kept as of 5 October 2026. The relay, both browser clients and the deploy
+*Kept as of 7 October 2026. The relay, both browser clients and the deploy
 config were deployed from `5b14947` on 24 September: four of the five hardening
 steps, the sandbox and reconnect fixes that reach the browser, streamed pad
 reads, freed pad names and the 90-day lease. The fifth step, per-address limits
@@ -15,6 +15,15 @@ Linux opened with `Permission denied`.*
 [the list at the end](#closed-on-23-october). The agent's share of that shipped
 in v0.0.6 on 3 October. Accounts were deployed on 4 October with sign-in
 live; what closed then is in [its own list](#closed-on-4-october).*
+
+*On 7 October four reviews of ajar — security, parity with the pad, the
+guest's page, and end-to-end flows — closed what is in [that day's
+list](#closed-on-7-october); every finding and its check is in
+[ajar-review-2026-10-07.md](ajar-review-2026-10-07.md). The relay and the page
+were deployed that day, and the agent's share shipped in v0.0.7. A host still
+on v0.0.6 or older can have its place taken while it is away, and lets a guest
+read by name what the tree hides, until it reinstalls. The same day a pad's
+cap went to 60 MB, [for now](#a-pad-holds-60-mb-for-now).*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -56,10 +65,23 @@ use of the runtime. Not reproduced locally.
 
 Raised from 25 MB on 7 October for public pads that need more, and meant to be
 reverted when that need goes: `pad::MAX_BYTES` back to 25 MiB,
-`MAX_CONCURRENT_PAD_WRITES` back to 4 (the build refuses one without the
-other), and `PAD_LIMITS` in `pad/src/zip.ts`. At 60 MB, four full pads use up
+`MAX_CONCURRENT_PAD_WRITES` back to 4 (the build refuses four at a 60 MiB cap,
+so the cap goes back first; it does not notice the count left at two), and
+`PAD_LIMITS` in `pad/src/zip.ts` — and the docs that quote 60 MB:
+`dev/pad.md`, `dev/security.md`, `dev/accounts.md`, `dev/operations.md`,
+`dev/relay.md` and `use/pad.md`. At 60 MB, four full pads use up
 an address's 256 MiB a day, and the relay reads two pad writes at once rather
 than four.
+
+One thing the raise made possible and nothing handles yet: **a single text
+file over 32 MB cannot be shared live.** Files travel through the store, but
+a file open for editing is also a live document, and a browser answering
+another's request for one sends its whole state in one WebSocket frame
+(`pad/src/app.ts`, the `DOC_WANT` reply). The relay closes any socket that
+sends a frame over 32 MB, so that browser drops out of the room and comes back
+to the same request. At 25 MB per pad no file could get there. Raising the
+frame cap costs memory per socket; refusing to make a live document of a file
+that large is the likelier fix.
 
 ### The pad's runtime cannot start without registry.wasmer.io
 
@@ -102,7 +124,7 @@ original bug.
 frees its slots. Two addresses that open 32 large reads each and re-open them as
 they are closed can still keep the 64 busy; that is a rate problem the per-address
 limit bounds rather than a stall, and the same shape a slow uploader has against
-the four write permits.
+the two write permits (four until 7 October).
 
 ### On Linux the sandbox still lets a guest reach key-holding sockets
 
@@ -371,7 +393,7 @@ and the one that keeps paying: `find .` listing five files nobody wrote, a pad
 opened from a link coming up empty, and the preview's own origin were all
 invisible locally.
 
-The recurring hazard is checks that pass for the wrong reason — twenty-nine so far,
+The recurring hazard is checks that pass for the wrong reason — thirty-one so far,
 plus two that *failed* for the wrong reason and cost more than any of them. The
 pattern never changes: whenever the thing under test can produce the passing
 evidence by accident, the check proves nothing. Reverting the fix and watching
@@ -393,10 +415,17 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | A change on disk to an open file deleted whatever had been typed since the last write, for everyone | `e7d4c23` |
 | A paste into a terminal whose program was not reading froze the whole agent, ctrl-c included | `e7d4c23` |
 | Editing a file with a byte-order mark or mixed line endings wrote every edit a character early; a Latin-1 file lost its accents | `e7d4c23` |
-| The guest's page: Back showed a dead page and a nameless roster entry; a reconnect or a file switch went back to line 1; a relay restart ejected guests for good; the host away looked like "connected" | `e7d4c23` |
+| The guest's page: Back showed a dead page and a nameless roster entry; a reconnect or a file switch went back to line 1; a relay restart ejected guests for good; with the host away the status said "open", and its countdown never moved | `e7d4c23` |
 | The agent quit, ending every terminal, when the relay still held its dead socket or rate-limited a flaky network | `e7d4c23` |
+| An open file deleted, moved or turned binary stayed editable, every keystroke going nowhere and the host's log saying so four times a second | `e7d4c23` |
+| Locking a session shut out everyone already in at their first blip, and everyone at a relay restart | `1093ca9` |
+| At 80 columns the host's panel cut the end off the link's key, and never showed the credentials warning | `1093ca9` |
+| A link with its key cut short, missing or wrong opened a session that never worked | `1093ca9` |
+| A host whose laptop was asleep looked like an empty, working session | `1093ca9` |
+| The terminal was a keyboard trap, and the file tree could not be reached by keyboard past its first screenful | `1093ca9` |
+| A guest could take nothing away but by copying it out of an editor — a file, a folder or everything now downloads | `1093ca9` |
 
-The whole review, with what is still to come, is in
+The whole review — every finding, its fix, and the check that holds it — is in
 [ajar-review-2026-10-07.md](ajar-review-2026-10-07.md).
 
 ## Closed on 4 October

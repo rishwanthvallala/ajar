@@ -62,7 +62,10 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadOnlyPaths=/srv/ajar
 
 # A stalled connection is bounded at 8 MB by the outbox, but a memory ceiling
-# is the backstop for whatever the next mistake turns out to be.
+# is the backstop for whatever the next mistake turns out to be. Pad writes
+# are budgeted against it in the code: main.rs asserts that the writes read at
+# once (two, of up to 121 MiB) stay under half of it — so lowering this is a
+# code change too.
 MemoryMax=512M
 TasksMax=512
 
