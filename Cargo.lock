@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "ajar"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "ajar-proto",
  "anyhow",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "ajar-proto"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "ajar-relay"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aes-gcm",
  "ajar-proto",
