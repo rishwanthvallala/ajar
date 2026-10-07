@@ -199,7 +199,7 @@ is all in the page — no relay change, and the original is only read.
 
 ## Limits and lifecycle
 
-- **Per account:** 20 pads, 100 MB in all, and 25 MB / 500 files each as now.
+- **Per account:** 20 pads, 100 MB in all, and 60 MB / 500 files each as now.
   The disk has 15 GB free; these are the numbers to revisit, not a promise.
 - **No expiry** while the account exists. Deleting a pad deletes its files and
   retires its name for good — unlike anonymous expiry, which frees it.

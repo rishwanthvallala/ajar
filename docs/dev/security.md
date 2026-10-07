@@ -467,18 +467,19 @@ its own header got that value back, and rotating it bought a fresh bucket per
 request. Caddy also replaces the header now rather than appending, so either
 half holds alone.
 
-**The body limit and the concurrency limit are one number, not two.** 51 MiB × 4
-is 204 MiB against the unit's `MemoryMax=512M`. Raising either alone fails to
+**The body limit and the concurrency limit are one number, not two.** 121 MiB × 2
+is 242 MiB against the unit's `MemoryMax=512M` (it was 51 MiB × 4 while a pad
+held 25 MiB; the cap went to 60 MiB on 7 October and the count down to two). Raising either alone fails to
 compile — there is a `const` assertion on the product, because the ceiling that
 applied before was the OOM killer.
 
 The permit for a pad write is taken in an **extractor, not the handler**.
 Extractors that do not touch the body run first, so a request waits before
-51 MiB is pulled off the wire; taken in the handler it would bound nothing.
+121 MiB is pulled off the wire; taken in the handler it would bound nothing.
 
 **The store allowance counts bytes added, not pads created.** A cap on
-creations does not protect a disk: sixty pads an hour at 25 MiB each fills the
-ceiling before lunch. So each address may add 256 MiB a day — ten full pads, or
+creations does not protect a disk: sixty pads an hour at 60 MiB each fills the
+ceiling before breakfast. So each address may add 256 MiB a day — four full pads, or
 tens of thousands of ordinary ones — and only growth is charged, so an edit in
 place is always free and an address at its limit can still make room. It is
 what made a 90-day lease affordable: without it, one address could fill the

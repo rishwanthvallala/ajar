@@ -608,7 +608,7 @@ is the format's headers and a CRC. Names are written with the UTF-8 flag
 Windows zips use.
 
 **Reading checks before it inflates.** The central directory says how many
-entries and how many bytes they unpack to; over the pad's 500 files or 25 MB is
+entries and how many bytes they unpack to; over the pad's 500 files or 60 MB is
 refused there, before any inflating. A zip can lie about those sizes — the
 classic zip bomb — so the inflated bytes are counted again as they come, and
 each entry's size and CRC must match what the directory claimed. Encrypted
@@ -667,7 +667,7 @@ Binary files travel everywhere text does, except into the editor:
 
 The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
-at 25 MB; base64 makes a binary file a third larger against that cap.
+at 60 MB; base64 makes a binary file a third larger against that cap.
 
 ## Where a file was left
 

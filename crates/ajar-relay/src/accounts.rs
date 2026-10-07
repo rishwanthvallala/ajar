@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 /// Pads one account may own at once, unless the relay is told otherwise.
 pub const MAX_PADS_PER_ACCOUNT: usize = 20;
 /// Bytes every pad of one account may hold together. Each pad keeps its own
-/// 25 MB cap as well; this is what stops twenty of them filling the disk.
+/// cap (`pad::MAX_BYTES`) as well; this is what stops twenty of them filling
+/// the disk.
 pub const MAX_BYTES_PER_ACCOUNT: u64 = 100 * 1024 * 1024;
 
 /// What one account may hold. Flags on the relay, so the numbers can move

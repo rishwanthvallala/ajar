@@ -29,11 +29,11 @@ use tracing::info;
 use crate::pad::Store;
 use crate::session::Registry;
 
-// A pad may contain 25 MiB of text. JSON escaping can expand each byte to six
-// bytes on the wire, so the extractor limit must sit above the store's cap.
+// A pad may contain `pad::MAX_BYTES` of text. JSON escaping can expand each
+// byte on the wire, so the extractor limit must sit above the store's cap.
 /// The largest pad write this will read off the wire.
 ///
-/// A pad holds 25 MiB of *content*; JSON escaping makes the request bigger than
+/// A pad holds `pad::MAX_BYTES` of *content*; JSON escaping makes the request bigger than
 /// that. The multiplier used to be six, for the worst case where every byte is a
 /// control character and becomes `\u00XX` — which is pathological, and it priced
 /// every request as if it were: 151 MiB each, with nothing bounding how many
@@ -53,14 +53,17 @@ const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 2 + 1024 * 1024;
 ///
 /// A queue rather than a refusal, because waiting a moment is invisible and
 /// being told "busy" is not. Requests wait *before* their body is read, so
-/// queuing costs a connection rather than 51 MiB.
-const MAX_CONCURRENT_PAD_WRITES: usize = 4;
+/// queuing costs a connection rather than 121 MiB.
+///
+/// Two since pads went to 60 MiB (it was four at 25): the assertion below is
+/// what the two numbers have to satisfy together.
+const MAX_CONCURRENT_PAD_WRITES: usize = 2;
 
 // These two are only meaningful together, and the unit file's MemoryMax=512M is
 // what they have to fit inside — along with every session, outbox and snapshot
 // the relay is also holding. Raising either one alone is how a limit stops being
 // one, so the product is stated here rather than left to be worked out after an
-// OOM. 204 MiB against 512 MiB leaves room for the rest of the process.
+// OOM. 242 MiB against 512 MiB leaves room for the rest of the process.
 const _: () = assert!(MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
 
 /// Pad reads being streamed at once, from every caller together.

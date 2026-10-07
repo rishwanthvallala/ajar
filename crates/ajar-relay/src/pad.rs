@@ -30,8 +30,14 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Total bytes one pad may hold. Matches the snapshot cap the agent tier uses.
-pub const MAX_BYTES: usize = 25 * 1024 * 1024;
+/// Total bytes one pad may hold.
+///
+/// Raised from 25 MiB on 7 October, for public pads that need to hold a larger
+/// project — and meant to come back down when that need does. It is tied to
+/// `MAX_PAD_HTTP_BODY` and the number of writes read at once in `main.rs`,
+/// whose product is asserted to fit the service's memory: raising this alone
+/// does not compile, which is the point. Reverting is this line and that count.
+pub const MAX_BYTES: usize = 60 * 1024 * 1024;
 
 /// Files one pad may hold.
 ///
@@ -44,7 +50,7 @@ pub const MAX_FILES: usize = 500;
 /// Bytes every pad in the store may add up to.
 ///
 /// The per-pad cap bounds one folder; nothing bounded the sum, and pads cost
-/// nothing to create. At 25 MiB each, roughly 640 writes fill a 16 GB disk, and
+/// nothing to create. At 60 MiB each, roughly 270 writes fill a 16 GB disk, and
 /// the lease is no help against something that takes an afternoon — a full
 /// disk stops the relay saving anything, including the pads belonging to
 /// people who were using it properly. See also `quota::MAX_PAD_GROWTH_PER_IP`,

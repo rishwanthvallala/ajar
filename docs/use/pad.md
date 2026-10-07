@@ -52,7 +52,7 @@ for everyone on it:
 - `__MACOSX`, `.DS_Store` and the rest of what zipping leaves behind stay out.
 - If a file in the zip would replace a different one already here, you are
   asked first. On a new pad, the starter `main.py` makes way.
-- 500 files and 25 MB, the same as any pad. Password-protected zips are
+- 500 files and 60 MB, the same as any pad. Password-protected zips are
   refused.
 
 **Colours** above the editor turns the colouring off, for every file, and

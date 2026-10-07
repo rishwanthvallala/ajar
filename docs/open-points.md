@@ -45,6 +45,15 @@ a store request ahead of it that stalled on the network — a store `fetch` has
 no deadline. (The run before that one failed too, but it spanned the laptop
 sleeping, and says nothing.)
 
+### A pad holds 60 MB for now
+
+Raised from 25 MB on 7 October for public pads that need more, and meant to be
+reverted when that need goes: `pad::MAX_BYTES` back to 25 MiB,
+`MAX_CONCURRENT_PAD_WRITES` back to 4 (the build refuses one without the
+other), and `PAD_LIMITS` in `pad/src/zip.ts`. At 60 MB, four full pads use up
+an address's 256 MiB a day, and the relay reads two pad writes at once rather
+than four.
+
 ### The pad's runtime cannot start without registry.wasmer.io
 
 Only the packages' bytes are mirrored. On every start the runtime asks

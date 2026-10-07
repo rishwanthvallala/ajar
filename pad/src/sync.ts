@@ -9,7 +9,7 @@
  * is ordinary (a counter, a date, a reordered column), so equal size proves
  * nothing and every candidate has to be read to be ruled out.
  *
- * That is affordable only because a pad is capped at 500 files and 25 MB. It
+ * That is affordable only because a pad is capped at 500 files and 60 MB. It
  * would not be at any size where the caps stopped mattering, and if those caps
  * ever rise this is the first thing that breaks.
  *
