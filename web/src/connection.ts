@@ -29,6 +29,10 @@ export class Connection {
   private ws: WebSocket | null = null;
   private attempt = 0;
   private closedByUs = false;
+  /** The next attempt, while one is scheduled. */
+  private retry: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the relay has ever let us in, which makes a new socket a reconnect. */
+  private welcomed = false;
   /**
    * Frames waiting to go out, always *unsealed*.
    *
@@ -54,13 +58,16 @@ export class Connection {
   }
 
   private open() {
-    this.opts.onState(this.attempt === 0 ? "connecting" : "reconnecting");
+    this.retry = null;
+    this.opts.onState(this.welcomed || this.attempt > 0 ? "reconnecting" : "connecting");
     const ws = new WebSocket(relayUrl());
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
     ws.onopen = () => {
-      this.attempt = 0;
+      // Not where the backoff resets: a relay that takes the socket and then
+      // refuses the hello would be asked again every 250ms, for ever. It
+      // resets on `welcome`, which is being let in.
       this.write(
         jsonFrame(Channel.Control, TARGET_ALL, {
           t: "hello",
@@ -75,7 +82,7 @@ export class Connection {
     };
 
     ws.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
+      if (this.ws !== ws || !(ev.data instanceof ArrayBuffer)) return;
       let frame: Frame;
       try {
         frame = decode(ev.data);
@@ -122,7 +129,7 @@ export class Connection {
       const delay = Math.min(250 * 2 ** this.attempt, 8000);
       this.attempt += 1;
       this.opts.onState("reconnecting", `retrying in ${Math.round(delay / 100) / 10}s`);
-      setTimeout(() => this.open(), delay);
+      this.retry = setTimeout(() => this.open(), delay);
     };
 
     ws.onerror = () => ws.close();
@@ -175,6 +182,8 @@ export class Connection {
         };
         if (msg.t === "welcome" && typeof msg.participant_id === "number") {
           this.participantId = msg.participant_id;
+          this.attempt = 0;
+          this.welcomed = true;
           // Document stream ids belong to the old host-side registration.
           // The application reopens the active path and replays its local
           // delta after this welcome.
@@ -202,8 +211,35 @@ export class Connection {
     }
   }
 
+  /**
+   * A fresh socket, now — for a page back from the back/forward cache.
+   *
+   * The one it went in with was closed while it was frozen, and the close
+   * may only be delivered now, or — as the pad found in Chrome — not before
+   * `pageshow` reports it still OPEN. A retry it had scheduled was frozen
+   * too. Rather than wait on either, both are dropped and the next socket
+   * goes at once, as the reconnect it is.
+   */
+  resume() {
+    if (this.closedByUs) return;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
+    const old = this.ws;
+    this.ws = null;
+    this.participantId = null;
+    try {
+      old?.close();
+    } catch {
+      // Already closed.
+    }
+    this.attempt = 0;
+    this.open();
+  }
+
   close() {
     this.closedByUs = true;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
     this.ws?.close();
   }
 }

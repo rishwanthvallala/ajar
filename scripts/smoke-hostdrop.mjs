@@ -303,6 +303,60 @@ async function main() {
   if (roster.includes("dee")) fail(`someone who left during the gap is still listed: ${roster}`);
   else ok("someone who left during the gap is no longer listed");
 
+  // ---- a host socket dead without anyone being told -----------------------
+  // A laptop closed on one network and opened on another: the relay still
+  // holds the old socket, and the agent coming back was refused as
+  // `host_taken` and quit, every terminal with it. The agent that opened the
+  // session proves it with the key, and takes its place back.
+  const K = "ab".repeat(32);
+  const asHost = (name, hostKey) => {
+    const h = new Guest(WS, "stale-host", name);
+    h.role = "host";
+    h.hostKey = hostKey;
+    return h;
+  };
+  const tryConnect = (g) => g.connect().then(() => "welcomed", (e) => e.message);
+  const stale = asHost("agent-before", K);
+  await stale.connect();
+  const watcher = new Guest(WS, "stale-host", "watcher");
+  await watcher.connect();
+  const back = asHost("agent-after", K);
+  const outcome = await tryConnect(back);
+  if (outcome !== "welcomed") fail(`the agent was refused its own session while its old socket lingered: ${outcome}`);
+  else ok("the agent that opened a session takes it back from its own stale socket");
+  const closed = await new Promise((resolve) => {
+    const t0 = Date.now();
+    const poll = setInterval(() => {
+      if (stale.ws.readyState === 3 || Date.now() - t0 > 5000) {
+        clearInterval(poll);
+        resolve(stale.ws.readyState === 3);
+      }
+    }, 50);
+  });
+  if (!closed) fail("the stale socket was left open alongside the new one");
+  else ok("and the stale socket is closed");
+  await sleep(800);
+  if (watcher.control.some((m) => m.t === "host_away")) fail("the stale socket closing told guests the host had gone");
+  else ok("its closing does not tell anyone the host has gone");
+  const stranger = await tryConnect(asHost("someone-else", "cd".repeat(32)));
+  if (!/^host_taken:/.test(stranger)) fail(`anyone else claiming a connected host's place should be refused: ${stranger}`);
+  else ok("anyone else is still refused the place");
+
+  // A resume is not a new session. Counted as one, a flaky network ran an
+  // agent into the limit on starting sessions in about forty seconds.
+  let refusedAt = null;
+  let last = back;
+  for (let i = 0; i < 25 && refusedAt === null; i++) {
+    const again = asHost(`again-${i}`, K);
+    const result = await tryConnect(again);
+    if (result !== "welcomed") refusedAt = `${i}: ${result}`;
+    last = again;
+  }
+  if (refusedAt) fail(`an agent reconnecting to its own session was refused: ${refusedAt}`);
+  else ok("twenty-five reconnects to the same session are not twenty-five new sessions");
+  last.close();
+  watcher.close();
+
   a.close();
   b.close();
   bOther.close();

@@ -354,16 +354,32 @@ async function checkSession() {
   // file will not keep.
   const edits = () => sent.filter(m => m.channel === 5 && m.stream === 11 && m.bytes?.[0] === 1).length;
   const lines = () => page.locator('.view-lines').textContent();
+  // A flip either way reopens the file from the host's copy, since edits the
+  // host refused meanwhile would otherwise leave the page out of step. This
+  // stands in for the host: it answers the reopen with the document again.
+  const opens = () => sent.filter(m => m.channel === 5 && m.t === 'open').length;
+  const answerReopen = async (before) => {
+    for (let i = 0; i < 100 && opens() <= before; i++) await new Promise(r => setTimeout(r, 50));
+    assert(opens() > before, 'a read-only flip reopens the file');
+    wire.send(frame(5, { t: 'opened', doc_id: 11, path: 'main.ts' }));
+    wire.send(frame(5, Buffer.concat([Buffer.from([1]), Buffer.from(Y.encodeStateAsUpdate(doc))]), 11));
+  };
+  let opensBefore = opens();
   wire.send(frame(2, { t: 'read_only', read_only: true }));
   await page.waitForFunction(() => document.getElementById('readonly')?.hidden === false);
+  await answerReopen(opensBefore);
+  await page.waitForFunction(() => document.getElementById('viewer')?.dataset.editing === 'main.ts');
   const editsBefore = edits();
   await page.locator('.monaco-editor .view-lines').click();
   await page.keyboard.type('xyz');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert(!(await lines()).includes('xyz'), 'a read-only file does not take typing');
   assert.equal(edits(), editsBefore, 'and sends no edit');
+  opensBefore = opens();
   wire.send(frame(2, { t: 'read_only', read_only: false }));
   await page.waitForFunction(() => document.getElementById('readonly')?.hidden === true);
+  await answerReopen(opensBefore);
+  await page.waitForFunction(() => document.getElementById('viewer')?.dataset.editing === 'main.ts');
   await page.locator('.monaco-editor .view-lines').click();
   await page.keyboard.type('qq');
   await page.waitForFunction(() => document.querySelector('.view-lines')?.textContent?.includes('qq'));

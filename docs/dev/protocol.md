@@ -81,12 +81,16 @@ pad was deleted.
 
 | Event | What happens |
 |---|---|
-| Guest's socket drops | Reconnects with backoff; the host re-announces every terminal and replays its ring buffer |
+| Guest's socket drops | Reconnects with backoff, reset only by a `welcome`; the host re-announces every terminal and replays its ring buffer, and the page closes any tab it did not name. The open file is reopened and what was typed meanwhile replayed onto it, the view where it was |
+| Guest's page goes into the back/forward cache | Kept as it is. Coming back, it opens a fresh socket at once — the one it had died while it was frozen |
 | Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away" |
 | Host returns in the grace | `host_back`. The agent reconciles its guest list with the relay's, then resends the tree, every terminal and its replay, every open document's state and the roster. Each guest resends its name and its document's state |
+| A guest arrives while the host is away | The relay sends them `host_away` with the time left, after `welcome` |
+| Host's socket is dead but nobody was told | Both ends ping: the agent every 15 s, dropping a connection silent for 45 s; the relay every 20 s, treating 60 s of silence as the socket gone. The agent's next hello carries the session's key, and the relay lets it replace its own stale socket rather than refusing it as `host_taken`. That socket's end, when it comes, is not the host leaving |
 | Host never returns | The relay reaps the session and tells guests why |
 | Host presses ctrl-c | `Control::Close` — immediate, no grace |
-| Relay process dies | The agent dials back in and re-opens the same session id |
+| Relay process dies | The agent dials back in and re-opens the same session id. Guests who get back first are refused `no_such_session`; a page that has been in the session waits that out, and `rate_limited`, rather than giving up |
+| The agent is refused `host_taken` or `rate_limited` | It waits and tries again: both are about the moment. Every other refusal ends it. A host coming back to a session the relay still has is metered as joining, not as starting a session |
 | Who may open a pad changes | Everyone in its room but its owners gets `Closed`, rejoins, and is let in on what they hold now; deleting the pad closes everyone. Signing out closes the room connections that sign-in made owner |
 
 Frames the agent tries to send while disconnected are **dropped, not queued**.

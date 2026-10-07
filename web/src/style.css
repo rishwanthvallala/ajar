@@ -413,8 +413,11 @@ header strong {
   flex: none;
 }
 .dot.open { background: var(--ok); }
-.dot.connecting, .dot.reconnecting { background: var(--warn); }
+.dot.connecting, .dot.reconnecting, .dot.away { background: var(--warn); }
 .dot.closed { background: var(--hard); }
+/* Why the last New terminal did nothing. Empty, it takes no room. */
+.term-notice { font-size: 0.75rem; color: var(--hard); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-notice:empty { display: none; }
 
 .people { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 

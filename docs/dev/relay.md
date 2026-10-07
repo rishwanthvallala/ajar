@@ -24,6 +24,11 @@ which is already tested.
 | One large frame | Always allowed when the queue is empty — a snapshot is legitimately megabytes |
 | Inbound frames | Capped at 32 MB, above the 25 MB the store accepts |
 
+Every socket is pinged every 20 s, and one silent for 60 s — pongs count — is
+treated as gone. Without it a socket dead without either end being told, a
+laptop closed on one network and opened on another, stayed "connected" for
+ever: a host's guests were never told it was away.
+
 The cap governs *accumulation*, not the size of any single frame. Refusing a
 snapshot to defend against a problem snapshots do not cause would break a
 working feature for nothing.

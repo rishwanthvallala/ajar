@@ -1,0 +1,558 @@
+#!/usr/bin/env node
+// The session client, in a real browser, through the things that go wrong
+// around it: a blip on the guest's own connection, Back out of the
+// back/forward cache, the relay restarting, the host away, other guests
+// arriving and leaving, files the editor cannot safely edit, and a terminal
+// the host refuses.
+//
+// Each of these was found broken by putting a browser through it, in the
+// review of 7 October; the wire-level suites passed throughout. So this drives
+// web/dist, served by a real relay, with a real agent.
+//
+// Needs `npm run build:ajar` and `cargo build` first.
+//
+//   node scripts/check-guest.mjs
+
+import { connect, createServer } from "node:net";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+
+import { fail, finish, Guest, linkOf, ok, Procs, sleep, startAgentInPanel, waitForHealth } from "./lib/wire.mjs";
+
+const { chromium } = createRequire(new URL("../web/package.json", import.meta.url))("playwright");
+
+const PORT = 8841;
+const GUEST_PORT = 8842;
+const AGENT_PORT = 8843;
+const LAG_PORT = 8844;
+const RELAY = `http://127.0.0.1:${PORT}`;
+/** Guests load the page through their own hop, so their socket can be cut. */
+const GUEST = `http://127.0.0.1:${GUEST_PORT}`;
+const START = process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home";
+
+const procs = new Procs();
+let workdir;
+const browsers = [];
+
+/** A hop that can be cut — every connection through it dropped, new ones refused. */
+function cuttableProxy(listenPort, targetPort) {
+  const live = new Set();
+  let cut = false;
+  const server = createServer((down) => {
+    if (cut) return void down.destroy();
+    const up = connect(targetPort, "127.0.0.1");
+    const pair = { down, up };
+    live.add(pair);
+    const end = () => {
+      down.destroy();
+      up.destroy();
+      live.delete(pair);
+    };
+    down.on("error", end).on("close", end);
+    up.on("error", end).on("close", end);
+    down.pipe(up);
+    up.pipe(down);
+  });
+  return {
+    listen: () => new Promise((r) => server.listen(listenPort, "127.0.0.1", r)),
+    cut() {
+      cut = true;
+      for (const { down, up } of live) {
+        down.destroy();
+        up.destroy();
+      }
+      live.clear();
+    },
+    restore() {
+      cut = false;
+    },
+    close: () => server.close(),
+  };
+}
+
+/** A hop that delays everything by `ms` each way, in order — a guest far away. */
+function laggyProxy(listenPort, targetPort, ms) {
+  const server = createServer((down) => {
+    const up = connect(targetPort, "127.0.0.1");
+    const lag = (from, to) => {
+      let last = 0;
+      from.on("data", (chunk) => {
+        const at = Math.max(Date.now() + ms, last);
+        last = at;
+        setTimeout(() => to.writable && to.write(chunk), at - Date.now());
+      });
+    };
+    lag(down, up);
+    lag(up, down);
+    const end = () => {
+      down.destroy();
+      up.destroy();
+    };
+    down.on("error", end).on("close", end);
+    up.on("error", end).on("close", end);
+  });
+  return {
+    listen: () => new Promise((r) => server.listen(listenPort, "127.0.0.1", r)),
+    close: () => server.close(),
+  };
+}
+
+/** What the editor shows, for a file short enough to be all on screen. */
+function editorText(page) {
+  return page.evaluate(() => {
+    const lines = [...document.querySelectorAll("#viewer .view-lines .view-line")];
+    lines.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top));
+    return lines.map((l) => l.textContent.replace(/\u00a0/g, " ")).join("\n");
+  });
+}
+
+async function until(fn, timeoutMs = 10_000, every = 100) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    last = await fn();
+    if (last) return last;
+    await sleep(every);
+  }
+  return last;
+}
+
+function check(cond, msg, detail = "") {
+  if (cond) ok(msg);
+  else fail(`${msg}${detail ? ` — ${detail}` : ""}`);
+  return cond;
+}
+
+async function startRelay() {
+  const relay = procs.start("target/debug/ajar-relay", ["--bind", `127.0.0.1:${PORT}`, "--web", "web/dist"], "relay");
+  await waitForHealth(RELAY);
+  // Something else already on the port would have answered that health
+  // check, and every result below would be about a different binary.
+  await sleep(200);
+  if (relay.exitCode !== null) throw new Error(`the relay exited at start:\n${relay.output}`);
+  return relay;
+}
+
+async function guestPage(browser, link, name, viewport = { width: 1400, height: 800 }) {
+  const page = await browser.newPage({ viewport });
+  page.errors = [];
+  page.on("pageerror", (e) => page.errors.push(e.message));
+  await page.addInitScript(() => {
+    window.__restored = 0;
+    addEventListener("pageshow", (e) => {
+      if (e.persisted) window.__restored += 1;
+    });
+  });
+  await page.goto(`${GUEST}/j/${link.session}#k=${link.key}`);
+  await page.fill("#name", name);
+  await page.click("#join button[type=submit]");
+  await page.locator(".term.shown .xterm").first().waitFor({ timeout: 20_000 });
+  return page;
+}
+
+/** Open a file and wait until it is bound for editing, or shown if it cannot be. */
+async function open(page, path, { editable = true } = {}) {
+  await page.locator(`.tree-row[data-path="${path}"]`).click();
+  if (editable) {
+    await page.waitForFunction((p) => document.getElementById("viewer")?.dataset.editing === p, path, { timeout: 15_000 });
+  } else {
+    // What the title then says is for the caller to check.
+    await page.waitForFunction((p) => document.getElementById("viewer-title")?.textContent?.startsWith(`${p} ·`), path, { timeout: 8000 }).catch(() => {});
+  }
+}
+
+/** The first line on screen and the cursor's line, read off the editor. */
+async function where(page) {
+  await focusEditor(page);
+  await sleep(100);
+  return page.evaluate(() => {
+    const ed = document.querySelector("#viewer .monaco-editor");
+    if (!ed) return null;
+    const box = ed.getBoundingClientRect();
+    const shown = [...ed.querySelectorAll(".line-numbers")]
+      .map((n) => ({ n: Number(n.textContent), r: n.getBoundingClientRect() }))
+      .filter((x) => x.n > 0 && x.r.bottom > box.top + 2 && x.r.top < box.bottom)
+      .sort((a, b) => a.r.top - b.r.top);
+    const active = ed.querySelector(".line-numbers.active-line-number");
+    return { top: shown[0]?.n ?? null, cursor: active ? Number(active.textContent) : null };
+  });
+}
+
+/** Focus the editor without moving its cursor. Monaco 0.56 takes keys through an edit context where the browser has one. */
+async function focusEditor(page) {
+  await page.evaluate(() => {
+    const ed = document.querySelector("#viewer .monaco-editor");
+    (ed?.querySelector(".native-edit-context") ?? ed?.querySelector("textarea"))?.focus();
+  });
+}
+
+/** Page well down a long file: the view and the cursor both end up there. */
+async function settleMidway(page) {
+  await page.locator("#viewer .view-line").first().click();
+  for (let i = 0; i < 30; i++) await page.keyboard.press("PageDown");
+  await sleep(300);
+}
+
+async function screen(page, nth = 0) {
+  return page.evaluate((n) => {
+    const t = document.querySelectorAll(".term.shown")[n];
+    return t ? [...t.querySelectorAll(".xterm-rows > div")].map((d) => d.textContent).join("\n") : "";
+  }, nth);
+}
+
+/** Ask the shell in the first terminal how big it is: [rows, cols]. */
+async function ttySize(page, tag) {
+  await page.locator(".term.shown .xterm").first().click();
+  await page.keyboard.type(`clear; echo ${tag}=$(stty size | tr ' ' x)\r`);
+  const found = await until(async () => (await screen(page)).match(new RegExp(`${tag}=(\\d+)x(\\d+)`)), 8000);
+  return found ? [Number(found[1]), Number(found[2])] : null;
+}
+
+async function onDisk(file, test, timeoutMs = 8000) {
+  let text = "";
+  await until(async () => {
+    text = await readFile(file, "utf8");
+    return test(text);
+  }, timeoutMs);
+  return text;
+}
+
+async function main() {
+  if (!existsSync("web/dist/index.html")) throw new Error("web/dist is missing — run `npm run build:ajar` first");
+  workdir = await mkdtemp(join(tmpdir(), "ajar-guest-ui-"));
+  const long = join(workdir, "long.txt");
+  await writeFile(long, Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  await writeFile(join(workdir, "note.txt"), "one two three\n");
+  await writeFile(join(workdir, "pic.bin"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0xff, 0xfe, 0, 1, 2, 3]));
+  const mixed = join(workdir, "mixed.txt");
+  await writeFile(mixed, "one\r\ntwo\nthree\n");
+  const bom = join(workdir, "bom.txt");
+  await writeFile(bom, "﻿hello\nworld\n");
+
+  let relay = await startRelay();
+  const guestHop = cuttableProxy(GUEST_PORT, PORT);
+  await guestHop.listen();
+  const agentHop = cuttableProxy(AGENT_PORT, PORT);
+  await agentHop.listen();
+  const agent = procs.start(
+    "target/debug/ajar",
+    [workdir, "--relay", `http://127.0.0.1:${AGENT_PORT}`, "--name", "hosty", "--max-terminals", "2"],
+    "agent",
+  );
+  const link = await linkOf(agent);
+
+  const browser = await chromium.launch({ headless: true });
+  browsers.push(browser);
+  const ana = await guestPage(browser, link, "ana");
+
+  // ---- files the editor must not edit ---------------------------------------
+  await open(ana, "pic.bin", { editable: false });
+  const binTitle = await ana.locator("#viewer-title").textContent();
+  check(/binary/.test(binTitle), "a binary file says so in its title", JSON.stringify(binTitle));
+
+  for (const [name, file, before] of [["mixed.txt", mixed, "one\r\ntwo\nthree\n"], ["bom.txt", bom, "﻿hello\nworld\n"]]) {
+    await open(ana, name, { editable: false });
+    const title = await ana.locator("#viewer-title").textContent();
+    check(/read-only/.test(title), `${name} opens read-only, saying why`, JSON.stringify(title));
+    await ana.locator("#viewer .view-line").nth(1).click();
+    await ana.keyboard.type("Y");
+    await sleep(1200);
+    const after = await readFile(file, "utf8");
+    check(after === before, `and typing at it changes nothing on disk`, JSON.stringify(after));
+  }
+
+  // ---- where you were in a file ---------------------------------------------
+  await open(ana, "long.txt");
+  await settleMidway(ana);
+  const mid = await where(ana);
+  check(mid?.top > 100 && mid?.cursor > mid.top, "settled well down long.txt", JSON.stringify(mid));
+  await open(ana, "note.txt");
+  await open(ana, "long.txt");
+  await sleep(300);
+  const back = await where(ana);
+  check(back?.top === mid.top && back?.cursor === mid.cursor, "another file and back: the same place in long.txt", `${JSON.stringify(mid)} → ${JSON.stringify(back)}`);
+
+  // ---- a blip on the guest's own connection ---------------------------------
+  // Somewhere other than where the file was left, so that what comes back
+  // after the blip cannot be that saved place by coincidence.
+  await focusEditor(ana);
+  for (let i = 0; i < 7; i++) await ana.keyboard.press("ArrowDown");
+  await ana.keyboard.press("PageDown");
+  await sleep(200);
+  const moved = await where(ana);
+  check(moved?.cursor !== mid.cursor, "moved on in long.txt", `${JSON.stringify(mid)} → ${JSON.stringify(moved)}`);
+  mid.top = moved.top;
+  mid.cursor = moved.cursor;
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  await sleep(1500);
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "long.txt", null, { timeout: 15_000 });
+  await sleep(500);
+  const afterBlip = await where(ana);
+  check(afterBlip?.top === mid.top && afterBlip?.cursor === mid.cursor, "a dropped connection leaves the reader where they were", `${JSON.stringify(mid)} → ${JSON.stringify(afterBlip)}`);
+  await focusEditor(ana);
+  await ana.keyboard.type("BLIP ");
+  const blipped = await onDisk(long, (t) => t.includes("BLIP "));
+  const blipLine = blipped.split("\n").findIndex((l) => l.includes("BLIP ")) + 1;
+  check(blipLine === mid.cursor, "and the next keystroke lands where the cursor was, not at line 1", `landed on line ${blipLine}, cursor was ${mid.cursor}`);
+
+  // ---- other guests: cursors and terminal sizes -----------------------------
+  const before = await ttySize(ana, "BIG");
+  const ben = await guestPage(browser, link, "ben", { width: 800, height: 540 });
+  await open(ben, "long.txt");
+  await ben.locator("#viewer .view-line").first().click();
+  await ben.keyboard.type("ben-was-here ");
+  const anaSeesBen = await until(() => ana.locator(".remote-caret").count(), 8000);
+  // Ben is at the top of the file, ana well down it: scroll ana up to see.
+  if (!anaSeesBen) {
+    await ana.locator("#viewer").click();
+    await ana.keyboard.press(START);
+  }
+  check(await until(() => ana.locator(".remote-caret").count(), 8000), "another guest's cursor shows");
+  await ana.locator(".term.shown .xterm").first().click();
+  const small = await ttySize(ana, "SMALL");
+  check(small && before && small[1] < before[1], "a smaller guest narrows the terminal for everyone", `${before} → ${small}`);
+  await ben.close();
+  const cursorGone = await until(async () => (await ana.locator(".remote-caret").count()) === 0, 8000);
+  check(cursorGone, "a guest who leaves takes their cursor with them");
+  const after = await until(async () => {
+    const s = await ttySize(ana, "AFTER");
+    return s && s[1] === before[1] ? s : null;
+  }, 12_000, 1000);
+  check(after, "and once they leave, the terminal is the size of who is left", `${before} → ${small} → ${await ttySize(ana, "LAST")}`);
+
+  // ---- the terminal limit ---------------------------------------------------
+  await ana.click("#new-terminal");
+  await until(async () => (await ana.locator(".term").count()) === 2, 8000);
+  await ana.click("#new-terminal");
+  const refusal = await until(async () => (await ana.locator(".term-notice").textContent()) || null, 8000);
+  check(/limit/.test(refusal ?? ""), "a terminal the host refuses says why", JSON.stringify(refusal));
+
+  // ---- a terminal that ends while a guest cannot hear -----------------------
+  // Another guest, on a connection of their own, exits the second terminal
+  // while ana's is down. Nobody can tell ana; the host's list on her return
+  // is all she has to go on.
+  const eve = await browser.newPage();
+  await eve.goto(`${RELAY}/j/${link.session}#k=${link.key}`);
+  await eve.fill("#name", "eve");
+  await eve.click("#join button[type=submit]");
+  await until(async () => (await eve.locator(".term").count()) === 2, 15_000);
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  await eve.locator(".term.shown .xterm").first().click();
+  await eve.keyboard.type("exit\r");
+  await until(async () => (await eve.locator(".term").count()) === 1, 10_000);
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  const anaTerms = await until(async () => ((await ana.locator(".term").count()) === 1 ? 1 : null), 10_000);
+  check(anaTerms === 1, "a terminal that ended while a guest was disconnected is gone from their tabs too", `${await ana.locator(".term").count()} terminals`);
+  await eve.close();
+
+  // ---- the host away --------------------------------------------------------
+  agentHop.cut();
+  await ana.locator("#away:not([hidden])").waitFor({ timeout: 10_000 });
+  const leaving = () => ana.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })));
+  check(!(await leaving()), "with nothing typed, leaving the page asks nothing");
+  await focusEditor(ana);
+  await ana.keyboard.type("AWAY ");
+  check(await leaving(), "typing that has nowhere to go yet makes leaving the page ask first");
+  check(/host away/.test(await ana.locator("#status").textContent()), "with the host away the status says so, not \"connected\"");
+  const first = await ana.locator("#away").textContent();
+  await sleep(2100);
+  const second = await ana.locator("#away").textContent();
+  check(first !== second && /Holding this session for/.test(second), "and the countdown counts", `${first} / ${second}`);
+  const cara = await browser.newPage();
+  await cara.goto(`${GUEST}/j/${link.session}#k=${link.key}`);
+  await cara.fill("#name", "cara");
+  await cara.click("#join button[type=submit]");
+  check(
+    await cara.locator("#away:not([hidden])").waitFor({ timeout: 10_000 }).then(() => true, () => false),
+    "someone joining while the host is away is told, rather than shown an empty session",
+  );
+  await cara.close();
+  await ana.locator('.tree-row[data-path="note.txt"]').click();
+  const awayTitle = await until(async () => {
+    const t = await ana.locator("#viewer-title").textContent();
+    return t.startsWith("note.txt ·") ? t : null;
+  }, 8000);
+  check(awayTitle, "a file opened while the host is away says where it came from, or why it cannot open", JSON.stringify(awayTitle));
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  check(
+    await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "note.txt", null, { timeout: 15_000 }).then(() => true, () => false),
+    "and when the host is back, the file is the live, editable one again",
+  );
+  check((await onDisk(long, (t) => t.includes("AWAY "))).includes("AWAY "), "what was typed while the host was away reached the file, though another was open by then");
+  check(!(await leaving()), "and once it has, leaving asks nothing");
+
+  // ---- the relay restarting -------------------------------------------------
+  // The agent is held back, as it is when the guests' browsers notice first:
+  // until it reconnects, the new relay has never heard of the session.
+  agentHop.cut();
+  procs.kill(relay);
+  await sleep(300);
+  relay = await startRelay();
+  await sleep(3000);
+  agentHop.restore();
+  const backAfterRestart = await until(async () => {
+    if (await ana.locator("h1", { hasText: "Can't join" }).count()) return "gave up";
+    return (await ana.locator("#status").textContent()) === "connected" && (await ana.locator("#away").isHidden()) ? "in" : null;
+  }, 40_000, 250);
+  check(backAfterRestart === "in", "a guest outlasts a relay restart that the host's agent is slow to notice", String(backAfterRestart));
+  await ana.locator(".term.shown .xterm").first().click();
+  await ana.keyboard.type("echo restarted-$((40+2))\r");
+  check(await until(async () => (await screen(ana)).includes("restarted-42"), 10_000), "and their terminal works afterwards");
+
+  // ---- an open file deleted on the host -------------------------------------
+  // It stayed editable, and everything typed into it went nowhere.
+  await writeFile(join(workdir, "doomed.txt"), "soon gone\n");
+  await until(async () => (await ana.locator('.tree-row[data-path="doomed.txt"]').count()) > 0, 10_000);
+  await open(ana, "doomed.txt");
+  await ana.locator("#viewer .view-line").first().click();
+  await ana.keyboard.type("kept ");
+  await rm(join(workdir, "doomed.txt"));
+  const stranded = await until(async () => {
+    const t = await ana.locator("#viewer-title").textContent();
+    return /not saved, read-only/.test(t) ? t : null;
+  }, 10_000);
+  check(stranded, "an open file deleted on the host says it can no longer be saved", JSON.stringify(await ana.locator("#viewer-title").textContent()));
+  check((await editorText(ana)).includes("kept"), "and what was typed into it is still on screen to copy", JSON.stringify(await editorText(ana)));
+  await ana.locator("#viewer .view-line").first().click();
+  await ana.keyboard.type("more");
+  await sleep(300);
+  check(!(await editorText(ana)).includes("more"), "and it takes no more typing");
+
+  // ---- Back out of the back/forward cache -----------------------------------
+  // Playwright turns the cache off; this browser has it on, as people do.
+  const cached = await chromium.launch({ channel: "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
+  browsers.push(cached);
+  const dan = await guestPage(cached, link, "dan");
+  await open(dan, "long.txt");
+  await settleMidway(dan);
+  const danAt = await where(dan);
+  let restored = false;
+  for (let attempt = 0; attempt < 2 && !restored; attempt++) {
+    await dan.goto(`${GUEST}/`);
+    await sleep(800);
+    // A page out of the cache fires no load event.
+    await dan.goBack({ waitUntil: "commit" });
+    await sleep(500);
+    restored = (await dan.evaluate(() => window.__restored).catch(() => 0)) > 0;
+    if (!restored) {
+      const why = await dan.evaluate(() => JSON.stringify(performance.getEntriesByType("navigation")[0]?.notRestoredReasons ?? null)).catch((e) => e.message);
+      console.log(`  note: Back was not served from the cache: ${why}`);
+      // A fresh load, not the cached page: put it back as it was and retry.
+      if (!(await dan.locator("#name").count())) break;
+      await dan.fill("#name", "dan");
+      await dan.click("#join button[type=submit]");
+      await dan.locator(".term.shown .xterm").first().waitFor({ timeout: 20_000 });
+      await open(dan, "long.txt");
+      await settleMidway(dan);
+    }
+  }
+  if (check(restored, "Back returns the session page from the cache")) {
+    await dan.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 }).catch(() => {});
+    check(await dan.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "long.txt", null, { timeout: 15_000 }).then(() => true, () => false), "and it is live: the file is open for editing again");
+    const danBack = await where(dan);
+    check(danBack?.top === danAt.top && danBack?.cursor === danAt.cursor, "at the same place in it", `${JSON.stringify(danAt)} → ${JSON.stringify(danBack)}`);
+    await focusEditor(dan);
+    await dan.keyboard.type("CACHED ");
+    check((await onDisk(long, (t) => t.includes("CACHED "))).includes("CACHED "), "and typing reaches the file");
+    await dan.locator(".term.shown .xterm").first().click();
+    await dan.keyboard.type("echo cached-$((50+5))\r");
+    check(await until(async () => (await screen(dan)).includes("cached-55"), 10_000), "and the terminal answers");
+    // Someone is "…" between arriving and saying who they are, so this waits
+    // for the roster to settle rather than reading one moment of it.
+    const roster = await until(async () => {
+      const t = await ana.locator("#people").textContent();
+      return /dan/.test(t) && !t.includes("…") ? t : null;
+    }, 10_000);
+    check(roster, "and nobody's roster gained a nameless guest", JSON.stringify(await ana.locator("#people").textContent()));
+  }
+
+  // ---- the host's keys -------------------------------------------------------
+  // The agent as a person runs it, in a terminal with its panel, its keys
+  // pressed. Every other check here runs it with no panel, and so never
+  // pressed one.
+  const panelDir = await mkdtemp(join(tmpdir(), "ajar-guest-panel-"));
+  const roFile = join(panelDir, "ro.txt");
+  await writeFile(roFile, "start\n");
+  const panel = startAgentInPanel(procs, [panelDir, "--relay", RELAY, "--name", "panelhost"]);
+  const panelLink = await linkOf(panel, 20_000);
+  const lag = laggyProxy(LAG_PORT, PORT, 250);
+  await lag.listen();
+  const pat = await browser.newPage();
+  pat.errors = [];
+  pat.on("pageerror", (e) => pat.errors.push(e.message));
+  await pat.goto(`http://127.0.0.1:${LAG_PORT}/j/${panelLink.session}#k=${panelLink.key}`);
+  await pat.fill("#name", "pat");
+  await pat.click("#join button[type=submit]");
+  await pat.locator(".term.shown .xterm").first().waitFor({ timeout: 30_000 });
+  await open(pat, "ro.txt");
+  await pat.locator("#viewer .view-line").first().click();
+  await pat.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
+  // Read-only on while pat is typing, a quarter of a second away: some of it
+  // reaches the host after the switch and is refused there.
+  const typing = pat.keyboard.type("abcdefghijklmnop", { delay: 40 });
+  await sleep(300);
+  panel.press("l");
+  await typing;
+  await pat.locator("#readonly:not([hidden])").waitFor({ timeout: 10_000 });
+  await sleep(1500);
+  panel.press("l");
+  await pat.locator("#readonly[hidden]").waitFor({ state: "attached", timeout: 10_000 });
+  await pat.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "ro.txt", null, { timeout: 15_000 });
+  await sleep(600);
+  await pat.locator("#viewer .view-line").first().click();
+  await pat.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
+  await pat.keyboard.type(" AFTER");
+  const disk = await onDisk(roFile, (t) => t.includes("AFTER"), 10_000);
+  const shown = await until(async () => {
+    const t = await editorText(pat);
+    return t.trimEnd() === disk.trimEnd() ? t : null;
+  }, 8000);
+  check(disk.includes("AFTER") && shown, "read-only switched on mid-typing and off again: later typing reaches the file, and the page agrees with it", `disk ${JSON.stringify(disk)}, page ${JSON.stringify(await editorText(pat))}`);
+
+  // And while it is on, the host drops a guest's keystrokes itself — the
+  // page not sending them is only manners.
+  const wire = new Guest(`ws://127.0.0.1:${PORT}/ws`, panelLink.session, "wire", panelLink.key);
+  await wire.connect();
+  await wire.waitUntil((g) => g.ptys.size >= 1, "the terminal pat has");
+  const [wirePty] = [...wire.ptys.keys()];
+  await wire.ready(wirePty);
+  panel.press("l");
+  await wire.waitUntil((g) => g.ptyMessages.some((m) => m.t === "read_only" && m.read_only === true), "the read-only notice");
+  wire.type(wirePty, "echo RO-$((6*7))\r");
+  await sleep(1500);
+  check(!(wire.ptys.get(wirePty) ?? "").includes("RO-42"), "with the host's [l] on, a guest's keystrokes are dropped at the host");
+  wire.close();
+  await pat.close();
+  lag.close();
+  panel.press("q");
+  await rm(panelDir, { recursive: true, force: true });
+
+  for (const [who, page] of [["ana", ana], ["dan", dan], ["pat", pat]]) {
+    check(page.errors.length === 0, `no page errors (${who})`, page.errors.join(" | "));
+  }
+
+  for (const b of browsers) await b.close();
+  guestHop.close();
+  agentHop.close();
+  finish(procs, "the guest's page holds up through blips, Back, restarts and the host away");
+}
+
+main()
+  .catch(async (e) => {
+    fail(e.stack ?? String(e));
+    for (const b of browsers) await b.close().catch(() => {});
+    procs.killAll();
+    process.exit(1);
+  })
+  .finally(() => {
+    if (workdir) rm(workdir, { recursive: true, force: true }).catch(() => {});
+  });

@@ -268,6 +268,11 @@ so in the moment after one, whoever claims a session's name first opens it —
 the agent, normally, which reconnects at once. Checked by `smoke-hostdrop.mjs`,
 which tries the takeover during a real agent's gap.
 
+The key also lets the agent take its place back while the relay still holds
+its previous socket open — dead, but not yet noticed. Anyone else asking for a
+connected host's place is still refused `host_taken`; a session opened without
+a key keeps the old rule, which is that nobody may.
+
 ## What a guest can read
 
 Only what the tree shows. The tree leaves out `.git`, dependencies and

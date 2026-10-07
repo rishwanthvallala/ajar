@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -16,6 +17,11 @@ use tracing::debug;
 /// Per-pty scrollback kept for replay. Small on purpose: a client has to
 /// re-parse every escape sequence in it, and a megabyte takes visibly long.
 const RING_CAPACITY: usize = 256 * 1024;
+
+/// Typing and pastes waiting for a program to read them, per terminal. Past
+/// this the input is dropped: a program that never reads would otherwise hold
+/// everything anyone pastes at it, for ever.
+const MAX_QUEUED_INPUT: usize = 1024 * 1024;
 
 /// Fixed-size overwriting buffer of recent terminal output.
 pub struct Ring {
@@ -53,16 +59,77 @@ pub struct PtySession {
     /// running underneath it.
     pub pid: Option<u32>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    input: Input,
     ring: Arc<Mutex<Ring>>,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
+/// A terminal's input, written by a thread of its own.
+///
+/// A pty takes only so much input before the program on it reads some — about
+/// a kilobyte, on macOS — and past that a write blocks. It used to be written
+/// from the agent's one loop, so a paste into a terminal running `sleep`, or
+/// anything else not reading, stopped the whole agent: every terminal, every
+/// document, the panel, and ctrl-c. Now only that terminal waits, as it would
+/// in any terminal emulator.
+struct Input {
+    tx: mpsc::Sender<(u64, Vec<u8>)>,
+    queued: Arc<AtomicUsize>,
+    /// Bumped by an interrupt. Input queued before it is dropped unwritten,
+    /// so a ctrl-c is not stuck behind the paste it is meant to stop.
+    epoch: Arc<AtomicU64>,
+}
+
+impl Input {
+    fn start(id: u32, mut writer: Box<dyn Write + Send>) -> Result<Self> {
+        let (tx, rx) = mpsc::channel::<(u64, Vec<u8>)>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let (left, current) = (queued.clone(), epoch.clone());
+        std::thread::Builder::new()
+            .name(format!("ajar-pty-in-{id}"))
+            .spawn(move || {
+                for (sent_in, bytes) in rx {
+                    left.fetch_sub(bytes.len(), Ordering::Relaxed);
+                    if sent_in < current.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if writer
+                        .write_all(&bytes)
+                        .and_then(|_| writer.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .context("spawning pty writer thread")?;
+        Ok(Self { tx, queued, epoch })
+    }
+
+    fn send(&self, bytes: &[u8]) -> Result<()> {
+        // ctrl-c, ctrl-\ and ctrl-z: whatever is still waiting was meant to
+        // be interrupted too.
+        let epoch = if bytes.iter().any(|b| matches!(b, 0x03 | 0x1c | 0x1a)) {
+            self.epoch.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            self.epoch.load(Ordering::Relaxed)
+        };
+        if self.queued.load(Ordering::Relaxed) + bytes.len() > MAX_QUEUED_INPUT {
+            debug!("terminal input backed up; dropping {} bytes", bytes.len());
+            return Ok(());
+        }
+        self.queued.fetch_add(bytes.len(), Ordering::Relaxed);
+        self.tx
+            .send((epoch, bytes.to_vec()))
+            .context("the terminal has closed")
+    }
+}
+
 impl PtySession {
+    /// Queue input for the terminal. Never blocks: see `Input`.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()?;
-        Ok(())
+        self.input.send(bytes)
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -245,7 +312,7 @@ impl PtyRegistry {
             .master
             .try_clone_reader()
             .context("cloning pty reader")?;
-        let writer = pair.master.take_writer().context("taking pty writer")?;
+        let input = Input::start(id, pair.master.take_writer().context("taking pty writer")?)?;
         let ring = Arc::new(Mutex::new(Ring::new(RING_CAPACITY)));
 
         let ring_for_thread = ring.clone();
@@ -281,7 +348,7 @@ impl PtyRegistry {
                 opened_by,
                 pid,
                 master: pair.master,
-                writer,
+                input,
                 ring,
                 _child: child,
             },
@@ -293,6 +360,84 @@ impl PtyRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A terminal whose program is not reading: every write waits for `open`.
+    struct Stuck {
+        entered: mpsc::Sender<()>,
+        open: Arc<Mutex<mpsc::Receiver<()>>>,
+        got: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for Stuck {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.entered.send(());
+            let _ = self.open.lock().unwrap().recv();
+            self.got.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn input_to_a_terminal_that_is_not_reading_never_blocks_and_ctrl_c_jumps_the_queue() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (open_tx, open_rx) = mpsc::channel();
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let input = Input::start(
+            1,
+            Box::new(Stuck {
+                entered: entered_tx,
+                open: Arc::new(Mutex::new(open_rx)),
+                got: got.clone(),
+            }),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        input.send(b"first").unwrap();
+        entered.recv().unwrap();
+        // The writer is now stuck on "first". None of this may wait for it.
+        input.send(&[b'x'; 64 * 1024]).unwrap();
+        input.send(b"more").unwrap();
+        input.send(b"\x03").unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+
+        for _ in 0..2 {
+            open_tx.send(()).unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while got.lock().unwrap().as_slice() != b"first\x03" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                String::from_utf8_lossy(&got.lock().unwrap())
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn input_past_the_cap_is_dropped_not_held() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (_open_tx, open_rx) = mpsc::channel::<()>();
+        let input = Input::start(
+            1,
+            Box::new(Stuck {
+                entered: entered_tx,
+                open: Arc::new(Mutex::new(open_rx)),
+                got: Arc::new(Mutex::new(Vec::new())),
+            }),
+        )
+        .unwrap();
+        input.send(b"first").unwrap();
+        entered.recv().unwrap();
+        for _ in 0..4 {
+            input.send(&vec![b'x'; MAX_QUEUED_INPUT / 2]).unwrap();
+        }
+        assert!(input.queued.load(Ordering::Relaxed) <= MAX_QUEUED_INPUT);
+    }
 
     #[test]
     fn ring_keeps_only_the_tail() {

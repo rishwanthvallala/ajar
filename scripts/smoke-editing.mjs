@@ -7,7 +7,7 @@
 //
 //   node scripts/smoke-editing.mjs
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -215,6 +215,70 @@ async function main() {
   await gb.waitUntil(() => b.awarenessSeen > 0, "an awareness update to reach bo");
   ok("awareness updates are relayed without being interpreted");
 
+  // ---- the disk changes while people are typing ------------------------
+  // A change on disk used to be spliced into the document until the two were
+  // equal — deleting whatever had been typed since the last write, for
+  // everyone. A log being appended to while someone had it open lost every
+  // keystroke between appends.
+  const log = join(workdir, "log.txt");
+  await writeFile(log, "line1\nline2\n");
+  const gc = new Guest(WS, session, "cy", key);
+  await gc.connect();
+  const c = new Editor(gc);
+  await c.open("log.txt");
+  const typed = "abcdefghijklmnopqrstuvwxyz";
+  for (let i = 0; i < typed.length; i++) {
+    c.type(i, typed[i]);
+    if (i % 5 === 4) await appendFile(log, `H${i}\n`);
+    await sleep(60);
+  }
+  let merged = "";
+  for (let i = 0; i < 60; i++) {
+    merged = await readFile(log, "utf8");
+    if (merged.startsWith(typed) && merged.includes("H24\n") && c.text === merged) break;
+    await sleep(100);
+  }
+  const appends = [4, 9, 14, 19, 24].every((i) => merged.split(`H${i}\n`).length === 2);
+  if (!merged.startsWith(typed) || !appends || c.text !== merged) {
+    fail(`typing and appends on disk did not both survive:\n    disk:   ${JSON.stringify(merged)}\n    editor: ${JSON.stringify(c.text)}`);
+  } else {
+    ok("typing not yet written and appends made on disk meanwhile both survive, once each");
+  }
+
+  // ---- an open file deleted underneath ---------------------------------
+  // It stayed open and editable, every keystroke went nowhere, and the host's
+  // log said so four times a second until someone closed the tab.
+  await writeFile(join(workdir, "doomed.txt"), "soon gone\n");
+  const d = new Editor(gb);
+  await d.open("doomed.txt");
+  const logged = () => (agent.output.match(/doomed\.txt: .*closed for editing/g) ?? []).length;
+  await rm(join(workdir, "doomed.txt"));
+  await gb.waitUntil(
+    (g) => g.docMessages.some((m) => m.t === "closed" && m.doc_id === d.docId),
+    "the document to be closed for its readers",
+    8000,
+  );
+  const reason = gb.docMessages.find((m) => m.t === "closed" && m.doc_id === d.docId).reason;
+  d.type(0, "into the void ");
+  await sleep(2000);
+  if (logged() !== 1) fail(`the host said it ${logged()} times, not once`);
+  else ok(`an open file deleted on the host closes for its readers, with the reason ("${reason}"), said once`);
+
+  // ---- files the browser's editor would change -------------------------
+  await writeFile(join(workdir, "latin1.txt"), Buffer.from("caf\xe9 na\xefve\n", "latin1"));
+  await writeFile(join(workdir, "mixed.txt"), "one\r\ntwo\n");
+  for (const name of ["latin1.txt", "mixed.txt"]) {
+    gb.send(json(CH_DOC, { t: "open", path: name }));
+    await gb.waitUntil(
+      (g) => g.docMessages.some((m) => (m.t === "error" || m.t === "opened") && m.path === name),
+      `an answer for ${name}`,
+    );
+    const answer = gb.docMessages.find((m) => (m.t === "error" || m.t === "opened") && m.path === name);
+    if (answer.t !== "error") fail(`${name} was opened for editing, which would rewrite bytes nobody typed`);
+    else ok(`${name} is refused for editing: ${answer.message}`);
+  }
+
+  gc.close();
   ga.close();
   gb.close();
   finish(procs, "editing works: two people, one file, and a terminal writing underneath");

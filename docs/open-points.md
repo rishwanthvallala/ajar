@@ -373,6 +373,15 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | A guest could take the host's place in the 45 s after the host's socket dropped — welcomed as the host coming back, able to send the others anything — and the real agent then quit | `58fbdbe` |
 | A guest could read what the tree hides by naming it — `.git/config`, gitignored files — read-only guests included | `58fbdbe` |
 | A guest could open every file in the folder as a document, a megabyte of the host's memory apiece | `58fbdbe` |
+| The landing page and `install.sh` told people to pipe a script from `ajar.sh`, a domain nobody owns, to `sh` | `0574a0c` |
+| A change on disk to an open file deleted whatever had been typed since the last write, for everyone | this batch |
+| A paste into a terminal whose program was not reading froze the whole agent, ctrl-c included | this batch |
+| Editing a file with a byte-order mark or mixed line endings wrote every edit a character early; a Latin-1 file lost its accents | this batch |
+| The guest's page: Back showed a dead page and a nameless roster entry; a reconnect or a file switch went back to line 1; a relay restart ejected guests for good; the host away looked like "connected" | this batch |
+| The agent quit, ending every terminal, when the relay still held its dead socket or rate-limited a flaky network | this batch |
+
+The whole review, with what is still to come, is in
+[ajar-review-2026-10-07.md](ajar-review-2026-10-07.md).
 
 ## Closed on 4 October
 

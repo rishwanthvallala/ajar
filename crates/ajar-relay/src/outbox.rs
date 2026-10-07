@@ -150,6 +150,16 @@ impl Outbox {
         self.wake.notify_waiters();
     }
 
+    /// Whether two handles queue for the same socket.
+    pub fn same(&self, other: &Outbox) -> bool {
+        Arc::ptr_eq(&self.queued, &other.queued)
+    }
+
+    /// Close the socket now, whatever is still queued for it.
+    pub fn close(&self) {
+        self.shut();
+    }
+
     /// Queue one final frame and close once everything ahead of it is sent.
     pub fn finish(&self, bytes: Vec<u8>) {
         if self.send(bytes).is_ok() {
@@ -177,6 +187,11 @@ impl Drain {
 
     /// The next frame to write, or `None` when the connection is finished —
     /// because the senders are gone, or because one of them overflowed.
+    #[cfg(test)]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub async fn next(&mut self) -> Option<Vec<u8>> {
         // Checked before parking, so an overflow that happened while this
         // task was busy is still seen.

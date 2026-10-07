@@ -94,7 +94,9 @@ export async function linkOf(agent, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("agent never printed a link")), timeoutMs);
     const poll = setInterval(() => {
-      const m = agent.output.match(/\/j\/([a-z0-9-]+)(?:#k=([A-Za-z0-9_-]+))?/i);
+      // The panel draws with escape sequences; the plain banner has none.
+      const plain = agent.output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+      const m = plain.match(/\/j\/([a-z0-9-]+)(?:#k=([A-Za-z0-9_-]+))?/i);
       if (m) {
         clearInterval(poll);
         clearTimeout(t);
@@ -226,6 +228,9 @@ export class Guest {
             role: this.role,
             // A pad link's code, the way the page sends it.
             ...(this.code ? { code: this.code } : {}),
+            // The key an agent opens its session with, for tests that speak
+            // as one.
+            ...(this.hostKey ? { host_key: this.hostKey } : {}),
           }),
         );
       };
@@ -510,6 +515,18 @@ export class Guest {
 }
 
 /** Tracks child processes so a failing test doesn't leak them. */
+/**
+ * The agent as a person runs it: in a terminal, showing its panel, taking
+ * keys. `agent.press("l")` presses one.
+ */
+export function startAgentInPanel(procs, args, label = "agent-panel") {
+  const agent = procs.start("python3", ["scripts/lib/ptyrun.py", "target/debug/ajar", ...args], label, {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  agent.press = (keys) => agent.stdin.write(keys);
+  return agent;
+}
+
 export class Procs {
   constructor() {
     this.list = [];

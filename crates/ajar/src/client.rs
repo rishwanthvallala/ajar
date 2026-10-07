@@ -20,6 +20,15 @@ use tracing::debug;
 
 const BACKOFF_BASE: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(8);
+/// How often the agent asks the relay whether it is still there.
+const PING_EVERY: Duration = Duration::from_secs(15);
+/// Silence for this long, pings included, and the connection is gone.
+///
+/// A socket can die without either end being told — a laptop lid closed on
+/// one network and opened on another — and nothing on it is ever read again.
+/// Without asking, the agent sat on that socket looking connected while
+/// guests waited for a host that was never coming back.
+const SILENT_FOR: Duration = Duration::from_secs(45);
 
 #[derive(Debug)]
 pub enum RelayEvent {
@@ -95,8 +104,22 @@ pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool
                 Ok(Outcome::Closed) => {
                     let _ = ev_tx.send(RelayEvent::Disconnected("relay closed".into()));
                 }
-                Ok(Outcome::Refused(msg)) => {
-                    let _ = ev_tx.send(RelayEvent::Refused(msg));
+                // Two refusals are about the moment, not the session, and
+                // giving up on them ended every terminal on the machine.
+                // `host_taken` is the relay still holding our previous socket
+                // — half-open after a sleep or a network change — until it
+                // notices; `rate_limited` is a flaky network reconnecting
+                // faster than the relay allows. Both clear by waiting.
+                Ok(Outcome::Refused { code, message })
+                    if code == "host_taken" || code == "rate_limited" =>
+                {
+                    let _ = ev_tx.send(RelayEvent::Disconnected(format!("{code}: {message}")));
+                    // At least a few seconds: a relay holding a stale socket
+                    // takes that long to let it go.
+                    attempt = attempt.max(3);
+                }
+                Ok(Outcome::Refused { code, message }) => {
+                    let _ = ev_tx.send(RelayEvent::Refused(format!("{code}: {message}")));
                     return;
                 }
                 Err(e) => {
@@ -123,7 +146,7 @@ pub fn spawn(url: String, hello: Control, cipher: Cipher, locked: Arc<AtomicBool
 
 enum Outcome {
     Closed,
-    Refused(String),
+    Refused { code: String, message: String },
 }
 
 async fn session(
@@ -181,9 +204,7 @@ async fn session(
 
     let participants = match welcome.parse_json::<Control>()? {
         Control::Welcome { participants, .. } => participants,
-        Control::Error { code, message } => {
-            return Ok(Outcome::Refused(format!("{code}: {message}")))
-        }
+        Control::Error { code, message } => return Ok(Outcome::Refused { code, message }),
         other => return Err(anyhow!("unexpected first message from relay: {other:?}")),
     };
     // Connected, so the next drop is a fresh blip and starts from the shortest
@@ -196,8 +217,19 @@ async fn session(
         participants,
     });
 
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heard = tokio::time::Instant::now();
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if heard.elapsed() > SILENT_FOR {
+                    return Err(anyhow!("the relay stopped answering"));
+                }
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return Ok(Outcome::Closed);
+                }
+            }
             outgoing = out_rx.recv() => {
                 let Some(frame) = outgoing else { return Ok(Outcome::Closed) };
                 let bytes = frame.seal(cipher, Direction::HostToGuest).encode();
@@ -206,6 +238,7 @@ async fn session(
                 }
             }
             incoming = source.next() => {
+                heard = tokio::time::Instant::now();
                 match incoming {
                     Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
                         Ok(f) => match f.open(cipher, Direction::GuestToHost) {

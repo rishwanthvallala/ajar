@@ -4,6 +4,7 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import { replaceText } from "./replace";
 
 /**
  * Collaborative editing bound to Monaco.
@@ -121,12 +122,28 @@ export class DocSession {
     applyAwarenessUpdate(this.awareness, bytes, "remote");
   }
 
+  /**
+   * Somebody left: their cursor goes with them.
+   *
+   * A browser that closes says nothing on its way out, so its awareness state
+   * would sit here until it timed out — a cursor, with a name on it, for
+   * someone no longer in the room. The relay's `left` is the word that they
+   * have gone.
+   */
+  forget(participant: number) {
+    const gone: number[] = [];
+    for (const [client, state] of this.awareness.getStates()) {
+      if (client === this.awareness.clientID) continue;
+      if (participantId((state as { user?: { id?: unknown } }).user?.id) === participant) gone.push(client);
+    }
+    if (gone.length) removeAwarenessStates(this.awareness, gone, "remote");
+  }
+
   /** Attach to an editor. Returns a function that detaches everything. */
   bind(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
-    // The document is the truth; the model starts from it.
-    if (model.getValue() !== this.ytext.toString()) {
-      model.setValue(this.ytext.toString());
-    }
+    // The document is the truth; the model starts from it — brought there by
+    // an edit rather than `setValue`, which would send the view to line 1.
+    replaceText(model, this.ytext.toString());
     this.decorations = editor.createDecorationsCollection([]);
 
     const onRemote = (event: Y.YTextEvent, tr: Y.Transaction) => {

@@ -6,7 +6,7 @@
 //
 //   node scripts/smoke-workspace.mjs
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -120,6 +120,27 @@ async function main() {
   await rm(join(workdir, "src", "added.rs"));
   await guest.waitUntil((g) => !g.tree.has("src/added.rs"), "a patch removing a file");
   ok("a deleted file arrived as a patch");
+
+  // A folder renamed, or moved in whole, is reported by the watcher as the
+  // folder alone. It used to arrive empty, and the old name's contents stayed
+  // listed under a folder that no longer existed.
+  await mkdir(join(workdir, "pkg", "deep"), { recursive: true });
+  await writeFile(join(workdir, "pkg", "deep", "x.txt"), "x");
+  await guest.waitUntil((g) => g.tree.has("pkg/deep/x.txt"), "a new folder with a file in it");
+  await rename(join(workdir, "pkg"), join(workdir, "lib"));
+  await guest.waitUntil(
+    (g) => g.tree.has("lib/deep/x.txt") && ![...g.tree.keys()].some((p) => p === "pkg" || p.startsWith("pkg/")),
+    "a renamed folder, contents and all, under its new name only",
+    10_000,
+  );
+  ok("a renamed folder arrives with its contents, and the old name goes with its own");
+  const elsewhere = await mkdtemp(join(tmpdir(), "ajar-workspace-outside-"));
+  await mkdir(join(elsewhere, "vendored", "a"), { recursive: true });
+  await writeFile(join(elsewhere, "vendored", "a", "b.txt"), "b");
+  await rename(join(elsewhere, "vendored"), join(workdir, "vendored"));
+  await guest.waitUntil((g) => g.tree.has("vendored/a/b.txt"), "a folder moved in from outside, with its contents", 10_000);
+  ok("a folder moved in from outside arrives with its contents");
+  await rm(elsewhere, { recursive: true, force: true });
 
   // Writing into an ignored directory must produce nothing at all. This is
   // the case that floods every guest if the watcher and scanner disagree.

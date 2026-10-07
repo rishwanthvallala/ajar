@@ -207,6 +207,7 @@ export type Pty =
   | { t: "resize"; pty_id: number; cols: number; rows: number }
   | { t: "close"; pty_id: number }
   | { t: "closed"; pty_id: number; exit_code: number }
-  | { t: "read_only"; read_only: boolean };
+  | { t: "read_only"; read_only: boolean }
+  | { t: "refused"; reason: string };
 
 export const textEncoder = encoder;

@@ -133,6 +133,8 @@ struct Host {
     /// Sealed and waiting for the relay to accept the offer.
     pending_snapshot: Option<Vec<u8>>,
     pending_files: u32,
+    /// Open documents whose last write failed, so the failure is said once.
+    failing_writes: std::collections::HashSet<u32>,
     cipher: Cipher,
     /// A rebuild is owed but the cooldown has not passed.
     resync_pending: bool,
@@ -406,6 +408,7 @@ async fn run() -> Result<()> {
         synced: None,
         pending_snapshot: None,
         pending_files: 0,
+        failing_writes: Default::default(),
         cipher: cipher_for_host,
         resync_pending: false,
         out_tx,
@@ -416,6 +419,10 @@ async fn run() -> Result<()> {
 
     let mut online = false;
     let mut warned_offline = false;
+    // Whether the link has ever worked. Once it has, a failed reconnect is a
+    // blip in progress, not a link that "will not work" — which is what every
+    // ordinary reconnect used to announce.
+    let mut ever_online = false;
     // The banner is held until the relay answers. Printed any earlier it
     // announces a link that is refused for the next few hundred milliseconds —
     // invisible over loopback, where the gap is about a millisecond, and
@@ -441,18 +448,23 @@ async fn run() -> Result<()> {
                 let Some(event) = event else { break };
                 match event {
                     RelayEvent::Connected { resumed, participants } => {
+                        let first = !ever_online;
                         online = true;
+                        ever_online = true;
                         warned_offline = false;
                         host.state.status = Status::Online;
                         if !host.ui.is_panel() {
                             if !banner_shown {
                                 banner(&host.state, &caps);
                                 banner_shown = true;
-                            } else if !resumed {
+                            } else if first {
                                 // The deadline below already printed a banner
                                 // saying the link did not work yet. It does now.
                                 host.log("the relay answered — the link works now");
                             }
+                        }
+                        if !first && !resumed {
+                            host.log("reconnected — the relay had let the session go, so guests rejoin it from scratch");
                         }
                         // Before anything is resent: who is actually here. Joins
                         // and leaves during the gap were announced to nobody.
@@ -465,7 +477,7 @@ async fn run() -> Result<()> {
                     RelayEvent::Disconnected(why) => {
                         if online {
                             host.log(format!("connection lost ({why}) — terminals keep running"));
-                        } else if !warned_offline {
+                        } else if !warned_offline && !ever_online {
                             // Never connected at all. Without this the agent
                             // prints a link and sits there looking healthy
                             // while nothing can reach it — which is exactly
@@ -669,7 +681,13 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
         Channel::Pty if frame.stream_id == STREAM_CONTROL => match frame.parse_json::<Pty>()? {
             Pty::Open { cols, rows } => {
                 let asker = frame.target;
-                if let Err(reason) = host.ptys.may_open() {
+                // A shell nobody here may type into is a process for nothing.
+                let allowed = if host.state.read_only {
+                    Err("the host has made this session read-only".to_string())
+                } else {
+                    host.ptys.may_open()
+                };
+                if let Err(reason) = allowed {
                     host.outbound.send(Frame::json(
                         Channel::Pty,
                         asker,
@@ -743,7 +761,7 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             DocMsg::Open { path } => on_doc_open(&path, frame.target, host)?,
             DocMsg::Close { doc_id } => {
                 if let Some((path, contents)) = host.docs.close(doc_id, frame.target) {
-                    write_back(&path, &contents, host);
+                    write_last(&path, &contents, host);
                 }
             }
             other => debug!("ignoring doc message: {other:?}"),
@@ -860,14 +878,11 @@ fn on_doc_open(path: &str, reader: u32, host: &mut Host) -> Result<()> {
     if let Err(why) = host.docs.may_open(path, reader) {
         return refuse(host, why);
     }
-    let contents = match host.workspace.read(path) {
-        Fs::Content { binary: true, .. } => return refuse(host, "binary file"),
-        Fs::Content {
-            truncated: true, ..
-        } => return refuse(host, "too large to edit — over 1 MB"),
-        Fs::Content { text, .. } => text,
-        Fs::ReadError { message, .. } => return refuse(host, &message),
-        _ => return refuse(host, "not a file"),
+    // Asked of a file already open too: someone else's copy of it may be
+    // fine, and this one have changed since.
+    let contents = match host.workspace.editable(path) {
+        Ok(text) => text,
+        Err(why) => return refuse(host, &why),
     };
 
     let (doc_id, state) = host.docs.open(path, &contents, reader);
@@ -978,52 +993,45 @@ fn broadcast_roster(host: &Host) -> Result<()> {
     Ok(())
 }
 
+/// Why an open document was not saved.
+enum Unsaved {
+    /// Its file is gone, or no longer something editing can write: the
+    /// document has to end.
+    NotEditable(String),
+    /// The write itself failed, and may work next time.
+    Failed(std::io::Error),
+}
+
 /// Write a document back to the file it came from.
-fn write_back(path: &str, contents: &str, host: &mut Host) -> bool {
+fn write_back(path: &str, contents: &str, host: &mut Host) -> Result<(), Unsaved> {
     // An open document may have changed underneath us since it was admitted.
     // Never replace a now-binary or over-limit file with the stale editable
     // prefix the CRDT was originally seeded from.
-    match host.workspace.read(path) {
-        Fs::Content {
-            binary: false,
-            truncated: false,
-            ..
-        } => {}
-        Fs::Content { binary: true, .. } => {
-            host.log(format!(
-                "{path} became binary — edits are no longer being saved"
-            ));
-            return false;
-        }
-        Fs::Content {
-            truncated: true, ..
-        } => {
-            host.log(format!(
-                "{path} grew over 1 MB — edits are no longer being saved"
-            ));
-            return false;
-        }
-        _ => {
-            host.log(format!("{path} is gone — edits are no longer being saved"));
-            return false;
-        }
-    }
+    host.workspace
+        .editable(path)
+        .map_err(Unsaved::NotEditable)?;
     let filter = host.workspace.filter();
     // `resolve` rather than `resolve_unchecked`: it canonicalises, so a
     // symlink planted where the document used to be cannot redirect the write
-    // out of the workspace. The cost is that a file deleted while it is open
-    // no longer resolves, and the edits stop being persisted — said out loud
-    // here, because a silent return looks exactly like a successful save.
-    let Some(abs) = filter.resolve(path) else {
-        host.log(format!("{path} is gone — edits are no longer being saved"));
-        return false;
-    };
-    if let Err(e) = atomic_write(&abs, filter.root(), contents.as_bytes()) {
-        warn!("could not write {path}: {e}");
-        host.log(format!("could not write {path}: {e}"));
-        return false;
+    // out of the workspace.
+    let abs = filter
+        .resolve(path)
+        .ok_or_else(|| Unsaved::NotEditable("deleted or moved".into()))?;
+    atomic_write(&abs, filter.root(), contents.as_bytes()).map_err(Unsaved::Failed)
+}
+
+/// Write a document nobody has open any more, saying so if that fails.
+fn write_last(path: &str, contents: &str, host: &mut Host) {
+    match write_back(path, contents, host) {
+        Ok(()) => {}
+        Err(Unsaved::NotEditable(why)) => {
+            host.log(format!("{path}: {why} — the last edits were not saved"))
+        }
+        Err(Unsaved::Failed(e)) => {
+            warn!("could not write {path}: {e}");
+            host.log(format!("could not write {path}: {e}"));
+        }
     }
-    true
 }
 
 /// Replace the directory entry rather than opening it for writing. If a
@@ -1123,14 +1131,17 @@ fn reconcile_docs(paths: &[String], host: &mut Host) {
         let Some(doc_id) = host.docs.id_for_path(path) else {
             continue;
         };
-        let Fs::Content {
-            text,
-            binary: false,
-            truncated: false,
-            ..
-        } = host.workspace.read(path)
-        else {
-            continue;
+        let text = match host.workspace.editable(path) {
+            Ok(text) => text,
+            // Deleted, moved, binary, grown past the limit: there is no file
+            // left to save into, so the document ends here, for everyone,
+            // with the reason. It used to stay open and editable, and every
+            // keystroke went nowhere while the log said so four times a
+            // second.
+            Err(why) => {
+                close_doc(doc_id, &why, host);
+                continue;
+            }
         };
         if let Some(update) = host.docs.reconcile(doc_id, &text) {
             let _ = host.outbound.send(Frame::stream(
@@ -1147,18 +1158,52 @@ fn reconcile_docs(paths: &[String], host: &mut Host) {
 /// Write back every document that has stopped changing.
 fn flush_documents(host: &mut Host) {
     for (id, path, contents) in host.docs.due_for_write(Instant::now()) {
-        if write_back(&path, &contents, host) {
-            host.docs.mark_written(id, &contents);
-        }
+        save(id, &path, &contents, host);
     }
 }
 
 fn flush_all_documents(host: &mut Host) {
     for (id, path, contents) in host.docs.pending_writes() {
-        if write_back(&path, &contents, host) {
-            host.docs.mark_written(id, &contents);
+        save(id, &path, &contents, host);
+    }
+}
+
+/// Write one open document, and close it if its file is no longer there to
+/// write to. A failure that may pass — a full disk — is retried next tick,
+/// and said once rather than on every one of them.
+fn save(id: u32, path: &str, contents: &str, host: &mut Host) {
+    match write_back(path, contents, host) {
+        Ok(()) => {
+            host.docs.mark_written(id, contents);
+            host.failing_writes.remove(&id);
+        }
+        Err(Unsaved::NotEditable(why)) => close_doc(id, &why, host),
+        Err(Unsaved::Failed(e)) => {
+            if host.failing_writes.insert(id) {
+                warn!("could not write {path}: {e}");
+                host.log(format!("could not write {path}: {e} — will keep trying"));
+            }
         }
     }
+}
+
+/// End a document for everyone who has it open, saying why.
+fn close_doc(id: u32, why: &str, host: &mut Host) {
+    let Some((path, _readers)) = host.docs.remove(id) else {
+        return;
+    };
+    host.failing_writes.remove(&id);
+    if let Ok(frame) = Frame::json(
+        Channel::Doc,
+        TARGET_ALL,
+        &DocMsg::Closed {
+            doc_id: id,
+            reason: why.to_string(),
+        },
+    ) {
+        let _ = host.outbound.send(frame);
+    }
+    host.log(format!("{path}: {why} — closed for editing"));
 }
 
 /// Someone is gone: their name, their window size, and their hold on any
@@ -1171,7 +1216,7 @@ fn forget(participant_id: u32, host: &mut Host) {
     host.sizes.remove(&participant_id);
     host.joined_at.remove(&participant_id);
     for (path, contents) in host.docs.drop_reader(participant_id) {
-        write_back(&path, &contents, host);
+        write_last(&path, &contents, host);
     }
     host.log(format!("{who} left"));
 }

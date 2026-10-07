@@ -94,9 +94,11 @@ The hard part is that the disk is not the document's private property:
 | Event | What happens |
 |---|---|
 | Someone types | Update reaches the host, is applied, fans out. Written back once typing stops for 400ms |
-| A terminal rewrites the file | The watcher reports it, the agent diffs it into the document, cursors survive |
+| A terminal rewrites the file | The watcher reports it, and the change is merged into the document as an edit of its own: typing not yet written survives it, cursors too |
 | Our own write comes back | Ignored — compared against *what we last wrote*, not what the document says now |
 | A binary or oversized file | Refused with a reason; falls back to read-only rather than being corrupted |
+| Not UTF-8, a byte-order mark, mixed or bare-CR line endings | Refused with a reason, read-only instead. The browser's editor would change bytes nobody typed |
+| The open file is deleted, moved, turns binary or outgrows 1 MB | The document closes for everyone who has it, with the reason; the page keeps the text on screen, read-only, to copy. Said once in the log |
 
 The third row is subtler than it looks. The watcher reports a write only after
 it lands, by which time the next keystroke has usually arrived — so comparing
@@ -107,6 +109,28 @@ External changes are folded in with a prefix/suffix diff rather than a
 wholesale replacement. Replacing the text would delete and reinsert every
 character, throwing away every cursor in the session; keeping the common ends
 means a formatter touching one line disturbs one line.
+
+The diff is taken against **what was last written**, not against the
+document, and made on a second replica held at that write — the *shadow* —
+then merged in like any guest's edit. Until 7 October it was a diff from the
+document to the disk, which made the two equal: whatever had been typed in the
+400 ms before the next write was deleted, for everyone, and a log being
+appended to while someone had it open lost every keystroke between appends.
+Now the disk's change and the typing are concurrent edits, and both stay; the
+merged text is written back once things go quiet. If the shadow has lost track
+of the disk — a write that failed halfway — the old rule applies and the disk
+wins.
+
+## Terminals
+
+Input is written by a thread per terminal, through a queue capped at 1 MB. A
+pty takes only so much before the program on it reads — about a kilobyte on
+macOS — and a write past that blocks; written from the agent's one loop, a
+paste into a terminal running `sleep` or `tail -f` stopped every terminal,
+every document, the panel and ctrl-c. Now only that terminal waits, as in any
+terminal emulator. A ctrl-c, ctrl-\\ or ctrl-z drops whatever is still queued
+ahead of it. A read-only session opens no terminals for guests: a shell nobody
+may type into is a process for nothing.
 
 The Monaco binding is written here rather than taken from `y-monaco`, which
 has not been published since 2024 and predates this Monaco by several major

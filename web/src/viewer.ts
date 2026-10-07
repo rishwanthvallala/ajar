@@ -7,6 +7,7 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import "monaco-editor/basic-languages/monaco.contribution";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
+import { replaceText } from "./replace";
 import { codeFontPx } from "./scale";
 // monaco-editor 0.56 exposes workers through its exports map, which rewrites
 // `./editor/…` to `./esm/vs/editor/…`. Importing the esm path directly
@@ -36,6 +37,13 @@ defineEditorThemes(monaco.editor);
 export class Viewer {
   private editor: monaco.editor.IStandaloneCodeEditor | null = null;
   private path: string | null = null;
+  /** The file whose model is in the editor now, which `path` runs ahead of. */
+  private shown: string | null = null;
+  /**
+   * Where each file was left — scrolled to, the cursor, what was folded — so
+   * coming back to one is coming back to there, not to its first line.
+   */
+  private readonly viewStates = new Map<string, monaco.editor.ICodeEditorViewState>();
   private readonly events = new AbortController();
 
   constructor(
@@ -56,6 +64,11 @@ export class Viewer {
   highlightChanged() {
     const model = this.editor?.getModel();
     if (model && this.path) monaco.editor.setModelLanguage(model, this.languageOf(this.path));
+  }
+
+  /** The file whose model is in the editor, if any. */
+  get shownPath(): string | null {
+    return this.shown;
   }
 
   /** The file whose content we're waiting for or showing. */
@@ -80,9 +93,25 @@ export class Viewer {
     this.editor?.updateOptions({ readOnly });
   }
 
-  show(path: string, text: string, truncated: boolean, readOnly = true) {
+  /**
+   * Put `text` on screen as `path`. `note` says, after the name, where the
+   * text came from when that is not simply the file.
+   */
+  show(path: string, text: string, truncated: boolean, readOnly = true, note?: string) {
     // A slow read for a file the user has already navigated away from.
     if (path !== this.path) return;
+
+    const current = this.editor?.getModel();
+    if (this.editor && current && this.shown === path) {
+      // The same file again: back from a reconnect, or from the saved copy to
+      // the live one. Only what differs is replaced, so the reader stays
+      // where they were — a fresh model put them at line 1, and the next
+      // keystroke landed there.
+      replaceText(current, text);
+      this.editor.updateOptions({ readOnly });
+      this.title(path, truncated ? "truncated at 1 MB" : note, truncated);
+      return;
+    }
 
     const model = monaco.editor.createModel(text, this.languageOf(path));
     if (!this.editor) {
@@ -104,16 +133,36 @@ export class Viewer {
       previous?.dispose();
       this.editor.updateOptions({ readOnly });
     }
+    this.shown = path;
+    const back = this.viewStates.get(path);
+    if (back) this.editor.restoreViewState(back);
 
-    this.titleEl.textContent = truncated ? `${path} · truncated at 1 MB` : path;
-    this.titleEl.classList.toggle("problem", truncated);
+    this.title(path, truncated ? "truncated at 1 MB" : note, truncated);
   }
 
+  private title(path: string, note: string | undefined, problem: boolean) {
+    this.titleEl.textContent = note ? `${path} · ${note}` : path;
+    this.titleEl.classList.toggle("problem", problem);
+    // A screen reader otherwise hears "Editor content" for every file alike.
+    this.editor?.updateOptions({ ariaLabel: note ? `${path}, ${note}` : path });
+  }
+
+  /**
+   * What is on screen can no longer be saved, and why. It stays, read-only,
+   * so whatever was typed into it can still be read and copied.
+   */
+  stranded(path: string, why: string) {
+    if (path !== this.path) return;
+    this.editor?.updateOptions({ readOnly: true });
+    this.title(path, `${why} — not saved, read-only`, true);
+  }
+
+  /** Nothing to show for `path`, and why. The reason stays in the title. */
   problem(path: string, message: string) {
     if (path !== this.path) return;
-    this.titleEl.textContent = `${path} · ${message}`;
-    this.titleEl.classList.add("problem");
+    // Shown first: showing sets the title, and this one is the point.
     this.show(path, "", false);
+    this.title(path, message, true);
   }
 
   layout() {
@@ -122,8 +171,13 @@ export class Viewer {
   }
 
   clear() {
-    this.path = null;
     const model = this.editor?.getModel();
+    if (this.editor && model && this.shown) {
+      const state = this.editor.saveViewState();
+      if (state) this.viewStates.set(this.shown, state);
+    }
+    this.path = null;
+    this.shown = null;
     this.editor?.setModel(null);
     model?.dispose();
   }

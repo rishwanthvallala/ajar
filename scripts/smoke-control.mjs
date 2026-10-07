@@ -87,28 +87,21 @@ async function main() {
     const { session, key } = await linkOf(agent);
     const g = new Guest(WS, session, "watcher", key);
     await g.connect();
-    g.openPty();
-    await g.waitUntil((x) => x.ptys.size >= 1, "a terminal");
-    const pty = [...g.ptys.keys()][0];
-    await g.settle(pty);
-
     // The flag rides the pty channel. This used to read `control.length >= 0`,
     // which is true of every array, so a notice that never arrived passed.
-    const sawFlag = () => g.ptyMessages.some((m) => m.t === "read_only" && m.read_only === true);
-    const before = (g.ptys.get(pty) ?? "").length;
-    // Deliberately not using ready(), which requires the shell to answer —
-    // the whole point is that it will not.
-    g.type(pty, "echo SHOULD-NOT-RUN\r");
-    await sleep(1500);
-    const after = strip((g.ptys.get(pty) ?? "").slice(before));
+    await g.waitUntil((x) => x.ptyMessages.some((m) => m.t === "read_only" && m.read_only === true), "the read-only notice");
+    ok("the guest is told the terminals are read-only");
 
-    if (after.includes("SHOULD-NOT-RUN")) {
-      fail(`a read-only terminal accepted input: ${JSON.stringify(after.slice(0, 120))}`);
-    } else {
-      ok("read-only terminals drop guest keystrokes at the host");
-    }
-    if (!sawFlag()) fail("no read-only notice reached the guest");
-    else ok("the guest is told the terminals are read-only");
+    // A shell nobody here may type into is a process on the host for
+    // nothing, so none is opened. (That keystrokes are dropped, for a session
+    // made read-only with terminals already open, is checked where the
+    // panel's keys can be pressed.)
+    g.openPty();
+    await g.waitUntil((x) => x.ptyMessages.some((m) => m.t === "refused"), "a refusal for the terminal");
+    const why = g.ptyMessages.find((m) => m.t === "refused").reason;
+    await sleep(300);
+    if (g.ptys.size !== 0) fail("a read-only guest was given a terminal");
+    else ok(`a read-only guest asking for a terminal is refused, saying why ("${why}")`);
 
     // And the files. Read-only used to stop at the terminals: an edit to an
     // open file was applied, passed on to everyone and written to disk.

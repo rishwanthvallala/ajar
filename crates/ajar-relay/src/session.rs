@@ -228,8 +228,22 @@ impl Registry {
         if entry.shape != Shape::Hosted {
             return Err(JoinError::WrongShape);
         }
-        if entry.host.is_some() {
-            return Err(JoinError::HostTaken);
+        let presented = host_key.map(|k| Sha256::digest(k.as_bytes()).to_vec());
+        // A host already connected, as far as the relay can tell. The socket
+        // may be dead without either end having been told — a laptop closed on
+        // one network and opened on another — and the agent, reconnecting, was
+        // refused as `host_taken` and quit, ending every terminal. The agent
+        // that opened the session proves it with the session's key, and takes
+        // its place back from the stale socket. Anyone else is still refused.
+        let mut replaced = false;
+        if let Some(stale) = &entry.host {
+            let owner = entry.host_key.is_some() && presented.as_ref() == entry.host_key.as_ref();
+            if !owner {
+                return Err(JoinError::HostTaken);
+            }
+            stale.tx.close();
+            entry.host = None;
+            replaced = true;
         }
         // The host's place, while its host is away, is the opener's alone.
         // It used to be anybody's who asked first: every guest knows the
@@ -239,7 +253,6 @@ impl Registry {
         // all share — while the real agent, back a moment later, was told the
         // place was taken and quit. A session an older agent opened, without
         // a key, keeps the old behaviour.
-        let presented = host_key.map(|k| Sha256::digest(k.as_bytes()).to_vec());
         if created {
             entry.host_key = presented;
         } else if let Some(expected) = &entry.host_key {
@@ -247,7 +260,7 @@ impl Registry {
                 return Err(JoinError::NotTheHost);
             }
         }
-        let resumed = entry.host_left_at.take().is_some();
+        let resumed = entry.host_left_at.take().is_some() || replaced;
         // The agent supplies this on every handshake. That restores the
         // admission boundary after a relay restart, before any guest can race
         // through a later Lock control frame.
@@ -429,6 +442,22 @@ impl Registry {
     /// Whether this socket still owns a participant entry. Kicking removes
     /// that entry first; the next frame from the old socket then closes it
     /// without granting one last action.
+    /// Whether this socket is still the one the session knows `participant`
+    /// by. A replaced host socket keeps the host's id, and must not keep
+    /// speaking with it.
+    pub fn holds(&self, id: &str, participant: &Participant, tx: &Tx) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|s| match participant.role {
+                Role::Host => s
+                    .host
+                    .as_ref()
+                    .is_some_and(|h| h.participant.id == participant.id && h.tx.same(tx)),
+                Role::Guest | Role::Peer => s.guests.contains_key(&participant.id),
+            })
+    }
+
+    #[cfg(test)]
     pub fn contains_participant(&self, id: &str, participant: &Participant) -> bool {
         self.sessions
             .get(id)
@@ -507,6 +536,18 @@ impl Registry {
         let Some(conn) = conn else { return false };
         conn.tx.finish(notice);
         true
+    }
+
+    /// The host's socket ended — if it is still the host's socket. One that
+    /// was replaced by the agent reconnecting says nothing about the session.
+    pub fn host_gone_from(&self, id: &str, why: HostExit, notice: &[u8], tx: &Tx) {
+        let current = self
+            .sessions
+            .get(id)
+            .is_some_and(|s| s.host.as_ref().is_some_and(|h| h.tx.same(tx)));
+        if current {
+            self.host_gone(id, why, notice);
+        }
     }
 
     /// The host's socket ended. `Deliberate` tears the session down now;
@@ -599,6 +640,71 @@ mod tests {
         assert!(
             resumed && host.id == 1,
             "the opener comes back as the host it was"
+        );
+    }
+
+    #[test]
+    fn the_opener_takes_its_place_back_from_its_own_stale_socket() {
+        let r = Registry::new();
+        let (stale, stale_rx) = tx();
+        r.open_locked(
+            "s",
+            stale.clone(),
+            false,
+            ajar_proto::PROTOCOL_VERSION,
+            Some("k"),
+        )
+        .unwrap();
+        let (guess, _rg) = tx();
+        assert_eq!(
+            r.open_locked(
+                "s",
+                guess,
+                false,
+                ajar_proto::PROTOCOL_VERSION,
+                Some("nope")
+            )
+            .err(),
+            Some(JoinError::HostTaken),
+            "anyone else is still refused while a host is connected"
+        );
+        let (fresh, _rf) = tx();
+        let (host, resumed) = r
+            .open_locked(
+                "s",
+                fresh.clone(),
+                false,
+                ajar_proto::PROTOCOL_VERSION,
+                Some("k"),
+            )
+            .unwrap();
+        assert!(resumed && host.id == 1);
+        assert!(stale_rx.is_closed(), "the stale socket is closed");
+        assert!(
+            !r.holds("s", &host, &stale),
+            "and no longer speaks as the host"
+        );
+        assert!(r.holds("s", &host, &fresh));
+        // Its end, when it comes, is not the host leaving.
+        r.host_gone_from("s", HostExit::Dropped, b"", &stale);
+        assert!(
+            r.holds("s", &host, &fresh),
+            "the new socket is still the host"
+        );
+        assert_eq!(r.with("s", |s| s.host_left_at.is_none()), Some(true));
+    }
+
+    #[test]
+    fn a_session_opened_without_a_key_cannot_be_taken_over_while_connected() {
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        r.open_locked("old", a, false, ajar_proto::PROTOCOL_VERSION, None)
+            .unwrap();
+        let (b, _rb) = tx();
+        assert_eq!(
+            r.open_locked("old", b, false, ajar_proto::PROTOCOL_VERSION, None)
+                .err(),
+            Some(JoinError::HostTaken)
         );
     }
 

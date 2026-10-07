@@ -77,7 +77,7 @@ they are running, and what it costs.
 |---|---|
 | `k` | Disconnect a guest — type the number beside their name, then Enter |
 | `x` | Lock the session — nobody new can join, people already in stay |
-| `l` | Read-only — guests can look, not type in a terminal or edit a file |
+| `l` | Read-only — guests can look, not type in a terminal, open a new one, or edit a file |
 | `d` | Stop keeping the offline copy, and forget the one already stored; press it again to keep one again. Offered as `[d] stop` on the line that says what is being kept |
 | `q` | Close — ends every terminal and kills the link |
 
@@ -87,8 +87,15 @@ guest's network off, `--no-sync` to keep no copy.
 ## What guests can do
 
 Open terminals, browse the file tree, open files, and edit them. Two people
-can type in the same file at once, and edits survive a terminal rewriting the
-file underneath them.
+can type in the same file at once, and their typing survives a terminal
+rewriting or appending to the file underneath them. Each file opens where you
+last left it.
+
+A few files open read-only, with the reason beside the name: binary files,
+files over 1 MB, and text the browser's editor would quietly change — not
+UTF-8, a byte-order mark, or mixed line endings. If a file you have open is
+deleted or moved on the host, it stays on screen, read-only, so nothing you
+typed is lost to you.
 
 Files are coloured by language — about eighty of them, plus CSV and TSV with
 each column in its own colour. **Colours** above the editor switches that off
@@ -96,8 +103,12 @@ for plain text. The button at the end of the top bar picks the theme: System
 (follow the device), Light, or Dark. Each guest's browser keeps its own choice.
 
 If your laptop sleeps or your wifi drops, guests keep a read-only view of the
-files rather than losing the session. When you come back, everything resumes —
-the terminals never stopped running.
+files rather than losing the session, with a countdown of how long the relay
+will wait. Anything they type in the meantime is kept and sent when you are
+back — and closing the tab before then asks first. When you come back,
+everything resumes — the terminals never stopped running. If you are gone
+longer than the relay waits, guests see that the session ended, and a Rejoin
+button for when you start sharing again on the same link.
 
 ## When you close it
 

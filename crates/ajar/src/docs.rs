@@ -32,6 +32,13 @@ pub struct Doc {
     /// Exactly what we last put on disk, so our own write can be recognised
     /// when the watcher reports it back a moment later.
     written: String,
+    /// A second replica, held at `written`: the document as the disk last had
+    /// it. A change on disk is an edit to *that*, not to whatever has been
+    /// typed since — so it is made here, as an edit of its own, and merged
+    /// into the live document the way a guest's would be. Typing that had not
+    /// been written yet survives it.
+    shadow: yrs::Doc,
+    shadow_text: TextRef,
     /// Set when the document has changed since the last write.
     dirty: Option<Instant>,
     /// Participants with this file open. The document is dropped when the
@@ -41,26 +48,35 @@ pub struct Doc {
 
 impl Doc {
     fn new(id: u32, path: String, contents: &str) -> Self {
-        // Yjs counts offsets in UTF-16 code units. yrs can count in bytes,
-        // which would silently disagree with every browser on any file
-        // containing a character outside the BMP.
-        let doc = yrs::Doc::with_options(Options {
-            offset_kind: OffsetKind::Utf16,
-            ..Options::default()
-        });
+        let doc = replica();
         let text = doc.get_or_insert_text(TEXT_KEY);
         {
             let mut txn = doc.transact_mut();
             text.insert(&mut txn, 0, contents);
         }
-        Self {
+        let shadow = replica();
+        let shadow_text = shadow.get_or_insert_text(TEXT_KEY);
+        let mut made = Self {
             id,
             path,
             doc,
             text,
             written: contents.to_string(),
+            shadow,
+            shadow_text,
             dirty: None,
             readers: HashSet::new(),
+        };
+        made.settle();
+        made
+    }
+
+    /// Bring the shadow up to the live document, which has just been written.
+    fn settle(&mut self) {
+        let since = self.shadow.transact().state_vector();
+        let update = self.doc.transact().encode_state_as_update_v1(&since);
+        if let Ok(update) = Update::decode_v1(&update) {
+            let _ = self.shadow.transact_mut().apply_update(update);
         }
     }
 
@@ -87,6 +103,18 @@ impl Doc {
     fn touch(&mut self) {
         self.dirty = Some(Instant::now());
     }
+}
+
+/// An empty document that counts as the browsers do.
+///
+/// Yjs counts offsets in UTF-16 code units. yrs can count in bytes, which
+/// would silently disagree with every browser on any file containing a
+/// character outside the BMP.
+fn replica() -> yrs::Doc {
+    yrs::Doc::with_options(Options {
+        offset_kind: OffsetKind::Utf16,
+        ..Options::default()
+    })
 }
 
 pub struct Docs {
@@ -177,6 +205,14 @@ impl Docs {
         (id, state)
     }
 
+    /// Close a document for everyone, because its file can no longer be
+    /// edited. Returns its path and who had it open.
+    pub fn remove(&mut self, id: u32) -> Option<(String, HashSet<u32>)> {
+        let doc = self.docs.remove(&id)?;
+        self.by_path.remove(&doc.path);
+        Some((doc.path, doc.readers))
+    }
+
     /// Drop a reader. Returns the document if that was the last one, so the
     /// caller can flush it before it disappears.
     pub fn close(&mut self, id: u32, reader: u32) -> Option<(String, String)> {
@@ -251,23 +287,57 @@ impl Docs {
             // Someone else's change that matched what people had already
             // typed. Nothing to send, but the disk is now the reference.
             doc.written = on_disk.to_string();
+            doc.dirty = None;
+            doc.settle();
             return None;
         }
 
-        let splice = splice(&current, on_disk)?;
         let before = doc.state_vector();
-        {
-            let mut txn = doc.doc.transact_mut();
-            if splice.remove > 0 {
-                doc.text.remove_range(&mut txn, splice.at, splice.remove);
+        let base = doc.shadow_text.get_string(&doc.shadow.transact());
+        if base == doc.written {
+            // What changed on disk, relative to what was last written there —
+            // made on the shadow, then merged in as a concurrent edit.
+            //
+            // It used to be spliced into the live document instead, which
+            // made the document equal the disk: anything typed in the 400 ms
+            // before the next write was deleted, for everyone, and a cursor
+            // at the top of the file was thrown to wherever the splice ended.
+            // A build step appending to a log someone had open lost every
+            // keystroke between appends.
+            let change = splice(&base, on_disk)?;
+            let since = doc.shadow.transact().state_vector();
+            {
+                let mut txn = doc.shadow.transact_mut();
+                if change.remove > 0 {
+                    doc.shadow_text
+                        .remove_range(&mut txn, change.at, change.remove);
+                }
+                if !change.insert.is_empty() {
+                    doc.shadow_text.insert(&mut txn, change.at, &change.insert);
+                }
             }
-            if !splice.insert.is_empty() {
-                doc.text.insert(&mut txn, splice.at, &splice.insert);
+            let update = doc.shadow.transact().encode_state_as_update_v1(&since);
+            let update = Update::decode_v1(&update).ok()?;
+            doc.doc.transact_mut().apply_update(update).ok()?;
+        } else {
+            // The shadow has lost track of the disk, which a write that
+            // failed halfway could do. The disk wins, as it always used to.
+            let change = splice(&current, on_disk)?;
+            {
+                let mut txn = doc.doc.transact_mut();
+                if change.remove > 0 {
+                    doc.text.remove_range(&mut txn, change.at, change.remove);
+                }
+                if !change.insert.is_empty() {
+                    doc.text.insert(&mut txn, change.at, &change.insert);
+                }
             }
+            doc.settle();
         }
         doc.written = on_disk.to_string();
-        // Not dirty: the disk already holds this.
-        doc.dirty = None;
+        // Dirty only if typing survived the merge: then the disk is missing
+        // it, and gets the merged text once things go quiet.
+        doc.dirty = (doc.contents() != on_disk).then(Instant::now);
         Some(doc.diff_since(&before))
     }
 
@@ -311,6 +381,7 @@ impl Docs {
         doc.written = contents.to_string();
         if doc.contents() == contents {
             doc.dirty = None;
+            doc.settle();
         }
     }
 }
@@ -689,25 +760,101 @@ mod tests {
     }
 
     #[test]
-    fn reconciling_cancels_a_pending_write() {
+    fn a_change_on_disk_with_nothing_unsaved_is_not_written_back() {
         // The disk already holds what we just folded in; writing it back
         // would be a pointless round trip.
         let mut docs = Docs::new();
         let (id, _) = docs.open("a.txt", "hello", 2);
-        docs.apply(id, &{
-            let doc = docs.get(id).unwrap();
-            let before = doc.state_vector();
-            {
-                let mut txn = doc.doc.transact_mut();
-                doc.text.insert(&mut txn, 5, "!");
-            }
-            doc.diff_since(&before)
-        })
-        .unwrap();
         docs.reconcile(id, "replaced from disk");
+        assert_eq!(docs.get(id).unwrap().contents(), "replaced from disk");
         assert!(docs
             .due_for_write(Instant::now() + WRITE_AFTER + Duration::from_millis(1))
             .is_empty());
+    }
+
+    /// A guest's edit, made the way a browser makes one: on its own replica.
+    fn guest_edit(
+        docs: &Docs,
+        id: u32,
+        edit: impl FnOnce(&TextRef, &mut yrs::TransactionMut),
+    ) -> Vec<u8> {
+        let guest = replica();
+        let text = guest.get_or_insert_text(TEXT_KEY);
+        let state = docs.get(id).unwrap().state();
+        guest
+            .transact_mut()
+            .apply_update(Update::decode_v1(&state).unwrap())
+            .unwrap();
+        let before = guest.transact().state_vector();
+        {
+            let mut txn = guest.transact_mut();
+            edit(&text, &mut txn);
+        }
+        let update = guest.transact().encode_state_as_update_v1(&before);
+        update
+    }
+
+    #[test]
+    fn a_change_on_disk_keeps_typing_that_was_not_written_yet() {
+        // Two guests type, one at each end, and the file is appended to on
+        // disk before the debounce writes their work. Everyone's survives.
+        let mut docs = Docs::new();
+        let (id, _) = docs.open("note.txt", "line1\nline2\n", 2);
+        let top = guest_edit(&docs, id, |t, txn| t.insert(txn, 0, "abc"));
+        let bottom = guest_edit(&docs, id, |t, txn| t.insert(txn, 12, "XYZ"));
+        docs.apply(id, &top).unwrap();
+        docs.apply(id, &bottom).unwrap();
+
+        let update = docs
+            .reconcile(id, "line1\nline2\nH0\n")
+            .expect("the disk changed");
+        let merged = docs.get(id).unwrap().contents();
+        assert!(merged.starts_with("abcline1\nline2\n"), "{merged:?}");
+        assert!(
+            merged.contains("XYZ") && merged.contains("H0\n"),
+            "{merged:?}"
+        );
+        assert_eq!(merged.len(), "abcline1\nline2\nH0\nXYZ".len(), "{merged:?}");
+
+        // A guest who had all of it gets the same text from the broadcast.
+        let guest = replica();
+        let text = guest.get_or_insert_text(TEXT_KEY);
+        for bytes in [
+            docs.get(id).unwrap().state(),
+            top.clone(),
+            bottom.clone(),
+            update,
+        ] {
+            guest
+                .transact_mut()
+                .apply_update(Update::decode_v1(&bytes).unwrap())
+                .unwrap();
+        }
+        assert_eq!(text.get_string(&guest.transact()), merged);
+
+        // And the disk is missing the typing, so it is written.
+        let due = docs.due_for_write(Instant::now() + WRITE_AFTER + Duration::from_millis(1));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].2, merged);
+        docs.mark_written(id, &merged);
+
+        // The next change on disk is relative to that write.
+        docs.reconcile(id, &format!("{merged}H1\n")).unwrap();
+        assert_eq!(docs.get(id).unwrap().contents(), format!("{merged}H1\n"));
+    }
+
+    #[test]
+    fn a_change_on_disk_and_typing_in_the_same_place_both_survive() {
+        let mut docs = Docs::new();
+        let (id, _) = docs.open("a.txt", "one two three", 2);
+        let typed = guest_edit(&docs, id, |t, txn| t.insert(txn, 4, "TYPED "));
+        docs.apply(id, &typed).unwrap();
+        docs.reconcile(id, "one 2 three").unwrap();
+        let merged = docs.get(id).unwrap().contents();
+        assert!(
+            merged.contains("TYPED") && merged.contains('2') && !merged.contains("two"),
+            "{merged:?}"
+        );
     }
 
     #[test]

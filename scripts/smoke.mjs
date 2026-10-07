@@ -10,7 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { fail, finish, Guest, linkOf, ok, Procs, waitForHealth } from "./lib/wire.mjs";
+import { fail, finish, Guest, linkOf, ok, Procs, sleep, waitForHealth } from "./lib/wire.mjs";
 
 const PORT = 8788;
 const HTTP = `http://127.0.0.1:${PORT}`;
@@ -87,6 +87,25 @@ async function main() {
   await late.waitUntil((g) => g.screen.includes(MARKER), "replay of earlier output");
   ok("a late guest received the ring-buffer replay");
 
+  // ---- a paste at a program that is not reading ------------------------
+  // Terminal input was written from the agent's one loop, and a pty only
+  // takes so much before the program on it reads. A paste into `tail -f`
+  // stopped everything: every terminal, every document, the panel, ctrl-c.
+  guest.type(ptyId, "tail -f /dev/null\r");
+  await sleep(600);
+  const pasted = Date.now();
+  // In lines: a terminal discards a line too long to hold, but a complete
+  // line waits for the program to read it — and once enough are waiting, the
+  // writer waits too.
+  guest.type(ptyId, `${"x".repeat(63)}\n`.repeat(512));
+  guest.openPty();
+  await guest.waitUntil((g) => g.ptys.size === 2, "a second terminal while the first is stuck", 5000);
+  const second = [...guest.ptys.keys()].find((id) => id !== ptyId);
+  await guest.waitUntil((g) => (g.ptys.get(second) ?? "").length > 0, "the second shell's prompt", 5000);
+  guest.type(second, "echo PASTE-$((40+2))\r");
+  await guest.waitUntil((g) => (g.ptys.get(second) ?? "").includes("PASTE-42"), "the second terminal to answer", 5000);
+  ok(`a paste nobody is reading holds up only its own terminal (another answered ${Date.now() - pasted} ms later)`);
+
   // Refusals have to actually arrive. They are queued on the writer task,
   // and closing the socket too eagerly throws them away.
   let refusal = null;
@@ -105,6 +124,13 @@ async function main() {
 
   guest.close();
   late.close();
+
+  // And ctrl-c still ends the agent, terminal stuck or not.
+  const exited = new Promise((resolve) => agent.once("exit", () => resolve(true)));
+  procs.kill(agent, "SIGINT");
+  const stopped = await Promise.race([exited, sleep(3000).then(() => false)]);
+  if (!stopped) fail("the agent ignored ctrl-c with a paste stuck in a terminal");
+  else ok("ctrl-c ends the agent with a paste still stuck in a terminal");
   procs.kill(relay);
 
   finish(procs, "spine works: guest → relay → agent → pty → back");

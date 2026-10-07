@@ -39,6 +39,11 @@ pub struct Gate {
 const DOC_WANT: u8 = 0x03;
 const DOC_NONE: u8 = 0x04;
 
+/// How often every socket is pinged.
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+/// Silence for this long — pongs count — and the socket is gone.
+const SILENT_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn viewer_may_send(frame: &Frame) -> bool {
     frame.channel == Channel::Doc
         && matches!(frame.payload.first(), Some(&DOC_WANT) | Some(&DOC_NONE))
@@ -59,9 +64,25 @@ pub async fn handle(
     // `next` returns `None` once this connection has fallen too far behind,
     // which ends the task and closes the socket.
     let writer = tokio::spawn(async move {
-        while let Some(bytes) = rx.next().await {
-            if sink.send(Message::Binary(bytes.into())).await.is_err() {
-                break;
+        let mut ping = tokio::time::interval(PING_EVERY);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping.tick().await;
+        loop {
+            tokio::select! {
+                bytes = rx.next() => {
+                    let Some(bytes) = bytes else { break };
+                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Asked, so that a socket dead without either end being told
+                // is noticed: anything that answers, browsers and agents
+                // alike, answers a ping.
+                _ = ping.tick() => {
+                    if sink.send(Message::Ping(Default::default())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
         let _ = sink.close().await;
@@ -117,6 +138,10 @@ pub async fn handle(
     // both mint a name nobody had. Two peers racing to create the same name
     // will both be metered; over-counting by one is not worth a lock here.
     let kind = match role {
+        // A host coming back to a session that is still here is not a new
+        // session. Counted as one, a flaky network ran an agent into the
+        // limit in about forty seconds, and it quit.
+        Role::Host if registry.exists(&session_id) => Kind::Join,
         Role::Host => Kind::Open,
         Role::Peer if !registry.exists(&session_id) => Kind::Open,
         _ => Kind::Join,
@@ -249,6 +274,22 @@ pub async fn handle(
                     }
                 });
             }
+            // Arriving while the host is away, a guest heard nothing about
+            // it: connected, no files, no terminals, and no reason why — an
+            // empty session, as far as they could tell. They are told what
+            // everyone already here was told, with the time that is left.
+            if let Some(left) = registry
+                .with(&session_id, |s| s.host_left_at)
+                .flatten()
+                .map(|at| HOST_GRACE.saturating_sub(at.elapsed()))
+            {
+                send_control(
+                    &tx,
+                    &Control::HostAway {
+                        grace_secs: left.as_secs().max(1),
+                    },
+                );
+            }
         }
         Role::Peer => {
             // Everyone already in the room hears about the arrival. Unlike a
@@ -279,7 +320,7 @@ pub async fn handle(
     let mut expecting: Option<(u64, u32)> = None;
 
     while let Some(frame) = next_frame(&mut stream).await {
-        if !registry.contains_participant(&session_id, &me) {
+        if !registry.holds(&session_id, &me, &tx) {
             debug!(
                 participant = me.id,
                 "frame from a removed participant; closing socket"
@@ -479,7 +520,7 @@ pub async fn handle(
             let bytes = Frame::json(Channel::Control, TARGET_ALL, &notice)
                 .map(|f| f.encode())
                 .unwrap_or_default();
-            registry.host_gone(&session_id, host_exit, &bytes);
+            registry.host_gone_from(&session_id, host_exit, &bytes, &tx);
             match host_exit {
                 HostExit::Deliberate => info!(session = %session_id, "session closed"),
                 HostExit::Dropped => {
@@ -530,7 +571,18 @@ fn kick(registry: &Registry, session_id: &str, participant_id: u32) {
 }
 
 async fn next_frame(stream: &mut futures_util::stream::SplitStream<WebSocket>) -> Option<Frame> {
-    while let Some(Ok(msg)) = stream.next().await {
+    loop {
+        let msg = match tokio::time::timeout(SILENT_FOR, stream.next()).await {
+            Ok(Some(Ok(msg))) => msg,
+            Ok(_) => return None,
+            // Pinged three times and not a word, pongs included: gone. For a
+            // host, its guests are told it is away — rather than waiting on
+            // it, connected as far as anyone could see, for ever.
+            Err(_) => {
+                debug!("socket silent for {SILENT_FOR:?}; treating it as gone");
+                return None;
+            }
+        };
         match msg {
             Message::Binary(b) => match Frame::decode(&b) {
                 Ok(f) => return Some(f),
@@ -543,7 +595,6 @@ async fn next_frame(stream: &mut futures_util::stream::SplitStream<WebSocket>) -
             _ => continue,
         }
     }
-    None
 }
 
 fn send_control(tx: &Outbox, msg: &Control) {

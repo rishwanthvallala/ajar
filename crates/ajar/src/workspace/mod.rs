@@ -84,6 +84,42 @@ impl Workspace {
         Ok(ScanReport { count, truncated })
     }
 
+    /// Everything under a folder that has just appeared, by the same rules as
+    /// a full scan, for as long as there is room under the entry limit.
+    fn adopt(&mut self, dir: &Path) -> Vec<Entry> {
+        let mut added = Vec::new();
+        let walker = WalkBuilder::new(dir)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .follow_links(false)
+            .build();
+        for dirent in walker.flatten() {
+            let path = dirent.path();
+            if path == dir {
+                continue;
+            }
+            if self.entries.len() >= MAX_ENTRIES {
+                break;
+            }
+            let is_dir = dirent.file_type().is_some_and(|t| t.is_dir());
+            if self.filter.is_ignored(path, is_dir) {
+                continue;
+            }
+            let Some(rel) = self.filter.relative(path) else {
+                continue;
+            };
+            if self.entries.contains_key(&rel) {
+                continue;
+            }
+            let entry = make_entry(rel.clone(), path, is_dir);
+            self.entries.insert(rel, entry.clone());
+            added.push(entry);
+        }
+        added
+    }
+
     pub fn filter(&self) -> Arc<Filter> {
         self.filter.clone()
     }
@@ -119,12 +155,34 @@ impl Workspace {
                     match self.entries.insert(rel.clone(), entry.clone()) {
                         Some(previous) if previous == entry => {} // touched, unchanged
                         Some(_) => changed.push(entry),
-                        None => added.push(entry),
+                        None => {
+                            added.push(entry);
+                            // A folder that arrives whole — renamed, moved in,
+                            // unpacked — is reported as itself, not as its
+                            // contents. It used to appear empty, for good.
+                            if is_dir {
+                                added.extend(self.adopt(&abs));
+                            }
+                        }
                     }
                 }
                 Err(_) => {
                     if self.entries.remove(rel).is_some() {
                         removed.push(rel.clone());
+                    }
+                    // And a folder that goes takes its contents with it. They
+                    // used to stay listed, and counted, under a name that no
+                    // longer existed.
+                    let inside = format!("{rel}/");
+                    let gone: Vec<String> = self
+                        .entries
+                        .range(inside.clone()..)
+                        .take_while(|(path, _)| path.starts_with(&inside))
+                        .map(|(path, _)| path.clone())
+                        .collect();
+                    for path in gone {
+                        self.entries.remove(&path);
+                        removed.push(path);
                     }
                 }
             }
@@ -144,6 +202,43 @@ impl Workspace {
             changed,
             removed,
         })
+    }
+
+    /// A file's text, if guests can edit it as text — or why they cannot.
+    ///
+    /// Stricter than `read`, which is for looking: anything editing would
+    /// write back wrongly is refused. A file that is not UTF-8 reaches the
+    /// editor with its foreign bytes replaced, and the first keystroke wrote
+    /// the replacements to disk. And the browser's editor keeps one kind of
+    /// line ending per file and drops a byte-order mark, so every offset in a
+    /// file with either was off by one per oddity — an edit made after the
+    /// mark landed a character early.
+    pub fn editable(&self, rel: &str) -> std::result::Result<String, String> {
+        let path = self
+            .filter
+            .resolve_shared(rel)
+            .ok_or_else(|| "deleted, moved or no longer shared".to_string())?;
+        let meta = std::fs::metadata(&path).map_err(|_| "deleted or moved".to_string())?;
+        if meta.is_dir() {
+            return Err("a directory".into());
+        }
+        if meta.len() as usize > MAX_FILE_BYTES {
+            return Err("too large to edit — over 1 MB".into());
+        }
+        let bytes = read_prefix(&path, MAX_FILE_BYTES).map_err(|e| e.to_string())?;
+        if bytes.iter().take(8192).any(|b| *b == 0) {
+            return Err("binary file".into());
+        }
+        let text = String::from_utf8(bytes).map_err(|_| {
+            "not UTF-8 text, so editing would change bytes nobody typed".to_string()
+        })?;
+        if text.starts_with('\u{feff}') {
+            return Err("starts with a byte-order mark, which the editor would drop".into());
+        }
+        if !one_kind_of_line_ending(&text) {
+            return Err("mixed line endings, which the editor would change".into());
+        }
+        Ok(text)
     }
 
     /// Read a file for a guest. Never sends binary, never sends more than the
@@ -190,6 +285,22 @@ impl Workspace {
             binary: false,
         })
     }
+}
+
+/// Only `\n`, or only `\r\n` — what the browser's editor keeps as it is.
+fn one_kind_of_line_ending(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let (mut crlf, mut lf) = (false, false);
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => crlf = true,
+            // A carriage return on its own: classic Mac, or stray.
+            b'\r' => return false,
+            b'\n' if i == 0 || bytes[i - 1] != b'\r' => lf = true,
+            _ => {}
+        }
+    }
+    !(crlf && lf)
 }
 
 fn read_prefix(path: &Path, want: usize) -> Result<Vec<u8>> {
@@ -298,6 +409,75 @@ mod tests {
             matches!(ws.read("README.md"), Fs::Content { .. }),
             "an ordinary file stopped being readable"
         );
+    }
+
+    #[test]
+    fn a_folder_renamed_or_moved_in_arrives_with_what_is_in_it() {
+        let root = scratch("rename-dir");
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/a.rs"), "a").unwrap();
+        fs::write(root.join("src/nested/b.rs"), "b").unwrap();
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        let (mut ws, _) = Workspace::scan(&root, MAX_ENTRIES).unwrap();
+
+        // What the watcher reports for `mv src lib`: the two names, nothing inside.
+        fs::rename(root.join("src"), root.join("lib")).unwrap();
+        fs::write(root.join("lib/skip.log"), "ignored").unwrap();
+        let Some(Fs::Patch { added, removed, .. }) = ws.apply(&["src".into(), "lib".into()]) else {
+            panic!("no patch")
+        };
+        let added: Vec<_> = added.iter().map(|e| e.path.as_str()).collect();
+        for path in ["lib", "lib/a.rs", "lib/nested", "lib/nested/b.rs"] {
+            assert!(added.contains(&path), "{path} missing from {added:?}");
+        }
+        assert!(
+            !added.contains(&"lib/skip.log"),
+            "ignored files stay hidden"
+        );
+        for path in ["src", "src/a.rs", "src/nested", "src/nested/b.rs"] {
+            assert!(
+                removed.contains(&path.to_string()),
+                "{path} still listed: {removed:?}"
+            );
+        }
+        let listed = paths(&ws.tree());
+        assert!(listed.iter().all(|p| !p.starts_with("src")), "{listed:?}");
+        assert!(
+            listed.contains(&"lib/nested/b.rs".to_string()),
+            "{listed:?}"
+        );
+    }
+
+    #[test]
+    fn only_files_the_editor_keeps_byte_for_byte_are_editable() {
+        let root = scratch("editable");
+        let files: &[(&str, &[u8], bool)] = &[
+            ("plain.txt", b"one\ntwo\n", true),
+            ("windows.txt", b"one\r\ntwo\r\n", true),
+            ("empty.txt", b"", true),
+            ("emoji.txt", "caf\u{e9} \u{1f600}\n".as_bytes(), true),
+            ("latin1.txt", b"caf\xe9 na\xefve\n", false),
+            ("bom.txt", b"\xef\xbb\xbfhello\n", false),
+            ("mixed.txt", b"one\r\ntwo\n", false),
+            ("mac.txt", b"one\rtwo\r", false),
+            ("binary.bin", b"\x89PNG\0\0", false),
+        ];
+        for (name, bytes, _) in files {
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        fs::write(root.join("big.txt"), vec![b'a'; MAX_FILE_BYTES + 1]).unwrap();
+        let (ws, _) = Workspace::scan(&root, MAX_ENTRIES).unwrap();
+        for (name, bytes, editable) in files {
+            match ws.editable(name) {
+                Ok(text) => {
+                    assert!(editable, "{name} should not be editable");
+                    assert_eq!(text.as_bytes(), *bytes, "{name} came back changed");
+                }
+                Err(why) => assert!(!editable, "{name} refused: {why}"),
+            }
+        }
+        assert!(ws.editable("big.txt").is_err());
+        assert!(ws.editable("gone.txt").is_err());
     }
 
     #[test]

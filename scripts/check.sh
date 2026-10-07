@@ -80,6 +80,13 @@ else
 fi
 
 if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+  echo "── ui: a guest's page through what goes wrong ─── skipped (AJAR_SKIP_UI=1) ──"
+else
+  echo "── ui: a guest's page through what goes wrong ────────"
+  node scripts/check-guest.mjs
+fi
+
+if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
   echo "── ui: a guest's terminal, key by key ─── skipped (AJAR_SKIP_UI=1) ──"
 else
   echo "── ui: a guest's terminal, key by key ────────────────"
