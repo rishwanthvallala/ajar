@@ -279,8 +279,14 @@ mod tests {
             ws_url("http://localhost:8787").unwrap(),
             "ws://localhost:8787/ws"
         );
-        assert_eq!(ws_url("https://relay.example.com/").unwrap(), "wss://relay.example.com/ws");
-        assert_eq!(ws_url("wss://relay.example.com").unwrap(), "wss://relay.example.com/ws");
+        assert_eq!(
+            ws_url("https://relay.example.com/").unwrap(),
+            "wss://relay.example.com/ws"
+        );
+        assert_eq!(
+            ws_url("wss://relay.example.com").unwrap(),
+            "wss://relay.example.com/ws"
+        );
     }
 
     #[test]
