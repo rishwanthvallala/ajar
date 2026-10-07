@@ -292,39 +292,61 @@ export class FileTree {
     );
 
     this.surface.style.transform = `translateY(${first * this.rowPx}px)`;
-    this.surface.replaceChildren();
 
+    // Rows are kept, not rebuilt. A click is a press and a release on the
+    // same element, and every file change repaints: a fresh row under the
+    // pointer between the two was a click that never happened — in a folder
+    // a build was writing to, files could hardly be opened at all.
+    const wanted = new Set<string>();
+    for (let i = first; i < last; i++) wanted.add(this.rows[i].node.path);
+    const kept = new Map<string, HTMLElement>();
+    for (const el of [...this.surface.children] as HTMLElement[]) {
+      if (wanted.has(el.dataset.path!)) kept.set(el.dataset.path!, el);
+      else el.remove();
+    }
+    let at = this.surface.firstElementChild;
     for (let i = first; i < last; i++) {
       const { node, expanded, empty } = this.rows[i];
-      const row = document.createElement("div");
-      row.setAttribute("role", "treeitem");
+      let row = kept.get(node.path);
+      if (!row) {
+        row = document.createElement("div");
+        row.setAttribute("role", "treeitem");
+        row.dataset.path = node.path;
+        row.title = node.path;
+        row.setAttribute("aria-label", node.name);
+        const twisty = document.createElement("span");
+        twisty.className = "twisty";
+        row.appendChild(twisty);
+        const label = document.createElement("span");
+        label.textContent = node.name;
+        row.appendChild(label);
+      }
+      // A path can be a file one moment and a folder the next.
+      (row.lastElementChild as HTMLElement).className = node.dir ? "name dir" : "name";
       row.setAttribute("aria-level", String(node.depth + 1));
       row.tabIndex = node.path === stop ? 0 : -1;
-      row.dataset.path = node.path;
-      row.setAttribute("aria-label", node.name);
       if (node.dir) row.setAttribute("aria-expanded", String(expanded));
+      else row.removeAttribute("aria-expanded");
       row.setAttribute("aria-selected", String(node.path === this.active));
       row.className = empty ? "tree-row empty-folder" : "tree-row";
       if (empty) row.setAttribute("aria-disabled", "true");
+      else row.removeAttribute("aria-disabled");
       if (node.path === this.active) row.classList.add("active");
       // Indent in em so it tracks the row's own font size.
       row.style.paddingLeft = `${0.4 + node.depth * 0.85}em`;
-      row.title = node.path;
 
-      const twisty = document.createElement("span");
-      twisty.className = "twisty";
       // Drawn, not typed: the ▾ and ▸ glyphs were 11 px and came out a
       // different size in every font.
-      if (node.dir) {
-        twisty.innerHTML = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="${expanded ? "M3 4.5l3 3 3-3" : "M4.5 3l3 3-3 3"}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      const twisty = row.firstElementChild as HTMLElement;
+      const chevron = node.dir ? (expanded ? "M3 4.5l3 3 3-3" : "M4.5 3l3 3-3 3") : "";
+      if (twisty.dataset.d !== chevron) {
+        twisty.dataset.d = chevron;
+        twisty.innerHTML = chevron
+          ? `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="${chevron}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+          : "";
       }
-      row.appendChild(twisty);
 
-      const label = document.createElement("span");
-      label.className = node.dir ? "name dir" : "name";
-      label.textContent = node.name;
-      row.appendChild(label);
-
+      // The tree's nodes are new on every rebuild, so the handler is too.
       row.onclick = () => {
         this.focusPath = node.path;
         this.onFocusMove();
@@ -332,8 +354,11 @@ export class FileTree {
         else if (!empty) this.onOpen(node.path);
       };
 
-      this.surface.appendChild(row);
-      if (node.path === focusedPath) row.focus({ preventScroll: true });
+      // Moved only when out of place; a row moved is a row taken out and
+      // put back, which loses a click as surely as a new one.
+      if (row !== at) this.surface.insertBefore(row, at);
+      else at = at.nextElementSibling;
+      if (node.path === focusedPath && document.activeElement !== row) row.focus({ preventScroll: true });
     }
     // Tab must always have somewhere to land in the tree. When the stop is
     // scrolled out of the window, the tree itself takes it and hands it on.

@@ -159,7 +159,15 @@ async function guestPage(browser, link, name, viewport = { width: 1400, height: 
 async function open(page, path, { editable = true } = {}) {
   await page.locator(`.tree-row[data-path="${path}"]`).click();
   if (editable) {
-    await page.waitForFunction((p) => document.getElementById("viewer")?.dataset.editing === p, path, { timeout: 15_000 });
+    await page.waitForFunction((p) => document.getElementById("viewer")?.dataset.editing === p, path, { timeout: 15_000 }).catch(async (e) => {
+      // What the page was showing instead, so a failure here says why.
+      const seen = await page.evaluate(() => ({
+        status: document.getElementById("status")?.textContent,
+        title: document.getElementById("viewer-title")?.textContent,
+        active: document.querySelector(".tree-row.active")?.dataset.path,
+      }));
+      throw new Error(`${path} was not opened for editing: ${JSON.stringify({ ...seen, errors: page.errors })}\n${e.message}`);
+    });
   } else {
     // What the title then says is for the caller to check.
     await page.waitForFunction((p) => document.getElementById("viewer-title")?.textContent?.startsWith(`${p} ·`), path, { timeout: 8000 }).catch(() => {});
@@ -310,6 +318,25 @@ async function main() {
   await ana.keyboard.press("F6");
   const out = await focused();
   check(out === "new-terminal" || out === "split", "F6 leaves the terminal", String(out));
+
+  // ---- by mouse ----------------------------------------------------------------
+  // A click is a press and a release on the same row. Every change in the
+  // folder repaints the tree, and a repaint used to replace every row, so a
+  // file arriving between the two swallowed the click. It sorts below the
+  // row pressed, so that row stays under the pointer.
+  await ana.locator("#close-file").click();
+  await sleep(300);
+  const row = await ana.locator('.tree-row[data-path="note.txt"]').boundingBox();
+  await ana.mouse.move(row.x + row.width / 2, row.y + row.height / 2);
+  await ana.mouse.down();
+  await writeFile(join(workdir, "zz-arrived.txt"), "mid-click\n");
+  const repainted = await ana.locator('.tree-row[data-path="zz-arrived.txt"]').waitFor({ timeout: 10_000 }).then(() => true, () => false);
+  await ana.mouse.up();
+  check(
+    repainted && (await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "note.txt", null, { timeout: 10_000 }).then(() => true, () => false)),
+    "a click on a file survives the tree changing between press and release",
+    JSON.stringify({ repainted, editing: await ana.evaluate(() => document.getElementById("viewer")?.dataset.editing ?? null) }),
+  );
 
   // ---- downloads --------------------------------------------------------------
   // On a fresh page, before anything in the tree has been chosen, Download all
@@ -641,7 +668,14 @@ async function main() {
   await pat.goto(`http://127.0.0.1:${LAG_PORT}/j/${panelLink.session}#k=${panelLink.key}`);
   await pat.fill("#name", "pat");
   await pat.click("#join button[type=submit]");
-  await pat.locator(".term.shown .xterm").first().waitFor({ timeout: 30_000 });
+  await pat.locator(".term.shown .xterm").first().waitFor({ timeout: 30_000 }).catch(async (e) => {
+    const seen = await pat.evaluate(() => ({
+      status: document.getElementById("status")?.textContent,
+      gate: document.querySelector(".gate")?.textContent?.trim().slice(0, 200),
+      tabs: document.getElementById("tabs")?.textContent,
+    }));
+    throw new Error(`pat, a quarter-second away, never got a terminal: ${JSON.stringify({ ...seen, errors: pat.errors })}\n${e.message}`);
+  });
   await open(pat, "ro.txt");
   await pat.locator("#viewer .view-line").first().click();
   await pat.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
