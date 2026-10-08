@@ -81,3 +81,29 @@ jobs:
           deploy/caddy/build.sh
           GOARCH=amd64 deploy/caddy/build.sh
           deploy/caddy/check.sh
+
+  # Someone else's first install. The release's Linux binary once ran on three
+  # of fifteen distributions, and the installer's PATH advice worked in no new
+  # terminal on a Mac; every other check here runs on the machine that built
+  # the binary, with a PATH someone already set up.
+  first-run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'ubuntu-latest' && 'x86_64-unknown-linux-musl' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: musl's C compiler, and the shells a new user might have
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools zsh
+      - run: ./scripts/dist.sh
+      - name: The binary on twelve distributions, and what install.sh and run.sh tell a new user
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/check-first-run.sh dist
+      - name: install.sh on this machine, its PATH advice followed
+        run: ./scripts/check-first-run.sh --here dist

@@ -464,6 +464,14 @@ async fn run() -> Result<()> {
     // But a relay that never answers must not leave the terminal blank, so the
     // banner goes out regardless after this, saying whatever is actually true.
     let banner_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    // Why the relay cannot be reached, when that is known before the banner
+    // is out: printed first, it sat above twenty lines ending in a link that
+    // looked ready to send, where nobody reads.
+    let mut held_warning: Option<String> = None;
+    // Whether anything can still arrive from the keyboard. Without a terminal
+    // nothing ever will, and a closed channel answers every poll at once —
+    // the loop spun a whole core for as long as the session was open.
+    let mut keys_open = true;
     // Drives deferred rebuilds: without it, a burst that ends during the
     // cooldown would leave the tree stale until something else changed.
     let mut resync_tick = tokio::time::interval(Duration::from_millis(250));
@@ -476,6 +484,9 @@ async fn run() -> Result<()> {
             _ = tokio::time::sleep_until(banner_deadline), if !banner_shown && !host.ui.is_panel() => {
                 banner(&host.state, &caps);
                 banner_shown = true;
+                if let Some(warning) = held_warning.take() {
+                    host.log(warning);
+                }
             }
             event = events.recv() => {
                 let Some(event) = event else { break };
@@ -485,6 +496,7 @@ async fn run() -> Result<()> {
                         online = true;
                         ever_online = true;
                         warned_offline = false;
+                        held_warning = None;
                         host.state.status = Status::Online;
                         if !host.ui.is_panel() {
                             if !banner_shown {
@@ -525,9 +537,14 @@ async fn run() -> Result<()> {
                             // while nothing can reach it — which is exactly
                             // how a missing TLS feature stayed hidden.
                             warned_offline = true;
-                            host.log(format!(
+                            let warning = format!(
                                 "cannot reach the relay ({why}) — the link will not work until this clears"
-                            ));
+                            );
+                            if banner_shown || host.ui.is_panel() {
+                                host.log(warning);
+                            } else {
+                                held_warning = Some(warning);
+                            }
                         }
                         // "reconnecting" would be a claim we had ever been
                         // connected. On the first attempt we have not.
@@ -563,8 +580,11 @@ async fn run() -> Result<()> {
                 host.refresh_panel();
                 host.ui.draw(&host.state)?;
             }
-            action = actions.recv() => {
-                let Some(action) = action else { continue };
+            action = actions.recv(), if keys_open => {
+                let Some(action) = action else {
+                    keys_open = false;
+                    continue;
+                };
                 match host.state.kick_step(&action) {
                     KickStep::Chosen(id) => {
                         // Out for good, past a relay restart too.
@@ -1736,7 +1756,11 @@ fn banner(state: &ui::State, caps: &limits::Limits) {
         state.folder,
         state.path
     );
-    println!("     {} files shared", state.files);
+    println!(
+        "     {} {} shared",
+        state.files,
+        if state.files == 1 { "file" } else { "files" }
+    );
     println!("     {}", state.sandbox);
     println!("     {}", caps.summary());
     // Said before the link, because "a copy of your source is being kept" is

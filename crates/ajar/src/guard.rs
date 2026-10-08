@@ -29,9 +29,10 @@ pub fn check(raw: &Path, force: bool) -> Result<Verdict> {
     if let Some(home) = home_dir() {
         if path == home {
             bail!(
-                "refusing to share your home directory.\n\
-                 Point ajar at a project folder instead — sharing {} exposes \
-                 every file you own.",
+                "refusing to share your home directory — sharing {} exposes \
+                 every file you own.\n\
+                 Run it from inside the project you want to share, or name the \
+                 project: ajar ~/path/to/project",
                 home.display()
             );
         }

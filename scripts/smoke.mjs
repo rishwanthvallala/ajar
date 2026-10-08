@@ -6,6 +6,7 @@
 //
 //   node scripts/smoke.mjs
 
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +87,20 @@ async function main() {
   await late.connect();
   await late.waitUntil((g) => g.screen.includes(MARKER), "replay of earlier output");
   ok("a late guest received the ring-buffer replay");
+
+  // ---- idle, with no terminal of its own --------------------------------
+  // Run like this — no panel, as from a script or with its output in a file —
+  // the agent's loop polled a keyboard channel nothing would ever write to,
+  // and spun a whole core for as long as the session was open.
+  // "0:01.25" on a Mac, "00:00:01" on Linux: either way, seconds.
+  const cpu = () =>
+    execFileSync("ps", ["-o", "time=", "-p", String(agent.pid)])
+      .toString().trim().split(/[-:]/).reduce((t, part) => t * 60 + Number(part), 0);
+  const before = cpu();
+  await sleep(3000);
+  const spent = cpu() - before;
+  if (spent > 1) fail(`an idle agent without a terminal used ${spent.toFixed(2)} s of CPU in 3 s`);
+  else ok(`an idle agent without a terminal sits idle (${spent.toFixed(2)} s of CPU in 3 s)`);
 
   // ---- a paste at a program that is not reading ------------------------
   // Terminal input was written from the agent's one loop, and a pty only

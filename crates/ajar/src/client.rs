@@ -127,7 +127,7 @@ pub fn spawn(
                     return;
                 }
                 Err(e) => {
-                    let _ = ev_tx.send(RelayEvent::Disconnected(e.to_string()));
+                    let _ = ev_tx.send(RelayEvent::Disconnected(reason(&e)));
                 }
             }
             if flag.load(Ordering::SeqCst) {
@@ -146,6 +146,28 @@ pub fn spawn(
         events: ev_rx,
         shutdown,
     }
+}
+
+/// What went wrong, with its causes. "connecting to relay at …" alone said
+/// where, never why — no certificates, no such host and a refused port all
+/// read the same. A cause that only repeats the one before it is left out.
+fn reason(e: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for cause in e.chain() {
+        let said = cause.to_string();
+        if out.contains(&said) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(": ");
+        }
+        out.push_str(&said);
+    }
+    // The one cause with a fix the person can make on the spot.
+    if out.contains("no native root CA certificates") {
+        out.push_str(" — install your system's CA certificates (the ca-certificates package)");
+    }
+    out
 }
 
 enum Outcome {
@@ -318,6 +340,26 @@ pub fn join_url(base: &str, session: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_says_why_once() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "no such host");
+        let e = anyhow::Error::new(inner).context("connecting to relay at wss://x/ws");
+        assert_eq!(
+            reason(&e),
+            "connecting to relay at wss://x/ws: no such host"
+        );
+        // A cause repeating the one before it, as the WebSocket library's
+        // IO error does, is said once.
+        let e = anyhow!("no native root CA certificates found")
+            .context("IO error: no native root CA certificates found")
+            .context("connecting to relay at wss://x/ws");
+        assert_eq!(
+            reason(&e),
+            "connecting to relay at wss://x/ws: IO error: no native root CA certificates found \
+             — install your system's CA certificates (the ca-certificates package)"
+        );
+    }
 
     #[test]
     fn upgrades_http_schemes() {

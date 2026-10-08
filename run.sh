@@ -28,15 +28,38 @@ find_ajar() {
     fi
 }
 
+# A new terminal starts in the home folder, and ajar will not share that —
+# so the first thing the one-liner did, pasted into a fresh terminal, was
+# refuse. Said here, in terms of what to type next.
+folder_named=no
+for arg in "$@"; do
+    case "$arg" in -*) ;; *) folder_named=yes ;; esac
+done
+if [ "$folder_named" = no ] && [ "$(pwd -P)" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
+    cat >&2 <<EOF
+
+  This terminal is in your home folder, and ajar will not share all of
+  that. Go to the project you want to share, and run it there:
+
+      cd ~/path/to/your/project
+      curl -sSf $RELAY/run.sh | sh
+
+EOF
+    exit 1
+fi
+
 AJAR=$(find_ajar)
 if [ -z "$AJAR" ]; then
-    command -v curl >/dev/null 2>&1 || {
-        echo "ajar: curl is needed to install" >&2
-        exit 1
-    }
     # To stderr, so that the only thing on stdout is the session link. That
     # matters the moment someone pipes this into something else.
-    curl -sSf "$RELAY/install.sh" | sh >&2
+    if command -v curl >/dev/null 2>&1; then
+        curl -sSf "$RELAY/install.sh" | sh >&2
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$RELAY/install.sh" | sh >&2
+    else
+        echo "ajar: curl or wget is needed to install" >&2
+        exit 1
+    fi
     AJAR=$(find_ajar)
     [ -n "$AJAR" ] || {
         echo "ajar: installed, but no binary at $BIN_DIR/ajar" >&2

@@ -21,6 +21,7 @@ DIST="${AJAR_DIST:-}"
 say() { printf '%s\n' "$*"; }
 err() { printf '\n  %s\n\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "$1 is required but not installed."; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 target() {
     os=$(uname -s)
@@ -28,7 +29,9 @@ target() {
 
     case "$os" in
         Darwin) os_part="apple-darwin" ;;
-        Linux)  os_part="unknown-linux-gnu" ;;
+        # Static, so it runs on any distribution — the glibc build needed a
+        # glibc as new as the release machine's, and said nothing until run.
+        Linux)  os_part="unknown-linux-musl" ;;
         MINGW*|MSYS*|CYGWIN*|Windows_NT)
             err "ajar does not support native Windows.
 
@@ -65,17 +68,62 @@ resolve_url() {
 }
 
 fetch() {
-    # $1 source, $2 destination
+    # $1 source, $2 destination. Why it failed lands in $TMP/why.
     case "$1" in
-        /*|./*|../*) cp "$1" "$2" ;;
-        *) curl -sSfL "$1" -o "$2" ;;
+        /*|./*|../*) cp "$1" "$2" 2>"$TMP/why" ;;
+        *)
+            # Plenty of systems have wget and not curl — a fresh Debian or
+            # Ubuntu among them — and someone who got this far found a way
+            # to run it.
+            if have curl; then
+                curl -sSfL "$1" -o "$2" 2>"$TMP/why"
+            else
+                wget -q -O "$2" "$1" 2>"$TMP/why"
+            fi
+            ;;
     esac
+}
+
+# The line that puts $BIN_DIR on PATH, for the shell this person types in.
+# ~/.profile was the advice for everyone, and zsh — every Mac's shell — never
+# reads it, nor does fish, nor a bash that is not a login shell: a new
+# terminal still said "command not found".
+path_advice() {
+    shell_name=$(basename "${SHELL:-sh}")
+    case "$shell_name" in
+        fish)
+            say "  $BIN_DIR is not on your PATH. This adds it, now and for every new"
+            say "  terminal:"
+            say ""
+            say "      fish_add_path $BIN_DIR"
+            return
+            ;;
+        zsh) rc="~/.zshrc" ;;
+        bash)
+            # A Mac's terminal starts login shells, which read .bash_profile;
+            # Linux terminals start the other kind, which read .bashrc.
+            if [ "$(uname -s)" = Darwin ]; then rc="~/.bash_profile"; else rc="~/.bashrc"; fi
+            ;;
+        *) rc="~/.profile" ;;
+    esac
+    say "  $BIN_DIR is not on your PATH. For every new terminal:"
+    say ""
+    say "      echo 'export PATH=\"\$PATH:$BIN_DIR\"' >> $rc"
+    say ""
+    say "  and for this one:"
+    say ""
+    say "      export PATH=\"\$PATH:$BIN_DIR\""
 }
 
 main() {
     need uname
     need tar
-    [ -n "$DIST" ] || need curl
+    # GNU tar hands the decompression to gzip, and a minimal image can have
+    # one without the other.
+    need gzip
+    if [ -z "$DIST" ] && ! have curl && ! have wget; then
+        err "curl or wget is required to download ajar, and neither is installed."
+    fi
 
     TARGET=$(target)
     URL=$(resolve_url "$TARGET")
@@ -86,8 +134,23 @@ main() {
     say ""
     say "  fetching ajar for $TARGET"
 
-    if ! fetch "$URL" "$TMP/ajar.tar.gz" 2>/dev/null; then
+    if ! fetch "$URL" "$TMP/ajar.tar.gz"; then
+        # Releases before 0.0.8 have only the glibc build for Linux.
+        case "$TARGET" in
+            *-linux-musl)
+                older=$(printf '%s' "$TARGET" | sed 's/-musl$/-gnu/')
+                if fetch "$(resolve_url "$older")" "$TMP/ajar.tar.gz"; then
+                    TARGET=$older
+                    URL=$(resolve_url "$older")
+                    say "  this release has only the glibc build; using it"
+                fi
+                ;;
+        esac
+    fi
+    if [ ! -s "$TMP/ajar.tar.gz" ]; then
+        why=$(head -c 300 "$TMP/why" 2>/dev/null)
         err "could not download $URL
+  ${why:-(no reason given)}
 
   If this version has not been published for $TARGET yet, build from source:
       cargo install --git https://github.com/$REPO ajar"
@@ -119,7 +182,18 @@ main() {
     install -m 755 "$TMP/ajar" "$BIN_DIR/ajar" 2>/dev/null \
         || { cp "$TMP/ajar" "$BIN_DIR/ajar" && chmod 755 "$BIN_DIR/ajar"; }
 
-    say "  installed $("$BIN_DIR/ajar" --version 2>/dev/null || echo ajar) to $BIN_DIR/ajar"
+    # Run once here, so that a binary this machine cannot run is found out
+    # now rather than at the first `ajar` — it used to say "installed" either
+    # way.
+    if ! version=$("$BIN_DIR/ajar" --version 2>"$TMP/why"); then
+        why=$(head -c 400 "$TMP/why")
+        err "installed $BIN_DIR/ajar, but it does not run on this machine:
+  ${why:-(no reason given)}
+
+  Please report this, with the output of \`uname -a\`:
+      https://github.com/$REPO/issues"
+    fi
+    say "  installed $version to $BIN_DIR/ajar"
     say ""
 
     case ":$PATH:" in
@@ -127,12 +201,7 @@ main() {
             say "  try it:"
             say "      ajar ~/some/project"
             ;;
-        *)
-            say "  $BIN_DIR is not on your PATH. Add it:"
-            say ""
-            say "      echo 'export PATH=\"\$PATH:$BIN_DIR\"' >> ~/.profile"
-            say "      export PATH=\"\$PATH:$BIN_DIR\""
-            ;;
+        *) path_advice ;;
     esac
 
     say ""

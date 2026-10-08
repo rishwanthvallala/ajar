@@ -14,8 +14,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 OUT=dist
 mkdir -p "$OUT"
 
+# On Linux, the static build: it is what install.sh fetches, because it runs
+# on any distribution. Needs `rustup target add <arch>-unknown-linux-musl`
+# and musl-tools.
 host_target() {
-    rustc -vV | awk '/^host: /{print $2}'
+    rustc -vV | awk '/^host: /{print $2}' | sed 's/-linux-gnu$/-linux-musl/'
 }
 
 candidates() {
@@ -23,8 +26,8 @@ candidates() {
         printf '%s\n' \
             aarch64-apple-darwin \
             x86_64-apple-darwin \
-            x86_64-unknown-linux-gnu \
-            aarch64-unknown-linux-gnu
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl
     else
         host_target
     fi
