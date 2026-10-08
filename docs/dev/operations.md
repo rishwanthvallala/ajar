@@ -400,8 +400,8 @@ was built.
 `AJAR_VERSION=v0.0.6 sh install.sh`, with the `v`, because it is used as the
 tag in the download URL. That is how to reproduce a report against an older
 agent. A release is a `v*` tag on `main`: `.github/workflows/release.yml`
-builds the four targets and publishes them. The current release is v0.0.7
-(7 October).
+builds the four targets and publishes them. The current release is v0.0.8
+(8 October).
 
 The Linux targets are musl, statically linked, and the workflow fails one
 that is not. Built against the runner's glibc, as they were up to 0.0.7, the

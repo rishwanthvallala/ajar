@@ -46,11 +46,15 @@ your connection is down, keeps files the tree hides out of reach of the page,
 refuses to edit text it would corrupt, keeps typing that a change on disk
 used to delete, keeps locked-in guests in through a relay restart, and adds
 downloads and the panel's `c`. On an older `ajar` a guest who presses
-Download waits a minute and is told it may be too old.
+Download waits a minute and is told it may be too old. 0.0.8 (8 October) is
+the first Linux build that runs on any distribution; it also stops `ajar`
+using a whole CPU core when run without a terminal, says why when the relay
+cannot be reached, and keeps the folder's copy on the relay after the relay
+restarts.
 
 One binary, nothing to configure, for macOS and Linux on x86_64 or arm64. On
 Linux it is static, so it runs on any distribution, glibc or musl, old or
-new. Releases up to 0.0.7 were not: they needed a glibc as new as Ubuntu
+new. Releases before 0.0.8 were not: they needed a glibc as new as Ubuntu
 24.04's and would not start on Ubuntu 22.04, Debian 12 or RHEL 9.
 
 It installs to `~/.local/bin` (or `AJAR_BIN_DIR`), runs it once to be sure it

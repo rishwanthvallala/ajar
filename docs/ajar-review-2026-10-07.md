@@ -107,7 +107,7 @@ with the fix reverted — a row that names none has no check of its own),
 | F2 | An open empty folder showed nothing, like one still loading | fixed — an "empty" row; `check-guest` |
 | F3 | The landing page had no theme switch and no icon; the tree's chevrons were 11 px glyphs | fixed |
 | F4 | On a fresh page, before anything in the tree was chosen, Download all downloaded the first folder alone | fixed; `check-guest` |
-| F5 | After a relay restart the folder's copy was not offered again until a file changed, while the panel said one was kept; a second download asked for while the first was being read was sent as well | fixed in the agent — reaches hosts with the next release; `smoke-reconnect` |
+| F5 | After a relay restart the folder's copy was not offered again until a file changed, while the panel said one was kept; a second download asked for while the first was being read was sent as well | fixed in the agent, in v0.0.8 on 8 October; `smoke-reconnect` |
 | T1 | The panel's keys were never pressed by any test | fixed — `check-guest` presses `l`, `x`, `k` and `q` through `scripts/lib/ptyrun.py` |
 | T2 | A suite's relay that died at start, its port taken, passed for a working one | fixed — `wire.mjs` notices and says so |
 | T3 | CI's annotation showed only a log's tail, often not the failure | fixed — every suite says its failures again at the end |
