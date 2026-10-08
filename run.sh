@@ -36,13 +36,15 @@ for arg in "$@"; do
     case "$arg" in -*) ;; *) folder_named=yes ;; esac
 done
 if [ "$folder_named" = no ] && [ "$(pwd -P)" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
+    # Said with whichever of the two this machine has.
+    if command -v curl >/dev/null 2>&1; then get="curl -sSf"; else get="wget -qO-"; fi
     cat >&2 <<EOF
 
   This terminal is in your home folder, and ajar will not share all of
   that. Go to the project you want to share, and run it there:
 
       cd ~/path/to/your/project
-      curl -sSf $RELAY/run.sh | sh
+      $get $RELAY/run.sh | sh
 
 EOF
     exit 1

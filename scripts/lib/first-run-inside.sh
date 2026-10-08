@@ -28,8 +28,10 @@ for shell in bash zsh fish; do
 done
 
 # The one-liner pasted into a fresh terminal, which starts in the home folder.
+# This image has no curl, so the command it gives back is the wget one.
 out=$(su - ubash -c 'sh /run.sh' 2>&1)
-check "$(printf '%s' "$out" | grep -q 'in your home folder' && echo yes)" "run.sh in a fresh terminal says to go to the project first" "$out"
+check "$(printf '%s' "$out" | grep -q 'in your home folder' && printf '%s' "$out" | grep -q 'wget -qO-' && echo yes)" \
+    "run.sh in a fresh terminal says to go to the project first, in the command this machine has" "$out"
 
 # A binary this machine cannot run is said at install, not at first use.
 mkdir -p /tmp/bad/pkg
