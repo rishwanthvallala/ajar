@@ -496,6 +496,10 @@ async function main() {
   const anaTerms = await until(async () => ((await ana.locator(".term").count()) === 1 ? 1 : null), 10_000);
   check(anaTerms === 1, "a terminal that ended while a guest was disconnected is gone from their tabs too", `${await ana.locator(".term").count()} terminals`);
   await eve.close();
+  // "connected" is the socket; the file ana has open is asked for again after
+  // it, and the host leaving before it is back is a different story — one
+  // open-points records — from the one told below. On CI's Mac it once was.
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "long.txt", null, { timeout: 15_000 });
 
   // ---- the host away --------------------------------------------------------
   agentHop.cut();

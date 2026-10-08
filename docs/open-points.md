@@ -41,6 +41,25 @@ not what would be nice.
 
 ### Unexplained once, and now able to explain themselves
 
+**Typing in the second after a guest reconnects is lost if the host drops in
+that second.** When a guest's own connection comes back, the file they have
+open is asked for again, and until the host answers, what they type is held
+in the editor and replayed once it does. If the host goes away inside that
+gap, the ask goes with it: the typing is not marked unsent, so closing the tab
+does not warn, and opening another file before the host is back discards it.
+It takes both connections failing within the same second. CI's Mac found it
+on 8 October, when `check-guest` cut the host before ana's file was back; the
+check now waits for the file, since the section is about the host away and
+not about this. The fix is to mark typing into a file being reopened as
+unsent, and to park it across a switch, as a document typed into while the
+host is away already is.
+
+**`accounts-check` failed once on CI's Ubuntu runner,** on 8 October, near the
+end: a wait timed out, and the page notes show the owner's other tab refused
+`rate_limited` by its room. The same code passed the run before. If it
+recurs, the relay's per-address limits, spent by one long suite from
+127.0.0.1, are the first suspect.
+
 **`smoke-editing` failed once.** *Terminal 1 never became ready*, on 24
 September, and it has passed every run since. If it recurs, `ready()` now says
 what the terminal showed, or that it was never opened; the shell's startup
