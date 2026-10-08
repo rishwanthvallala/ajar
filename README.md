@@ -35,6 +35,8 @@ curl -sSf https://ajar.rishwanth.dev/run.sh | sh     # share this folder
 curl -sSf https://ajar.rishwanth.dev/install.sh | sh # install, or update
 ```
 
+No curl? `wget -qO- https://ajar.rishwanth.dev/run.sh | sh` does the same.
+
 Or open [code.rishwanth.dev](https://code.rishwanth.dev) and start typing.
 
 - **[Sharing a machine](docs/use/ajar.md)** — install, share, the panel, the controls

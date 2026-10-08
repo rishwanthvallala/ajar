@@ -19,6 +19,11 @@ curl -sSf https://ajar.rishwanth.dev/run.sh | sh
 That installs `ajar` if it is missing, reuses it if not, and prints a link.
 Send the link. That is the whole thing.
 
+Run it in the project, not in a new terminal's home folder: `ajar` will not
+share your whole home, and says so. A machine with wget and no curl — a fresh
+Debian or Ubuntu often is one — can use
+`wget -qO- https://ajar.rishwanth.dev/run.sh | sh` instead.
+
 To install once and use the command directly:
 
 ```sh
@@ -43,11 +48,18 @@ used to delete, keeps locked-in guests in through a relay restart, and adds
 downloads and the panel's `c`. On an older `ajar` a guest who presses
 Download waits a minute and is told it may be too old.
 
-One binary, nothing to configure, for macOS and Linux on x86_64 or arm64. It
-installs to `~/.local/bin` (or `AJAR_BIN_DIR`), and says how to add that to
-your `PATH` if it is not on it. To install a particular release,
-`AJAR_VERSION=v0.0.6` before `sh`. On Windows use WSL2 and keep the project
-inside the WSL filesystem.
+One binary, nothing to configure, for macOS and Linux on x86_64 or arm64. On
+Linux it is static, so it runs on any distribution, glibc or musl, old or
+new. Releases up to 0.0.7 were not: they needed a glibc as new as Ubuntu
+24.04's and would not start on Ubuntu 22.04, Debian 12 or RHEL 9.
+
+It installs to `~/.local/bin` (or `AJAR_BIN_DIR`), runs it once to be sure it
+works on this machine, and if that folder is not on your `PATH`, prints the
+line that adds it for the shell you use — `~/.zshrc` for zsh, `~/.bashrc` for
+bash on Linux and `~/.bash_profile` on a Mac, `fish_add_path` for fish — and
+the one for the terminal you are in. `run.sh` finds it there either way. To
+install a particular release, `AJAR_VERSION=v0.0.6` before `sh`. On Windows
+use WSL2 and keep the project inside the WSL filesystem.
 
 ## Read this before you send the link
 

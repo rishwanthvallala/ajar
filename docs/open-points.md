@@ -26,7 +26,10 @@ read by name what the tree hides, until it reinstalls. The same day a pad's
 cap went to 60 MB, [for now](#a-pad-holds-60-mb-for-now).*
 
 *On 8 October a click on a file in the guest's tree stopped being lost to
-the folder changing — [its own list](#closed-on-8-october).*
+the folder changing, and fresh containers of fifteen Linux distributions
+found what a first install meets — [that day's list](#closed-on-8-october).
+The installer's half is live with the relay; the static Linux build and the
+agent's half reach people with the next release.*
 
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
@@ -412,6 +415,12 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | | |
 |---|---|
 | A click on a file in the guest's tree did nothing whenever anything in the folder changed between press and release — every change repainted every row — so in a folder a build was writing to, files could hardly be opened | `12b7381` |
+| The Linux release ran on three distributions of fifteen tried — it needed glibc 2.39, so not Ubuntu 22.04, Debian 12, RHEL 8 or 9, Amazon Linux or Alpine — and `install.sh` said "installed" anyway. Linux builds are now static, and the installer runs what it installed | `2b584a3`; reaches people with the next release |
+| The installer's PATH advice, `~/.profile`, is read by no zsh — every Mac's shell — no fish, and no bash a terminal opens on Linux; a new terminal still said "command not found". It now names the file for the shell in use | `2b584a3` |
+| The one-liner pasted into a new terminal, which starts in the home folder, was refused, with advice in terms of `ajar` rather than of the command just pasted | `2b584a3` |
+| Without curl the install could not start, where wget was there all along; a minimal image with tar but no gzip failed mid-extract | `2b584a3` |
+| Run without a terminal — from a script, with its output in a file — the agent spun a whole core for as long as the session was open | `2b584a3`; reaches hosts with the next release |
+| A relay that could not be reached was said above the banner, where nobody reads, and without why — no certificates, no such host and a refused port read the same | `2b584a3`; reaches hosts with the next release |
 
 ## Closed on 7 October
 

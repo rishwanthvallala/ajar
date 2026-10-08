@@ -403,6 +403,17 @@ agent. A release is a `v*` tag on `main`: `.github/workflows/release.yml`
 builds the four targets and publishes them. The current release is v0.0.7
 (7 October).
 
+The Linux targets are musl, statically linked, and the workflow fails one
+that is not. Built against the runner's glibc, as they were up to 0.0.7, the
+binary needed glibc 2.39 — for `pidfd_spawnp` and `pidfd_getpid`, among
+others — and would not start on Ubuntu 22.04, Debian 12, RHEL 8 or 9, or
+Amazon Linux; `install.sh` said "installed" all the same. Each is also
+published under its old `-gnu` name, for an `install.sh` from before the
+change, which asks for that. `install.sh` asks for `-musl` and falls back to
+`-gnu` for a release that has only that. `scripts/dist.sh` on Linux builds
+the musl target too, which needs `rustup target add <arch>-unknown-linux-musl`
+and musl-tools.
+
 Try the whole install path without publishing:
 
 ```sh

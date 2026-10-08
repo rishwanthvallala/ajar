@@ -19,6 +19,14 @@ an annotation, which anyone can read through the API where the log needs a
 sign-in. Ubuntu then runs `scripts/linux-sandbox.sh`, and builds Caddy for
 both architectures and checks its rate limits (`deploy/caddy/check.sh`).
 
+A second job, `first-run`, is someone else's first install, on both
+runners: the agent built as it is released, then `scripts/check-first-run.sh`
+— on Ubuntu, the static binary in twelve distributions' containers and the
+installer as a new user meets it; on both, the installer into a throwaway
+home, its PATH advice followed. Every other check runs on the machine that
+built the binary, with a PATH somebody already set up, which is how the
+release ran on three distributions of fifteen and nobody's tests noticed.
+
 ## What each suite proves
 
 | | |
@@ -47,6 +55,7 @@ both architectures and checks its rate limits (`deploy/caddy/check.sh`).
 | `scripts/smoke-peer.mjs` | Peer sessions — the only suite that starts a relay and no agent |
 | `scripts/smoke-accounts.mjs` | Accounts at the relay, against a stand-in OAuth provider that checks PKCE: sign-in, the cookie's flags, a replayed callback, an off-site return address; then the store and the peer room as a stranger, a viewer, an editor and the owner — a viewer's edit dropped and its `DOC_NONE` passed, every setting, revoking, eviction of people already inside, both quotas, deletion, a restart, and no token or code in the database in the clear; the admin figures for the operator and a 404 for anyone else; signing out ending that sign-in's owner connections in the room and only those; deleting an account; and a relay with no provider set up. Each enforcement point was reverted and the suite failed |
 | `pad/scripts/accounts-check.mjs` | Accounts in three browsers — owner, edit link, bare name: signing in, New pad, the share dialog's links, the code taken out of the address bar, live typing both ways, a viewer's copy-on-write, a command's file kept local, Discard rejoining the live document, Save as my copy, settings reaching people already inside, the private screen, the dashboard; a long file opening where the owner left it after the editor typed in it meanwhile; a file the owner drags into a folder reaching the editor's tree and the store, and a viewer unable to drag; a viewer's document outliving its editors; a tab closed inside its save delay, Run in one file while another is typed in, `/admin`, a pad made from a zip, Copy a pad — the refusals in words, a failed write leaving no pad, a pasted code sent with the read and not kept, the original untouched — **Not live** on a name an ajar session holds and its backoff, signing out with the pad open as owner in another tab, Back out of the back-forward cache — to a pad, to the dashboard after New pad and after Copy a pad, and after a viewer's Save as my copy — and deleting the account behind its typed confirmation. In the gate |
+| `scripts/check-first-run.sh` | A first install somewhere else. Given `dist`: the static Linux binary's `--version` in fresh containers of Ubuntu 20.04, 22.04 and 24.04, Debian 11 and 12, Rocky 8 and 9, Fedora 41, Amazon Linux 2 and 2023, openSUSE Leap 15.6 and Alpine; then, in Ubuntu, `install.sh` as a new bash, zsh and fish user, its PATH line run as printed and a new terminal finding `ajar`, `run.sh` pasted into a terminal still in the home folder, and a binary that cannot run said so at install. `--here` does the installer part on this machine, in a throwaway home — on a Mac, zsh as a login shell. Docker or podman; on a Mac, podman runs the containers as arm64. Against the 0.0.7 release binary ten of the twelve distributions fail, and against the installer before 8 October five of its checks |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
 | `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
