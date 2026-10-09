@@ -653,7 +653,11 @@ try {
 
   // Share from the dashboard is the pad's own dialog.
   const dialog = () => owner.locator("dialog.share-dialog");
-  await card().getByRole("button", { name: "Share" }).click();
+  // On CI's Ubuntu, 9 October, this found the pad's card twice, a moment
+  // after the check above found it once. Said with what was there, if again.
+  const cards = await owner.locator(".pad-card").evaluateAll((els) => els.map((e) => `${e.dataset.name} in ${e.parentElement?.className} ${e.isConnected}`));
+  if (cards.filter((c) => c.startsWith(`${name} `)).length !== 1) fail(`the dashboard shows each pad once — ${JSON.stringify(cards)}`);
+  await card().first().getByRole("button", { name: "Share" }).click();
   await dialog().waitFor();
   is(await dialog().getByLabel("Who can view").inputValue(), "code", "and in full, in the same dialog as the pad's");
 
