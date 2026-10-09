@@ -52,8 +52,7 @@ needs a check that fails before it is fixed.
 - **The guest page replays typing from an outage at the same offset,** where
   `carry.ts` in the pad anchors it to the text around it; someone else's edit
   before it meanwhile puts it in the wrong place.
-- **A save in the half-second after a command can store an empty file** for
-  a document still waiting for the room; **signing out and back in** can
+- **Signing out and back in** can
   write stale copies of files collaborators edited meanwhile; **a command's
   change that splits an emoji** corrupts it; **typing during a move** of the
   same file can be dropped.
@@ -454,6 +453,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| A save in the moment a file's document was still waiting for the room stored the file as nothing: the waiting document is empty, and the save read it rather than the editor's text. Found by reading, not reproduced — the moment is too short to make happen on purpose | this commit |
 | A place whose connection dropped while somebody else opened the file came back with a document sharing no history with theirs — the newcomer, unanswered, had seeded from the stored copy — and the merge kept both: the whole file doubled, for everyone. Each side now sees the other's history for what it is; one, by a fixed rule, rejoins with what it typed since they parted | `378f69d` |
 | A command in one place that rewrote a file open only in another reached the store and nobody's editor: theirs kept the old text, and their next keystroke saved it back over the command's work, for everyone | `9262712` |
 | A new file opened while empty, then written by a command, opened empty — its document had no state, so the command's output went to the store and the model and never into it — and typing in it saved only the typing | `9262712` |

@@ -1063,7 +1063,9 @@ export class App {
           path,
           // The document is the truth for a file somebody has open; the model
           // mirrors it, and reading the mirror is a race with the next update.
-          content: this.docs.get(path)?.contents() ?? this.models.get(path)?.getValue(),
+          // But not a document still waiting for the room: it is empty, and
+          // a save in that moment stored the file as nothing.
+          content: this.current(path),
         }))
         .filter((c): c is { path: string; content: string } => c.content !== undefined)
         .filter((c) => this.known.get(c.path) !== c.content);
@@ -1077,8 +1079,7 @@ export class App {
         if (this.runtime) {
           const rt = await this.runtime;
           for (const c of changes) {
-            const current = this.docs.get(c.path)?.contents() ?? this.models.get(c.path)?.getValue();
-            if (current === c.content) await rt.write(c.path, c.content);
+            if (this.current(c.path) === c.content) await rt.write(c.path, c.content);
           }
         }
         this.peers?.moved(seq);
@@ -1144,7 +1145,7 @@ export class App {
    */
   private current(path: string): string | undefined {
     const doc = this.docs.get(path);
-    if (doc?.hasState) return doc.contents();
+    if (doc?.ready) return doc.contents();
     return this.models.get(path)?.getValue();
   }
 
