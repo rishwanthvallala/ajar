@@ -203,7 +203,16 @@ async function focusEditor(page) {
 async function settleMidway(page) {
   await page.locator("#viewer .view-line").first().click();
   for (let i = 0; i < 30; i++) await page.keyboard.press("PageDown");
-  await sleep(300);
+  // Until it stops moving. On CI's Mac the editor was still working through
+  // the presses after they had all been sent, and the place read here was
+  // some 300 lines short of where the page came to rest (9 October).
+  let last = null;
+  for (let i = 0; i < 30; i++) {
+    await sleep(200);
+    const now = await where(page);
+    if (last && now?.top === last.top && now?.cursor === last.cursor) return;
+    last = now;
+  }
 }
 
 async function screen(page, nth = 0) {
