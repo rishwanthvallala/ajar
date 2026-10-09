@@ -78,6 +78,49 @@ export function seedId(text: string): number {
   return (h >>> 0) || 1;
 }
 
+/**
+ * The line ending an editor model made from `text` has — Monaco's own rule,
+ * so the two never disagree: CRLF when more than half the line breaks have a
+ * carriage return, LF otherwise, and none when there are no line breaks.
+ */
+export function eolOf(text: string): "\n" | "\r\n" | null {
+  let cr = 0;
+  let lf = 0;
+  let crlf = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 13) {
+      if (text.charCodeAt(i + 1) === 10) {
+        crlf++;
+        i++;
+      } else cr++;
+    } else if (c === 10) lf++;
+  }
+  const total = cr + lf + crlf;
+  if (total === 0) return null;
+  return cr + crlf > total / 2 ? "\r\n" : "\n";
+}
+
+/** Every line break in `text` as `eol`. */
+export function withEol(text: string, eol: "\n" | "\r\n"): string {
+  return text.replace(/\r\n|\r|\n/g, eol);
+}
+
+/**
+ * Text as an editor holds it: one line ending throughout.
+ *
+ * A Monaco model cannot hold mixed line endings. Made from a file with both,
+ * it converts them all to one, and from then on every offset after a
+ * converted one was off by a character between the editor and the document:
+ * a paste over a value in a CSV left part of the old value behind in the
+ * document — what was saved, and what every other place showed once it opened
+ * the file — while the screen that pasted looked right. Until 9 October.
+ */
+export function asEditorHolds(text: string): string {
+  const eol = eolOf(text);
+  return eol ? withEol(text, eol) : text;
+}
+
 /** One open file, shared. */
 export class DocSession {
   readonly ydoc = new Y.Doc();
@@ -131,6 +174,9 @@ export class DocSession {
     // delete-everything-and-insert reached everyone with the file open as a
     // whole new file, and sent them back to its first line.
     const old = this.ytext.toString();
+    // In the document's line ending — a command's output is whatever it is,
+    // and an editor would have converted it, putting every later edit off.
+    text = withEol(text, eolOf(old) ?? "\n");
     if (old === text) return;
     const limit = Math.min(old.length, text.length);
     let start = 0;
@@ -193,6 +239,10 @@ export class DocSession {
    * has.
    */
   seed(text: string) {
+    // As an editor holds it. Every place converts the same text the same way,
+    // so the seeds still match; the stored copy takes the converted text at
+    // the next save.
+    text = asEditorHolds(text);
     if (this.ytext.length > 0 || !text) return;
     const mine = this.ydoc.clientID;
     this.ydoc.clientID = seedId(text);
@@ -270,8 +320,18 @@ export class DocSession {
     model: monaco.editor.ITextModel,
   ) {
     this.api = api;
-    // The document is the truth; the model starts from it.
-    replaceText(api, model, this.ytext.toString());
+    // The document is the truth; the model starts from it — in the document's
+    // line ending, which the model would otherwise impose its own over.
+    const text = this.ytext.toString();
+    const eol = eolOf(text) ?? "\n";
+    if (model.getEOL() !== eol) {
+      model.setEOL(eol === "\r\n" ? api.editor.EndOfLineSequence.CRLF : api.editor.EndOfLineSequence.LF);
+    }
+    replaceText(api, model, text);
+    // Still not the same: the document has mixed line endings — made by a
+    // page from before this was handled, or written in from outside. Made
+    // into what the editor can hold before anything is typed against it.
+    if (model.getValue() !== text) this.mend(api, model);
     this.decorations = editor.createDecorationsCollection([]);
 
     const onRemote = (event: Y.YTextEvent, tr: Y.Transaction) => {
@@ -301,6 +361,10 @@ export class DocSession {
       } finally {
         this.applyingRemote = false;
       }
+      // A line ending the model converted on the way in: an older page, or a
+      // command's output written in somewhere that did not convert it. The
+      // two would drift apart from here, so the document is mended first.
+      if (model.getValueLength() !== this.ytext.length) queueMicrotask(() => this.mend(api, model));
     };
     this.ytext.observe(onRemote);
 
@@ -348,6 +412,37 @@ export class DocSession {
     };
     this.binding = binding;
     return binding;
+  }
+
+  /**
+   * Make a document with mixed line endings into one an editor can hold, and
+   * the editor match it.
+   *
+   * LF, by deleting carriage returns: deletions alone, so two places mending
+   * at once agree — each deletes the same characters, and a character is
+   * deleted once however many delete it. Converting to CRLF would insert, and
+   * two places inserting the same carriage return would put in two. A lone
+   * carriage return, which nothing makes any more, becomes a line feed.
+   */
+  private mend(api: typeof monaco, model: monaco.editor.ITextModel) {
+    if (model.isDisposed()) return;
+    const text = this.ytext.toString();
+    if (text.includes("\r")) {
+      this.ydoc.transact(() => {
+        for (let i = text.length - 1; i >= 0; i--) {
+          if (text.charCodeAt(i) !== 13) continue;
+          this.ytext.delete(i, 1);
+          if (text.charCodeAt(i + 1) !== 10) this.ytext.insert(i, "\n");
+        }
+      }, "local");
+    }
+    this.applyingRemote = true;
+    try {
+      model.setEOL(api.editor.EndOfLineSequence.LF);
+      replaceText(api, model, this.ytext.toString());
+    } finally {
+      this.applyingRemote = false;
+    }
   }
 
   /** Everyone else's cursor and selection, as editor decorations. */

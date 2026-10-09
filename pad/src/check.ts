@@ -8,7 +8,8 @@ import { parsePadLink } from "./access";
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { carryOver } from "./carry";
-import { cssString, participantId } from "./editing";
+import type * as Monaco from "monaco-editor";
+import { asEditorHolds, cssString, DocSession, eolOf, participantId } from "./editing";
 import { Shell } from "./shell";
 import { mintName, Store, StoreError } from "./store";
 import { seedFiles } from "./seed";
@@ -288,6 +289,114 @@ async function main() {
     is(after("one\ntwo\n", "one\ntwo\nmine\n", "theirs\none\ntwo\n"), "theirs\none\ntwo\nmine\n", "somebody's line above it stays, and it lands after the text it followed");
     is(after("x = 1\ny = 2\n", "x = 1\nz = 0\ny = 2\n", "x = 1\ny = 2\ntheirs\n"), "x = 1\nz = 0\ny = 2\ntheirs\n", "somebody's line below it stays too");
     is(after("keep this", "keep", "keep that"), "keep that", "a deletion over text somebody changed removes none of theirs");
+  }
+
+  // ---- line endings an editor converts ------------------------------------
+  // A Monaco model holds one line ending. A document with mixed ones put every
+  // offset after a converted one off by a character between the editor and
+  // the document: a paste over a value in a CSV left part of the old value
+  // in what was saved and in what every other place showed. 9 October.
+  {
+    is(eolOf("a\nb\r\nc\r\n"), "\r\n", "two CRLF of three: the editor's line ending is CRLF");
+    is(eolOf("a\nb\nc\r\n"), "\n", "one CRLF of three: LF");
+    is(eolOf("abc"), null, "no line breaks, no line ending");
+    is(asEditorHolds("a\r\nb\nc\r\n"), "a\r\nb\r\nc\r\n", "mixed text is held with the one line ending");
+    is(asEditorHolds("a\rb\r\n"), "a\r\nb\r\n", "a lone carriage return too");
+
+    const monaco = await import("monaco-editor/esm/vs/editor/editor.api");
+    (self as unknown as { MonacoEnvironment: unknown }).MonacoEnvironment = {
+      getWorker: async () => new (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default(),
+    };
+    // Places that hand each other their updates a moment later, as the network would.
+    let places: DocSession[] = [];
+    const place = (id: number) => {
+      const doc = new DocSession(1, "sheet.csv", { id, name: `p${id}` }, (kind, bytes) => {
+        if (kind !== "update") return;
+        for (const other of places) if (other !== doc) setTimeout(() => other.applyUpdate(bytes), 5);
+      });
+      places.push(doc);
+      return doc;
+    };
+    const editors: Monaco.editor.IStandaloneCodeEditor[] = [];
+    const show = (doc: DocSession) => {
+      const host = document.createElement("div");
+      host.style.cssText = "width: 400px; height: 120px";
+      document.body.append(host);
+      const editor = monaco.editor.create(host, {});
+      const model = monaco.editor.createModel("", "plaintext");
+      editor.setModel(model);
+      editors.push(editor);
+      doc.bind(monaco, editor, model);
+      return model;
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 150));
+    const paste = (model: Monaco.editor.ITextModel, line: number, from: number, to: number, text: string) =>
+      model.pushEditOperations([], [{ range: new monaco.Range(line, from, line, to), text }], () => null);
+    const sheet = "name,qty\r\nalpha,1\nbeta,2\r\n";
+
+    // Opened from the stored copy, as two places do.
+    {
+      const a = place(1);
+      const b = place(2);
+      a.seed(sheet);
+      b.seed(sheet);
+      const ma = show(a);
+      const mb = show(b);
+      paste(ma, 3, 6, 7, "1233132");
+      await settle();
+      is(b.contents(), "name,qty\r\nalpha,1\r\nbeta,1233132\r\n", "a paste over a value in a mixed-ending sheet is exactly what the other place holds");
+      is(mb.getValue(), b.contents(), "and what it shows");
+      is(ma.getValue(), a.contents(), "and the place that pasted holds what it shows");
+    }
+
+    // Mixed text put in by a page from before this, with two places showing it.
+    // Both mend at once, and agree.
+    {
+      places = [];
+      const a = place(3);
+      const b = place(4);
+      const older = place(5);
+      const ma = show(a);
+      const mb = show(b);
+      older.ydoc.transact(() => older.ytext.insert(0, sheet), "local");
+      await settle();
+      await settle();
+      const same = a.contents() === b.contents() && b.contents() === older.contents();
+      is(same && !a.contents().includes("\r"), true, `mixed text from elsewhere is mended to LF, the same in every place — ${JSON.stringify([a.contents(), b.contents(), older.contents()])}`);
+      is(ma.getValue() === a.contents() && mb.getValue() === b.contents(), true, "and each editor shows its document");
+      paste(mb, 3, 6, 7, "1233132");
+      await settle();
+      is(a.contents(), "name,qty\nalpha,1\nbeta,1233132\n", "then a paste lands where it was made");
+      is(ma.getValue(), a.contents(), "and the other place shows it");
+    }
+
+    // A document already mixed when a place opens it.
+    {
+      places = [];
+      const older = place(6);
+      const a = place(7);
+      older.ydoc.transact(() => older.ytext.insert(0, "x\r\ny\nz\r\n"), "local");
+      await settle();
+      const ma = show(a);
+      await settle();
+      is(a.contents(), "x\ny\nz\n", "a mixed document is mended when opened");
+      is(older.contents(), a.contents(), "for everyone");
+      is(ma.getValue(), a.contents(), "and shown as it is");
+    }
+
+    // A command's output, written into a document with its own line endings.
+    {
+      places = [];
+      const a = place(8);
+      a.seed("one\r\ntwo\r\n");
+      a.replace("one\r\ntwo\nthree\n");
+      is(a.contents(), "one\r\ntwo\r\nthree\r\n", "a command's output goes in with the document's line ending");
+    }
+
+    for (const editor of editors) {
+      editor.getModel()?.dispose();
+      editor.dispose();
+    }
   }
 
   // ---- CSV and TSV colours ----

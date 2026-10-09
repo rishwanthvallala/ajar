@@ -152,6 +152,13 @@ Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for
 everyone once it finishes.
 
+A file whose lines end in a mix of styles — some Windows `\r\n`, some `\n`,
+as a CSV can when a script wrote part of it and something else the rest — is
+given one style when it is opened, the one most of its lines already have,
+and saved that way. The editor can only hold one, and editing a file with
+both put changes in the wrong place: a value pasted into one cell came out
+in everyone else's copy with part of the old value still beside it.
+
 **Not live**, in place of the dots, means an `ajar` session is using the
 pad's name, and a pad cannot share its live room with one. Your changes still
 save, but other people's show only when you reload. It goes back to live by

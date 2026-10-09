@@ -429,6 +429,12 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
 
+## Closed on 9 October
+
+| | |
+|---|---|
+| A pad file with mixed line endings — a CSV a script wrote part of — put every edit after the first converted line ending a character off between the editor and the shared document: a value pasted into a cell showed right where it was pasted, and with part of the old value beside it everywhere else, and in the saved file | this commit |
+
 ## Closed on 8 October
 
 | | |

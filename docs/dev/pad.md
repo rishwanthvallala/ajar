@@ -451,6 +451,24 @@ viewer's document as unplaceable, which `App.unstick` notices after 1.5 s: it
 throws the document away and asks the room again. `accounts-check.mjs` plays
 exactly that, typing at the start of the file, where the garble shows.
 
+**A document holds what an editor can, line endings included,** since 9
+October. A Monaco model has one line ending, and made from text with both
+`\r\n` and `\n` it converts them all; the binding maps model offsets to the
+document's one for one, so every edit after a converted line ending landed a
+character off in the document. A paste over a CSV value left part of the old
+value behind — `beta,2` pasted over became `beta12331322` — in what was saved
+and in what every other place showed when it opened the file, while the
+screen that pasted looked right. So `seed` converts the stored text as
+Monaco would (`eolOf`, its own rule: CRLF when more than half the line breaks
+carry a CR), every place converting the same text the same way, so seeds
+still dedupe; `replace` puts a command's output in with the document's own
+line ending; and `bind` gives the model the document's. A document mixed
+anyway — made by a page from before this, or written in from elsewhere — is
+mended when bound, or when a remote update leaves the model a different
+length from it: to LF, by deleting carriage returns, because two places
+mending at once each delete the same characters, where two inserting the
+same CR would put in two. `check.ts` plays all of it with real editors.
+
 ### Seeding the sandbox is a separate problem, with the same shape
 
 The document seeding above is about the *room*. Seeding the **sandbox** is
