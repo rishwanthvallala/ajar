@@ -36,10 +36,18 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
       - name: Build the agent
         run: cargo build --release --target ${{ matrix.target }} -p ajar
+      # No program interpreter, so no libc to find at run time. Not `file`'s
+      # wording: x86_64 builds static-pie, which it calls "static-pie
+      # linked", and the 0.0.8 release failed here on that alone.
       - name: A Linux binary depends on nothing
         if: contains(matrix.target, 'musl')
         run: |
-          file "target/${{ matrix.target }}/release/ajar" | tee /dev/stderr | grep -q 'statically linked'
+          bin="target/${{ matrix.target }}/release/ajar"
+          file "$bin"
+          if readelf -l "$bin" | grep -q 'program interpreter'; then
+            echo "::error::$bin is dynamically linked"
+            exit 1
+          fi
       - name: Package
         run: |
           mkdir -p dist
