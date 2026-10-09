@@ -433,8 +433,8 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
-| A terminal command finishing in one place took the sandbox's copy of each open file back as the command's work, and put that older text over whatever was typed meanwhile in any place — a character at a time, or a paste | this commit |
-| Every terminal command dropped the byte-order mark from a file that had one — Excel's "CSV UTF-8" — and published it so | this commit |
+| A terminal command finishing in one place took the sandbox's copy of each open file back as the command's work, and put that older text over whatever was typed meanwhile in any place — a character at a time, or a paste | `7b3ec09` |
+| Every terminal command dropped the byte-order mark from a file that had one — Excel's "CSV UTF-8" — and published it so | `7b3ec09` |
 | A pad file with mixed line endings — a CSV a script wrote part of — put every edit after the first converted line ending a character off between the editor and the shared document: a value pasted into a cell showed right where it was pasted, and with part of the old value beside it everywhere else, and in the saved file | `5f98110` |
 
 ## Closed on 8 October
