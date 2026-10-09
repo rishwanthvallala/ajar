@@ -1350,6 +1350,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       v.show(path, text, false, true, "read-only: mixed line endings or a byte-order mark");
       return;
     }
+    doc.onDrift = () => {
+      if (editing !== doc) return;
+      const now = doc.ytext.toString();
+      discardDocument(true);
+      v.show(path, now, false, true, "read-only: its line endings changed — reopen it to edit");
+    };
     detach = doc.bind(handles.editor, handles.model);
     // Which file is being edited, not merely shown — for anything outside
     // that needs to tell the two apart, the browser checks among them.

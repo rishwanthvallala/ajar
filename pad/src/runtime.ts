@@ -189,6 +189,11 @@ export class Runtime {
     return this.written.get(path);
   }
 
+  /** What `path` holds now, read back after a command: the next one's base. */
+  saw(path: string, contents: string): void {
+    this.written.set(path, contents);
+  }
+
   /** Once every write already asked for has landed. */
   async settled(): Promise<void> {
     while (this.inFlight.size) await Promise.allSettled([...this.inFlight]);

@@ -201,6 +201,38 @@ try {
     await idle();
     await wait(a, 1500);
     await agree(a, b, "\ufeffname,qty\n", "a command run beside a file with a byte-order mark leaves the mark");
+
+    // A file only the other place has open, rewritten by a command here.
+    // It used to reach the store and nobody's editor: theirs kept the old
+    // text, and their next keystroke saved it back over the command's work.
+    await term("echo old > zz.csv");
+    await wait(b, 150);
+    await idle();
+    const row = a.locator("#files").getByText("zz.csv", { exact: true });
+    await row.waitFor({ timeout: 15_000 });
+    await row.click();
+    await a.waitForFunction(() => window.__pad.active() === "zz.csv" && window.__pad.text("zz.csv") === "old\n", null, { timeout: 15_000 });
+    await b.locator("#files").getByText("main.py", { exact: true }).click();
+    await term("echo new > zz.csv");
+    await wait(b, 150);
+    await idle();
+    const shows = await a.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === "new\n", null, { timeout: 10_000 }).then(() => true, () => false);
+    if (shows) ok("a command here that rewrites a file open only in the other place shows there");
+    else fail(`a command here that rewrites a file open only in the other place shows there — it shows ${JSON.stringify((await state(a)).screen)}`);
+
+    // A new file, opened while empty, then written by a command.
+    b.once("dialog", (d) => d.accept("out.csv"));
+    await b.locator('#files button[aria-label="New file"]').click();
+    await wait(b, 1500);
+    await b.locator("#files").getByText("main.py", { exact: true }).click();
+    await term("printf 'a,b\\n1,2\\n' > out.csv");
+    await wait(b, 150);
+    await idle();
+    await wait(b, 1500);
+    await b.locator("#files").getByText("out.csv", { exact: true }).click();
+    const filled = await b.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === "a,b\n1,2\n", null, { timeout: 10_000 }).then(() => true, () => false);
+    if (filled) ok("a file opened while empty, then written by a command, opens with what the command wrote");
+    else fail(`a file opened while empty, then written by a command, opens with what the command wrote — it shows ${JSON.stringify((await state(b)).screen)}`);
   }
 } catch (e) {
   fail(e.stack ?? String(e));

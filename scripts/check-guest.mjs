@@ -239,6 +239,8 @@ async function main() {
   await writeFile(join(workdir, "pic.bin"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0xff, 0xfe, 0, 1, 2, 3]));
   const mixed = join(workdir, "mixed.txt");
   await writeFile(mixed, "one\r\ntwo\nthree\n");
+  const lf = join(workdir, "lf.txt");
+  await writeFile(lf, "one\ntwo\n");
   const bom = join(workdir, "bom.txt");
   await writeFile(bom, "﻿hello\nworld\n");
   // For downloads: something the ignore rules hide, and something big enough
@@ -407,6 +409,19 @@ async function main() {
     const after = await readFile(file, "utf8");
     check(after === before, `and typing at it changes nothing on disk`, JSON.stringify(after));
   }
+
+  // A tool on the host writing CRLF lines into a file a guest is editing. The
+  // guest's editor holds one line ending and would convert the new ones, and
+  // from then on every edit would land a character off, on the host's disk.
+  // The host ends the document, saying why; the page has its own guard too,
+  // for a change that reaches it first.
+  await open(ana, "lf.txt");
+  await writeFile(lf, "one\ntwo\nthree\r\nfour\r\n");
+  const drifted = await until(async () => {
+    const t = await ana.locator("#viewer-title").textContent();
+    return /line endings/.test(t) && /read-only/.test(t) ? t : null;
+  }, 10_000);
+  check(drifted, "a file the host gives other line endings while it is open stops being edited, saying why", JSON.stringify(await ana.locator("#viewer-title").textContent()));
 
   // ---- where you were in a file ---------------------------------------------
   await open(ana, "long.txt");

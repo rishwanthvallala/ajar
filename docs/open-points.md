@@ -39,6 +39,29 @@ not what would be nice.
 
 ## Waiting on a decision
 
+### Found by reading on 9 October, not yet reproduced
+
+An audit of every path text takes into or out of a live document, after the
+line-ending and write-back bugs, traced these by reading the code. The two it
+ranked first were reproduced and are closed above; these were not, and each
+needs a check that fails before it is fixed.
+
+- **A place that drops off while holding a document can double the file when
+  it returns.** If somebody else opens the file meanwhile and hears no answer,
+  they seed it again from the stored copy under that text's id; the returning
+  document's history shares nothing with it, and the merge keeps both copies.
+- **The guest page loses typing in flight when its socket dies.** What it
+  replays after reconnecting is measured from the moment it noticed, which
+  already includes keystrokes handed to the dying socket.
+- **The guest page replays typing from an outage at the same offset,** where
+  `carry.ts` in the pad anchors it to the text around it; someone else's edit
+  before it meanwhile puts it in the wrong place.
+- **A save in the half-second after a command can store an empty file** for
+  a document still waiting for the room; **signing out and back in** can
+  write stale copies of files collaborators edited meanwhile; **a command's
+  change that splits an emoji** corrupts it; **typing during a move** of the
+  same file can be dropped.
+
 ### Unexplained once, and now able to explain themselves
 
 **Typing in the second after a guest reconnects is lost if the host drops in
@@ -433,6 +456,9 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| A command in one place that rewrote a file open only in another reached the store and nobody's editor: theirs kept the old text, and their next keystroke saved it back over the command's work, for everyone | this commit |
+| A new file opened while empty, then written by a command, opened empty — its document had no state, so the command's output went to the store and the model and never into it — and typing in it saved only the typing | this commit |
+| A guest on Windows typing the first line break into a one-line file put CRLF in the document while a Mac guest's editor held LF — Monaco's default line ending is the operating system's — and every edit after it would land a character off, on the host's disk. Found by reading, and fixed without a check: one needs a Windows browser. The page now gives the editor the document's line ending, and stops editing if the two ever differ in length; `check-guest` covers the host's own guard, which ends a document a tool gives mixed line endings | this commit |
 | A terminal command finishing in one place took the sandbox's copy of each open file back as the command's work, and put that older text over whatever was typed meanwhile in any place — a character at a time, or a paste | `7b3ec09` |
 | Every terminal command dropped the byte-order mark from a file that had one — Excel's "CSV UTF-8" — and published it so | `7b3ec09` |
 | A pad file with mixed line endings — a CSV a script wrote part of — put every edit after the first converted line ending a character off between the editor and the shared document: a value pasted into a cell showed right where it was pasted, and with part of the old value beside it everywhere else, and in the saved file | `5f98110` |

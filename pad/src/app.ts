@@ -1473,13 +1473,11 @@ export class App {
   private applyEdit(path: string, doc: DocSession, change: Edit): void {
     const model = this.models.get(path);
     if (doc.bound && model && this.monaco) {
+      // As replaceText does: an edit, so the view and the cursor stay where
+      // they were, moving only as far as the text before them changed.
       const from = model.getPositionAt(change.at);
       const to = model.getPositionAt(change.at + change.remove);
-      model.pushEditOperations(
-        [],
-        [{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: change.insert }],
-        () => null,
-      );
+      model.applyEdits([{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: change.insert }]);
       return;
     }
     doc.edit(change.at, change.remove, change.insert);
@@ -1500,20 +1498,35 @@ export class App {
       // — unless the command changed it. Taken back as it was, it put that
       // older text over whatever had been typed since, in this place and
       // every other: a character, or a paste, gone. Until 9 October.
+      // A file somebody else has open, changed here by a command this page
+      // has no document for: the change goes into their document — from
+      // here, once. Stored alone, it never reached them; their editor kept
+      // the old text, and their next keystroke saved it back over the
+      // command's work for everyone. (Taken in by each of them instead, it
+      // would be put in once per person, and a CRDT keeps every copy.)
+      const elsewhere = new Set<string>();
+      if (this.peers && !this.peers.alone) {
+        for (const c of found.changes) {
+          if (c.content === null || c.encoding === "base64" || isMarker(c.path, c.content)) continue;
+          if (this.docs.has(c.path) || !this.known.has(c.path) || this.local.has(c.path)) continue;
+          elsewhere.add(c.path);
+        }
+        await Promise.all([...elsewhere].map((path) => this.readyDoc(path)));
+      }
       const changes: typeof found.changes = [];
       for (const change of found.changes) {
         const doc = this.docs.get(change.path);
-        if (!doc?.hasState || change.content === null || change.encoding === "base64" || isMarker(change.path, change.content)) {
+        if (!doc?.ready || change.content === null || change.encoding === "base64" || isMarker(change.path, change.content)) {
           changes.push(change);
           continue;
         }
         const wrote = rt.wrote(change.path);
         if (change.content === wrote) {
-          // Untouched by the command. Nothing to take back, and nothing to
-          // store: the editors save the document themselves.
-          const before = this.known.get(change.path);
-          if (before === undefined) next.delete(change.path);
-          else next.set(change.path, before);
+          // Untouched by the command: nothing to take back. What is stored
+          // is the document as it is, not the sandbox's older copy of it.
+          const live = doc.contents();
+          next.set(change.path, live);
+          if (live !== this.known.get(change.path)) changes.push({ ...change, content: live });
           continue;
         }
         // Changed by the command: that change, on top of the document as it
@@ -1525,6 +1538,13 @@ export class App {
         if (made) this.applyEdit(change.path, doc, made);
         changes.push({ ...change, content: doc.contents() });
         next.set(change.path, doc.contents());
+      }
+      // Joined only to put the change in; nothing here shows them.
+      for (const path of elsewhere) if (this.active !== path) this.closeDoc(path);
+      // What the sandbox holds now is what the next command starts from —
+      // the command's text, whatever the documents have since made of it.
+      for (const change of found.changes) {
+        if (change.content !== null && change.encoding !== "base64") rt.saw(change.path, change.content);
       }
       if (changes.length === 0) {
         this.known = next;
@@ -1565,7 +1585,7 @@ export class App {
           // (The one on screen carries it through its binding.) A live one
           // took the command's change above, before anything was awaited.
           const doc = this.docs.get(change.path);
-          if (!doc?.hasState) this.setFile(change.path, change.content);
+          if (!doc?.ready) this.setFile(change.path, change.content);
         }
       }
       this.renderFiles();

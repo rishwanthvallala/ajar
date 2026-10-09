@@ -1,6 +1,9 @@
 import type * as monaco from "monaco-editor";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import { asEditorHolds, eolOf, withEol } from "@ajar/workspace-ui/eol";
+
+export { asEditorHolds, eolOf, withEol };
 
 /**
  * Collaborative editing bound to Monaco.
@@ -78,48 +81,6 @@ export function seedId(text: string): number {
   return (h >>> 0) || 1;
 }
 
-/**
- * The line ending an editor model made from `text` has — Monaco's own rule,
- * so the two never disagree: CRLF when more than half the line breaks have a
- * carriage return, LF otherwise, and none when there are no line breaks.
- */
-export function eolOf(text: string): "\n" | "\r\n" | null {
-  let cr = 0;
-  let lf = 0;
-  let crlf = 0;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    if (c === 13) {
-      if (text.charCodeAt(i + 1) === 10) {
-        crlf++;
-        i++;
-      } else cr++;
-    } else if (c === 10) lf++;
-  }
-  const total = cr + lf + crlf;
-  if (total === 0) return null;
-  return cr + crlf > total / 2 ? "\r\n" : "\n";
-}
-
-/** Every line break in `text` as `eol`. */
-export function withEol(text: string, eol: "\n" | "\r\n"): string {
-  return text.replace(/\r\n|\r|\n/g, eol);
-}
-
-/**
- * Text as an editor holds it: one line ending throughout.
- *
- * A Monaco model cannot hold mixed line endings. Made from a file with both,
- * it converts them all to one, and from then on every offset after a
- * converted one was off by a character between the editor and the document:
- * a paste over a value in a CSV left part of the old value behind in the
- * document — what was saved, and what every other place showed once it opened
- * the file — while the screen that pasted looked right. Until 9 October.
- */
-export function asEditorHolds(text: string): string {
-  const eol = eolOf(text);
-  return eol ? withEol(text, eol) : text;
-}
 
 /** One open file, shared. */
 export class DocSession {
@@ -128,6 +89,8 @@ export class DocSession {
   readonly awareness: Awareness;
   private binding: (() => void) | null = null;
   private applyingRemote = false;
+  /** Seeded from a stored copy that was empty: nothing to insert, and still the truth. */
+  private seededEmpty = false;
   private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
   private styleEl: HTMLStyleElement | null = null;
   private api: typeof monaco | null = null;
@@ -256,7 +219,11 @@ export class DocSession {
     // so the seeds still match; the stored copy takes the converted text at
     // the next save.
     text = asEditorHolds(text);
-    if (this.ytext.length > 0 || !text) return;
+    if (this.ytext.length > 0) return;
+    if (!text) {
+      this.seededEmpty = true;
+      return;
+    }
     const mine = this.ydoc.clientID;
     this.ydoc.clientID = seedId(text);
     try {
@@ -280,6 +247,17 @@ export class DocSession {
    */
   get hasState(): boolean {
     return this.ydoc.store.clients.size > 0 && this.ydoc.store.pendingStructs === null;
+  }
+
+  /**
+   * Whether this is the file's text, to be edited and built on: somebody's
+   * state, or a stored copy that was empty. `hasState` alone said no to the
+   * second — an empty seed inserts nothing — so a new file a command then
+   * wrote kept an empty document, and opened empty, with the command's
+   * output in the store and nowhere on screen.
+   */
+  get ready(): boolean {
+    return this.hasState || (this.seededEmpty && this.ydoc.store.pendingStructs === null);
   }
 
   /**

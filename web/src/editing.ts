@@ -7,6 +7,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwareness
 import { onThemeChange } from "@ajar/workspace-ui";
 import { colourFor } from "./colours";
 import { replaceText } from "./replace";
+import { eolOf } from "@ajar/workspace-ui/eol";
 
 /**
  * Collaborative editing bound to Monaco.
@@ -60,6 +61,9 @@ export class DocSession {
   private applyingRemote = false;
   private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
   private styleEl: HTMLStyleElement | null = null;
+
+  /** Told when the editor can no longer hold this document as it is. */
+  onDrift: (() => void) | null = null;
 
   constructor(
     readonly docId: number,
@@ -129,7 +133,16 @@ export class DocSession {
   /** Attach to an editor. Returns a function that detaches everything. */
   bind(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
     // The document is the truth; the model starts from it — brought there by
-    // an edit rather than `setValue`, which would send the view to line 1.
+    // an edit rather than `setValue`, which would send the view to line 1 —
+    // and in its line ending. A file with no line breaks yet took Monaco's
+    // default, which is the operating system's: CRLF for a guest on Windows,
+    // LF on a Mac. The first Enter on Windows put a CRLF in the document that
+    // the Mac's model held as LF, and every edit after it landed a character
+    // off — in the document, and on the host's disk.
+    const eol = eolOf(this.ytext.toString()) ?? "\n";
+    if (model.getEOL() !== eol) {
+      model.setEOL(eol === "\r\n" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    }
     replaceText(model, this.ytext.toString());
     this.decorations = editor.createDecorationsCollection([]);
 
@@ -160,6 +173,10 @@ export class DocSession {
       } finally {
         this.applyingRemote = false;
       }
+      // A line ending the model converted on the way in — written on the host
+      // by something else. From here every offset would be off, so this
+      // stops being edited rather than drift.
+      if (model.getValueLength() !== this.ytext.length) this.onDrift?.();
     };
     this.ytext.observe(onRemote);
 
