@@ -91,6 +91,8 @@ export class DocSession {
   private applyingRemote = false;
   /** Seeded from a stored copy that was empty: nothing to insert, and still the truth. */
   private seededEmpty = false;
+  /** The text this document was seeded with, and when — what its own history starts from. */
+  seededWith: { text: string; at: number } | null = null;
   private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
   private styleEl: HTMLStyleElement | null = null;
   private api: typeof monaco | null = null;
@@ -220,6 +222,7 @@ export class DocSession {
     // the next save.
     text = asEditorHolds(text);
     if (this.ytext.length > 0) return;
+    this.seededWith = { text, at: Date.now() };
     if (!text) {
       this.seededEmpty = true;
       return;
@@ -235,6 +238,36 @@ export class DocSession {
 
   applyUpdate(bytes: Uint8Array) {
     Y.applyUpdate(this.ydoc, bytes, "remote");
+  }
+
+  /**
+   * The client of a history in `update` that shares nothing with this one,
+   * or null.
+   *
+   * A document starts with one insert that has nothing to its left or right:
+   * the seed. An update carrying such an insert from a client this document
+   * has never heard of, when this one already holds text, is a second
+   * document of the same file — seeded from the stored copy by somebody who
+   * asked while the place holding the live one could not answer: asleep, or
+   * between networks. Merged, a CRDT keeps both, and the file doubled for
+   * everyone.
+   */
+  foreignRoot(update: Uint8Array): number | null {
+    if (this.ytext.length === 0) return null;
+    for (const struct of Y.decodeUpdate(update).structs) {
+      if (!(struct instanceof Y.Item)) continue;
+      if (this.ydoc.store.clients.has(struct.id.client)) continue;
+      if (struct.origin === null && struct.rightOrigin === null) return struct.id.client;
+    }
+    return null;
+  }
+
+  /** The client of this document's own first insert, if it has one. */
+  get rootClient(): number | null {
+    for (let item = this.ytext._start; item; item = item.right) {
+      if (item.origin === null && item.rightOrigin === null) return item.id.client;
+    }
+    return null;
   }
 
   /**

@@ -484,6 +484,21 @@ command did change takes only that change, rebased onto the live text by
 with a byte-order mark read back without one and every command published it
 so. `pair-check.mjs` plays both, two places at once.
 
+**Two histories of one file are told apart, not merged,** since 9 October.
+Seeding from the stored copy is safe only when nobody holds a live document,
+and "nobody answered" is not the same thing: a place whose connection dropped
+holds one and cannot say so. Back, its document and the newcomer's shared no
+history, and the merge kept both — the file doubled. A document's own history
+starts with one insert that has nothing to either side; an update carrying
+such an insert from a client it has never seen, into a document with text,
+is the other history (`DocSession.foreignRoot`). Both places see it, and the
+one whose first insert has the smaller client id gives its document up and
+rejoins (`App.rejoin`): it takes the room's, then replays what it typed since
+the two parted — measured from its text when it lost the room, or from what
+it seeded, whichever came later. `pair-check.mjs` cuts a place's sockets the
+way a sleeping laptop's are cut, types on both sides of the gap, and wants
+one file with both people's work.
+
 ### Seeding the sandbox is a separate problem, with the same shape
 
 The document seeding above is about the *room*. Seeding the **sandbox** is

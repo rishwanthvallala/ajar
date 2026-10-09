@@ -43,13 +43,9 @@ not what would be nice.
 
 An audit of every path text takes into or out of a live document, after the
 line-ending and write-back bugs, traced these by reading the code. The two it
-ranked first were reproduced and are closed above; these were not, and each
+ranked first, and the doubled file below them, were reproduced and are closed above; these were not, and each
 needs a check that fails before it is fixed.
 
-- **A place that drops off while holding a document can double the file when
-  it returns.** If somebody else opens the file meanwhile and hears no answer,
-  they seed it again from the stored copy under that text's id; the returning
-  document's history shares nothing with it, and the merge keeps both copies.
 - **The guest page loses typing in flight when its socket dies.** What it
   replays after reconnecting is measured from the moment it noticed, which
   already includes keystrokes handed to the dying socket.
@@ -77,11 +73,13 @@ not about this. The fix is to mark typing into a file being reopened as
 unsent, and to park it across a switch, as a document typed into while the
 host is away already is.
 
-**`accounts-check` failed once on CI's Ubuntu runner,** on 8 October, near the
-end: a wait timed out, and the page notes show the owner's other tab refused
-`rate_limited` by its room. The same code passed the run before. If it
-recurs, the relay's per-address limits, spent by one long suite from
-127.0.0.1, are the first suspect.
+**`accounts-check` failed twice on CI's Ubuntu runner,** on 8 and 9 October,
+at its last step: the owner's other tab, its pad deleted, was refused
+`rate_limited` on its way back into the room, and was still backing off when
+the 15 s wait ran out. Every browser in the suite is one address, and by then
+it has spent much of the relay's joins for the minute. The wait now runs to
+the window's length. If it fails past that, the limit is being hit for a
+reason other than one suite's volume.
 
 **`smoke-editing` failed once.** *Terminal 1 never became ready*, on 24
 September, and it has passed every run since. If it recurs, `ready()` now says
@@ -456,6 +454,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| A place whose connection dropped while somebody else opened the file came back with a document sharing no history with theirs — the newcomer, unanswered, had seeded from the stored copy — and the merge kept both: the whole file doubled, for everyone. Each side now sees the other's history for what it is; one, by a fixed rule, rejoins with what it typed since they parted | this commit |
 | A command in one place that rewrote a file open only in another reached the store and nobody's editor: theirs kept the old text, and their next keystroke saved it back over the command's work, for everyone | `9262712` |
 | A new file opened while empty, then written by a command, opened empty — its document had no state, so the command's output went to the store and the model and never into it — and typing in it saved only the typing | `9262712` |
 | A guest on Windows typing the first line break into a one-line file put CRLF in the document while a Mac guest's editor held LF — Monaco's default line ending is the operating system's — and every edit after it would land a character off, on the host's disk. Found by reading, and fixed without a check: one needs a Windows browser. The page now gives the editor the document's line ending, and stops editing if the two ever differ in length; `check-guest` covers the host's own guard, which ends a document a tool gives mixed line endings | `9262712` |

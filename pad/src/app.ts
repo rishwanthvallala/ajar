@@ -178,6 +178,14 @@ export class App {
   private disposed = false;
   /** Documents with updates they could not place, and when to give up on them. */
   private stuck = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Each open document's text when this page last lost the room, kept until
+   * a little after it is back: what was typed after it is what this place
+   * has that the room may not, if the room grew a document of its own
+   * meanwhile (`rejoin`).
+   */
+  private atDrop = new Map<string, { text: string; at: number }>();
+  private dropGeneration = 0;
 
   constructor(
     private readonly name: string,
@@ -318,6 +326,14 @@ export class App {
     this.peers = new Peers(url, this.name, {
       onMoved: () => void this.refresh(),
       onPresence: (_others, id) => {
+        if (id === null) {
+          for (const [path, doc] of this.docs) if (doc.ready) this.atDrop.set(path, { text: doc.contents(), at: Date.now() });
+        } else if (this.atDrop.size) {
+          const generation = ++this.dropGeneration;
+          setTimeout(() => {
+            if (generation === this.dropGeneration) this.atDrop.clear();
+          }, 30_000);
+        }
         const renamed = id !== null && id !== this.me;
         if (id !== null) this.me = id;
         this.renderPresence(id === null ? [] : (this.peers?.otherIds ?? []));
@@ -589,6 +605,15 @@ export class App {
     }
 
     if (kind === DOC_UPDATE) {
+      // A document of this file that grew apart from this one. Both places
+      // see it, and the same rule picks the one kept: the other gives its
+      // own up and rejoins with what it had that was not saved.
+      const foreign = doc.foreignRoot(bytes);
+      if (foreign !== null) {
+        const own = doc.rootClient;
+        if (own === null || own < foreign) void this.rejoin(path, doc);
+        return;
+      }
       doc.applyUpdate(bytes);
       if (this.viewer) this.unstick(path, doc);
       // Whoever was waiting for state has it now — if this was state. Any
@@ -1463,6 +1488,34 @@ export class App {
     } catch (e) {
       this.say("error", (e as Error).message);
     }
+  }
+
+  /**
+   * Give up this place's document of a file for the room's, keeping what
+   * was typed here and not yet saved: from the stored copy to this
+   * document's text, rebased onto the room's.
+   */
+  private async rejoin(path: string, doc: DocSession): Promise<void> {
+    if (this.docs.get(path) !== doc) return;
+    const mine = doc.contents();
+    // From where this place's history and the room's parted: what it had
+    // when it lost the room, or what it seeded from while the room's was out
+    // of reach, whichever came later. Not the stored copy, which may have
+    // moved on since with work of either side's — measured from it, that
+    // work would be taken out again, or left out.
+    const dropped = this.atDrop.get(path);
+    const seeded = doc.seededWith;
+    const parted = dropped && (!seeded || dropped.at > seeded.at) ? dropped : seeded;
+    const base = parted?.text ?? this.known.get(path) ?? mine;
+    this.atDrop.delete(path);
+    const shown = this.active === path;
+    this.closeDoc(path);
+    const room = await this.readyDoc(path);
+    if (this.docs.get(path) !== room) return;
+    const made = carryOver(base, mine, room.contents());
+    if (made) this.applyEdit(path, room, made);
+    else this.setFile(path, room.contents());
+    if (shown && this.active === path) this.show(path);
   }
 
   /**

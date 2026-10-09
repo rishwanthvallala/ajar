@@ -967,7 +967,11 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   const meAfter = await (await fetch(`${ORIGIN}/api/me`, { headers: { cookie: lastCookie } })).json();
   is(meAfter.user, null, "the account's sign-in no longer works");
   is((await fetch(`${ORIGIN}/api/pad/${doomed}`)).status, 410, "its pads are deleted");
-  await stillTab.waitForSelector("text=This pad was deleted", { timeout: 15_000 });
+  // Up to the relay's window. Every browser here is one address, and by now
+  // the suite has spent much of its joins for the minute: twice on CI's
+  // Ubuntu (8–9 October) this tab's way back in was refused `rate_limited`,
+  // and it was backing off as it should when 15 s ran out.
+  await stillTab.waitForSelector("text=This pad was deleted", { timeout: 70_000 });
   ok("and a tab that had one open says it was deleted");
 } catch (e) {
   fail(e.message.split("\n")[0]);

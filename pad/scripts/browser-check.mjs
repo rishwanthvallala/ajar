@@ -101,8 +101,11 @@ server.close();
 relay.kill();
 await rm(padDir, { recursive: true, force: true });
 
+// The notes first, each cut short, and the failures again at the very end:
+// CI keeps only the end of the log where anyone can read it, and on its Mac
+// a run's notes — the runtime's "fatal signal" chatter — filled all of it.
+for (const n of noise) console.log(`  note: ${n.length > 300 ? `${n.slice(0, 300)}…` : n}`);
 for (const line of results.filter((l) => l !== "DONE")) console.log(`  ${line}`);
-for (const n of noise) console.log(`  note: ${n}`);
 
 const failed = results.filter((l) => l.startsWith("FAIL"));
 if (timedOut) {
@@ -110,6 +113,8 @@ if (timedOut) {
   process.exit(1);
 }
 if (failed.length) {
+  console.log("\n  failed:");
+  for (const line of failed) console.log(`    ${line}`);
   console.log(`\n  ${failed.length} check${failed.length === 1 ? "" : "s"} failed\n`);
   process.exit(1);
 }

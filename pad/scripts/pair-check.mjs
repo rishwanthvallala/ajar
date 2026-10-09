@@ -79,6 +79,22 @@ const errors = [];
 
 async function place(name, label) {
   const page = await (await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] })).newPage();
+  // A connection that can be cut the way a sleeping laptop's is: closed, and
+  // no way back until let. (Playwright's offline mode holds frames back and
+  // releases them later, which no network does.)
+  await page.addInitScript(() => {
+    const Real = window.WebSocket;
+    window.__sockets = [];
+    window.__cut = false;
+    const Cuttable = function (url, protocols) {
+      const ws = window.__cut ? new Real("ws://127.0.0.1:9/") : new Real(url, protocols);
+      window.__sockets.push(ws);
+      return ws;
+    };
+    Cuttable.prototype = Real.prototype;
+    for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Cuttable[k] = Real[k];
+    window.WebSocket = Cuttable;
+  });
   page.on("pageerror", (e) => { if (!/Canceled/.test(e.message)) errors.push(`${label}: ${e.message.slice(0, 160)}`); });
   await page.goto(`${ORIGIN}/${name}`);
   await page.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
@@ -138,6 +154,44 @@ try {
     await b.keyboard.type("XY");
     await wait(a, 800);
     await agree(a, b, "name,qty\r\nalXYpha,1\r\nbeta,1233132\r\n", "and typing in the other place lands where it was typed");
+    await a.context().close();
+    await b.context().close();
+  }
+
+  // ---- a place that drops out while another opens the file ----------------
+  // Nobody answers the newcomer, so it seeds from the stored copy; the place
+  // that dropped comes back with its own document of the file, and the two
+  // share no history. Merged, a CRDT kept both, and the file doubled for
+  // everyone. Each side's work in the gap is kept, once.
+  {
+    const name = `pair-drop-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ writes: [{ path: "main.py", content: "one\n" }] }),
+    });
+    const a = await place(name, "A");
+    await wait(a, 1500);
+    await caretAt(a, 2, 1);
+    await a.keyboard.type("two\n");
+    await wait(a, 2000);
+    await a.evaluate(() => {
+      window.__cut = true;
+      for (const ws of window.__sockets) ws.close();
+    });
+    await wait(a, 2000);
+    await caretAt(a, 3, 1);
+    await a.keyboard.type("three\n");
+    const b = await place(name, "B");
+    await b.waitForFunction(() => window.__pad.text("main.py") === "one\ntwo\n", null, { timeout: 15_000 });
+    await caretAt(b, 1, 1);
+    await b.keyboard.type("B");
+    await wait(b, 1500);
+    await a.evaluate(() => {
+      window.__cut = false;
+    });
+    await wait(a, 12_000);
+    await agree(a, b, "Bone\ntwo\nthree\n", "a place back from a dropout, and one that opened the file meanwhile, end with one file and both their work");
     await a.context().close();
     await b.context().close();
   }
