@@ -191,6 +191,19 @@ export class DocSession {
     }, "local");
   }
 
+  /**
+   * Remove `remove` characters at `at` and put `insert` there, as an edit of
+   * this browser's — for a change made outside the editor, to a document
+   * not on screen. In the document's line ending, as `replace` is.
+   */
+  edit(at: number, remove: number, insert: string) {
+    const text = withEol(insert, eolOf(this.ytext.toString()) ?? "\n");
+    this.ydoc.transact(() => {
+      if (remove > 0) this.ytext.delete(at, remove);
+      if (text) this.ytext.insert(at, text);
+    }, "local");
+  }
+
   /** The text as it stands. */
   contents(): string {
     return this.ytext.toString();

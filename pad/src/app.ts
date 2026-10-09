@@ -11,7 +11,7 @@ import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
-import { carryOver } from "./carry";
+import { carryOver, type Edit } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession, replaceText } from "./editing";
 import { FileTree } from "./files";
@@ -1465,13 +1465,72 @@ export class App {
     }
   }
 
+  /**
+   * A change made outside the editor — a command's — put into a file's live
+   * document as if typed there: through the editor when the file is on
+   * screen, so the binding carries it, and into the document otherwise.
+   */
+  private applyEdit(path: string, doc: DocSession, change: Edit): void {
+    const model = this.models.get(path);
+    if (doc.bound && model && this.monaco) {
+      const from = model.getPositionAt(change.at);
+      const to = model.getPositionAt(change.at + change.remove);
+      model.pushEditOperations(
+        [],
+        [{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: change.insert }],
+        () => null,
+      );
+      return;
+    }
+    doc.edit(change.at, change.remove, change.insert);
+    this.setFile(path, doc.contents());
+  }
+
   /** Push whatever the command changed, and show any new files it made. */
   private async publish(rt: Runtime): Promise<void> {
     if (this.viewer) return this.keepLocally(rt);
     return this.queueWrite(async () => {
       await this.flushModels(rt);
-      const { changes, next, nextBinaries } = await diff(rt, this.known, this.binaries);
-      if (changes.length === 0) return;
+      // Read nothing back before what the page has already written is there.
+      await rt.settled();
+      const found = await diff(rt, this.known, this.binaries);
+      const { next, nextBinaries } = found;
+      // A file with a live document is the document's. What the sandbox
+      // holds of it is the page's own copy, written in as the document moved
+      // — unless the command changed it. Taken back as it was, it put that
+      // older text over whatever had been typed since, in this place and
+      // every other: a character, or a paste, gone. Until 9 October.
+      const changes: typeof found.changes = [];
+      for (const change of found.changes) {
+        const doc = this.docs.get(change.path);
+        if (!doc?.hasState || change.content === null || change.encoding === "base64" || isMarker(change.path, change.content)) {
+          changes.push(change);
+          continue;
+        }
+        const wrote = rt.wrote(change.path);
+        if (change.content === wrote) {
+          // Untouched by the command. Nothing to take back, and nothing to
+          // store: the editors save the document themselves.
+          const before = this.known.get(change.path);
+          if (before === undefined) next.delete(change.path);
+          else next.set(change.path, before);
+          continue;
+        }
+        // Changed by the command: that change, on top of the document as it
+        // is now, and the result stored.
+        const live = doc.contents();
+        // With no record of what the page wrote, the difference from the
+        // document itself, which is what taking it back used to do.
+        const made = carryOver(wrote ?? live, change.content, live);
+        if (made) this.applyEdit(change.path, doc, made);
+        changes.push({ ...change, content: doc.contents() });
+        next.set(change.path, doc.contents());
+      }
+      if (changes.length === 0) {
+        this.known = next;
+        this.binaries = nextBinaries;
+        return;
+      }
       let seq: number;
       try {
         seq = await this.store.write(this.name, changes);
@@ -1503,10 +1562,10 @@ export class App {
           // it was undone here the moment the file was shown again — bound to
           // the document, which still had the old text — and never reached
           // anybody else in the room, whose next save could undo it for good.
-          // (The one on screen carries it through its binding.)
+          // (The one on screen carries it through its binding.) A live one
+          // took the command's change above, before anything was awaited.
           const doc = this.docs.get(change.path);
-          if (doc && !doc.bound && doc.hasState) doc.replace(change.content);
-          this.setFile(change.path, change.content);
+          if (!doc?.hasState) this.setFile(change.path, change.content);
         }
       }
       this.renderFiles();

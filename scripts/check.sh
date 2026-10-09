@@ -101,10 +101,15 @@ if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
   echo "── ui: the pad, as a person uses it ─── skipped (AJAR_SKIP_UI=1) ──"
 else
   echo "── ui: the pad, as a person uses it ──────────────────"
+  # check.ts, in a real browser: what has to be true underneath — among it,
+  # documents bound to real editors — and nothing ran it but `npm run check`.
+  node pad/scripts/browser-check.mjs
   node pad/scripts/terminal-check.mjs
   node pad/scripts/user-check.mjs
   echo "── ui: accounts — owner, editor and viewer ───────────"
   node pad/scripts/accounts-check.mjs
+  echo "── ui: two places in one pad ─────────────────────────"
+  node pad/scripts/pair-check.mjs
 fi
 
 echo "── smoke: peer sessions ──────────────────────────────"

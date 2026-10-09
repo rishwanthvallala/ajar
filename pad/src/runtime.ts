@@ -174,6 +174,33 @@ export class Runtime {
   ) {}
 
   /**
+   * The text the page last put in each file, and the writes still on their
+   * way. A command's changes are what differs from these: a file still
+   * holding what the page wrote is one the command did not touch, however
+   * far the live document has moved on since — and reading it back as the
+   * command's work put that older text over whatever somebody had typed
+   * meanwhile, a character or a paste at a time.
+   */
+  private readonly written = new Map<string, string>();
+  private inFlight = new Set<Promise<unknown>>();
+
+  /** What the page last wrote to `path`, if it was text and is still there. */
+  wrote(path: string): string | undefined {
+    return this.written.get(path);
+  }
+
+  /** Once every write already asked for has landed. */
+  async settled(): Promise<void> {
+    while (this.inFlight.size) await Promise.allSettled([...this.inFlight]);
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.inFlight.add(work);
+    void work.finally(() => this.inFlight.delete(work)).catch(() => {});
+    return work;
+  }
+
+  /**
    * `files` keys are root-relative JS paths: `"main.py"`, not `"/app/main.py"`.
    *
    * `install` overrides the shipped package set. Only the package probe passes
@@ -214,7 +241,12 @@ export class Runtime {
       ...(install?.network ? { network: install.network } : {}),
       files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),
     });
-    return new Runtime(box, bash);
+    const runtime = new Runtime(box, bash);
+    // What it starts with is written by the page too.
+    for (const [path, contents] of Object.entries(files)) {
+      if (typeof contents === "string") runtime.written.set(path, contents);
+    }
+    return runtime;
   }
 
   /**
@@ -240,29 +272,39 @@ export class Runtime {
     return this.box.fs.readFile(`/${path}`);
   }
 
-  async writeBytes(path: string, bytes: Uint8Array): Promise<void> {
-    const slash = path.lastIndexOf("/");
-    if (slash > 0) {
-      await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
-    }
-    await this.box.fs.writeFile(`/${path}`, bytes);
+  writeBytes(path: string, bytes: Uint8Array): Promise<void> {
+    this.written.delete(path);
+    return this.track((async () => {
+      const slash = path.lastIndexOf("/");
+      if (slash > 0) {
+        await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
+      }
+      await this.box.fs.writeFile(`/${path}`, bytes);
+    })());
   }
 
-  async write(path: string, contents: string): Promise<void> {
-    const slash = path.lastIndexOf("/");
-    if (slash > 0) {
-      await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
-    }
-    await this.box.fs.writeText(`/${path}`, contents);
+  write(path: string, contents: string): Promise<void> {
+    // Recorded as it is asked for, in order: the last asked for is the one
+    // the file ends up holding.
+    this.written.set(path, contents);
+    return this.track((async () => {
+      const slash = path.lastIndexOf("/");
+      if (slash > 0) {
+        await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
+      }
+      await this.box.fs.writeText(`/${path}`, contents);
+    })());
   }
 
-  async remove(path: string): Promise<void> {
-    await this.box.fs.remove(`/${path}`);
+  remove(path: string): Promise<void> {
+    this.written.delete(path);
+    return this.track(this.box.fs.remove(`/${path}`));
   }
 
   /** A directory and everything in it. */
-  async removeTree(path: string): Promise<void> {
-    await this.box.fs.remove(`/${path}`, { recursive: true });
+  removeTree(path: string): Promise<void> {
+    for (const p of [...this.written.keys()]) if (p.startsWith(`${path}/`)) this.written.delete(p);
+    return this.track(this.box.fs.remove(`/${path}`, { recursive: true }));
   }
 
   /**

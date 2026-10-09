@@ -63,7 +63,11 @@ export function binariesFrom(files: Record<string, StoredFile>): Binaries {
   return binaries;
 }
 
-const strict = new TextDecoder("utf-8", { fatal: true });
+// `ignoreBOM` keeps a byte-order mark in the text rather than dropping it:
+// dropped, every command read a file saved with one as changed — a file the
+// page had written with the mark came back without it — and published it so,
+// for everyone. Until 9 October.
+const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
  * A file's bytes as text, or null when they are not text: not UTF-8, or with

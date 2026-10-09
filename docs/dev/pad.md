@@ -469,6 +469,21 @@ length from it: to LF, by deleting carriage returns, because two places
 mending at once each delete the same characters, where two inserting the
 same CR would put in two. `check.ts` plays all of it with real editors.
 
+**A command's work is what it changed,** since 9 October. After a command,
+the page diffs the sandbox against the stored copy and publishes what moved;
+for an open file it used to take the sandbox's text back into the document as
+well. But the sandbox's copy of an open file is the page's own, written in as
+the document moved — and a moment old. Taken back, it put that older text
+over whatever somebody had typed since, in every place: a command run in one
+browser while somebody typed in another lost them characters. `Runtime` now
+records what the page last wrote to each file and waits for writes in flight
+before the diff reads; an open file still holding what the page wrote is one
+the command did not touch, and is left alone — the editors save it. One the
+command did change takes only that change, rebased onto the live text by
+`carryOver`. And the sandbox's text is decoded with `ignoreBOM`, or a file
+with a byte-order mark read back without one and every command published it
+so. `pair-check.mjs` plays both, two places at once.
+
 ### Seeding the sandbox is a separate problem, with the same shape
 
 The document seeding above is about the *room*. Seeding the **sandbox** is
