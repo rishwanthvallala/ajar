@@ -32,6 +32,13 @@ found what a first install meets — [that day's list](#closed-on-8-october).
 The installer's half is live with the relay; the static Linux build and the
 agent's half shipped in v0.0.8 the same day.*
 
+*On 11 October the pad store became a file per blob and a save the edit, and a
+pad went to 100 MB; every case measured before was run again against the
+release before, and two slowdowns found that way were fixed. On 12 October a
+pad's runtime stopped needing registry.wasmer.io to start, and two typing
+losses on the guest's page were closed — [those days' lists](#closed-on-12-october).
+The relay and both pages are live; nothing of it needs an agent release.*
+
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
 not what would be nice.
@@ -40,18 +47,15 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### The guest page: one found and left, three without checks
+### The guest page: one fix without a check
 
-Found while closing the guest page's typing losses on 11 October, and older
-than those fixes: a guest who goes back to a file whose typing is held for a
-host that is away, and stays on it until the host returns, has the file opened
-again *and* the held copy handed back with a close — and the host then drops
-them as a reader of the document they are editing. Left alone for now.
-
-Fixed with the rest, but with no check of their own: a hand-back of held
-typing lost to a second blip during the hand-back itself; the toast that says
-held typing could not be saved, when the host refuses the file by then; and
-the guard that ignores a second answer for the same file.
+Of 11 October's fixes to typing held for a host that is away, one still has no
+check of its own: held typing being handed back when a second blip of the
+guest's own lands *during* the hand-back — between the host's answer naming the
+document and the document's state arriving. Those are two frames the host sends
+back to back; a proxy cannot reliably come between them, so a check would need a
+hook in the page. The other two, and the bug left that day, were closed on 12
+October.
 
 ### Unexplained once, and now able to explain themselves
 
@@ -62,6 +66,13 @@ the 15 s wait ran out. Every browser in the suite is one address, and by then
 it has spent much of the relay's joins for the minute. The wait now runs to
 the window's length. If it fails past that, the limit is being hit for a
 reason other than one suite's volume.
+
+**The guest's editor would not load, twice on CI.** On 11 October `check-guest`
+saw "Couldn't load the editor" opening `ro.txt` through a 250 ms lag, once on
+Ubuntu and once on macOS; eight runs here did not. The second time no request
+had failed, nothing was refused and nothing was thrown — the loader caught the
+error and kept nothing of it. It now logs it (`90fc82d`) and the check reports
+it, so a recurrence says what the editor's module threw.
 
 **`smoke-editing` failed once.** *Terminal 1 never became ready*, on 24
 September, and it has passed every run since. If it recurs, `ready()` now says
@@ -147,24 +158,6 @@ signal the agent or anything else the host runs — and also cannot `kill` a
 server started in a *different* tab. That was the trade taken, and it is one
 line (`Scope::Signal`) if it turns out to be the wrong one. Sharing one domain
 across terminals would need a single confined parent that spawns every shell.
-
-### A pipe into `head` can still end with the runtime talking
-
-`awk '{print $1}' poem.txt | head -1` printed `alpha` and then, on CI on 11
-October, one of two things. Python's `Exception ignored on flushing
-sys.stdout: BrokenPipeError` was the pad's own tools: `head` exits after its
-line, and a tool still writing caught the broken pipe, then met it again in
-Python's last flush on the way out. That is fixed — `awk`, `sort`, `tail` and
-`box.py` point their output at `/dev/null` once the reader has gone, as a real
-tool dies of `SIGPIPE` without a word, and `browser-check` pipes 100,000 lines
-into `head -1` to be sure of it. The other, on CI's Mac, was the runtime's
-own `Program recieved termination signal: Broken pipe` and a run of `fatal
-signal: Aborted`, typo included: there the runtime ended the tool at the write
-before Python saw anything, and said so on the terminal. That one is not the
-pad's to stop from inside the tool. It shows only when the tool loses the
-race to `head`, so rarely and never on a fast machine; the likely fix is the
-pad's terminal leaving out lines that are exactly the runtime's signal
-notices. `browser-check` compares a tool's output without them.
 
 ### Tools that do not fully work
 
@@ -279,6 +272,23 @@ the pad needs it to work.
 ---
 
 ## Built, with the parts that are still open
+
+### Pads of up to 100 MB
+
+From the measurements of 11 October ([pad-store.md](dev/pad-store.md#old-against-new-11-october)):
+
+- **A paste over 30 MiB into a file open live is not shared live.** A page
+  sends no document message over the relay's limit, and says so; the paste is
+  saved, but the other places' documents never get it, and the next save from
+  one of them goes whole over it. Nobody pastes 30 MB into a browser editor
+  often; refusing the paste, or closing the file's live document first, would
+  end it.
+- **One large file uploads more slowly than it did in one request** — about
+  0.4 s at 58 MB — because each part after the first copies the file so far,
+  and a write in parts that fails partway leaves the parts before it in the pad.
+- **Switching back to a large file re-reads its line endings.** Binding a
+  document scans the whole text for them (`eolOf`): about 30 ms each time at
+  20 MB, the largest cost of the switch. Old, and not made worse.
 
 ### `playwright` is declared in the wrong workspace
 
@@ -413,10 +423,21 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
 
+## Closed on 12 October
+
+| | |
+|---|---|
+| A pad's runtime could not start without registry.wasmer.io: it asks where each of ten packages is, one after another, on every start, and when one failed — three runs of eight from one network on 2 October — Run never answered. The answers are recorded with the packages and the service worker gives them; `app-check` runs a browser that cannot resolve the registry and presses Run | `5fd244f` |
+| The two lists beside the mirrored packages, `manifest.json` and now `registry.json`, were cached for a year as immutable with the packages: a returning browser kept a list naming files a later deploy had removed, and fell back to Wasmer. They revalidate each visit | `5fd244f` |
+| A guest typing into a file while the host was away, leaving it and going back before they returned was dropped by the host as a reader of that file on their return: the page closed the document it had parked while the same file was being opened again, the host removed it, and every keystroke after was refused — with the file open and editable on screen. Found and left on 11 October | `d62b567` |
+| Typing held back for a file, gone back to while the host was away, was dropped as they returned: on screen, it was handed back as a file being opened again, which sends only what differs from the text held, and kept typing is already in that text. Found writing the check for the guard that ignores a second answer for one file, which has a check now, as does the toast for typing held for a file the host refuses | `337893f` |
+| A pipe into `head` could end with the runtime's own `Program recieved termination signal: Broken pipe` and a run of `fatal signal: Aborted` on the terminal, on a slow machine. The shell leaves them out — the abort only after a broken pipe, so a program's own abort is still told | `f68770a` |
+
 ## Closed on 11 October
 
 | | |
 |---|---|
+| Measured against the release before: working out a large write's requests cost up to 385 ms of the page's main thread, now 88; switching back to a 20 MB file was 18 ms slower every time, from counting its bytes in one piece, now counted a line at a time and as fast as before | `f6e92ab` |
 | A pad's 60 MB was a stopgap meant to go back to 25. It is 100 MB now, to stay: an address may add 512 MiB a day and an account holds 250 MB. What made a large pad dangerous is gone — see the next three rows — and a request carries at most 24 MiB, so a larger upload, copy or file goes in parts | `adfa6fa` |
 | One large file and twenty one-character saves into it: a 60 MB file took the relay to 274 MB of its 512, a 25 MB one before it got it killed, and the saves left 1.3 GB of old copies on disk, outside the ceiling's count. An edit is now streamed from one stored copy to the next, and the one it replaced deleted then: a save adds no memory at 99 MB, and one copy stays | `adfa6fa` |
 | A write's body could be 121 MiB, held whole with the text parsed out of it: 268 MB for one 60 MB file. A request is now 33 MiB at most, and glibc's mmap threshold is fixed so the relay gives back what uploads used — 59 MB held after files of 25, 60 and 99 MB, not 261 | `adfa6fa` |
