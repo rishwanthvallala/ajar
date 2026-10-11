@@ -68,69 +68,81 @@ export interface Step {
   follows?: boolean;
 }
 
+const encoder = new TextEncoder();
+const NOT_ASCII = /[^\x00-\x7f]/;
+
 /**
- * Bytes the code unit at `i` of `s` takes in a JSON string, as JSON.stringify
- * writes one: a surrogate pair is counted at its first half, and its second
- * is nothing.
+ * Bytes `s` takes as a JSON string, its quotes too: what JSON.stringify writes,
+ * measured on it. Walking the characters in script took 175 ms for 58 MB.
  */
-function width(s: string, i: number): number {
-  const c = s.charCodeAt(i);
-  if (c < 0x80) {
-    if (c === 0x22 || c === 0x5c) return 2;
-    if (c >= 0x20) return 1;
-    return c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 2 : 6;
-  }
-  if (c < 0x800) return 2;
-  if (c >= 0xd800 && c <= 0xdbff) {
-    const next = s.charCodeAt(i + 1);
-    return next >= 0xdc00 && next <= 0xdfff ? 4 : 6;
-  }
-  if (c >= 0xdc00 && c <= 0xdfff) {
-    const prev = s.charCodeAt(i - 1);
-    return prev >= 0xd800 && prev <= 0xdbff ? 0 : 6;
-  }
-  return 3;
-}
-
-/** Bytes `s` takes as a JSON string, its quotes too. */
 export function jsonBytes(s: string): number {
-  let n = 2;
-  for (let i = 0; i < s.length; i++) n += width(s, i);
-  return n;
+  const json = JSON.stringify(s);
+  return NOT_ASCII.test(json) ? encoder.encode(json).length : json.length;
 }
 
-/** `s` in pieces of at most `max` bytes as JSON strings, none cut inside a character. */
+const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff;
+
+/**
+ * `s` in pieces of at most `max` bytes as JSON strings, none cut inside a
+ * character. Each piece's length is guessed from the bytes the last one took
+ * per character, and measured; one over is cut down in proportion.
+ */
 export function pieces(s: string, max: number): string[] {
+  // A character is a byte at least, so a string longer than `max` is over it
+  // without being measured; a guess does for its first piece.
+  let perChar = 1.05;
+  if (s.length + 2 <= max) {
+    const whole = jsonBytes(s);
+    if (whole <= max) return [s];
+    perChar = whole / s.length;
+  }
   const out: string[] = [];
   let start = 0;
-  let n = 2;
-  for (let i = 0; i < s.length; i++) {
-    const w = width(s, i);
-    if (w > 0 && n + w > max && i > start) {
-      out.push(s.slice(start, i));
-      start = i;
-      n = 2;
+  while (start < s.length) {
+    let len = Math.max(1, Math.floor((max - 2) / perChar));
+    for (;;) {
+      let end = Math.min(s.length, start + len);
+      // Not between the halves of a pair; and never nothing.
+      if (end < s.length && isHigh(s.charCodeAt(end - 1))) end--;
+      if (end <= start) end = Math.min(s.length, start + 2);
+      const piece = s.slice(start, end);
+      const bytes = jsonBytes(piece);
+      if (bytes <= max || end - start <= 2) {
+        out.push(piece);
+        perChar = Math.max(bytes / piece.length, 1);
+        start = end;
+        break;
+      }
+      len = Math.max(1, Math.floor((end - start) * (max / bytes) * 0.98));
     }
-    n += w;
   }
-  out.push(s.slice(start));
   return out;
 }
 
-const encoder = new TextEncoder();
-
-/** A change's bytes as JSON, without its text, and with it. */
-function measure(c: Change): { frame: number; whole: number } {
-  const frame = encoder.encode(
+/** A change's bytes as JSON without its text. */
+function frameOf(c: Change): number {
+  return encoder.encode(
     JSON.stringify({
       ...c,
       content: typeof c.content === "string" ? "" : c.content,
       edits: c.edits?.map((e) => ({ ...e, insert: "" })),
     }),
   ).length;
-  let text = typeof c.content === "string" ? jsonBytes(c.content) - 2 : 0;
-  for (const e of c.edits ?? []) text += jsonBytes(e.insert) - 2;
-  return { frame, whole: frame + text };
+}
+
+/** A change's text: its content, and what its edits insert. */
+function textsOf(c: Change): string[] {
+  return [...(typeof c.content === "string" ? [c.content] : []), ...(c.edits ?? []).map((e) => e.insert)];
+}
+
+/**
+ * The most a change can take as JSON: six bytes a character, for a control
+ * character escaped as `\u00XX`, and room for its keys.
+ */
+function atMost(c: Change): number {
+  let units = c.path.length + (typeof c.content === "string" ? c.content.length : 0) + (c.base?.length ?? 0);
+  for (const e of c.edits ?? []) units += e.insert.length + 40;
+  return units * 6 + 256;
 }
 
 /** `{"writes":[` and `]}`, and room to spare. */
@@ -144,6 +156,9 @@ const ENVELOPE = 1024;
  */
 export function plan(changes: Change[], max = REQUEST_BYTES): Step[] {
   const room = max - ENVELOPE;
+  // Every save and nearly every command: one request even at the most it could
+  // take, so nothing needs measuring.
+  if (changes.reduce((n, c) => n + atMost(c), 0) <= room) return [{ changes }];
   const steps: Step[] = [];
   let run: Change[] = [];
   let size = 0;
@@ -153,7 +168,12 @@ export function plan(changes: Change[], max = REQUEST_BYTES): Step[] {
     size = 0;
   };
   for (const c of changes) {
-    const { frame, whole } = measure(c);
+    const frame = frameOf(c);
+    const texts = textsOf(c);
+    // Longer than a request in characters is longer in bytes: no need to
+    // measure what is going to be split.
+    const units = texts.reduce((n, t) => n + t.length, 0);
+    const whole = frame + units > room ? Infinity : texts.reduce((n, t) => n + jsonBytes(t), frame);
     if (whole <= room) {
       if (size + whole + 1 > room) flush();
       run.push(c);

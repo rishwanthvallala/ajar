@@ -9,9 +9,10 @@ import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { carryOver, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
-import { asEditorHolds, cssString, DocSession, eolOf, participantId } from "./editing";
+import { asEditorHolds, cssString, DocSession, eolOf, participantId, utf8Of } from "./editing";
 import { Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
+import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
 import { seedFiles } from "./seed";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
@@ -352,6 +353,19 @@ async function main() {
     (self as unknown as { MonacoEnvironment: unknown }).MonacoEnvironment = {
       getWorker: async () => new (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default(),
     };
+    // A file's size as UTF-8, counted a line at a time: what decides whether it
+    // can be edited together live, so it has to be the bytes, not a guess.
+    {
+      const texts = ["", "plain ascii\nlines\n", "café, naïve\r\nmore\r\n", "漢字かな\n😀 and 👍🏽\n", "end without a newline é", "\n\n\n"];
+      const counted = texts.map((t) => {
+        const model = monaco.editor.createModel(t, "plaintext");
+        const ok = utf8Of(model) === new TextEncoder().encode(model.getValue()).length;
+        model.dispose();
+        return ok;
+      });
+      is(counted.every(Boolean), true, `a file's bytes counted a line at a time are its UTF-8 (${counted.join(",")})`);
+    }
+
     // Places that hand each other their updates a moment later, as the network would.
     let places: DocSession[] = [];
     const place = (id: number) => {
@@ -733,6 +747,19 @@ async function main() {
   const noise = await diff(rt, known, bins);
   is(noise.changes.length, 0, "generated files are not published");
   is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
+
+  // ---- a document message too big for the relay ----
+  // One over the relay's frame limit does not close the socket: the relay
+  // stops reading it, and everything sent after goes nowhere. So it is never
+  // sent, and the caller is told.
+  {
+    const peers = new Peers("ws://127.0.0.1:9/", "nowhere", { onMoved: () => {}, onPresence: () => {}, onDoc: () => {} });
+    const before = peers.counts.docOut;
+    is(peers.doc(1, DOC_UPDATE, new Uint8Array(MAX_DOC_MESSAGE)), false, "a document message over the relay's limit is not sent");
+    is(peers.counts.docOut, before, "and is not counted as sent");
+    is(peers.doc(1, DOC_UPDATE, new Uint8Array(1024)), true, "an ordinary one is");
+    peers.close();
+  }
 
   // ---- names ----
   is(/^[a-z]+-[a-z]+-\d{4}$/.test(mintName()), true, "a minted name fits the server's rule");

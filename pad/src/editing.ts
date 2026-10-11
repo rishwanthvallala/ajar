@@ -70,6 +70,29 @@ export function cssString(text: string): string {
 }
 
 /**
+ * Bytes of a model's text as UTF-8, a line at a time. Encoding the whole text
+ * instead made it one 20 MB string and a 21 MB buffer, and every switch back
+ * to that file was 18 ms slower afterwards (11 October).
+ */
+export function utf8Of(model: monaco.editor.ITextModel): number {
+  const lines = model.getLineCount();
+  let bytes = model.getEOL().length * (lines - 1);
+  for (let i = 1; i <= lines; i++) {
+    const line = model.getLineContent(i);
+    bytes += line.length;
+    if (!NOT_ASCII.test(line)) continue;
+    for (let j = 0; j < line.length; j++) {
+      const c = line.charCodeAt(j);
+      // Two bytes below U+0800, three above; a surrogate pair is four for its two.
+      if (c >= 0x80) bytes += c < 0x800 || (c >= 0xd800 && c <= 0xdfff) ? 1 : 2;
+    }
+  }
+  return bytes;
+}
+
+const NOT_ASCII = /[^\x00-\x7f]/;
+
+/**
  * The client id a text is seeded under: FNV-1a of it, never the 0 a seed
  * used before. Two seeds share one only when their text is the same.
  */

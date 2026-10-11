@@ -137,6 +137,61 @@ where it was made. An upload of a full 100 MB pad is five requests or so.
 The parts are separate writes. If one fails, the ones before it have landed,
 and a file sent in parts holds only those until it is saved again.
 
+Working out the requests is measured, not walked: `JSON.stringify` and a check
+for anything that is not ASCII, and a piece's length guessed from the bytes per
+character so far, then measured. Walking every character in script cost 175 ms
+for 58 MB of files and 385 ms for one 58 MB file, on the page's main thread;
+now 88 ms for either, about what serialising the request costs anyway. A write
+that would fit in one request even at six bytes a character — every save, and
+nearly every command — is not measured at all.
+
+## Old against new, 11 October
+
+Every case measured before, run again on the release before these changes
+(`e2b7015`) and after them, on one machine in one session, so nothing is
+compared with a number from another day. The relay in a Linux container held
+to 512 MB, three runs of each case; the page in headless Chromium against a
+local relay, in the order old, new, new, old. Where the ranges overlap, there
+is no difference to report.
+
+| Relay | Before | After, as deployed |
+|---|---|---|
+| 58 MB pad of 2 MB files: a small save | 1–2 ms | 1 ms |
+| the same pad: read whole | 723–750 ms | 798–832 ms |
+| the same pad: relay's peak memory | 66–83 MB | 45–50 MB |
+| 12 reads of a 24 MiB pad at once | 1026–1152 ms, peak 56–66 MB | 1038–1359 ms, peak 30–42 MB |
+| one 25 MB file: a one-character save | 175 ms, peak 193 MB, 301 MB on disk | 97 ms, peak 27 MB, 26 MB on disk |
+| one 60 MB file | the relay was killed | 268 ms, peak 45 MB |
+| upload 58 MB as 2 MB files, the page's own code | 961–1670 ms, peak 132–183 MB | 1034–1040 ms, peak 79–81 MB |
+| upload one 58 MB file | 1026–1814 ms, peak 239–290 MB | 1374–1597 ms, peak 122–125 MB |
+| upload one 98 MB file | over the cap | 3.6 s, peak 137 MB |
+
+| Page, a pad of 2 MB files | Editor ready | Terminal answering | A 30 MB file a command made, stored |
+|---|---|---|---|
+| 5 MB | 0.3–0.5 s → 0.3–0.4 s | 3.0–4.0 s → 3.1–3.2 s | 1.2 s → 1.2–1.3 s |
+| 60 MB | 0.8 s → 0.8 s | 3.6–4.7 s → 3.7 s | 1.5–1.6 s → 1.4–1.5 s |
+| 100 MB | 1.2 s → 1.2–1.3 s | 4.1–4.3 s → 4.2–4.3 s | 1.7 s → 1.6–1.8 s |
+| 200 MB | 2.2 s → 2.1 s | 5.8–5.9 s → 5.6–5.7 s | 2.3–2.5 s → 2.2–2.4 s |
+
+A command's small change was stored 0.0–0.2 s after Enter in both, at every
+size. In one large file: opening it, typing forty characters and the save after
+were the same; switching back to it took a median of 102 ms before and 88 ms
+after at 10 MB, 71 ms both at 20 MB; a 30 MB file, live before, now opens
+read-only in 30–70 ms.
+
+What it found, and what was done:
+
+- **Working out the requests** was the slower path — above.
+- **Switching back to a 20 MB file was 18 ms slower**, every time: counting
+  its bytes, to decide whether it can be live, encoded the whole text once, and
+  every later rebinding of that file's document was slower for it. The bytes
+  are now counted a line at a time (`utf8Of` in `editing.ts`), and the gap is
+  gone.
+- **One large file uploads more slowly** than when it went in one request —
+  about 0.4 s at 58 MB — because each part after the first is added by copying
+  the file so far. That is what holds the relay to half the memory, and it is
+  left as it is: a 32 MiB part would save a tenth of a second.
+
 ## Upgrading, and going back
 
 On startup, every `<name>.json` in the pad directory is imported — files,

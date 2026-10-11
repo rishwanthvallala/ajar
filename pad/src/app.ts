@@ -13,7 +13,7 @@ import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDe
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
 import { carryOver, type Edit, putBack } from "./carry";
 import { Console } from "./console";
-import { colourFor, DocSession, replaceText } from "./editing";
+import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
@@ -784,7 +784,9 @@ export class App {
     this.unbind?.();
     this.unbind = null;
     const solo = this.solo(path);
-    this.editor.updateOptions({ readOnly: solo });
+    // Only when it changes: setting an option, even to what it was, has the
+    // editor work its options out again.
+    if (this.editor.getOption(this.monaco.editor.EditorOption.readOnly) !== solo) this.editor.updateOptions({ readOnly: solo });
     if (solo) {
       const mb = Math.round(model.getValueLength() / (1024 * 1024));
       this.say("", `${path} is about ${mb} MB, too large to edit together live — read-only here; change it from the terminal`);
@@ -2585,8 +2587,27 @@ export class App {
    */
   private solo(path: string): boolean {
     const model = this.models.get(path);
-    return !!model && !this.docs.has(path) && tooBigToShare(model.getValueLength(), () => model.getValue());
+    if (!model || this.docs.has(path)) return false;
+    const units = model.getValueLength();
+    if (units > LIVE_MAX) return true;
+    if (units * 3 <= LIVE_MAX) return false;
+    // Counting the bytes builds and encodes the whole text: 20 ms for 20 MB,
+    // and it was paid on every switch to the file. Counted once a model now,
+    // and after that bounded: a character added since is three bytes at most.
+    // (Typed over rather than added, it can be more; `MAX_DOC_MESSAGE` is what
+    // holds regardless.)
+    const was = this.sized.get(path);
+    if (was?.model === model.id && was.bytes + 3 * Math.max(0, units - was.units) <= LIVE_MAX) return false;
+    const bytes = utf8Of(model);
+    this.sized.set(path, { model: model.id, units, bytes });
+    return bytes > LIVE_MAX;
   }
+
+  /**
+   * A file's bytes when `solo` last counted them, its length then, and which
+   * model — by id, so a disposed one is not kept alive by this.
+   */
+  private sized = new Map<string, { model: string; units: number; bytes: number }>();
 
   private say(status: Status, text: string): void {
     this.el.status.textContent = text;

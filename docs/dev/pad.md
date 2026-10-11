@@ -452,7 +452,10 @@ A file already live in a page that grows past the limit stays live there. And
 `Peers.doc` sends no message over 30 MiB (`MAX_DOC_MESSAGE`): a newcomer asking
 for one is answered `DOC_NONE` and takes the stored copy, and the page says
 the file has grown too large to share live. `pair-check` opens a 25 MB file in
-two places.
+two places. Whether a file is past the limit is decided by its length when that
+is enough, and otherwise by counting its bytes once, a line at a time:
+encoding the whole text instead left every later switch back to a 20 MB file
+18 ms slower ([pad-store.md](pad-store.md#old-against-new-11-october)).
 
 **The seed's client id comes from its text** since 4 October, not a fixed 0.
 Viewers made the fixed id dangerous. A viewer keeps a document but cannot hand
