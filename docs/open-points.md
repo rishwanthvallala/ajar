@@ -23,7 +23,8 @@ list](#closed-on-7-october); every finding and its check is in
 were deployed that day, and the agent's share shipped in v0.0.7. A host still
 on v0.0.6 or older can have its place taken while it is away, and lets a guest
 read by name what the tree hides, until it reinstalls. The same day a pad's
-cap went to 60 MB, [for now](#a-pad-holds-60-mb-for-now).*
+cap went to 60 MB, meant for now; on 11 October it went to 100 MB to stay,
+once the store could carry it — [that day's list](#closed-on-11-october).*
 
 *On 8 October a click on a file in the guest's tree stopped being lost to
 the folder changing, and fresh containers of fifteen Linux distributions
@@ -87,38 +88,6 @@ On 7 October, on the macOS runner (CI run 37622394950), the second editor
 same commit and the rerun failed elsewhere. `Atomics.wait` on the main thread
 is the Wasmer SDK's, so the suspect is its start-up racing the page's first
 use of the runtime. Not reproduced locally.
-
-### A pad holds 60 MB for now
-
-Raised from 25 MB on 7 October for public pads that need more, and meant to be
-reverted when that need goes: `pad::MAX_BYTES` back to 25 MiB,
-`MAX_CONCURRENT_PAD_WRITES` back to 4 (the build refuses four at a 60 MiB cap,
-so the cap goes back first; it does not notice the count left at two), and
-`PAD_LIMITS` in `pad/src/zip.ts` — and the docs that quote 60 MB:
-`dev/pad.md`, `dev/security.md`, `dev/accounts.md`, `dev/operations.md`,
-`dev/relay.md` and `use/pad.md`. At 60 MB, four full pads use up
-an address's 256 MiB a day, and the relay reads two pad writes at once rather
-than four.
-
-**What made 60 MB dangerous is gone since 11 October.** The store kept a pad as
-one document and every save rewrote it whole: measured then, a small save into
-a 60 MB pad cost 130 ms and about four times the pad in memory, and a relay that
-had saved a few large pads was killed by its own `MemoryMax` on the next. The
-store now writes only the files a save names, and a save can be just the edit
-([pad-store.md](dev/pad-store.md)): 1 ms and flat memory at 60 MB. What bounds a
-pad now is the request that carries a whole one — an upload or a copy sends
-every file at once, read off the wire whole — and the browser, which holds
-every file of the pad it opens, in the editor and in the sandbox.
-
-One thing the raise made possible and nothing handles yet: **a single text
-file over 32 MB cannot be shared live.** Files travel through the store, but
-a file open for editing is also a live document, and a browser answering
-another's request for one sends its whole state in one WebSocket frame
-(`pad/src/app.ts`, the `DOC_WANT` reply). The relay closes any socket that
-sends a frame over 32 MB, so that browser drops out of the room and comes back
-to the same request. At 25 MB per pad no file could get there. Raising the
-frame cap costs memory per socket; refusing to make a live document of a file
-that large is the likelier fix.
 
 ### The pad's runtime cannot start without registry.wasmer.io
 
@@ -463,6 +432,10 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| A pad's 60 MB was a stopgap meant to go back to 25. It is 100 MB now, to stay: an address may add 512 MiB a day and an account holds 250 MB. What made a large pad dangerous is gone — see the next three rows — and a request carries at most 24 MiB, so a larger upload, copy or file goes in parts | `adfa6fa` |
+| One large file and twenty one-character saves into it: a 60 MB file took the relay to 274 MB of its 512, a 25 MB one before it got it killed, and the saves left 1.3 GB of old copies on disk, outside the ceiling's count. An edit is now streamed from one stored copy to the next, and the one it replaced deleted then: a save adds no memory at 99 MB, and one copy stays | `adfa6fa` |
+| A write's body could be 121 MiB, held whole with the text parsed out of it: 268 MB for one 60 MB file. A request is now 33 MiB at most, and glibc's mmap threshold is fixed so the relay gives back what uploads used — 59 MB held after files of 25, 60 and 99 MB, not 261 | `adfa6fa` |
+| A text file over 32 MB open in two places stopped reaching the second, and took the first place's whole connection with it: the relay stops reading a socket that sends a frame over its limit rather than closing it, so nothing said so. Possible since pads went to 60 MB. A file over 24 MiB now opens read-only with no live document, and its changes go through the store; no page sends a document message over 30 MiB | `129a79a` |
 | Every save rewrote the whole pad: a keystroke in a 60 MB pad cost the relay 130 ms and about four times the pad in memory, and a relay that had saved a few large pads was killed by its own memory limit on the next — every session with it. The store now keeps each file once under its hash, with SQLite listing them, and a save writes only what it changes: 1 ms and flat memory | `4a13fa6` |
 | A keystroke in a large file sent the whole file: a 300 KB file's save was 310 KB. A save of a large file is now the edit, against the stored version's hash, and goes whole only if that version has moved on — 165 bytes | `4a13fa6` |
 | A host gone in the moment after a guest's own connection came back took the guest's ask for their open file with it, and what they typed while it was out went too: not counted as unsent, so closing the tab asked nothing; replaced on screen by the saved copy; and thrown away when another file was opened. Typing kept for a host that was away went the same way if the guest's own connection blipped before the host was back. CI's Mac found the first on 8 October; `check-guest` now holds the agent's hop so the ask never arrives | `c8bb7b3` |
