@@ -760,6 +760,68 @@ async function main() {
   await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "held.txt", null, { timeout: 15_000 });
   check(!(await leaving()), "and once it has gone, leaving asks nothing");
 
+  // Typing held back for a file: typed while the page was asking for it again
+  // after a blip of its own, the host gone before it answered, and then left
+  // for note.txt — what the two sections below start from, as the one above.
+  const holdTypingFor = async (path, text) => {
+    await open(ana, path);
+    await ana.locator("#viewer .view-line").first().click();
+    await ana.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
+    guestHop.cut();
+    await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+    agentHop.stall("down");
+    guestHop.restore();
+    await ana.waitForFunction(() => !document.getElementById("viewer")?.dataset.editing, null, { timeout: 20_000 });
+    await focusEditor(ana);
+    await ana.keyboard.type(text);
+    agentHop.cut();
+    await ana.locator("#away:not([hidden])").waitFor({ timeout: 10_000 });
+    await ana.locator('.tree-row[data-path="note.txt"]').click();
+    await until(async () => (await ana.locator("#viewer-title").textContent()).startsWith("note.txt ·"), 8000);
+  };
+  const newFile = async (name, text) => {
+    const file = join(workdir, name);
+    await writeFile(file, text);
+    await until(async () => (await ana.locator(`.tree-row[data-path="${name}"]`).count()) > 0, 10_000);
+    return file;
+  };
+
+  // ---- asked for twice as the host comes back --------------------------------
+  // A file with typing held back for it, gone back to while the host is away.
+  // When they return it is asked for twice — for the typing, and as the file
+  // on screen — and answered twice, with one document. The second answer is
+  // ignored; taken as a document of its own, the editor would be bound to
+  // two, and every keystroke after sent twice.
+  const twice = await newFile("twice.txt", "first line\n");
+  await holdTypingFor("twice.txt", " held");
+  await ana.locator('.tree-row[data-path="twice.txt"]').click();
+  await until(async () => (await ana.locator("#viewer-title").textContent()).startsWith("twice.txt"), 8000);
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "twice.txt", null, { timeout: 15_000 });
+  await sleep(500);
+  await ana.locator("#viewer .view-line").first().click();
+  await ana.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
+  await ana.keyboard.type(" after");
+  const twiceOnDisk = await onDisk(twice, (t) => t === "first line held after\n", 15_000);
+  check(twiceOnDisk === "first line held after\n", "a file asked for twice as the host comes back is one document: what was held is in it once, and typing after reaches it", JSON.stringify(twiceOnDisk));
+
+  // ---- held for a file the host refuses by the time it is back -----------------
+  // The typing has nowhere to go, and the page says so — which file, and why
+  // — rather than asking for it again for ever or dropping it in silence.
+  const refused = await newFile("refused.txt", "first line\n");
+  await holdTypingFor("refused.txt", " held");
+  await writeFile(refused, Buffer.from([0, 0x9f, 0x92, 0x96, 0, 1, 2, 3]));
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  const lostSaid = await ana
+    .locator(".toast", { hasText: "could not be saved" })
+    .first()
+    .waitFor({ timeout: 15_000 })
+    .then(() => ana.locator(".toast", { hasText: "could not be saved" }).first().textContent(), () => null);
+  check(lostSaid?.includes("refused.txt"), "typing held for a file the host refuses by then is said to be lost, and which file", JSON.stringify(lostSaid));
+  check(!(await leaving()), "and then leaving asks nothing");
+
   // ---- a host whose machine is asleep -----------------------------------------
   // Its socket stays open, so the relay counts it as here; it answers
   // nothing. Someone arriving saw an empty, working session.

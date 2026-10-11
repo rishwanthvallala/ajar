@@ -378,9 +378,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /**
    * The file being opened again after a new socket, and the typing to hand
    * back to the host's copy of it. `onScreen` while the editor still holds
-   * that typing, and takes more of it, until the copy is back.
+   * that typing, and takes more of it, until the copy is back. `kept` when it
+   * is typing held back for the file while it was off screen: all of `held`
+   * goes back, not only what differs from it.
    */
-  let reconnectingDocument: { path: string; held: Held; onScreen: boolean } | null = null;
+  let reconnectingDocument: { path: string; held: Held; onScreen: boolean; kept?: boolean } | null = null;
   /** Typing into it meanwhile, which has gone nowhere yet. */
   let holding: { dispose(): void } | null = null;
   /**
@@ -506,6 +508,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** What there is to hand back to the file being opened again, or null if nothing was typed. */
   function heldTyping(): Held | null {
     if (!reconnectingDocument) return null;
+    // Typing kept off screen is already in `held.local`, so it differs from
+    // nothing: compared, it read as nothing typed, and was dropped when the
+    // file was on screen again as the host came back (12 October).
+    if (reconnectingDocument.kept) return reconnectingDocument.held;
     const { path, held, onScreen } = reconnectingDocument;
     const v = workspace.editor.viewer;
     const local = onScreen && v?.handles && v.shownPath === path ? v.handles.model.getValue() : held.local;
@@ -1074,7 +1080,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           if (back && workspace.editor.path !== msg.path) {
             handingBack.set(msg.doc_id, { path: msg.path, held: back });
           } else {
-            if (back) reconnectingDocument ??= { path: msg.path, held: back, onScreen: false };
+            if (back) reconnectingDocument ??= { path: msg.path, held: back, onScreen: false, kept: true };
             void startEditing(msg.doc_id, msg.path);
           }
         } else if (msg.t === "closed") {
