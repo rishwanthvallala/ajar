@@ -858,11 +858,17 @@ async function main() {
   pat.errors = [];
   pat.on("pageerror", (e) => pat.errors.push(e.message));
   // Requests that failed, so "Couldn't load the editor" says which and why.
-  // CI's Ubuntu runner saw it once on 11 October, opening ro.txt through the
-  // lag; eight runs here did not.
+  // CI saw it twice on 11 October, Ubuntu then macOS, opening ro.txt through
+  // the lag; eight runs here did not, and the second time no request had
+  // failed at all.
   pat.on("requestfailed", (r) => pat.errors.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
   pat.on("response", (r) => {
     if (r.status() >= 400) pat.errors.push(`${r.status()} for ${r.url()}`);
+  });
+  // And what the page says went wrong: on 11 October, on CI's Mac, it was none
+  // of the above, so the editor's own error is what is left.
+  pat.on("console", (m) => {
+    if (m.type() === "error" && m.text().startsWith("the editor did not load")) pat.errors.push(m.text().slice(0, 400));
   });
   await pat.goto(`http://127.0.0.1:${LAG_PORT}/j/${panelLink.session}#k=${panelLink.key}`);
   await pat.fill("#name", "pat");

@@ -53,7 +53,10 @@ export class EditorPane {
       if (version !== this.version) return null;
       viewer.opening(path);
       return viewer;
-    } catch {
+    } catch (e) {
+      // Said where it can be read: swallowed, a CI run on 11 October showed
+      // only that it happened, with no request failed and nothing thrown.
+      console.error(`the editor did not load: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
       this.loading = null;
       if (version === this.version && !this.disposed) this.el("viewer-title").textContent = `${path} · Couldn't load the editor. Select the file to retry.`;
       return null;
