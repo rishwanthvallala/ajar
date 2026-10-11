@@ -449,11 +449,11 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
-| An owner signed out under a private pad and back in wrote every file the page had kept back into the pad — the ones not on screen as they were when last shown — over whatever collaborators had done meanwhile. Only files changed here go back now, each rebased onto the pad as it is | this commit |
-| A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | this commit |
-| Typing in a file while it was being moved went with the old file's document when the move landed | this commit |
-| A store request the server never answered held the page's write queue for good — every save and publish behind it | this commit |
-| A command that changed a file with typing in it not yet saved — the half-second before a save — lost its change: the page wrote its unsaved files into the sandbox after the command, over what it had done, before reading anything back. Found running the checks for the rest, as a flaky `user-check` | this commit |
+| An owner signed out under a private pad and back in wrote every file the page had kept back into the pad — the ones not on screen as they were when last shown — over whatever collaborators had done meanwhile. Only files changed here go back now, each rebased onto the pad as it is | `648544c` |
+| A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | `648544c` |
+| Typing in a file while it was being moved went with the old file's document when the move landed | `648544c` |
+| A store request the server never answered held the page's write queue for good — every save and publish behind it | `648544c` |
+| A command that changed a file with typing in it not yet saved — the half-second before a save — lost its change: the page wrote its unsaved files into the sandbox after the command, over what it had done, before reading anything back. Found running the checks for the rest, as a flaky `user-check` | `648544c` |
 
 ## Closed on 9 October
 
