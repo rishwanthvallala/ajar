@@ -16,7 +16,7 @@ someone already knows.
 Shipped as a string so it lands in the sandbox with everything else and
 needs no second fetch.
 """
-import operator, re, sys
+import operator, os, re, sys
 
 USAGE = "usage: awk [-F sep] [-v var=value] 'program' [file ...]"
 
@@ -444,4 +444,14 @@ def main(argv):
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        code = main(sys.argv[1:])
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went — `| head` — which a real tool is told by SIGPIPE and
+        # dies of quietly. Python flushes once more on its way out, and that
+        # flush meeting the closed pipe printed "Exception ignored ...
+        # BrokenPipeError" over the terminal; pointed at /dev/null it says nothing.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    raise SystemExit(code)

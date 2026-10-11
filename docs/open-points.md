@@ -198,18 +198,23 @@ server started in a *different* tab. That was the trade taken, and it is one
 line (`Scope::Signal`) if it turns out to be the wrong one. Sharing one domain
 across terminals would need a single confined parent that spawns every shell.
 
-### A pipe into `head` can end with the runtime talking
+### A pipe into `head` can still end with the runtime talking
 
-`awk '{print $1}' poem.txt | head -1` printed `alpha` and then, on CI's Mac
-on 11 October, `Program recieved termination signal: Broken pipe` and a run of
-`Program recieved fatal signal: Aborted` — the runtime's words, typo
-included. `head` exits after its line; a command still writing then is ended
-by the runtime at the write, before Python's own `BrokenPipeError` handling in
-`awk.py` can see it, and the runtime says so on the terminal. A real shell
-ends it silently. Whether it shows depends on which of the two gets there
-first, so on a fast machine it never does. `browser-check` now checks the
-tool's output without those lines. The likely fix is the pad's terminal
-leaving out lines that are exactly the runtime's signal notices.
+`awk '{print $1}' poem.txt | head -1` printed `alpha` and then, on CI on 11
+October, one of two things. Python's `Exception ignored on flushing
+sys.stdout: BrokenPipeError` was the pad's own tools: `head` exits after its
+line, and a tool still writing caught the broken pipe, then met it again in
+Python's last flush on the way out. That is fixed — `awk`, `sort`, `tail` and
+`box.py` point their output at `/dev/null` once the reader has gone, as a real
+tool dies of `SIGPIPE` without a word, and `browser-check` pipes 100,000 lines
+into `head -1` to be sure of it. The other, on CI's Mac, was the runtime's
+own `Program recieved termination signal: Broken pipe` and a run of `fatal
+signal: Aborted`, typo included: there the runtime ended the tool at the write
+before Python saw anything, and said so on the terminal. That one is not the
+pad's to stop from inside the tool. It shows only when the tool loses the
+race to `head`, so rarely and never on a fast machine; the likely fix is the
+pad's terminal leaving out lines that are exactly the runtime's signal
+notices. `browser-check` compares a tool's output without them.
 
 ### Tools that do not fully work
 
@@ -466,6 +471,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | `648544c` |
 | Typing in a file while it was being moved went with the old file's document when the move landed | `648544c` |
 | A store request the server never answered held the page's write queue for good — every save and publish behind it | `648544c` |
+| The pad's own `awk` — and `sort`, `tail` and `box.py` with it — printed `Exception ignored on flushing sys.stdout: BrokenPipeError` after its output when piped into `head` | this commit |
 | A command that changed a file with typing in it not yet saved — the half-second before a save — lost its change: the page wrote its unsaved files into the sandbox after the command, over what it had done, before reading anything back. Found running the checks for the rest, as a flaky `user-check` | `648544c` |
 
 ## Closed on 9 October

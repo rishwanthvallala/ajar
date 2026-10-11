@@ -31,7 +31,8 @@ const TYPES = {
 // A real relay, with a pad directory of its own. The store checks talk to
 // this over HTTP rather than to a stub, because the parts most likely to be
 // wrong — reserved names, status codes, the sequence number — live in it.
-const RELAY_PORT = 8841;
+// Not check-guest's 8841, which it shared until the two ran side by side.
+const RELAY_PORT = 8871;
 const padDir = await mkdtemp(join(tmpdir(), "ajar-pad-check-"));
 const relay = spawn(
   new URL("../../target/debug/ajar-relay", import.meta.url).pathname,

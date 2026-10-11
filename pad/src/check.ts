@@ -588,6 +588,11 @@ async function main() {
     ["awk -F' ' '{n += $3} END {print n}' poem.txt", "100"],
     ["awk '{print $1 \"-\" $3}' poem.txt | head -1", "alpha-10"],
     ["awk '$1 !~ /alpha/ {print $1}' poem.txt", "beta\ngamma"],
+    // Far more than `head` reads: each is still writing when the pipe closes,
+    // and says nothing about it, as a real tool says nothing.
+    ["python -c 'print(*range(100000), sep=chr(10))' > many.txt && awk '{print $1}' many.txt | head -1", "0"],
+    ["sort -n many.txt | head -1", "0"],
+    ["tail -n 100000 many.txt | head -1", "0"],
   ] as const) {
     printed = "";
     const r = await sh.run(cmd);

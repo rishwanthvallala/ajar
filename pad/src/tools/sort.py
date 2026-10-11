@@ -11,6 +11,7 @@ actually type. Anything else is refused rather than quietly ignored, because a
 sort that silently drops `-k` is worse than one that admits it cannot.
 """
 
+import os
 import sys
 
 SUPPORTED = "-n -r -u -f -b -z -t SEP -k KEY -o FILE"
@@ -193,4 +194,14 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        code = main(sys.argv[1:])
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went — `| head` — which a real tool is told by SIGPIPE and
+        # dies of quietly. Python flushes once more on its way out, and that
+        # flush meeting the closed pipe printed "Exception ignored ...
+        # BrokenPipeError" over the terminal; pointed at /dev/null it says nothing.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    raise SystemExit(code)

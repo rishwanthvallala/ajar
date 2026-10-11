@@ -939,4 +939,14 @@ if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         sys.stderr.write(f"usage: box.py <{'|'.join(sorted(COMMANDS))}> [args...]\n")
         raise SystemExit(2)
-    raise SystemExit(COMMANDS[sys.argv[1]](sys.argv[2:]) or 0)
+    try:
+        code = COMMANDS[sys.argv[1]](sys.argv[2:]) or 0
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went — `| head` — which a real tool is told by SIGPIPE and
+        # dies of quietly. Python flushes once more on its way out, and that
+        # flush meeting the closed pipe printed "Exception ignored ...
+        # BrokenPipeError" over the terminal; pointed at /dev/null it says nothing.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    raise SystemExit(code)
