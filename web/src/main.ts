@@ -375,8 +375,22 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The file currently open for editing, if any. */
   let editing: DocSession | null = null;
   let detach: (() => void) | null = null;
-  /** The file being opened again after a new socket, and the typing to hand back to the host's copy of it. */
-  let reconnectingDocument: { path: string; held: Held } | null = null;
+  /**
+   * The file being opened again after a new socket, and the typing to hand
+   * back to the host's copy of it. `onScreen` while the editor still holds
+   * that typing, and takes more of it, until the copy is back.
+   */
+  let reconnectingDocument: { path: string; held: Held; onScreen: boolean } | null = null;
+  /** Typing into it meanwhile, which has gone nowhere yet. */
+  let holding: { dispose(): void } | null = null;
+  /**
+   * Files that were being opened again, typed into, and then left before the
+   * host's copy came back: asked for whenever the host can answer, handed
+   * back, and closed.
+   */
+  const heldBack = new Map<string, Held>();
+  /** Of those, the ones the host has answered, by the document id it gave, until their state arrives. */
+  const handingBack = new Map<number, { path: string; held: Held }>();
   /**
    * Document bytes that arrived before the editor was ready.
    *
@@ -480,8 +494,50 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   let awaitingState: { docId: number; resolve: () => void } | null = null;
 
   function closeDocument() {
+    // Left before the host's copy came back, with typing for it: kept, off
+    // screen, until it can be handed back. Dropped here, it was gone.
+    const typed = heldTyping();
+    if (typed) holdBack(reconnectingDocument!.path, typed);
     reconnectingDocument = null;
+    stopHolding();
     discardDocument(true);
+  }
+
+  /** What there is to hand back to the file being opened again, or null if nothing was typed. */
+  function heldTyping(): Held | null {
+    if (!reconnectingDocument) return null;
+    const { path, held, onScreen } = reconnectingDocument;
+    const v = workspace.editor.viewer;
+    const local = onScreen && v?.handles && v.shownPath === path ? v.handles.model.getValue() : held.local;
+    return local !== held.local || held.sent.unconfirmed.length ? { sent: held.sent, local } : null;
+  }
+
+  function askFor(path: string) {
+    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
+  }
+
+  /** Typing for a file no longer on screen, asked for now if the host can answer. */
+  function holdBack(path: string, held: Held) {
+    heldBack.set(path, held);
+    if (connState === "open" && !hostAway) askFor(path);
+  }
+
+  /** Every file with typing held back, asked for again: the last ask went nowhere. */
+  function askForHeldBack() {
+    for (const { path, held } of handingBack.values()) heldBack.set(path, held);
+    handingBack.clear();
+    for (const path of heldBack.keys()) askFor(path);
+  }
+
+  /** Typing into the file being opened again is unsent until it is handed back. */
+  function holdTyping() {
+    stopHolding();
+    holding = workspace.editor.viewer?.handles?.model.onDidChangeContent(() => setUnsent(true)) ?? null;
+  }
+
+  function stopHolding() {
+    holding?.dispose();
+    holding = null;
   }
 
   function discardDocument(notifyHost: boolean) {
@@ -651,6 +707,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     e.preventDefault();
     e.returnValue = "";
   }
+  /** No longer unsent, once nothing typed is waiting anywhere. */
+  function settleUnsent() {
+    if (connState !== "open" || hostAway || reconnectingDocument) return;
+    if (parked.length || heldBack.size || handingBack.size) return;
+    setUnsent(false);
+  }
 
   /** The host is back, or might be: out of the away state. */
   function leaveAway() {
@@ -774,9 +836,13 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             awayEl.hidden = false;
           }, 10_000);
           paintStatus();
-          // Their document ids belonged to the last socket.
-          dropParked();
-          if (!editing) setUnsent(false);
+          // Their document ids belonged to the last socket. What was typed
+          // into them goes by file instead, asked for again below.
+          for (const doc of parked.splice(0)) {
+            if (doc.waiting) heldBack.set(doc.path, { sent: doc.sent(), local: doc.ytext.toString() });
+            doc.destroy();
+          }
+          typedAway.clear();
           if (!hostAway) awayEl.hidden = true;
           // A new socket: any terminal that ended while we were gone is
           // still a tab here. The host is about to name the live ones.
@@ -792,16 +858,23 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           );
           // The open file is asked for again, and what was typed into it that
           // the host may not have is handed back to the copy it answers with.
-          if (editing) {
+          if (editing && !reconnectingDocument) {
             reconnectingDocument = {
               path: editing.path,
               held: { sent: editing.sent(), local: editing.ytext.toString() },
+              onScreen: true,
             };
-            if (editing.waiting) setUnsent(true);
-            const path = editing.path;
-            discardDocument(false);
-            conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
           }
+          if (reconnectingDocument) {
+            // The last socket's document — or, after a second blip, one
+            // answering the last socket's ask and still waiting for its state.
+            if (editing) discardDocument(false);
+            if (reconnectingDocument.onScreen) holdTyping();
+            if (reconnectingDocument.held.sent.unconfirmed.length) setUnsent(true);
+            askFor(reconnectingDocument.path);
+          }
+          askForHeldBack();
+          settleUnsent();
           break;
         }
         case "joined":
@@ -826,7 +899,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           // simply go dead while we wait.
           conn.send(jsonFrame(Channel.Store, TARGET_ALL, { t: "fetch" } satisfies Store));
           // A file asked for in the instant before is never going to arrive.
-          if (!editing && workspace.editor.path) showFromCopy(workspace.editor.path);
+          // One being opened again after a blip of our own keeps what is on
+          // screen instead: typing may be in it, and the saved copy went
+          // over it. It is asked for again when the host is back.
+          if (!editing && workspace.editor.path && !reconnectingDocument?.onScreen) showFromCopy(workspace.editor.path);
           break;
         case "host_back": {
           if (hostAway) toast("The host is back.");
@@ -852,7 +928,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             doc.destroy();
           }
           typedAway.clear();
-          if (connState === "open") setUnsent(false);
+          // And files asked for again after a blip of our own, whose ask
+          // went with the host.
+          if (!editing && reconnectingDocument?.onScreen) askFor(reconnectingDocument.path);
+          askForHeldBack();
+          settleUnsent();
           break;
         }
         case "locked":
@@ -976,8 +1056,19 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (f.channel === Channel.Doc) {
       if (f.streamId === 0) {
         const msg = parseJson<Doc>(f);
-        if (msg.t === "opened") void startEditing(msg.doc_id, msg.path);
-        else if (msg.t === "closed") {
+        if (msg.t === "opened") {
+          // A file left with typing held back for it: handed back once its
+          // state arrives, then closed — or, on screen again by now, as it
+          // opens there.
+          const back = heldBack.get(msg.path);
+          heldBack.delete(msg.path);
+          if (back && workspace.editor.path !== msg.path) {
+            handingBack.set(msg.doc_id, { path: msg.path, held: back });
+          } else {
+            if (back) reconnectingDocument ??= { path: msg.path, held: back, onScreen: false };
+            void startEditing(msg.doc_id, msg.path);
+          }
+        } else if (msg.t === "closed") {
           // The host ended the document: its file was deleted, moved, turned
           // binary or grew past the limit, so nothing more can be saved.
           // Typing into it used to carry on, and go nowhere.
@@ -988,6 +1079,18 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           discardDocument(false);
           workspace.editor.viewer?.stranded(path, msg.reason);
         } else if (msg.t === "error") {
+          // Typing held for it has nowhere to go now, and is said to be lost
+          // rather than asked for again for ever.
+          let lost = heldBack.delete(msg.path);
+          if (reconnectingDocument?.path === msg.path) {
+            lost ||= heldTyping() !== null;
+            reconnectingDocument = null;
+            stopHolding();
+          }
+          if (lost) {
+            toast(`What was typed in ${msg.path} could not be saved: ${msg.message}.`);
+            settleUnsent();
+          }
           // Not editable — binary, or too large. Show it read-only and say
           // why rather than silently doing nothing.
           if (workspace.editor.path !== msg.path) return;
@@ -1000,6 +1103,14 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       const split = untag(f.payload);
       if (!split) return;
       const [kind, body] = split;
+      const back = handingBack.get(f.streamId);
+      if (back) {
+        // The host sends a document's whole state straight after `opened`.
+        if (kind !== DocKind.Update) return;
+        handingBack.delete(f.streamId);
+        void handBackOffScreen(f.streamId, back.path, back.held, body);
+        return;
+      }
       if (editing && editing.docId === f.streamId) {
         if (kind === DocKind.Update) {
           editing.applyUpdate(body);
@@ -1264,6 +1375,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (!v || v.current !== path || disposed) return;
     const { DocSession } = await import("./editing");
     if (version !== selection || v.current !== path || disposed) return;
+    // Asked for twice — as a file with typing held back, and as the one on
+    // screen from the saved copy — it is answered twice, with one document.
+    if (editing?.docId === docId) return;
 
     const doc = new DocSession(docId, path, { id: me, name }, (kind, bytes) => {
       if (kind === "update" && (hostAway || connState !== "open")) {
@@ -1303,17 +1417,16 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       if (editing !== doc || version !== selection || v.current !== path || disposed) return;
     }
 
-    const resume = reconnectingDocument?.path === path ? reconnectingDocument : null;
-    if (resume) {
-      // Only the change typed while disconnected, onto the host's fresh
-      // state, rather than the page's whole copy over everyone's edits since.
-      // The model kept the file on screen between the old document going and
+    if (reconnectingDocument?.path === path) {
+      // Only the change typed while it was away, onto the host's fresh state,
+      // rather than the page's whole copy over everyone's edits since. The
+      // model kept the file on screen between the old document going and
       // this one arriving, and took whatever was typed into it meanwhile.
-      const local = v.handles && v.shownPath === path ? v.handles.model.getValue() : resume.held.local;
-      doc.handBack({ sent: resume.held.sent, local });
+      const typed = heldTyping();
       reconnectingDocument = null;
-      // Handed back: what was typed while away now goes out with this state.
-      if (!hostAway) setUnsent(false);
+      stopHolding();
+      if (typed) doc.handBack(typed);
+      settleUnsent();
     }
     fromCopy = null;
 
@@ -1343,6 +1456,20 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     viewerEl.dataset.editing = path;
     v.setReadOnly(readOnly);
     if (focusSelectedFile) { workspace.editor.focus(); focusSelectedFile = false; }
+  }
+
+  /** Typing held back for a file no longer on screen, into the host's copy of it, which is then closed. */
+  async function handBackOffScreen(docId: number, path: string, held: Held, state: Uint8Array) {
+    const { DocSession } = await import("./editing");
+    if (disposed) return;
+    const doc = new DocSession(docId, path, { id: me, name }, (kind, bytes) => {
+      if (kind === "update") conn.send(streamFrame(Channel.Doc, docId, tagged(DocKind.Update, bytes)));
+    });
+    doc.applyUpdate(state);
+    doc.handBack(held);
+    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: docId } satisfies Doc));
+    doc.destroy();
+    settleUnsent();
   }
 
   /** The stored copy arrives sealed; the key is the one from the link. */
@@ -1413,6 +1540,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   function dispose() {
     if (disposed) return;
     ++selection;
+    // Nothing is held back from a page that is going.
+    reconnectingDocument = null;
     closeDocument();
     disposed = true;
     if (awayTimer) clearInterval(awayTimer);
@@ -1420,6 +1549,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     if (waitingTimer) clearTimeout(waitingTimer);
     waitingTimer = null;
     dropParked();
+    heldBack.clear();
+    handingBack.clear();
     setUnsent(false);
     tree.dispose();
     workspace.dispose();

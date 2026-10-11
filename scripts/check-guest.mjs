@@ -538,8 +538,9 @@ async function main() {
   check(anaTerms === 1, "a terminal that ended while a guest was disconnected is gone from their tabs too", `${await ana.locator(".term").count()} terminals`);
   await eve.close();
   // "connected" is the socket; the file ana has open is asked for again after
-  // it, and the host leaving before it is back is a different story — one
-  // open-points records — from the one told below. On CI's Mac it once was.
+  // it, and the host leaving before it is back is a different story — told
+  // further down, in its own section — from the one told below. On CI's Mac
+  // it once was.
   await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "long.txt", null, { timeout: 15_000 });
 
   // ---- the host away --------------------------------------------------------
@@ -669,6 +670,61 @@ async function main() {
   await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "offset.txt", null, { timeout: 15_000 });
   const placed = await onDisk(offset, (t) => t === "Oh, hello brave world\n");
   check(placed === "Oh, hello brave world\n", "typing from an outage lands where it was typed, though someone else's edit before it moved that", `disk ${JSON.stringify(placed)}, page ${JSON.stringify(await editorText(ana))}`);
+
+  // ---- the host leaving in the moment after the guest is back -------------------
+  // Back from a blip, the page asks for its open file again, and what is typed
+  // until the host answers is held in the editor. A host gone before it
+  // answered took the ask with it: the typing was not counted as unsent, the
+  // saved copy was put over it, and another file opened meanwhile threw it
+  // away. CI's Mac found it on 8 October, in the host-away section above.
+  const held = join(workdir, "held.txt");
+  await writeFile(held, "first line\n");
+  await until(async () => (await ana.locator('.tree-row[data-path="held.txt"]').count()) > 0, 10_000);
+  await open(ana, "held.txt");
+  await ana.locator("#viewer .view-line").first().click();
+  await ana.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  // The ask never reaches the host, and then the host goes.
+  agentHop.stall("down");
+  guestHop.restore();
+  await ana.waitForFunction(() => !document.getElementById("viewer")?.dataset.editing, null, { timeout: 20_000 });
+  await focusEditor(ana);
+  await ana.keyboard.type(" held");
+  agentHop.cut();
+  await ana.locator("#away:not([hidden])").waitFor({ timeout: 10_000 });
+  check(await leaving(), "typing into a file still being opened again when the host left makes leaving the page ask first");
+  await sleep(1000);
+  check((await editorText(ana)).includes("first line held"), "and it stays on screen while the host is away", JSON.stringify(await editorText(ana)));
+  await ana.locator('.tree-row[data-path="note.txt"]').click();
+  await until(async () => (await ana.locator("#viewer-title").textContent()).startsWith("note.txt ·"), 8000);
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  const kept = await onDisk(held, (t) => t === "first line held\n", 15_000);
+  check(kept === "first line held\n", "and it reaches the file when the host is back, though another file was opened meanwhile", JSON.stringify(kept));
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "note.txt", null, { timeout: 15_000 });
+  check(!(await leaving()), "and once it has, leaving asks nothing");
+  // The other order: typed into while the host is away, left for another
+  // file, and then the guest's own connection blips before the host is back.
+  // The file kept for the host belonged to the last socket, and was thrown
+  // away with it.
+  agentHop.cut();
+  await ana.locator("#away:not([hidden])").waitFor({ timeout: 10_000 });
+  await focusEditor(ana);
+  await ana.keyboard.type("PARKED ");
+  await ana.locator('.tree-row[data-path="held.txt"]').click();
+  await until(async () => (await ana.locator("#viewer-title").textContent()).startsWith("held.txt ·"), 8000);
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  guestHop.restore();
+  await ana.locator("#status", { hasText: "host away" }).waitFor({ timeout: 20_000 });
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  const note = join(workdir, "note.txt");
+  const parked = await onDisk(note, (t) => t.includes("PARKED "), 15_000);
+  check(parked.includes("PARKED "), "typing kept for a host that is away outlasts a blip of the guest's own before it is back", JSON.stringify(parked));
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "held.txt", null, { timeout: 15_000 });
+  check(!(await leaving()), "and once it has gone, leaving asks nothing");
 
   // ---- a host whose machine is asleep -----------------------------------------
   // Its socket stays open, so the relay counts it as here; it answers
