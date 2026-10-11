@@ -714,9 +714,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     setUnsent(false);
   }
 
-  /** The host is back, or might be: out of the away state. */
-  function leaveAway() {
-    if (!hostAway) return;
+  /**
+   * The host is back, or might be: out of the away state. Returns the file it
+   * asked for again, the one on screen from the saved copy, if there was one.
+   */
+  function leaveAway(): string | null {
+    if (!hostAway) return null;
     hostAway = false;
     if (awayTimer) clearInterval(awayTimer);
     awayTimer = null;
@@ -729,7 +732,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     fromCopy = null;
     if (stale && !editing && workspace.editor.path === stale) {
       conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path: stale } satisfies Doc));
+      return stale;
     }
+    return null;
   }
 
   let welcomedOnce = false;
@@ -906,7 +911,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           break;
         case "host_back": {
           if (hostAway) toast("The host is back.");
-          leaveAway();
+          const reopened = leaveAway();
           // The host names its terminals again on the way back.
           announced = new Set();
           // Everything said while the host was away was dropped by the relay,
@@ -921,10 +926,14 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
               streamFrame(Channel.Doc, editing.docId, tagged(DocKind.Update, editing.fullState())),
             );
           }
-          // Files typed into in the gap and then left: theirs too, then closed.
+          // Files typed into in the gap and then left: theirs too, then closed —
+          // except one on screen again, from the saved copy, and asked for
+          // just now. The host answers that ask with this same document, and
+          // closing it after dropped us as a reader of the file we were by
+          // then editing: what we typed next went nowhere (11 October).
           for (const doc of parked.splice(0)) {
             conn.send(streamFrame(Channel.Doc, doc.docId, tagged(DocKind.Update, doc.fullState())));
-            conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: doc.docId } satisfies Doc));
+            if (doc.path !== reopened) conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: doc.docId } satisfies Doc));
             doc.destroy();
           }
           typedAway.clear();

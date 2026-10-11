@@ -580,6 +580,40 @@ async function main() {
   check((await onDisk(long, (t) => t.includes("AWAY "))).includes("AWAY "), "what was typed while the host was away reached the file, though another was open by then");
   check(!(await leaving()), "and once it has, leaving asks nothing");
 
+  // ---- back to that file before the host is ---------------------------------
+  // Typed into while the host is away, left, and gone back to before they
+  // return. On their return the page handed that typing back and closed the
+  // document — while the same file, on screen from the saved copy, was being
+  // opened again, and the host answers that with the same document. The close
+  // dropped the guest as a reader of the file they were by then editing, and
+  // what they typed next went nowhere (found 11 October, fixed 12).
+  await open(ana, "long.txt");
+  agentHop.cut();
+  await ana.locator("#away:not([hidden])").waitFor({ timeout: 10_000 });
+  await focusEditor(ana);
+  await ana.keyboard.type("PARKED ");
+  await ana.locator('.tree-row[data-path="note.txt"]').click();
+  await until(async () => ((await ana.locator("#viewer-title").textContent()).startsWith("note.txt") ? true : null), 8000);
+  await ana.locator('.tree-row[data-path="long.txt"]').click();
+  await until(async () => ((await ana.locator("#viewer-title").textContent()).startsWith("long.txt") ? true : null), 8000);
+  agentHop.restore();
+  await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
+  check(
+    await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "long.txt", null, { timeout: 15_000 }).then(() => true, () => false),
+    "back on a file whose typing waited for the host, it is the live one again when they return",
+  );
+  await sleep(500);
+  await focusEditor(ana);
+  await ana.keyboard.press(START);
+  await ana.keyboard.type("AFTER ");
+  const reached = await onDisk(long, (t) => t.includes("PARKED ") && t.includes("AFTER "), 10_000);
+  check(
+    reached.includes("PARKED ") && reached.includes("AFTER "),
+    "and both what waited and what is typed after reach the file",
+    `PARKED ${reached.includes("PARKED ")}, AFTER ${reached.includes("AFTER ")}`,
+  );
+  check(!(await leaving()), "and once they have, leaving asks nothing");
+
   // ---- typing in flight when the guest's connection dies ----------------------
   // Keystrokes handed to a socket whose network has already gone go down with
   // it, and the page cannot tell them from ones that arrived. It replayed what
