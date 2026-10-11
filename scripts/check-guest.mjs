@@ -39,10 +39,16 @@ const procs = new Procs();
 let workdir;
 const browsers = [];
 
-/** A hop that can be cut — every connection through it dropped, new ones refused. */
+/**
+ * A hop that can be cut — every connection through it dropped, new ones
+ * refused — or stalled: one way's bytes dropped while both ends still think
+ * the connection is up, as on a network that has gone without telling either
+ * of them. "up" is toward the target, "down" back from it.
+ */
 function cuttableProxy(listenPort, targetPort) {
   const live = new Set();
   let cut = false;
+  const stalled = { up: false, down: false };
   const server = createServer((down) => {
     if (cut) return void down.destroy();
     const up = connect(targetPort, "127.0.0.1");
@@ -55,8 +61,8 @@ function cuttableProxy(listenPort, targetPort) {
     };
     down.on("error", end).on("close", end);
     up.on("error", end).on("close", end);
-    down.pipe(up);
-    up.pipe(down);
+    down.on("data", (bytes) => stalled.up || up.write(bytes));
+    up.on("data", (bytes) => stalled.down || down.write(bytes));
   });
   return {
     listen: () => new Promise((r) => server.listen(listenPort, "127.0.0.1", r)),
@@ -68,8 +74,12 @@ function cuttableProxy(listenPort, targetPort) {
       }
       live.clear();
     },
+    stall(way) {
+      stalled[way] = true;
+    },
     restore() {
       cut = false;
+      stalled.up = stalled.down = false;
     },
     close: () => server.close(),
   };
@@ -568,6 +578,74 @@ async function main() {
   );
   check((await onDisk(long, (t) => t.includes("AWAY "))).includes("AWAY "), "what was typed while the host was away reached the file, though another was open by then");
   check(!(await leaving()), "and once it has, leaving asks nothing");
+
+  // ---- typing in flight when the guest's connection dies ----------------------
+  // Keystrokes handed to a socket whose network has already gone go down with
+  // it, and the page cannot tell them from ones that arrived. It replayed what
+  // was typed after it noticed, measured from the text as it was then — which
+  // held the lost keystrokes already, so they were never sent again, and the
+  // host's copy, put back on screen, took them away (found by reading, 9
+  // October).
+  const flight = join(workdir, "flight.txt");
+  await writeFile(flight, "alpha omega\n");
+  await until(async () => (await ana.locator('.tree-row[data-path="flight.txt"]').count()) > 0, 10_000);
+  await open(ana, "flight.txt");
+  await cursorAt(ana, 6);
+  await ana.keyboard.type("sent ");
+  await onDisk(flight, (t) => t.includes("sent "));
+  guestHop.stall("up");
+  await ana.keyboard.type("lost ");
+  await sleep(500);
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "flight.txt", null, { timeout: 15_000 });
+  const flown = await onDisk(flight, (t) => t === "alpha sent lost omega\n");
+  check(flown === "alpha sent lost omega\n", "typing handed to a connection already dead reaches the file once the page is back", `disk ${JSON.stringify(flown)}, page ${JSON.stringify(await editorText(ana))}`);
+  // The other way round: typing that reached the host, with only the host's
+  // echo of it lost, is not put in twice — and what is typed while the page
+  // is away still goes in after it.
+  guestHop.stall("down");
+  await ana.keyboard.type("echoless ");
+  await onDisk(flight, (t) => t.includes("echoless "));
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  await ana.keyboard.type("offline ");
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "flight.txt", null, { timeout: 15_000 });
+  // Counted on its own, so that the line above failing does not fail this.
+  const once = (t) => t.split("echoless ").length === 2 && t.split("offline ").length === 2 && t.includes("echoless offline omega\n");
+  const echoed = await onDisk(flight, once);
+  check(once(echoed), "and typing that reached the host, with its echo lost, is not put in twice", `disk ${JSON.stringify(echoed)}, page ${JSON.stringify(await editorText(ana))}`);
+  // Again with someone else in the file, typing at its start meanwhile. The
+  // host's document outlives ana's connection then, and the text it holds is
+  // nothing ana ever had, so it is the document's record of her updates that
+  // says which arrived.
+  const bea = await browser.newPage();
+  await bea.goto(`${RELAY}/j/${link.session}#k=${link.key}`);
+  await bea.fill("#name", "bea");
+  await bea.click("#join button[type=submit]");
+  await bea.locator(".term.shown .xterm").first().waitFor({ timeout: 20_000 });
+  await open(bea, "flight.txt");
+  guestHop.stall("down");
+  await focusEditor(ana);
+  await ana.keyboard.type("shared ");
+  await onDisk(flight, (t) => t.includes("shared "));
+  await cursorAt(bea, 0);
+  await bea.keyboard.type("B: ");
+  await onDisk(flight, (t) => t.startsWith("B: "));
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  await ana.keyboard.type("later ");
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "flight.txt", null, { timeout: 15_000 });
+  const both = (t) => t.startsWith("B: ") && t.split("shared ").length === 2 && t.split("later ").length === 2 && t.includes("shared later omega\n");
+  const shared = await onDisk(flight, both);
+  check(both(shared), "and with someone else typing in the file meanwhile, it is not put in twice either", `disk ${JSON.stringify(shared)}, page ${JSON.stringify(await editorText(ana))}`);
+  await bea.close();
 
   // ---- typing from an outage, after someone else's edit before it -------------
   // What was typed while the page was away was put back at the same offset in

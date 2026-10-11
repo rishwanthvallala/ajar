@@ -6,12 +6,11 @@ import "@ajar/workspace-ui/theme.css";
 import "./style.css";
 import "@ajar/workspace-ui/workspace.css";
 
-import { carryOver } from "./carry";
 import { colourFor } from "./colours";
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
 import { Workspace } from "./workspace";
-import type { DocSession } from "./editing";
+import type { DocSession, Held } from "./editing";
 import type { Sealer } from "./sealed";
 import { codeFontPx } from "./scale";
 import {
@@ -376,7 +375,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   /** The file currently open for editing, if any. */
   let editing: DocSession | null = null;
   let detach: (() => void) | null = null;
-  let reconnectingDocument: { path: string; base: string; local?: string } | null = null;
+  /** The file being opened again after a new socket, and the typing to hand back to the host's copy of it. */
+  let reconnectingDocument: { path: string; held: Held } | null = null;
   /**
    * Document bytes that arrived before the editor was ready.
    *
@@ -617,9 +617,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     connState = s;
     connDetail = detail;
     paintStatus();
-    if (s === "reconnecting" && editing && !reconnectingDocument) {
-      reconnectingDocument = { path: editing.path, base: editing.ytext.toString() };
-    }
+    // Typing the host has not sent back may have gone down with the socket.
+    if (s === "reconnecting" && editing?.waiting) setUnsent(true);
   }
 
   /**
@@ -791,13 +790,14 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           conn.send(
             jsonFrame(Channel.Presence, TARGET_ALL, { t: "iam", name, resume } satisfies Presence),
           );
+          // The open file is asked for again, and what was typed into it that
+          // the host may not have is handed back to the copy it answers with.
           if (editing) {
-            const base = reconnectingDocument?.base ?? editing.ytext.toString();
             reconnectingDocument = {
               path: editing.path,
-              base,
-              local: editing.ytext.toString(),
+              held: { sent: editing.sent(), local: editing.ytext.toString() },
             };
+            if (editing.waiting) setUnsent(true);
             const path = editing.path;
             discardDocument(false);
             conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
@@ -1304,20 +1304,13 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     }
 
     const resume = reconnectingDocument?.path === path ? reconnectingDocument : null;
-    // The model kept the file on screen between the old document going and
-    // this one arriving, and took whatever was typed into it meanwhile.
-    if (resume && v.handles && v.shownPath === path) resume.local = v.handles.model.getValue();
-    const edit = resume?.local === undefined ? null : carryOver(resume.base, resume.local, doc.ytext.toString());
-    if (edit) {
-      // Only the change typed while disconnected, onto the host's fresh state,
-      // rather than the page's whole copy over everyone's edits since — and
-      // where the text around it still is, not at the offset it was typed at.
-      doc.ydoc.transact(() => {
-        if (edit.remove) doc.ytext.delete(edit.at, edit.remove);
-        if (edit.insert) doc.ytext.insert(edit.at, edit.insert);
-      }, "local");
-    }
     if (resume) {
+      // Only the change typed while disconnected, onto the host's fresh
+      // state, rather than the page's whole copy over everyone's edits since.
+      // The model kept the file on screen between the old document going and
+      // this one arriving, and took whatever was typed into it meanwhile.
+      const local = v.handles && v.shownPath === path ? v.handles.model.getValue() : resume.held.local;
+      doc.handBack({ sent: resume.held.sent, local });
       reconnectingDocument = null;
       // Handed back: what was typed while away now goes out with this state.
       if (!hostAway) setUnsent(false);

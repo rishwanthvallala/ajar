@@ -7,6 +7,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwareness
 import { onThemeChange } from "@ajar/workspace-ui";
 import { colourFor } from "./colours";
 import { replaceText } from "./replace";
+import { carryOver } from "./carry";
 import { eolOf } from "@ajar/workspace-ui/eol";
 
 /**
@@ -52,6 +53,26 @@ function cssString(text: string): string {
   });
 }
 
+/**
+ * What this page sent of a document, against what the host has said it has:
+ * enough to tell, once the page is back after losing touch, which of its
+ * typing never arrived.
+ */
+export interface Sent {
+  /** Everything the host has sent of the document, as one update. */
+  confirmed: Uint8Array;
+  /** Our updates it has not sent back, oldest first, with how far each takes our clock. */
+  unconfirmed: { update: Uint8Array; to: number }[];
+  /** The Yjs client they were made as. */
+  client: number;
+}
+
+/** Typing to hand back to a file opened again: what was sent of it, and the text the page has. */
+export interface Held {
+  sent: Sent;
+  local: string;
+}
+
 /** One open file, shared. */
 export class DocSession {
   readonly ydoc = new Y.Doc();
@@ -61,6 +82,14 @@ export class DocSession {
   private applyingRemote = false;
   private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
   private styleEl: HTMLStyleElement | null = null;
+  /**
+   * The document as far as the host has confirmed it. The host passes every
+   * update on to everyone, its sender included, so one of ours that has come
+   * back is one that arrived — and one that has not may have gone down with
+   * a socket the page still thought was open.
+   */
+  private readonly confirmed = new Y.Doc();
+  private unconfirmed: { update: Uint8Array; to: number }[] = [];
 
   /** Told when the editor can no longer hold this document as it is. */
   onDrift: (() => void) | null = null;
@@ -80,6 +109,7 @@ export class DocSession {
       // Updates that arrived from the host are already everywhere they need
       // to be; echoing them would be a loop.
       if (origin === "remote") return;
+      this.unconfirmed.push({ update, to: Y.getState(this.ydoc.store, this.ydoc.clientID) });
       this.send("update", update);
     });
 
@@ -94,6 +124,41 @@ export class DocSession {
 
   applyUpdate(bytes: Uint8Array) {
     Y.applyUpdate(this.ydoc, bytes, "remote");
+    Y.applyUpdate(this.confirmed, bytes);
+    const arrived = Y.getState(this.confirmed.store, this.ydoc.clientID);
+    while (this.unconfirmed.length && this.unconfirmed[0]!.to <= arrived) this.unconfirmed.shift();
+  }
+
+  /** Whether any of our updates has yet to come back from the host. */
+  get waiting(): boolean {
+    return this.unconfirmed.length > 0;
+  }
+
+  /** What was sent of this document, and how much of it the host has confirmed. */
+  sent(): Sent {
+    return {
+      confirmed: Y.encodeStateAsUpdate(this.confirmed),
+      unconfirmed: [...this.unconfirmed],
+      client: this.ydoc.clientID,
+    };
+  }
+
+  /**
+   * Put typing held from before a lost connection into this document, the
+   * host's copy of its file opened again: the change from what the host was
+   * left with to what the page has, where the text around it still is.
+   *
+   * Measured from what the host was left with, not from what the page had
+   * when it noticed the connection had gone: keystrokes handed to a socket
+   * already dead were in that, and so were never sent again.
+   */
+  handBack(held: Held) {
+    const edit = carryOver(reachedHost(held.sent, this.ydoc), held.local, this.ytext.toString());
+    if (!edit) return;
+    this.ydoc.transact(() => {
+      if (edit.remove) this.ytext.delete(edit.at, edit.remove);
+      if (edit.insert) this.ytext.insert(edit.at, edit.insert);
+    }, "local");
   }
 
   /**
@@ -281,5 +346,40 @@ export class DocSession {
     removeAwarenessStates(this.awareness, [this.awareness.clientID], "local");
     this.awareness.destroy();
     this.ydoc.destroy();
+    this.confirmed.destroy();
+  }
+}
+
+/**
+ * The text the host was left with of a document this page lost touch with,
+ * given the host's document for its file now.
+ *
+ * At least what it confirmed, and of the rest as much as it shows it has. A
+ * document still open on the host — someone else had it open too — holds our
+ * updates under their ids, so its clock for us says how far they got. One it
+ * opened again from the file has ids of its own, and only its text to go by:
+ * the last of our updates that leaves the text as the host has it is the last
+ * that arrived. Typing that reached the host with only its echo lost is not
+ * put in twice that way.
+ */
+function reachedHost(sent: Sent, now: Y.Doc): string {
+  const doc = new Y.Doc();
+  try {
+    Y.applyUpdate(doc, sent.confirmed);
+    const text = doc.getText("content");
+    const got = Y.getState(now.store, sent.client);
+    if (got > 0) {
+      for (const { update, to } of sent.unconfirmed) if (to <= got) Y.applyUpdate(doc, update);
+      return text.toString();
+    }
+    const there = now.getText("content").toString();
+    let reached = text.toString();
+    for (const { update } of sent.unconfirmed) {
+      Y.applyUpdate(doc, update);
+      if (text.length === there.length && text.toString() === there) reached = there;
+    }
+    return reached;
+  } finally {
+    doc.destroy();
   }
 }
