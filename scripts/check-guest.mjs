@@ -199,6 +199,13 @@ async function focusEditor(page) {
   });
 }
 
+/** The cursor `n` characters into a one-line file, by keyboard. */
+async function cursorAt(page, n) {
+  await page.locator("#viewer .view-line").first().click();
+  await page.keyboard.press(START);
+  for (let i = 0; i < n; i++) await page.keyboard.press("ArrowRight");
+}
+
 /** Page well down a long file: the view and the cursor both end up there. */
 async function settleMidway(page) {
   await page.locator("#viewer .view-line").first().click();
@@ -561,6 +568,29 @@ async function main() {
   );
   check((await onDisk(long, (t) => t.includes("AWAY "))).includes("AWAY "), "what was typed while the host was away reached the file, though another was open by then");
   check(!(await leaving()), "and once it has, leaving asks nothing");
+
+  // ---- typing from an outage, after someone else's edit before it -------------
+  // What was typed while the page was away was put back at the same offset in
+  // the host's text, wherever that now fell: someone else's "Oh, " at the
+  // start, and "brave " went into the middle of "hello" (found by reading, 9
+  // October).
+  const offset = join(workdir, "offset.txt");
+  await writeFile(offset, "hello world\n");
+  await until(async () => (await ana.locator('.tree-row[data-path="offset.txt"]').count()) > 0, 10_000);
+  await open(ana, "offset.txt");
+  guestHop.cut();
+  await ana.locator("#status", { hasText: "reconnecting" }).waitFor({ timeout: 10_000 });
+  await cursorAt(ana, 6);
+  await ana.keyboard.type("brave ");
+  // The host has closed its document by now — ana was its only reader, and
+  // it writes the file as it goes — so this is the text it opens next.
+  await sleep(1500);
+  await writeFile(offset, "Oh, hello world\n");
+  guestHop.restore();
+  await ana.locator("#status", { hasText: /^connected$/ }).waitFor({ timeout: 20_000 });
+  await ana.waitForFunction(() => document.getElementById("viewer")?.dataset.editing === "offset.txt", null, { timeout: 15_000 });
+  const placed = await onDisk(offset, (t) => t === "Oh, hello brave world\n");
+  check(placed === "Oh, hello brave world\n", "typing from an outage lands where it was typed, though someone else's edit before it moved that", `disk ${JSON.stringify(placed)}, page ${JSON.stringify(await editorText(ana))}`);
 
   // ---- a host whose machine is asleep -----------------------------------------
   // Its socket stays open, so the relay counts it as here; it answers

@@ -6,6 +6,7 @@ import "@ajar/workspace-ui/theme.css";
 import "./style.css";
 import "@ajar/workspace-ui/workspace.css";
 
+import { carryOver } from "./carry";
 import { colourFor } from "./colours";
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
@@ -1306,27 +1307,14 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     // The model kept the file on screen between the old document going and
     // this one arriving, and took whatever was typed into it meanwhile.
     if (resume && v.handles && v.shownPath === path) resume.local = v.handles.model.getValue();
-    if (resume?.local !== undefined && resume.local !== resume.base) {
-      // Replay only the local splice made while disconnected onto the host's
-      // fresh state. This preserves unrelated host edits better than replacing
-      // the entire file with a stale browser copy.
-      let prefix = 0;
-      const shared = Math.min(resume.base.length, resume.local.length);
-      while (prefix < shared && resume.base[prefix] === resume.local[prefix]) prefix++;
-      let suffix = 0;
-      while (
-        suffix < shared - prefix &&
-        resume.base[resume.base.length - 1 - suffix] ===
-          resume.local[resume.local.length - 1 - suffix]
-      ) {
-        suffix++;
-      }
-      const remove = resume.base.length - prefix - suffix;
-      const insert = resume.local.slice(prefix, resume.local.length - suffix);
+    const edit = resume?.local === undefined ? null : carryOver(resume.base, resume.local, doc.ytext.toString());
+    if (edit) {
+      // Only the change typed while disconnected, onto the host's fresh state,
+      // rather than the page's whole copy over everyone's edits since — and
+      // where the text around it still is, not at the offset it was typed at.
       doc.ydoc.transact(() => {
-        const available = Math.max(0, doc.ytext.length - prefix);
-        if (remove > 0 && available > 0) doc.ytext.delete(prefix, Math.min(remove, available));
-        if (insert) doc.ytext.insert(Math.min(prefix, doc.ytext.length), insert);
+        if (edit.remove) doc.ytext.delete(edit.at, edit.remove);
+        if (edit.insert) doc.ytext.insert(edit.at, edit.insert);
       }, "local");
     }
     if (resume) {
