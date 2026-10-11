@@ -857,6 +857,13 @@ async function main() {
   const pat = await browser.newPage();
   pat.errors = [];
   pat.on("pageerror", (e) => pat.errors.push(e.message));
+  // Requests that failed, so "Couldn't load the editor" says which and why.
+  // CI's Ubuntu runner saw it once on 11 October, opening ro.txt through the
+  // lag; eight runs here did not.
+  pat.on("requestfailed", (r) => pat.errors.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+  pat.on("response", (r) => {
+    if (r.status() >= 400) pat.errors.push(`${r.status()} for ${r.url()}`);
+  });
   await pat.goto(`http://127.0.0.1:${LAG_PORT}/j/${panelLink.session}#k=${panelLink.key}`);
   await pat.fill("#name", "pat");
   await pat.click("#join button[type=submit]");
