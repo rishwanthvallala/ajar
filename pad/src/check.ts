@@ -10,7 +10,7 @@ import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-token
 import { carryOver, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId, utf8Of } from "./editing";
-import { Shell } from "./shell";
+import { RuntimeNotices, Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
 import { seedFiles } from "./seed";
@@ -610,15 +610,11 @@ async function main() {
   ] as const) {
     printed = "";
     const r = await sh.run(cmd);
-    // Less the runtime's own word when `head` closes the pipe first: on a
-    // slow machine — CI's Mac — the command is still writing, and the runtime
-    // ends it there and says so. Recorded in open-points; the tool's output
-    // is what is checked here.
-    const said = printed
-      .split(/\r?\n/)
-      .filter((line) => !/^Program recieved (termination|fatal) signal:/.test(line))
-      .join("\n")
-      .trim();
+    // The runtime's own word when `head` closes the pipe first — on a slow
+    // machine, CI's Mac, the command is still writing and the runtime ends it
+    // there and says so — is the shell's to leave out now (RuntimeNotices),
+    // so it is not taken out here.
+    const said = printed.trim();
     if (said === want) ok(cmd);
     else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
   }
@@ -747,6 +743,26 @@ async function main() {
   const noise = await diff(rt, known, bins);
   is(noise.changes.length, 0, "generated files are not published");
   is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
+
+  // ---- the runtime's word when a pipe's reader leaves ----
+  // A real tool dies of SIGPIPE without a word; the runtime said so on the
+  // terminal, and then aborted, on a slow machine. Those lines go, and only
+  // those: an abort with no broken pipe before it is the program's own.
+  {
+    const PIPE = "Program recieved termination signal: Broken pipe";
+    const ABORT = "Program recieved fatal signal: Aborted";
+    const n = new RuntimeNotices();
+    is(n.push(`alpha\r\n${PIPE}\r\n${ABORT}\r\n${ABORT}\r\n`), "alpha\r\n", "the broken pipe notice and the aborts after it are left out, the output kept");
+    n.end();
+    is(n.push(`${ABORT}\r\n`), `${ABORT}\r\n`, "an abort with no broken pipe before it, in its own command, is shown");
+    n.end();
+    is(n.push("Program rec"), "", "the start of a notice is held");
+    is(n.push(`ieved termination signal: Broken pipe\r\n$ `), "$ ", "and dropped once its line is whole, with what follows shown");
+    is(n.push("$ "), "$ ", "a prompt with no line end is shown at once");
+    is(n.push("Progress 10%"), "Progress 10%", "and so is anything that cannot be a notice");
+    is(n.push("Pro") + n.flush(), "Pro", "what was held is shown when let go");
+    is(n.push(`say ${PIPE}\r\n`), `say ${PIPE}\r\n`, "a line that only mentions it is kept");
+  }
 
   // ---- a document message too big for the relay ----
   // One over the relay's frame limit does not close the socket: the relay

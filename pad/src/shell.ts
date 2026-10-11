@@ -128,6 +128,72 @@ export interface Finished {
   interrupted?: boolean;
 }
 
+/**
+ * The runtime's own word when a pipe's reader leaves first, taken out of what
+ * reaches the terminal.
+ *
+ * `awk … | head -1` printed its line and then, on a slow machine — CI's Mac on
+ * 11 October — `Program recieved termination signal: Broken pipe` and a run of
+ * `Program recieved fatal signal: Aborted`, typo and all: the runtime ending
+ * the writer at its next write, and saying so. A real tool dies of SIGPIPE
+ * without a word, which is what the pad's own tools now do too. So the broken
+ * pipe notice goes, always; an abort notice goes only after one, in the same
+ * command — a program that aborts by itself is still told about.
+ *
+ * Text arrives in pieces, so a piece that could be the start of a notice is
+ * held until its line is whole, and never long: a program that prints
+ * "Program re" and waits gets it on screen in 50 ms (`HOLD_MS`).
+ */
+export class RuntimeNotices {
+  private held = "";
+  private brokenPipe = false;
+
+  /** Text to show now, of what has arrived. */
+  push(text: string): string {
+    let rest = this.held + text;
+    this.held = "";
+    let out = "";
+    for (;;) {
+      const nl = rest.indexOf("\n");
+      if (nl === -1) break;
+      const line = rest.slice(0, nl + 1);
+      rest = rest.slice(nl + 1);
+      const bare = line.replace(/\r?\n$/, "");
+      if (bare === BROKEN_PIPE) {
+        this.brokenPipe = true;
+        continue;
+      }
+      if (bare === ABORTED && this.brokenPipe) continue;
+      out += line;
+    }
+    if (rest && (NOTICE_START.startsWith(rest) || rest.startsWith(NOTICE_START))) this.held = rest;
+    else out += rest;
+    return out;
+  }
+
+  /** Whether part of a line is being held. */
+  get holding(): boolean {
+    return this.held !== "";
+  }
+
+  /** What is held, now: it was not a notice after all, or not yet. */
+  flush(): string {
+    const held = this.held;
+    this.held = "";
+    return held;
+  }
+
+  /** A command is over: the next one's abort is its own. */
+  end(): void {
+    this.brokenPipe = false;
+  }
+}
+
+const NOTICE_START = "Program recieved ";
+const BROKEN_PIPE = "Program recieved termination signal: Broken pipe";
+const ABORTED = "Program recieved fatal signal: Aborted";
+const HOLD_MS = 50;
+
 export class Shell {
   /** Discards output. Set while the shell is being configured. */
   silent = false;
@@ -144,6 +210,8 @@ export class Shell {
    */
   private echoed = "";
   private buffer = "";
+  private notices = new RuntimeNotices();
+  private releasing: ReturnType<typeof setTimeout> | null = null;
   /** While a `query` runs, what the shell says is collected here, not shown. */
   private captured: string | null = null;
   private waiting: ((f: Finished) => void) | null = null;
@@ -301,6 +369,12 @@ export class Shell {
         // Before anything else is written: see `interrupt()`.
         void this.proc.stdin!.write("\n").catch(() => {});
       }
+      // Whatever was held is shown before the command is over, so what a
+      // query captures is all of it.
+      if (this.releasing) clearTimeout(this.releasing);
+      this.releasing = null;
+      this.show(this.notices.flush());
+      this.notices.end();
       done?.({ exitCode: Number(found[1]), interrupted });
     }
     // Only a partial marker is held back, which would otherwise render as a
@@ -320,7 +394,18 @@ export class Shell {
   }
 
   private emit(text: string): void {
-    if (this.closed) return;
+    this.show(this.notices.push(text));
+    if (this.releasing) clearTimeout(this.releasing);
+    this.releasing = this.notices.holding
+      ? setTimeout(() => {
+          this.releasing = null;
+          this.show(this.notices.flush());
+        }, HOLD_MS)
+      : null;
+  }
+
+  private show(text: string): void {
+    if (!text || this.closed) return;
     if (this.captured !== null) this.captured += text;
     else if (!this.silent) this.onOutput(text);
   }
