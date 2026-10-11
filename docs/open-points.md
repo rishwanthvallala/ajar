@@ -471,7 +471,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 | A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | `648544c` |
 | Typing in a file while it was being moved went with the old file's document when the move landed | `648544c` |
 | A store request the server never answered held the page's write queue for good — every save and publish behind it | `648544c` |
-| The pad's own `awk` — and `sort`, `tail` and `box.py` with it — printed `Exception ignored on flushing sys.stdout: BrokenPipeError` after its output when piped into `head` | this commit |
+| The pad's own `awk` — and `sort`, `tail` and `box.py` with it — printed `Exception ignored on flushing sys.stdout: BrokenPipeError` after its output when piped into `head` | `fa97ffb` |
 | A command that changed a file with typing in it not yet saved — the half-second before a save — lost its change: the page wrote its unsaved files into the sandbox after the command, over what it had done, before reading anything back. Found running the checks for the rest, as a flaky `user-check` | `648544c` |
 
 ## Closed on 9 October
