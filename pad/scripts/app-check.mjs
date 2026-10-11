@@ -531,8 +531,13 @@ try {
   await slow.click(".monaco-editor .view-lines");
   await slow.keyboard.press("ControlOrMeta+End");
   await slow.keyboard.type("from-the-slow-one\n");
+  // At the other end of the file. Typed at the same end, over a real network
+  // to the live site, the two lines interleaved — "from-th" "to-the-slow-one"
+  // "e-slow-one", the same in both places, which is what typing at one spot at
+  // once makes — and this check, looking for each line whole, failed on a
+  // document that had converged (11 October).
   await page.click(".monaco-editor .view-lines");
-  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.press("ControlOrMeta+Home");
   await page.keyboard.type("to-the-slow-one\n");
   const reaches = (tab, t) => tab
     .waitForFunction((t) => (window.__pad?.text("notes.txt") ?? "").includes(t), t, { timeout: 20_000 })
