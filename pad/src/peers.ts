@@ -34,6 +34,16 @@ const CH_DOC = 0x05;
 /** How many frames may wait for a connection before the oldest are dropped. */
 const MAX_PENDING = 512;
 
+/**
+ * The largest document message this page sends. The relay takes 32 MB a
+ * frame, and one over that does not close the socket: the relay stops reading
+ * it, and everything this page sends after — every file's typing, the nudges
+ * that bring saves, cursors — goes nowhere, with nothing on either side to
+ * say so. Measured 11 October with a 40 MB file open in two places: the
+ * second never saw a keystroke. A message this big is not sent.
+ */
+export const MAX_DOC_MESSAGE = 30 * 1024 * 1024;
+
 /** First byte of a doc payload. */
 export const DOC_UPDATE = 0x01;
 export const DOC_AWARENESS = 0x02;
@@ -294,12 +304,15 @@ export class Peers {
    * arrives a moment later asks for state, and answering needs the history
    * these updates carry.
    */
-  doc(stream: number, kind: number, bytes: Uint8Array): void {
+  /** Send a document message, unless it is too big to; false then. */
+  doc(stream: number, kind: number, bytes: Uint8Array): boolean {
+    if (bytes.length + 1 > MAX_DOC_MESSAGE) return false;
     this.counts.docOut += 1;
     const payload = new Uint8Array(bytes.length + 1);
     payload[0] = kind;
     payload.set(bytes, 1);
     this.send(CH_DOC, payload, stream);
+    return true;
   }
 
   private send(channel: number, payload: Uint8Array, streamId = 0): void {

@@ -229,6 +229,71 @@ try {
     await b.context().close();
   }
 
+  // ---- a file too large to edit together live ------------------------------
+  // A live document reaches somebody arriving as one message, and the relay
+  // takes 32 MB of those. A 40 MB file open in two places: the second never
+  // saw a keystroke, and nothing said so — every later message from the
+  // first place, for any file, went nowhere. Since 11 October a file past
+  // 24 MiB opens read-only and is changed from the terminal, and the store
+  // carries its changes, as it does a binary file's.
+  {
+    const name = `pair-huge-${Date.now().toString(36)}`;
+    const huge = "0123456789 the quick brown fox\n".repeat(850_000);
+    for (const writes of [[{ path: "main.py", content: "x = 1\n" }], [{ path: "huge.txt", content: huge }]]) {
+      const r = await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes }) });
+      if (!r.ok) throw new Error(`could not store the large file: ${r.status} ${await r.text()}`);
+    }
+    const [a, b] = await pair(name);
+    const opened = async (page) => {
+      await page.locator("#files").getByText("huge.txt", { exact: true }).click();
+      await page.waitForFunction(() => window.__pad.active() === "huge.txt", null, { timeout: 30_000 });
+      await wait(page, 1000);
+      return page.evaluate(() => {
+        const ed = window.monaco.editor.getEditors()[0];
+        return {
+          readOnly: ed.getOption(window.monaco.editor.EditorOption.readOnly),
+          live: window.__pad.docs().includes("huge.txt"),
+          length: ed.getModel().getValueLength(),
+          status: document.querySelector("#status")?.textContent ?? "",
+        };
+      });
+    };
+    const [oa, ob] = [await opened(a), await opened(b)];
+    if (oa.readOnly && ob.readOnly && !oa.live && !ob.live && oa.length === huge.length && ob.length === huge.length) {
+      ok(`a ${(huge.length / 1048576).toFixed(0)} MB file opens read-only in both places, with no live document`);
+    } else {
+      fail(`a ${(huge.length / 1048576).toFixed(0)} MB file opens read-only in both places, with no live document — ${JSON.stringify({ A: oa, B: ob })}`);
+    }
+    // Changed by a command in one place, it reaches the other through the store.
+    await a.click("#terminal");
+    await a.locator("#terminal .xterm-helper-textarea").focus();
+    await a.keyboard.type("echo ready");
+    await a.keyboard.press("Enter");
+    await a.waitForFunction(() => /\nready/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 240_000 });
+    await a.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 30_000 });
+    await a.keyboard.type("echo added-by-a-command >> huge.txt");
+    await a.keyboard.press("Enter");
+    const want = huge.length + "added-by-a-command\n".length;
+    const reached = await b
+      .waitForFunction((n) => {
+        const ed = window.monaco.editor.getEditors()[0];
+        const model = ed.getModel();
+        return model.getValueLength() === n && model.getLineContent(model.getLineCount() - 1) === "added-by-a-command";
+      }, want, { timeout: 120_000, polling: 500 })
+      .then(() => true, () => false);
+    if (reached) ok("and a command changing it in one place reaches the other, through the store");
+    else fail(`and a command changing it in one place reaches the other, through the store — B holds ${await b.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getValueLength())} of ${want}`);
+    // The room is still a room: typing in another file reaches the other place.
+    for (const p of [a, b]) await p.locator("#files").getByText("main.py", { exact: true }).click();
+    await wait(a, 2000);
+    await caretAt(a, 1, 6);
+    await a.keyboard.type("23");
+    await wait(a, 1500);
+    await agree(a, b, "x = 123\n", "and typing in another file still reaches the other place");
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- commands in one place, typing in the other --------------------------
   {
     const [a, b] = await pair(`pair-run-${Date.now().toString(36)}`);

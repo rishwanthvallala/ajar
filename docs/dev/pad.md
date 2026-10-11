@@ -260,9 +260,11 @@ deletes forward; to `nano`, both ctrl-c and ctrl-d are just keys.
 
 **`FileStat` carries `kind` and `size` and nothing else** — no modification
 time, no hash — so the sync diff must read every file to know what changed.
-Affordable only under the pad's caps of 500 files and 60 MB — 25 MB until 7
-October, and nothing here times the diff at the new size; if either rises
-again this breaks first.
+Affordable under the pad's caps of 500 files and 100 MB — 25 MB until 7
+October, 60 until 11 October. Timed then, in a 100 MB pad of 50 files: a
+command's change is stored 0.1 s after Enter, the diff included, as at 25 MB.
+The sandbox's files are in memory, so reading them all is cheap; if the caps
+rise again, time it again.
 
 **A binary cannot restore its working directory**, so the shipped `find`
 exited 1 after doing its work correctly and `find … && …` never ran its second
@@ -436,6 +438,21 @@ seeds only once everyone present has said so or left; otherwise it waits, up
 to five seconds, for whoever does have it. The check slows one browser's relay
 by 1.5 s and compares the whole text on both sides — a check of each side's
 lines alone passed against the 600 ms wait.
+
+**A file past 24 MiB is not a live document** (`LIVE_MAX` in `app.ts`), since
+11 October. A live document reaches somebody arriving as its whole state, in
+one message, and the relay takes 32 MB a frame. Over that it does not close
+the socket — it stops reading it, so everything that page sends afterwards,
+for every file, goes nowhere, and neither side says so. Measured with a 40 MB
+file open in two places: the second never saw a keystroke. Pads held at most
+25 MB until 7 October, so no file could get there; at 60, and now 100, one
+can. Such a file opens read-only, with a line saying why; a command changes
+it, and the store carries the change to everyone, as it does a binary file's.
+A file already live in a page that grows past the limit stays live there. And
+`Peers.doc` sends no message over 30 MiB (`MAX_DOC_MESSAGE`): a newcomer asking
+for one is answered `DOC_NONE` and takes the stored copy, and the page says
+the file has grown too large to share live. `pair-check` opens a 25 MB file in
+two places.
 
 **The seed's client id comes from its text** since 4 October, not a fixed 0.
 Viewers made the fixed id dangerous. A viewer keeps a document but cannot hand
@@ -662,7 +679,7 @@ is the format's headers and a CRC. Names are written with the UTF-8 flag
 Windows zips use.
 
 **Reading checks before it inflates.** The central directory says how many
-entries and how many bytes they unpack to; over the pad's 500 files or 60 MB is
+entries and how many bytes they unpack to; over the pad's 500 files or 100 MB is
 refused there, before any inflating. A zip can lie about those sizes — the
 classic zip bomb — so the inflated bytes are counted again as they come, and
 each entry's size and CRC must match what the directory claimed. Encrypted
@@ -721,7 +738,7 @@ Binary files travel everywhere text does, except into the editor:
 
 The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
-at 60 MB; base64 makes a binary file a third larger against that cap.
+at 100 MB; base64 makes a binary file a third larger against that cap.
 
 ## Where a file was left
 

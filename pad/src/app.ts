@@ -46,6 +46,26 @@ const STUCK_WAIT = 1500;
  */
 const EDITS_FROM = 16 * 1024;
 
+/**
+ * Bytes of text a file can hold and still be edited together live. Above it
+ * the file opens read-only and is changed from the terminal; its changes
+ * reach everyone through the store, as a binary file's do.
+ *
+ * A live document reaches somebody arriving as its whole state in one
+ * message, and the relay takes 32 MB of those (see `MAX_DOC_MESSAGE`). Every
+ * file a 25 MB pad could hold is under this, as it was before pads grew past
+ * that on 7 October; a 40 MB file open in two places stopped reaching the
+ * second, until 11 October.
+ */
+export const LIVE_MAX = 24 * 1024 * 1024;
+
+/** Whether a file's text is past `LIVE_MAX`; its length first, which is free. */
+function tooBigToShare(units: number, text: () => string): boolean {
+  if (units > LIVE_MAX) return true;
+  if (units * 3 <= LIVE_MAX) return false;
+  return new TextEncoder().encode(text()).length > LIVE_MAX;
+}
+
 const STARTER = `# Paste over this, or start typing.
 import csv
 
@@ -506,7 +526,9 @@ export class App {
         if (kind === "update") queueMicrotask(() => this.detach(path));
         return;
       }
-      this.peers?.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes);
+      if (this.peers && !this.peers.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes)) {
+        this.say("error", `that change to ${path} is too large to share live; it is saved, and others get it as saved`);
+      }
       // Local changes only — the document returns early on anything applied
       // from somebody else — which makes this the right place to decide that
       // something needs saving.
@@ -639,8 +661,13 @@ export class App {
     }
     else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
     else if (kind === DOC_WANT) {
-      // Somebody wants what they are missing. Only what they lack is sent.
-      this.peers?.doc(stream, DOC_UPDATE, doc.diffSince(bytes));
+      // Somebody wants what they are missing. Only what they lack is sent —
+      // unless that is more than one message carries, for a file that grew
+      // past sharing while it was open. Then they take the stored copy.
+      if (!this.peers?.doc(stream, DOC_UPDATE, doc.diffSince(bytes))) {
+        this.peers?.doc(stream, DOC_NONE, new Uint8Array());
+        this.say("error", `${path} has grown too large to share live; others get it as saved`);
+      }
     }
   }
 
@@ -756,6 +783,12 @@ export class App {
     if (back) this.editor.restoreViewState(back);
     this.unbind?.();
     this.unbind = null;
+    const solo = this.solo(path);
+    this.editor.updateOptions({ readOnly: solo });
+    if (solo) {
+      const mb = Math.round(model.getValueLength() / (1024 * 1024));
+      this.say("", `${path} is about ${mb} MB, too large to edit together live — read-only here; change it from the terminal`);
+    }
     // Bound once the document is ready, which may mean waiting for another
     // browser to send it. The model already shows the stored copy meanwhile,
     // so the wait is invisible rather than blank.
@@ -864,6 +897,8 @@ export class App {
   private async attach(path: string, model: Monaco.editor.ITextModel): Promise<void> {
     // A viewer's own copy has no live document: that is what makes it theirs.
     if (this.local.has(path)) return;
+    // Nor has a file too large to share live.
+    if (this.solo(path)) return;
     // Kept until the document is bound, so a click away and back still knows
     // what the file looked like before anything was typed.
     if (!this.shownUnbound.has(path)) this.shownUnbound.set(path, model.getValue());
@@ -1615,6 +1650,9 @@ export class App {
         for (const c of found.changes) {
           if (c.content === null || c.encoding === "base64" || isMarker(c.path, c.content)) continue;
           if (this.docs.has(c.path) || !this.known.has(c.path) || this.local.has(c.path)) continue;
+          // Nobody has a live document of it: the store carries it.
+          const content = c.content;
+          if (tooBigToShare(content.length, () => content)) continue;
           elsewhere.add(c.path);
         }
         await Promise.all([...elsewhere].map((path) => this.readyDoc(path)));
@@ -2538,6 +2576,16 @@ export class App {
     actions.append(button("Save as my copy", () => void this.saveCopy(), true));
     bar.append(pill, text, actions);
     this.ui.setBanner(bar);
+  }
+
+  /**
+   * A file shown with no live document: past `LIVE_MAX` by what its model
+   * holds. One already live here, that grew past it while open, stays live —
+   * it is already shared, and each change is its own message.
+   */
+  private solo(path: string): boolean {
+    const model = this.models.get(path);
+    return !!model && !this.docs.has(path) && tooBigToShare(model.getValueLength(), () => model.getValue());
   }
 
   private say(status: Status, text: string): void {

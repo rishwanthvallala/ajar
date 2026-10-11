@@ -52,7 +52,7 @@ for everyone on it:
 - `__MACOSX`, `.DS_Store` and the rest of what zipping leaves behind stay out.
 - If a file in the zip would replace a different one already here, you are
   asked first. On a new pad, the starter `main.py` makes way.
-- 500 files and 60 MB, the same as any pad. Password-protected zips are
+- 500 files and 100 MB, the same as any pad. Password-protected zips are
   refused.
 
 **Colours** above the editor turns the colouring off, for every file, and
@@ -203,7 +203,7 @@ setting takes effect straight away too, for people already in the pad.
 **Delete** removes the pad and its files for everyone, and its name is never
 used again.
 
-An account holds 20 pads and 100 MB across them.
+An account holds 20 pads and 250 MB across them.
 
 **Delete account**, at the bottom of Your pads, deletes your account and every
 pad in it, for everyone, straight away — after you type `delete` to confirm.
@@ -261,10 +261,14 @@ counts, so a folder people keep visiting stays. Once one is deleted its name is
 free, so an old link opens an empty folder — or whatever somebody else has
 started there since. Keep anything you care about somewhere else too.
 
-**A pad holds 500 files and 60 MB.** A change that would take it past either
+**A pad holds 500 files and 100 MB.** A change that would take it past either
 is not saved, and the line under the editor says so.
 
-One address can add about 256 MB a day to the server. Editing what is already
+**A text file over 24 MB opens read-only.** It is too large to edit together
+live. Change it from the terminal — `sed`, `python`, a script of your own — and
+everyone gets the change once it is saved.
+
+One address can add about 512 MB a day to the server. Editing what is already
 there never counts against that — only growing it does.
 
 ## If a command hangs
