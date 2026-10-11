@@ -11,7 +11,7 @@ import { carryOver, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId } from "./editing";
 import { Shell } from "./shell";
-import { mintName, Store, StoreError } from "./store";
+import { mintName, Store, StoreError, storedHash } from "./store";
 import { seedFiles } from "./seed";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
@@ -771,6 +771,27 @@ async function main() {
     fail("a reserved name was accepted");
   } catch (e) {
     is(e instanceof StoreError && e.status === 400, true, "a reserved name is refused");
+  }
+
+  // A save of a large file as what changed in it, against the text the relay
+  // holds, named by its hash. Anything else it holds by then, it refuses.
+  {
+    const big = `${"line of text\n".repeat(2000)}end\n`;
+    await store.write(name, [{ path: "big.txt", content: big }]);
+    is(store.editsWork, true, "the relay says it takes edits");
+    const base = await storedHash(big);
+    await store.write(name, [{ path: "big.txt", content: null, base, edits: [{ at: 0, remove: 4, insert: "LINE" }] }]);
+    const after = (await store.read(name)).files["big.txt"];
+    is(after?.content, `LINE${big.slice(4)}`, "an edit against the stored text changes it, and only where it says");
+    is(after?.hash, await storedHash(`LINE${big.slice(4)}`), "and the relay's hash is the one a browser works out");
+    let stale = false;
+    try {
+      await store.write(name, [{ path: "big.txt", content: null, base, edits: [{ at: 0, remove: 4, insert: "XXXX" }] }]);
+    } catch (e) {
+      stale = e instanceof StoreError && e.stale;
+    }
+    is(stale, true, "an edit against a version the relay no longer holds is refused as stale");
+    is((await store.read(name)).files["big.txt"]?.content.startsWith("LINE"), true, "and changes nothing");
   }
 
   await sh.close();

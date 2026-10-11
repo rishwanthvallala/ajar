@@ -390,7 +390,7 @@ async fn create_pad(
     let me = require_user(&state, &headers).await?;
     let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
     let pad = blocking(move || {
-        let taken = |name: &str| pads.get(name).ok().flatten().is_some();
+        let taken = |name: &str| pads.exists(name).unwrap_or(false);
         let pad = accounts.create_pad(me.id, &taken)?;
         pads.pin(&pad.name);
         Ok(pad)

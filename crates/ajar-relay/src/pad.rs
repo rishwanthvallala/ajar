@@ -7,9 +7,10 @@
 //! gone. Two lifetimes in one process, kept apart on purpose.
 //!
 //! The shape is small: a folder is a name, a sequence number, and a map of
-//! paths to contents, stored as one JSON document per pad. No database,
-//! nothing to migrate, and a pad is legible with `cat` when something is
-//! wrong. The caps are what keep that honest.
+//! paths to contents. Since 11 October 2026 the paths are rows in SQLite and
+//! the contents are files named by their hash, so a save writes what changed
+//! and a read streams the rest — see docs/dev/pad-store.md. It was one JSON
+//! document per pad, which every keystroke's save read and wrote whole.
 //!
 //! **A lapsed name is free again.** A pad nobody opens or writes to for 90 days is
 //! deleted, and whoever opens that name next starts an empty folder there.
@@ -27,7 +28,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Total bytes one pad may hold.
@@ -166,61 +169,14 @@ pub struct Pad {
 }
 
 impl Pad {
-    fn new(now_ms: u64) -> Self {
-        Self {
-            seq: 0,
-            created_ms: now_ms,
-            updated_ms: now_ms,
-            files: BTreeMap::new(),
-        }
-    }
-
     pub fn bytes(&self) -> usize {
         self.files.values().map(|f| f.content.len()).sum()
     }
 }
 
-/// How long ago a stored pad was last touched — written, or opened.
-///
-/// The file's modification time *is* the lease. A write renames a new file
-/// into place, which sets it; a read renews it with [`renew`]. Kept in the
-/// filesystem rather than in the document so that neither needs the pad
-/// parsed: the sweeper `stat`s each file, and a read can check and renew
-/// without loading what it is about to stream. A clock that puts the time in
-/// the future reads as touched just now, never as lapsed.
-fn idle_for(meta: &std::fs::Metadata) -> Duration {
-    meta.modified()
-        .ok()
-        .and_then(|m| SystemTime::now().duration_since(m).ok())
-        .unwrap_or_default()
-}
-
-fn lapsed(meta: &std::fs::Metadata) -> bool {
-    idle_for(meta) > LEASE
-}
-
-/// Restart a pad's lease because somebody opened it — at most once a day.
-///
-/// Failure is not an error: the read goes ahead, and the pad keeps whatever
-/// lease its last write gave it.
-fn renew(file: &std::fs::File, meta: &std::fs::Metadata) {
-    if idle_for(meta) > RENEW_EVERY {
-        let _ = file.set_modified(SystemTime::now());
-    }
-}
-
-/// A stored pad opened for streaming: the file positioned just past its
-/// opening brace, and how many bytes follow.
-///
-/// Past the brace so a caller can put its own fields in front — the stored
-/// document already *is* the response, apart from `exists`.
-pub struct Opened {
-    pub file: std::fs::File,
-    pub remaining: u64,
-}
-
 /// What an accepted write did: the sequence it reached, and how many bytes it
-/// added to the store — which is what the caller's address is charged.
+/// added to the pad's footprint — which is what the caller's address is
+/// charged.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Written {
     pub seq: u64,
@@ -229,6 +185,8 @@ pub struct Written {
     /// quota.
     pub bytes: u64,
     pub files: u64,
+    /// Each written file's hash, for a browser to send edits against.
+    pub hashes: BTreeMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -248,6 +206,11 @@ pub enum Error {
     /// This write would add more than the caller's address has left for the
     /// day. See `quota::MAX_PAD_GROWTH_PER_IP`.
     OverAllowance,
+    /// Edits sent against a version of a file the store no longer holds. The
+    /// browser sends the whole file instead.
+    Stale,
+    /// Edits that do not fit the file they name.
+    BadEdit(&'static str),
     Io(String),
 }
 
@@ -274,12 +237,26 @@ impl Error {
                  or remove something first"
                     .into()
             }
+            Error::Stale => "a file changed since this page last read it".into(),
+            Error::BadEdit(why) => format!("that edit will not apply: {why}"),
             Error::Io(e) => format!("could not store that: {e}"),
         }
     }
 }
 
-/// A name that is safe to use as a filename and readable in a URL.
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Io(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e.to_string())
+    }
+}
+
+/// A name that is safe to use in a URL and as a key.
 pub fn check_name(name: &str) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::BadName("it is empty"));
@@ -287,8 +264,9 @@ pub fn check_name(name: &str) -> Result<(), Error> {
     if name.len() > MAX_NAME {
         return Err(Error::BadName("it is too long"));
     }
-    // Strict enough that the name *is* the filename with no escaping, which is
-    // the only reason the store can be a directory of flat files.
+    // Strict enough that the name is a filename with no escaping too — the
+    // store was a directory of `<name>.json` until October 2026, and an export
+    // for going back writes that again.
     if !name
         .bytes()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -308,9 +286,10 @@ pub fn check_name(name: &str) -> Result<(), Error> {
 
 /// A path inside a pad.
 ///
-/// These never touch the filesystem — a pad is one JSON document — but they do
-/// reach other people's browsers, where a `..` would be handed to a runtime
-/// that resolves it. Refusing them here is cheaper than trusting every client.
+/// These never touch the filesystem — a file's bytes are stored under their
+/// hash — but they do reach other people's browsers, where a `..` would be
+/// handed to a runtime that resolves it. Refusing them here is cheaper than
+/// trusting every client.
 pub fn check_path(path: &str) -> Result<(), Error> {
     if path.is_empty() {
         return Err(Error::BadPath("it is empty"));
@@ -333,13 +312,29 @@ pub fn check_path(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// One write to apply. Absent `content` removes the file.
+/// One change to a file's text: `remove` characters at `at`, then `insert`
+/// there. Counted in UTF-16 code units, as a browser counts a string.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Edit {
+    pub at: usize,
+    pub remove: usize,
+    #[serde(default)]
+    pub insert: String,
+}
+
+/// One write to apply. `content` replaces the file; `edits` against `base`
+/// change it; neither removes it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Write {
     pub path: String,
     pub content: Option<String>,
     #[serde(default = "utf8")]
     pub encoding: Encoding,
+    /// The hash of the stored file `edits` apply to.
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub edits: Option<Vec<Edit>>,
 }
 
 fn utf8() -> Encoding {
@@ -353,37 +348,194 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// How many locks guard the pads.
+/// How long a blob nothing refers to stays on disk before it is deleted.
 ///
-/// Striped rather than one per name: a lock map keyed by pad would grow for
-/// the life of the process, and this is a server that is meant to run for
-/// months. Sixty-four is far more than the concurrency a scratchpad sees, so
-/// two pads sharing a stripe is a theoretical wait, not a real one.
-const STRIPES: usize = 64;
+/// Not deleted at once: a read takes the list of blobs it will send and then
+/// sends them, and a write landing in between can leave one of them held by
+/// nothing. A stalled reader is closed by the kernel within a minute
+/// (`TCP_USER_TIMEOUT` in `main.rs`), so ten is room to spare.
+pub const GRACE: Duration = Duration::from_secs(10 * 60);
+
+fn hash_of(encoding: Encoding, content: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(match encoding {
+        Encoding::Utf8 => b"u",
+        Encoding::Base64 => b"b",
+    });
+    h.update(content.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+fn encoding_code(e: Encoding) -> i64 {
+    match e {
+        Encoding::Utf8 => 0,
+        Encoding::Base64 => 1,
+    }
+}
+
+fn encoding_from(code: i64) -> Encoding {
+    if code == 1 {
+        Encoding::Base64
+    } else {
+        Encoding::Utf8
+    }
+}
+
+fn encoding_name(e: Encoding) -> &'static str {
+    match e {
+        Encoding::Utf8 => "utf8",
+        Encoding::Base64 => "base64",
+    }
+}
+
+/// `remove` UTF-16 units at `at` replaced by `insert`, or why not.
+fn apply_edit(text: &str, edit: &Edit) -> Result<String, Error> {
+    // A byte offset for a UTF-16 one, or None if it falls inside a character.
+    let byte_at = |units: usize| -> Option<usize> {
+        let mut seen = 0usize;
+        for (i, c) in text.char_indices() {
+            if seen == units {
+                return Some(i);
+            }
+            seen += c.len_utf16();
+            if seen > units {
+                return None;
+            }
+        }
+        (seen == units).then_some(text.len())
+    };
+    let from = byte_at(edit.at).ok_or(Error::BadEdit("it starts outside the text"))?;
+    let to = byte_at(edit.at + edit.remove).ok_or(Error::BadEdit("it ends outside the text"))?;
+    let mut out = String::with_capacity(text.len() - (to - from) + edit.insert.len());
+    out.push_str(&text[..from]);
+    out.push_str(&edit.insert);
+    out.push_str(&text[to..]);
+    Ok(out)
+}
+
+/// One file of a pad as the store holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Row {
+    blob: String,
+    encoding: Encoding,
+    seq: u64,
+    /// Bytes of its text, which is what the caps count.
+    size: u64,
+    /// Bytes of its blob on disk.
+    stored: u64,
+}
+
+/// A stored pad opened for streaming: its document after the opening brace,
+/// as pieces, and how many bytes they come to.
+///
+/// After the brace so a caller can put its own fields in front, as it always
+/// has. The pieces are fixed bytes and blobs; a blob is opened only when it is
+/// reached, so a read holds one file open, not one per file in the pad.
+pub struct Opened {
+    pub parts: Vec<Part>,
+    pub remaining: u64,
+}
+
+pub enum Part {
+    Bytes(Vec<u8>),
+    Blob(PathBuf),
+}
+
+#[cfg(test)]
+impl Opened {
+    /// The document as one reader, for anything not streaming it to a socket.
+    pub fn into_reader(self) -> impl std::io::Read {
+        PartsReader {
+            parts: self.parts.into_iter(),
+            current: None,
+        }
+    }
+}
+
+#[cfg(test)]
+struct PartsReader {
+    parts: std::vec::IntoIter<Part>,
+    current: Option<Box<dyn std::io::Read>>,
+}
+
+#[cfg(test)]
+impl std::io::Read for PartsReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if let Some(r) = self.current.as_mut() {
+                let n = r.read(buf)?;
+                if n > 0 {
+                    return Ok(n);
+                }
+                self.current = None;
+            }
+            match self.parts.next() {
+                None => return Ok(0),
+                Some(Part::Bytes(b)) => self.current = Some(Box::new(std::io::Cursor::new(b))),
+                Some(Part::Blob(path)) => self.current = Some(Box::new(std::fs::File::open(path)?)),
+            }
+        }
+    }
+}
 
 pub struct Store {
     dir: PathBuf,
+    blobs: PathBuf,
     /// The ceiling this store enforces. A field rather than the constant so a
     /// smaller disk can say so, and so a test can reach it without writing 4 GB.
     ceiling: u64,
-    /// Serialised bytes currently on disk, maintained rather than measured.
+    /// One connection, and every change to the store under it: a write's
+    /// checks and its transaction are one step, so two writes to one pad
+    /// cannot both start from the same version and lose one another.
+    db: Mutex<Connection>,
+    /// Bytes of the blobs some file holds, maintained rather than measured.
     ///
-    /// Counted once at startup and adjusted by every save and every expiry.
-    /// The alternative is walking the directory per write, which is the cost
-    /// the file-count cap exists to avoid — and the sweeper already shows what
-    /// a full scan costs when it does one hourly.
+    /// A blob is counted once however many pads hold it, which is what it
+    /// costs the disk. One held by nothing stops counting at once, though its
+    /// file waits out [`GRACE`].
     used: AtomicU64,
-    /// Serialises the read-modify-write in `write`.
-    ///
-    /// Without it two saves to one pad both read the same starting point and
-    /// the second discards the first — and they collided on the temporary file
-    /// as well, so the loser did not even fail quietly: it failed with
-    /// `No such file or directory` after the winner renamed the file away.
-    /// Two people typing in one folder is the ordinary case here, not an edge.
-    stripes: Vec<Mutex<()>>,
     /// Pads that belong to an account. Their lease never lapses: an owned
     /// pad lasts as long as its account, and deleting it is the owner's call.
     pinned: parking_lot::RwLock<std::collections::HashSet<String>>,
+}
+
+const SCHEMA: &str = "
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    CREATE TABLE IF NOT EXISTS pads (
+        name TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        created_ms INTEGER NOT NULL,
+        updated_ms INTEGER NOT NULL,
+        touched_ms INTEGER NOT NULL,
+        bytes INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS files (
+        pad TEXT NOT NULL,
+        path TEXT NOT NULL,
+        blob TEXT NOT NULL,
+        encoding INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        size INTEGER NOT NULL,
+        stored INTEGER NOT NULL,
+        PRIMARY KEY (pad, path)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS blobs (
+        hash TEXT PRIMARY KEY,
+        stored INTEGER NOT NULL,
+        refs INTEGER NOT NULL,
+        unheld_ms INTEGER
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS pads_touched ON pads (touched_ms);
+    CREATE INDEX IF NOT EXISTS blobs_unheld ON blobs (unheld_ms) WHERE refs = 0;
+";
+
+/// A pad's row, if there is one.
+struct Head {
+    seq: u64,
+    created_ms: u64,
+    updated_ms: u64,
+    touched_ms: u64,
 }
 
 impl Store {
@@ -393,7 +545,8 @@ impl Store {
     /// diverges from what production runs.
     pub fn open(dir: impl Into<PathBuf>, ceiling: u64) -> std::io::Result<Self> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
+        let blobs = dir.join("blobs");
+        std::fs::create_dir_all(&blobs)?;
 
         // `<name>.tomb` is what the old policy left for every lapsed name, and
         // each one sealed that name for good. Nothing reads them any more;
@@ -411,19 +564,117 @@ impl Store {
             tracing::info!(freed, "cleared tombstones — those names are free again");
         }
 
-        let used = std::fs::read_dir(&dir)?
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum();
-        Ok(Self {
+        let db = Connection::open(dir.join("store.db")).map_err(std::io::Error::other)?;
+        db.execute_batch(SCHEMA).map_err(std::io::Error::other)?;
+        let store = Self {
             dir,
+            blobs,
             ceiling,
-            used: AtomicU64::new(used),
-            stripes: (0..STRIPES).map(|_| Mutex::new(())).collect(),
+            db: Mutex::new(db),
+            used: AtomicU64::new(0),
             pinned: Default::default(),
-        })
+        };
+        store.import_legacy()?;
+        // Nothing is being read yet, so a blob held by nothing can go now.
+        store.collect(Duration::ZERO);
+        let used: i64 = store
+            .db
+            .lock()
+            .query_row(
+                "SELECT COALESCE(SUM(stored), 0) FROM blobs WHERE refs > 0",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(std::io::Error::other)?;
+        store.used.store(used as u64, Ordering::Relaxed);
+        Ok(store)
+    }
+
+    /// Bring in every pad stored the old way — one `<name>.json` each — and
+    /// move the file into `legacy/`, kept for going back.
+    ///
+    /// Each pad in a transaction of its own, and moved only once it is in. A
+    /// pad already here — a start that stopped part-way — is only moved.
+    fn import_legacy(&self) -> std::io::Result<()> {
+        let legacy: Vec<(String, PathBuf)> = std::fs::read_dir(&self.dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter_map(|p| stem(&p).map(|name| (name, p)))
+            .filter(|(name, _)| check_name(name).is_ok())
+            .collect();
+        if legacy.is_empty() {
+            return Ok(());
+        }
+        let kept = self.dir.join("legacy");
+        std::fs::create_dir_all(&kept)?;
+        let mut imported = 0usize;
+        for (name, path) in legacy {
+            match self.import_one(&name, &path) {
+                Ok(()) => {
+                    std::fs::rename(&path, kept.join(format!("{name}.json")))?;
+                    imported += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(pad = %name, "left where it was, not imported: {}", e.message())
+                }
+            }
+        }
+        tracing::info!(
+            imported,
+            "pads brought into the store from one document each"
+        );
+        Ok(())
+    }
+
+    fn import_one(&self, name: &str, path: &Path) -> Result<(), Error> {
+        let meta = std::fs::metadata(path)?;
+        let touched = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_else(now_ms);
+        let pad: Pad =
+            serde_json::from_slice(&std::fs::read(path)?).map_err(|e| Error::Io(e.to_string()))?;
+        let mut db = self.db.lock();
+        let there: bool = db
+            .query_row("SELECT 1 FROM pads WHERE name = ?1", [name], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if there {
+            return Ok(());
+        }
+        let mut rows = BTreeMap::new();
+        for (path, file) in &pad.files {
+            let (blob, stored) = self.put_blob(file.encoding, &file.content)?;
+            rows.insert(
+                path.clone(),
+                Row {
+                    blob,
+                    encoding: file.encoding,
+                    seq: file.seq,
+                    size: file.content.len() as u64,
+                    stored,
+                },
+            );
+        }
+        let tx = db.transaction()?;
+        let changed: Vec<String> = rows.keys().cloned().collect();
+        Self::apply_rows(&tx, name, &BTreeMap::new(), &rows, &changed, touched)?;
+        tx.execute(
+            "INSERT INTO pads (name, seq, created_ms, updated_ms, touched_ms, bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                name,
+                pad.seq as i64,
+                pad.created_ms as i64,
+                pad.updated_ms as i64,
+                touched as i64,
+                pad.bytes() as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Exempt a pad from its lease, for as long as it is owned.
@@ -431,110 +682,291 @@ impl Store {
         self.pinned.write().insert(name.to_owned());
     }
 
-    fn lapsed(&self, name: &str, meta: &std::fs::Metadata) -> bool {
-        !self.pinned.read().contains(name) && lapsed(meta)
+    fn lapsed(&self, name: &str, touched_ms: u64) -> bool {
+        !self.pinned.read().contains(name)
+            && Duration::from_millis(now_ms().saturating_sub(touched_ms)) > LEASE
     }
 
-    /// Delete a pad outright — its owner said so. The name is the accounts
-    /// store's to retire; here it is only files.
-    pub fn remove(&self, name: &str) -> Result<(), Error> {
-        check_name(name)?;
-        let _guard = self.stripe(name).lock();
-        self.pinned.write().remove(name);
-        let path = self.pad_path(name);
-        let Ok(meta) = std::fs::metadata(&path) else {
-            return Ok(());
-        };
-        std::fs::remove_file(&path).map_err(|e| Error::Io(e.to_string()))?;
-        self.used.fetch_sub(meta.len(), Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Serialised bytes the store is holding right now.
+    /// Bytes of the blobs some pad holds right now.
     pub fn used(&self) -> u64 {
         self.used.load(Ordering::Relaxed)
     }
 
-    fn stripe(&self, name: &str) -> &Mutex<()> {
-        let mut h: usize = 0;
-        for b in name.bytes() {
-            h = h.wrapping_mul(31).wrapping_add(b as usize);
-        }
-        &self.stripes[h % STRIPES]
+    fn blob_path(&self, hash: &str) -> PathBuf {
+        self.blobs.join(&hash[..2]).join(hash)
     }
 
-    fn pad_path(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{name}.json"))
+    /// Store a file's text under its hash, if nothing has yet, and say which
+    /// hash and how big the blob is. The text is kept as the JSON string it is
+    /// sent as, so a read copies it rather than encoding it.
+    fn put_blob(&self, encoding: Encoding, content: &str) -> Result<(String, u64), Error> {
+        let hash = hash_of(encoding, content);
+        let path = self.blob_path(&hash);
+        if let Ok(meta) = std::fs::metadata(&path) {
+            return Ok((hash, meta.len()));
+        }
+        let body = serde_json::to_vec(content).map_err(|e| Error::Io(e.to_string()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Written beside its place and renamed into it: a blob is either all
+        // there or not there. Unique per call, as two writers storing the same
+        // text at once is ordinary.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.blobs.join(format!(".{}.{n}.tmp", std::process::id()));
+        std::fs::write(&tmp, &body)?;
+        std::fs::rename(&tmp, &path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
+        Ok((hash, body.len() as u64))
     }
 
-    /// Read a pad. `Ok(None)` means the name is free — nobody has written it,
-    /// or its lease lapsed.
-    ///
-    /// An expired pad reads as free here rather than being deleted: deletion
-    /// belongs to the sweeper, under the pad's lock, so that no reader can
-    /// remove a pad that a write replaced after the reader looked.
-    pub fn get(&self, name: &str) -> Result<Option<Pad>, Error> {
-        use std::io::Read;
-
-        check_name(name)?;
-        let io = |e: std::io::Error| Error::Io(e.to_string());
-        let mut file = match std::fs::File::open(self.pad_path(name)) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io(e)),
-        };
-        // Checked on the way out as well as by the sweeper, so a pad is never
-        // served past its lease just because nothing has swept recently.
-        if self.lapsed(name, &file.metadata().map_err(io)?) {
-            return Ok(None);
-        }
-        let mut raw = Vec::new();
-        file.read_to_end(&mut raw).map_err(io)?;
-        serde_json::from_slice(&raw)
-            .map(Some)
+    fn blob_text(&self, hash: &str) -> Result<String, Error> {
+        serde_json::from_slice(&std::fs::read(self.blob_path(hash))?)
             .map_err(|e| Error::Io(e.to_string()))
+    }
+
+    fn head(db: &Connection, name: &str) -> Result<Option<Head>, Error> {
+        Ok(db
+            .query_row(
+                "SELECT seq, created_ms, updated_ms, touched_ms FROM pads WHERE name = ?1",
+                [name],
+                |r| {
+                    Ok(Head {
+                        seq: r.get::<_, i64>(0)? as u64,
+                        created_ms: r.get::<_, i64>(1)? as u64,
+                        updated_ms: r.get::<_, i64>(2)? as u64,
+                        touched_ms: r.get::<_, i64>(3)? as u64,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    fn rows(db: &Connection, name: &str) -> Result<BTreeMap<String, Row>, Error> {
+        let mut q = db.prepare_cached(
+            "SELECT path, blob, encoding, seq, size, stored FROM files WHERE pad = ?1 ORDER BY path",
+        )?;
+        let rows = q.query_map([name], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Row {
+                    blob: r.get(1)?,
+                    encoding: encoding_from(r.get(2)?),
+                    seq: r.get::<_, i64>(3)? as u64,
+                    size: r.get::<_, i64>(4)? as u64,
+                    stored: r.get::<_, i64>(5)? as u64,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Move a pad's files from `old` to `new`, for the paths in `changed` and
+    /// any `old` has that `new` does not, counting each blob's holders as it
+    /// goes. Returns the change in bytes held, for `used`.
+    fn apply_rows(
+        tx: &rusqlite::Transaction,
+        name: &str,
+        old: &BTreeMap<String, Row>,
+        new: &BTreeMap<String, Row>,
+        changed: &[String],
+        now: u64,
+    ) -> Result<i64, Error> {
+        let mut held: i64 = 0;
+        // A blob's holders, changed by `by`; what that does to the bytes held.
+        let mut count = |hash: &str, stored: u64, by: i64| -> Result<(), Error> {
+            tx.execute(
+                "INSERT INTO blobs (hash, stored, refs, unheld_ms) VALUES (?1, ?2, 0, NULL) ON CONFLICT(hash) DO NOTHING",
+                params![hash, stored as i64],
+            )?;
+            let before: i64 =
+                tx.query_row("SELECT refs FROM blobs WHERE hash = ?1", [hash], |r| {
+                    r.get(0)
+                })?;
+            let after = before + by;
+            tx.execute(
+                "UPDATE blobs SET refs = ?2, unheld_ms = CASE WHEN ?2 > 0 THEN NULL ELSE ?3 END WHERE hash = ?1",
+                params![hash, after, now as i64],
+            )?;
+            if before == 0 && after > 0 {
+                held += stored as i64;
+            } else if before > 0 && after == 0 {
+                held -= stored as i64;
+            }
+            Ok(())
+        };
+        for (path, row) in old {
+            if !new.contains_key(path) {
+                tx.execute(
+                    "DELETE FROM files WHERE pad = ?1 AND path = ?2",
+                    params![name, path],
+                )?;
+                count(&row.blob, row.stored, -1)?;
+            }
+        }
+        for path in changed {
+            let Some(row) = new.get(path) else { continue };
+            count(&row.blob, row.stored, 1)?;
+            if let Some(was) = old.get(path) {
+                count(&was.blob, was.stored, -1)?;
+            }
+            tx.execute(
+                "INSERT INTO files (pad, path, blob, encoding, seq, size, stored) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(pad, path) DO UPDATE SET blob = ?3, encoding = ?4, seq = ?5, size = ?6, stored = ?7",
+                params![
+                    name,
+                    path,
+                    row.blob,
+                    encoding_code(row.encoding),
+                    row.seq as i64,
+                    row.size as i64,
+                    row.stored as i64
+                ],
+            )?;
+        }
+        Ok(held)
+    }
+
+    /// Delete a pad outright — its owner said so. The name is the accounts
+    /// store's to retire; here it is only its files.
+    pub fn remove(&self, name: &str) -> Result<(), Error> {
+        check_name(name)?;
+        self.pinned.write().remove(name);
+        self.drop_pad(name)?;
+        Ok(())
+    }
+
+    /// Delete a pad's rows and let go of its blobs. True if there was one.
+    fn drop_pad(&self, name: &str) -> Result<bool, Error> {
+        let mut db = self.db.lock();
+        if Self::head(&db, name)?.is_none() {
+            return Ok(false);
+        }
+        let old = Self::rows(&db, name)?;
+        let tx = db.transaction()?;
+        let held = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now_ms())?;
+        tx.execute("DELETE FROM pads WHERE name = ?1", [name])?;
+        tx.commit()?;
+        self.adjust(held);
+        Ok(true)
+    }
+
+    fn adjust(&self, held: i64) {
+        if held >= 0 {
+            self.used.fetch_add(held as u64, Ordering::Relaxed);
+        } else {
+            self.used.fetch_sub(held.unsigned_abs(), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether a name holds a pad: written, and not lapsed.
+    pub fn exists(&self, name: &str) -> Result<bool, Error> {
+        check_name(name)?;
+        let db = self.db.lock();
+        Ok(Self::head(&db, name)?.is_some_and(|h| !self.lapsed(name, h.touched_ms)))
+    }
+
+    /// Read a pad whole. `Ok(None)` means the name is free — nobody has
+    /// written it, or its lease lapsed. For the tests: a read over HTTP goes
+    /// through [`Store::open_for_read`].
+    #[cfg(test)]
+    pub fn get(&self, name: &str) -> Result<Option<Pad>, Error> {
+        check_name(name)?;
+        self.load(name, false)
+    }
+
+    /// A pad, its files read from their blobs; lapsed ones too if asked.
+    ///
+    /// An expired pad reads as free rather than being deleted: deletion
+    /// belongs to the sweeper, so a read never removes a pad a write replaced
+    /// after the read looked.
+    fn load(&self, name: &str, lapsed_too: bool) -> Result<Option<Pad>, Error> {
+        let (head, rows) = {
+            let db = self.db.lock();
+            let Some(head) = Self::head(&db, name)? else {
+                return Ok(None);
+            };
+            if !lapsed_too && self.lapsed(name, head.touched_ms) {
+                return Ok(None);
+            }
+            (head, Self::rows(&db, name)?)
+        };
+        let mut files = BTreeMap::new();
+        for (path, row) in rows {
+            files.insert(
+                path,
+                File {
+                    content: self.blob_text(&row.blob)?,
+                    encoding: row.encoding,
+                    seq: row.seq,
+                },
+            );
+        }
+        Ok(Some(Pad {
+            seq: head.seq,
+            created_ms: head.created_ms,
+            updated_ms: head.updated_ms,
+            files,
+        }))
     }
 
     /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
     /// means the name is free.
     ///
-    /// `get` holds the file, the parsed pad and — once the handler serialised
-    /// it — the response at the same time: about three times the pad, per read,
-    /// with nothing bounding how many ran together. Twelve concurrent reads of a
-    /// 24 MiB pad grew the relay by 647 MiB, past the unit's `MemoryMax=512M`.
-    ///
-    /// Here the lease is the file's modification time, so checking it — and
-    /// renewing it, since opening a pad counts as touching it — costs a `stat`
-    /// and not a parse, and the file itself is what gets sent. One descriptor
-    /// serves both, so the check and the bytes are the same version even if a
-    /// write renames a new one into place meanwhile.
+    /// Opening counts as touching it, so its lease starts again — at most once
+    /// a day, as renewing is a write. What is sent is the version this looked
+    /// at: its blobs never change, and none is deleted inside [`GRACE`].
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
-        use std::io::Read;
-
         check_name(name)?;
-        let io = |e: std::io::Error| Error::Io(e.to_string());
-        let mut file = match std::fs::File::open(self.pad_path(name)) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io(e)),
+        let (head, rows) = {
+            let db = self.db.lock();
+            let Some(head) = Self::head(&db, name)? else {
+                return Ok(None);
+            };
+            // Lapsed reads as free, the same as `get`, and for the same reason
+            // is left for the sweeper to delete.
+            if self.lapsed(name, head.touched_ms) {
+                return Ok(None);
+            }
+            let now = now_ms();
+            if Duration::from_millis(now.saturating_sub(head.touched_ms)) > RENEW_EVERY {
+                db.execute(
+                    "UPDATE pads SET touched_ms = ?2 WHERE name = ?1",
+                    params![name, now as i64],
+                )?;
+            }
+            (head, Self::rows(&db, name)?)
         };
-        let meta = file.metadata().map_err(io)?;
-        // Lapsed reads as free, the same as `get`, and for the same reason is
-        // left for the sweeper to delete.
-        if self.lapsed(name, &meta) {
-            return Ok(None);
-        }
-        renew(&file, &meta);
 
-        let mut brace = [0u8; 1];
-        file.read_exact(&mut brace).map_err(io)?;
-        if brace != *b"{" {
-            return Err(Error::Io("a stored pad is not a JSON object".into()));
+        let mut parts = Vec::new();
+        let mut remaining = 0u64;
+        let mut text = format!(
+            r#""seq":{},"created_ms":{},"updated_ms":{},"files":{{"#,
+            head.seq, head.created_ms, head.updated_ms
+        );
+        for (i, (path, row)) in rows.iter().enumerate() {
+            let key = serde_json::to_string(path).map_err(|e| Error::Io(e.to_string()))?;
+            text.push_str(&format!(
+                r#"{}{key}:{{"content":"#,
+                if i > 0 { "," } else { "" }
+            ));
+            remaining += text.len() as u64;
+            parts.push(Part::Bytes(std::mem::take(&mut text).into_bytes()));
+            remaining += row.stored;
+            parts.push(Part::Blob(self.blob_path(&row.blob)));
+            text = format!(
+                r#","encoding":"{}","seq":{},"hash":"{}"}}"#,
+                encoding_name(row.encoding),
+                row.seq,
+                row.blob
+            );
         }
-        Ok(Some(Opened {
-            file,
-            remaining: meta.len() - 1,
-        }))
+        text.push_str("}}");
+        remaining += text.len() as u64;
+        parts.push(Part::Bytes(text.into_bytes()));
+        Ok(Some(Opened { parts, remaining }))
     }
 
     /// Apply writes and removals with no allowance, and return the new sequence
@@ -547,7 +979,7 @@ impl Store {
     }
 
     /// Apply writes and removals, refusing any that would add more than
-    /// `allowance` bytes to the store, and say what was added.
+    /// `allowance` bytes to the pad, and say what was added.
     ///
     /// Last write wins, and this is where "last" is decided: the server stamps
     /// the order because no two browsers can agree on one.
@@ -555,6 +987,9 @@ impl Store {
     /// Only growth is charged. An edit that leaves a pad the same size or
     /// smaller always goes through, so somebody at their limit can still fix a
     /// typo — or make room.
+    ///
+    /// What it reads and writes is the files it is given. The rest of the pad
+    /// is rows in a table, and stays as it is.
     pub fn write_within(
         &self,
         name: &str,
@@ -564,147 +999,187 @@ impl Store {
         check_name(name)?;
         for w in writes {
             check_path(&w.path)?;
-        }
-
-        // Held across the read, the change and the save. Blocking I/O under a
-        // lock in an async handler is not free, but a pad is one small JSON
-        // document and the alternative is losing writes.
-        let _guard = self.stripe(name).lock();
-
-        // A lapsed pad reads as `None`, so writing to its name starts a fresh
-        // one, and the save replaces the old file rather than adding to it.
-        let now = now_ms();
-        let mut pad = match self.get(name)? {
-            Some(pad) => pad,
-            None => Pad::new(now),
-        };
-
-        pad.seq += 1;
-        pad.updated_ms = now;
-        for w in writes {
-            match &w.content {
-                Some(content) => {
-                    pad.files.insert(
-                        w.path.clone(),
-                        File {
-                            content: content.clone(),
-                            encoding: w.encoding,
-                            seq: pad.seq,
-                        },
-                    );
-                }
-                None => {
-                    pad.files.remove(&w.path);
-                }
+            if w.content.is_none() && w.edits.is_some() && w.base.is_none() {
+                return Err(Error::BadEdit(
+                    "edits need the hash of the file they apply to",
+                ));
             }
         }
 
-        // A path cannot be both a file and a directory. Validate the resulting
-        // pad so conflicts are caught even when the two paths arrive in
-        // separate requests.
-        for path in pad.files.keys() {
+        let mut db = self.db.lock();
+        let now = now_ms();
+        let head = Self::head(&db, name)?;
+        let old = Self::rows(&db, name)?;
+        // A lapsed pad starts again: its files go, the name is the writer's.
+        let live = head
+            .as_ref()
+            .is_some_and(|h| !self.lapsed(name, h.touched_ms));
+        let seq = if live {
+            head.as_ref().map_or(0, |h| h.seq)
+        } else {
+            0
+        } + 1;
+        let created_ms = head.as_ref().filter(|_| live).map_or(now, |h| h.created_ms);
+        let mut new = if live { old.clone() } else { BTreeMap::new() };
+
+        let mut changed = Vec::new();
+        for w in writes {
+            match (&w.content, &w.edits) {
+                (Some(content), _) => {
+                    let (blob, stored) = self.put_blob(w.encoding, content)?;
+                    let size = content.len() as u64;
+                    new.insert(
+                        w.path.clone(),
+                        Row {
+                            blob,
+                            encoding: w.encoding,
+                            seq,
+                            size,
+                            stored,
+                        },
+                    );
+                }
+                (None, Some(edits)) => {
+                    // Against the version named, and only that one: applied to
+                    // anything else they would put text in the wrong place.
+                    let Some(current) = new.get(&w.path) else {
+                        return Err(Error::Stale);
+                    };
+                    if Some(&current.blob) != w.base.as_ref() || current.encoding != Encoding::Utf8
+                    {
+                        return Err(Error::Stale);
+                    }
+                    let mut text = self.blob_text(&current.blob)?;
+                    for edit in edits {
+                        text = apply_edit(&text, edit)?;
+                    }
+                    let (blob, stored) = self.put_blob(Encoding::Utf8, &text)?;
+                    let size = text.len() as u64;
+                    new.insert(
+                        w.path.clone(),
+                        Row {
+                            blob,
+                            encoding: Encoding::Utf8,
+                            seq,
+                            size,
+                            stored,
+                        },
+                    );
+                }
+                (None, None) => {
+                    new.remove(&w.path);
+                }
+            }
+            changed.push(w.path.clone());
+        }
+
+        // A path cannot be both a file and a directory. Checked on the result,
+        // so a conflict is caught even when its two paths arrive in separate
+        // requests.
+        for path in new.keys() {
             for (slash, _) in path.match_indices('/') {
-                if pad.files.contains_key(&path[..slash]) {
+                if new.contains_key(&path[..slash]) {
                     return Err(Error::BadPath("a file is also used as a directory"));
                 }
             }
         }
-
         // Checked after applying rather than before: a write that replaces a
         // large file with a small one should be allowed even when the pad was
         // already at the limit.
-        if pad.files.len() > MAX_FILES {
+        if new.len() > MAX_FILES {
             return Err(Error::TooManyFiles);
         }
-        let bytes = pad.bytes();
-        if bytes > MAX_BYTES {
-            return Err(Error::TooBig { bytes });
+        let bytes: u64 = new.values().map(|r| r.size).sum();
+        if bytes > MAX_BYTES as u64 {
+            return Err(Error::TooBig {
+                bytes: bytes as usize,
+            });
         }
 
-        let grew = self.save(name, &pad, allowance)?;
-        Ok(Written {
-            seq: pad.seq,
-            grew,
-            bytes: bytes as u64,
-            files: pad.files.len() as u64,
-        })
-    }
-
-    /// Store a pad, returning how many bytes it added to the store.
-    fn save(&self, name: &str, pad: &Pad, allowance: u64) -> Result<u64, Error> {
-        let body = serde_json::to_vec(pad).map_err(|e| Error::Io(e.to_string()))?;
-
-        // What this write costs the store, as a delta against whatever the name
-        // already occupied. Replacing a large pad with a small one has to give
-        // the difference back, or the ceiling ratchets shut on ordinary use. A
-        // lapsed pad still on disk counts as occupied: the save replaces it.
-        let was = std::fs::metadata(self.pad_path(name))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let now = body.len() as u64;
-        let grew = now.saturating_sub(was);
+        // What this write costs, as a change in the pad's footprint. Replacing
+        // a large pad with a small one gives the difference back, or the
+        // ceiling ratchets shut on ordinary use. A lapsed pad still here
+        // counts as occupied: the write replaces it.
+        let was: u64 = old.values().map(|r| r.stored).sum();
+        let footprint: u64 = new.values().map(|r| r.stored).sum();
+        let grew = footprint.saturating_sub(was);
         // The caller's own allowance first: it is what they can do something
         // about, and it is the answer that is true when both would refuse.
         if grew > allowance {
             return Err(Error::OverAllowance);
         }
-        if grew > 0 && self.used.load(Ordering::Relaxed) + grew > self.ceiling {
+
+        let tx = db.transaction()?;
+        let held = Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
+        if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
+            // Rolled back with the transaction; the blobs written for it are
+            // held by nothing, and go when the sweeper next looks.
             return Err(Error::StoreFull);
         }
-
-        // Written beside the target and renamed over it. A half-written pad
-        // that a restart then tries to parse is worse than a lost write.
-        // Unique per call, not per process. Sharing one temporary path meant
-        // concurrent writers clobbered each other's file before the rename.
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = self
-            .dir
-            .join(format!(".{name}.{}.{n}.tmp", std::process::id()));
-        std::fs::write(&tmp, &body).map_err(|e| Error::Io(e.to_string()))?;
-        std::fs::rename(&tmp, self.pad_path(name)).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            Error::Io(e.to_string())
-        })?;
-        // Only once the rename landed. Counting before it would charge the
-        // store for bytes that never reached the disk.
-        if now >= was {
-            self.used.fetch_add(now - was, Ordering::Relaxed);
-        } else {
-            self.used.fetch_sub(was - now, Ordering::Relaxed);
-        }
-        Ok(grew)
+        tx.execute(
+            "INSERT INTO pads (name, seq, created_ms, updated_ms, touched_ms, bytes) VALUES (?1, ?2, ?3, ?4, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET seq = ?2, created_ms = ?3, updated_ms = ?4, touched_ms = ?4, bytes = ?5",
+            params![name, seq as i64, created_ms as i64, now as i64, bytes as i64],
+        )?;
+        tx.commit()?;
+        // Only once it is committed: counting before would charge the store
+        // for bytes no pad holds.
+        self.adjust(held);
+        let hashes = writes
+            .iter()
+            .filter_map(|w| new.get(&w.path).map(|r| (w.path.clone(), r.blob.clone())))
+            .collect();
+        Ok(Written {
+            seq,
+            grew,
+            bytes,
+            files: new.len() as u64,
+            hashes,
+        })
     }
 
     /// Delete a pad whose lease has lapsed, and give its bytes back. True if it
-    /// did.
-    ///
-    /// Decided and done under the pad's lock, looking at the file as it is now.
-    /// Deciding from an earlier read and then deleting by path would remove
-    /// whatever a write had renamed onto that path in between — a fresh pad,
-    /// written by somebody who had just started using the name.
+    /// did. Decided and done under the store's lock, looking at the pad as it
+    /// is now, so a pad written since it was listed is left alone.
     pub fn expire_if_lapsed(&self, name: &str) -> bool {
-        let _guard = self.stripe(name).lock();
-        let path = self.pad_path(name);
-        let Ok(meta) = std::fs::metadata(&path) else {
+        {
+            let db = self.db.lock();
+            match Self::head(&db, name) {
+                Ok(Some(head)) if self.lapsed(name, head.touched_ms) => {}
+                _ => return false,
+            }
+        }
+        // Between the look and the drop a write can land; `drop_pad` takes the
+        // lock again, so look once more inside it.
+        let mut db = self.db.lock();
+        let Ok(Some(head)) = Self::head(&db, name) else {
             return false;
         };
-        if !self.lapsed(name, &meta) {
+        if !self.lapsed(name, head.touched_ms) {
             return false;
         }
-        let freed = meta.len();
-        if std::fs::remove_file(&path).is_err() {
+        let Ok(old) = Self::rows(&db, name) else {
+            return false;
+        };
+        let Ok(tx) = db.transaction() else {
+            return false;
+        };
+        let Ok(held) = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now_ms()) else {
+            return false;
+        };
+        if tx
+            .execute("DELETE FROM pads WHERE name = ?1", [name])
+            .is_err()
+            || tx.commit().is_err()
+        {
             return false;
         }
-        self.used.fetch_sub(freed, Ordering::Relaxed);
+        self.adjust(held);
         true
     }
 
-    /// Delete everything past its lease, freeing the names. Returns them.
     /// What the store holds, for the operator's view: how many pads, how
-    /// recently each was last opened or written, and the biggest. A walk of
-    /// the directory and a `stat` each, as the sweeper does — no pad is
-    /// parsed, and nothing is read that the store does not already keep.
+    /// recently each was last opened or written, and the biggest.
     pub fn census(&self, top: usize) -> Census {
         let mut census = Census {
             pads: 0,
@@ -716,39 +1191,40 @@ impl Store {
             touched_30d: 0,
             biggest: Vec::new(),
         };
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return census;
+        let all: Vec<(String, u64, u64)> = {
+            let db = self.db.lock();
+            let Ok(mut q) = db.prepare("SELECT name, bytes, touched_ms FROM pads") else {
+                return census;
+            };
+            let Ok(rows) = q.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, i64>(2)? as u64,
+                ))
+            }) else {
+                return census;
+            };
+            rows.flatten().collect()
         };
         let pinned = self.pinned.read();
+        let now = now_ms();
         let mut sizes = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let (Some(name), Ok(meta)) = (stem(&path), entry.metadata()) else {
-                continue;
-            };
+        for (name, bytes, touched_ms) in all {
             let owned = pinned.contains(&name);
-            if !owned && lapsed(&meta) {
+            let idle = Duration::from_millis(now.saturating_sub(touched_ms));
+            if !owned && idle > LEASE {
                 continue;
             }
             census.pads += 1;
             census.owned += owned as u64;
-            let idle = idle_for(&meta);
             census.touched_1d += (idle <= Duration::from_secs(86_400)) as u64;
             census.touched_7d += (idle <= Duration::from_secs(7 * 86_400)) as u64;
             census.touched_30d += (idle <= Duration::from_secs(30 * 86_400)) as u64;
-            let touched = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
             sizes.push(PadSize {
                 name,
-                bytes: meta.len(),
-                touched,
+                bytes,
+                touched: touched_ms / 1000,
                 owned,
             });
         }
@@ -758,17 +1234,150 @@ impl Store {
         census
     }
 
+    /// Delete everything past its lease, freeing the names, and the blobs
+    /// nothing has held for [`GRACE`]. Returns the names.
     pub fn sweep(&self) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
+        let cutoff = now_ms().saturating_sub(LEASE.as_millis() as u64);
+        let candidates: Vec<String> = {
+            let db = self.db.lock();
+            let Ok(mut q) = db.prepare("SELECT name FROM pads WHERE touched_ms < ?1") else {
+                return Vec::new();
+            };
+            let Ok(rows) = q.query_map([cutoff as i64], |r| r.get::<_, String>(0)) else {
+                return Vec::new();
+            };
+            rows.flatten().collect()
         };
-        entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
-            .filter_map(|path| stem(&path))
+        let expired: Vec<String> = candidates
+            .into_iter()
             .filter(|name| self.expire_if_lapsed(name))
-            .collect()
+            .collect();
+        self.collect(GRACE);
+        expired
+    }
+
+    /// Delete blobs nothing has held for `grace`, and files in the blob
+    /// directory the table does not know — written for a write that was then
+    /// refused, or by a process that stopped between the two.
+    fn collect(&self, grace: Duration) {
+        let cutoff = now_ms().saturating_sub(grace.as_millis() as u64);
+        let gone: Vec<String> = {
+            let db = self.db.lock();
+            let Ok(mut q) = db.prepare("SELECT hash FROM blobs WHERE refs = 0 AND unheld_ms <= ?1")
+            else {
+                return;
+            };
+            let Ok(rows) = q.query_map([cutoff as i64], |r| r.get::<_, String>(0)) else {
+                return;
+            };
+            rows.flatten().collect()
+        };
+        for hash in &gone {
+            let db = self.db.lock();
+            // Held again since it was listed: kept.
+            if db
+                .execute("DELETE FROM blobs WHERE hash = ?1 AND refs = 0", [hash])
+                .unwrap_or(0)
+                == 1
+            {
+                let _ = std::fs::remove_file(self.blob_path(hash));
+            }
+        }
+        // Files the table never heard of, past the same grace — their writes
+        // may still be about to commit.
+        let Ok(shards) = std::fs::read_dir(&self.blobs) else {
+            return;
+        };
+        for shard in shards.flatten() {
+            let path = shard.path();
+            let old_enough = |meta: &std::fs::Metadata| {
+                meta.modified()
+                    .ok()
+                    .and_then(|m| SystemTime::now().duration_since(m).ok())
+                    .is_some_and(|age| age >= grace)
+            };
+            if path.is_file() {
+                // A temporary file left by a process that stopped mid-write.
+                if shard.metadata().is_ok_and(|m| old_enough(&m)) {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let Some(hash) = file.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if !file.metadata().is_ok_and(|m| old_enough(&m)) {
+                    continue;
+                }
+                let db = self.db.lock();
+                let known = db
+                    .query_row("SELECT 1 FROM blobs WHERE hash = ?1", [&hash], |_| Ok(()))
+                    .optional()
+                    .unwrap_or(Some(()))
+                    .is_some();
+                if !known {
+                    let _ = std::fs::remove_file(file.path());
+                }
+            }
+        }
+    }
+
+    /// Write every pad out the old way — `<name>.json`, one document each, its
+    /// modification time its lease — into `out`. What a relay from before this
+    /// store reads, and so the way back.
+    pub fn export_legacy(&self, out: &Path) -> Result<usize, Error> {
+        std::fs::create_dir_all(out)?;
+        let names: Vec<(String, u64)> = {
+            let db = self.db.lock();
+            let mut q = db.prepare("SELECT name, touched_ms FROM pads ORDER BY name")?;
+            let rows = q.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut written = 0;
+        for (name, touched_ms) in names {
+            // Lapsed or not: the store has not swept it, so neither does this.
+            let Some(pad) = self.load(&name, true)? else {
+                continue;
+            };
+            let path = out.join(format!("{name}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&pad).map_err(|e| Error::Io(e.to_string()))?,
+            )?;
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(UNIX_EPOCH + Duration::from_millis(touched_ms)));
+            written += 1;
+        }
+        Ok(written)
+    }
+
+    /// Set when a pad was last touched, for tests of the lease.
+    #[cfg(test)]
+    fn set_touched(&self, name: &str, ago: Duration) {
+        let at = now_ms().saturating_sub(ago.as_millis() as u64);
+        self.db
+            .lock()
+            .execute(
+                "UPDATE pads SET touched_ms = ?2 WHERE name = ?1",
+                params![name, at as i64],
+            )
+            .unwrap();
+    }
+
+    /// How long ago a pad was last touched, for tests of the lease.
+    #[cfg(test)]
+    fn idle_of(&self, name: &str) -> Duration {
+        let db = self.db.lock();
+        let head = Self::head(&db, name).unwrap().expect("the pad exists");
+        Duration::from_millis(now_ms().saturating_sub(head.touched_ms))
     }
 }
 
@@ -844,8 +1453,15 @@ mod tests {
     }
 
     /// A pad ~1 MiB on disk, so a ceiling can be reached without writing 4 GB.
+    /// Its text is its own: the same text in two pads is stored once.
     fn megabyte(s: &Store, name: &str) -> Result<u64, Error> {
-        s.write(name, &[put("big.txt", &"x".repeat(1024 * 1024))])
+        s.write(
+            name,
+            &[put(
+                "big.txt",
+                &format!("{name}{}", "x".repeat(1024 * 1024)),
+            )],
+        )
     }
 
     #[test]
@@ -960,6 +1576,8 @@ mod tests {
             path: path.into(),
             content: Some(content.into()),
             encoding: Encoding::Utf8,
+            base: None,
+            edits: None,
         }
     }
 
@@ -1087,6 +1705,8 @@ mod tests {
                 path: "gone.txt".into(),
                 content: None,
                 encoding: Encoding::Utf8,
+                base: None,
+                edits: None,
             }],
         )
         .unwrap();
@@ -1248,12 +1868,7 @@ mod tests {
 
     /// Set when a stored pad was last touched, as `ago` before now.
     fn touched(s: &Store, name: &str, ago: Duration) {
-        std::fs::File::options()
-            .write(true)
-            .open(s.pad_path(name))
-            .unwrap()
-            .set_modified(SystemTime::now() - ago)
-            .unwrap();
+        s.set_touched(name, ago);
     }
 
     /// Push a stored pad past its lease.
@@ -1262,7 +1877,7 @@ mod tests {
     }
 
     fn idle(s: &Store, name: &str) -> Duration {
-        idle_for(&std::fs::metadata(s.pad_path(name)).unwrap())
+        s.idle_of(name)
     }
 
     #[test]
@@ -1334,6 +1949,8 @@ mod tests {
             path: path.into(),
             content: None,
             encoding: Encoding::Utf8,
+            base: None,
+            edits: None,
         }
     }
 
@@ -1372,8 +1989,8 @@ mod tests {
         assert_eq!(s.sweep(), vec!["stale".to_string()]);
         assert!(s.get("fresh").unwrap().is_some());
         assert!(
-            !s.pad_path("stale").exists(),
-            "the expired pad is still on disk"
+            s.load("stale", true).unwrap().is_none(),
+            "the expired pad is still in the store"
         );
         assert!(s.get("stale").unwrap().is_none());
     }
@@ -1450,10 +2067,11 @@ mod tests {
     /// rest of the stored document.
     fn streamed(s: &Store, name: &str) -> serde_json::Value {
         use std::io::Read;
-        let mut opened = s.open_for_read(name).unwrap().expect("the pad exists");
+        let opened = s.open_for_read(name).unwrap().expect("the pad exists");
+        let remaining = opened.remaining;
         let mut rest = String::new();
-        opened.file.read_to_string(&mut rest).unwrap();
-        assert_eq!(rest.len() as u64, opened.remaining, "remaining was wrong");
+        opened.into_reader().read_to_string(&mut rest).unwrap();
+        assert_eq!(rest.len() as u64, remaining, "remaining was wrong");
         serde_json::from_str(&format!("{{\"exists\":true,{rest}")).expect("valid json")
     }
 
@@ -1506,6 +2124,268 @@ mod tests {
         assert!(
             idle(&s, "p") < Duration::from_secs(60),
             "a write did not restart the lease"
+        );
+    }
+
+    // ---- the store as files and rows, from 11 October 2026 ----
+
+    fn blob_count(s: &Store) -> usize {
+        std::fs::read_dir(&s.blobs)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|d| std::fs::read_dir(d.path()).unwrap().count())
+            .sum()
+    }
+
+    fn hash(s: &Store, name: &str, path: &str) -> String {
+        let db = s.db.lock();
+        Store::rows(&db, name).unwrap()[path].blob.clone()
+    }
+
+    fn edit(path: &str, base: &str, at: usize, remove: usize, insert: &str) -> Write {
+        Write {
+            path: path.into(),
+            content: None,
+            encoding: Encoding::Utf8,
+            base: Some(base.into()),
+            edits: Some(vec![Edit {
+                at,
+                remove,
+                insert: insert.into(),
+            }]),
+        }
+    }
+
+    #[test]
+    fn a_save_writes_only_the_files_it_names() {
+        // The whole pad was read, parsed and written back on every save: a
+        // keystroke in a 60 MB pad cost the relay a quarter of a gigabyte.
+        let (s, _d) = store();
+        s.write(
+            "p",
+            &[
+                put("big.txt", &"x".repeat(1024 * 1024)),
+                put("main.py", "print(1)"),
+            ],
+        )
+        .unwrap();
+        let big = s.blob_path(&hash(&s, "p", "big.txt"));
+        let before = std::fs::metadata(&big).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.write("p", &[put("main.py", "print(2)")]).unwrap();
+        assert_eq!(
+            std::fs::metadata(&big).unwrap().modified().unwrap(),
+            before,
+            "the untouched file was rewritten"
+        );
+        let pad = s.get("p").unwrap().unwrap();
+        assert_eq!(
+            pad.files["big.txt"].seq, 1,
+            "the untouched file's sequence moved"
+        );
+        assert_eq!(pad.files["main.py"].content, "print(2)");
+    }
+
+    #[test]
+    fn the_same_text_is_stored_once() {
+        let (s, _d) = store();
+        let text = "y".repeat(100_000);
+        s.write("one", &[put("a.txt", &text)]).unwrap();
+        let after_one = s.used();
+        s.write("two", &[put("copy.txt", &text)]).unwrap();
+        assert_eq!(s.used(), after_one, "the same text was counted twice");
+        assert_eq!(blob_count(&s), 1);
+        // And it stays while either still holds it.
+        s.remove("one").unwrap();
+        s.collect(Duration::ZERO);
+        assert_eq!(
+            s.get("two").unwrap().unwrap().files["copy.txt"].content,
+            text
+        );
+    }
+
+    #[test]
+    fn a_blob_nothing_holds_waits_out_the_grace() {
+        // A read takes its list of blobs and then sends them; a write in
+        // between can leave one held by nothing. It stays long enough for any
+        // read to finish.
+        let (s, _d) = store();
+        s.write("p", &[put("a.txt", "first")]).unwrap();
+        let old = s.blob_path(&hash(&s, "p", "a.txt"));
+        s.write("p", &[put("a.txt", "second")]).unwrap();
+        s.collect(GRACE);
+        assert!(old.exists(), "an unheld blob went before its grace");
+        s.collect(Duration::ZERO);
+        assert!(!old.exists(), "an unheld blob outlived its grace");
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            "second"
+        );
+    }
+
+    #[test]
+    fn a_refused_write_leaves_nothing_behind() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.txt", "kept")]).unwrap();
+        let big = "z".repeat(MAX_BYTES + 1);
+        assert!(matches!(
+            s.write("p", &[put("big.txt", &big)]),
+            Err(Error::TooBig { .. })
+        ));
+        s.collect(Duration::ZERO);
+        assert_eq!(blob_count(&s), 1, "the refused write's blob was kept");
+        assert!(!s.get("p").unwrap().unwrap().files.contains_key("big.txt"));
+    }
+
+    #[test]
+    fn edits_apply_to_the_version_they_name() {
+        let (s, _d) = store();
+        let written = s
+            .write_within("p", &[put("a.txt", "hello world")], u64::MAX)
+            .unwrap();
+        let base = written.hashes["a.txt"].clone();
+        let next = s
+            .write_within("p", &[edit("a.txt", &base, 6, 5, "there")], u64::MAX)
+            .unwrap();
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            "hello there"
+        );
+        assert_ne!(next.hashes["a.txt"], base, "the new version has a new hash");
+        // Against the version before, which the store no longer holds.
+        assert_eq!(
+            s.write("p", &[edit("a.txt", &base, 0, 5, "HELLO")]),
+            Err(Error::Stale)
+        );
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            "hello there",
+            "a stale edit was applied"
+        );
+        // Nor to a file that is not there.
+        assert_eq!(
+            s.write("p", &[edit("gone.txt", &base, 0, 0, "x")]),
+            Err(Error::Stale)
+        );
+    }
+
+    #[test]
+    fn edits_count_as_a_browser_counts() {
+        // UTF-16 code units: an emoji is two. An edit inside one is refused
+        // rather than splitting it.
+        let (s, _d) = store();
+        let base = s
+            .write_within("p", &[put("a.txt", "a\u{1F600}b")], u64::MAX)
+            .unwrap()
+            .hashes["a.txt"]
+            .clone();
+        assert_eq!(
+            s.write("p", &[edit("a.txt", &base, 2, 0, "x")]),
+            Err(Error::BadEdit("it starts outside the text"))
+        );
+        s.write("p", &[edit("a.txt", &base, 3, 1, "c")]).unwrap();
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            "a\u{1F600}c"
+        );
+    }
+
+    #[test]
+    fn a_pad_stored_the_old_way_is_brought_in() {
+        let dir = tempdir::Dir::new();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "main.py".to_string(),
+            File {
+                content: "print('é')\n".into(),
+                encoding: Encoding::Utf8,
+                seq: 3,
+            },
+        );
+        files.insert(
+            "logo.png".to_string(),
+            File {
+                content: "iVBORw0KGgo=".into(),
+                encoding: Encoding::Base64,
+                seq: 2,
+            },
+        );
+        let old = Pad {
+            seq: 3,
+            created_ms: 1_000,
+            updated_ms: 2_000,
+            files,
+        };
+        let path = dir.path().join("old-pad.json");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let ago = Duration::from_secs(5 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - ago)
+            .unwrap();
+
+        let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let pad = s.get("old-pad").unwrap().expect("imported");
+        assert_eq!((pad.seq, pad.created_ms, pad.updated_ms), (3, 1_000, 2_000));
+        assert_eq!(pad.files["main.py"].content, "print('é')\n");
+        assert_eq!(pad.files["main.py"].seq, 3);
+        assert_eq!(pad.files["logo.png"].encoding, Encoding::Base64);
+        assert!(
+            idle(&s, "old-pad") > ago - Duration::from_secs(60),
+            "the lease was not carried over"
+        );
+        assert!(!path.exists(), "the old file was left in place");
+        assert!(
+            dir.path().join("legacy/old-pad.json").exists(),
+            "the old file was not kept"
+        );
+        // And a second start does not bring it in twice.
+        drop(s);
+        let again = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        assert_eq!(again.get("old-pad").unwrap().unwrap().seq, 3);
+    }
+
+    #[test]
+    fn an_export_reads_back_as_the_same_pads() {
+        // The way back: what the store held, as the relay before it reads it.
+        let (s, _d) = store();
+        s.write(
+            "p",
+            &[put("a.txt", "one"), put("dir/b.txt", "two \"quoted\"\n")],
+        )
+        .unwrap();
+        let out = tempdir::Dir::new();
+        assert_eq!(s.export_legacy(out.path()).unwrap(), 1);
+        let back: Pad =
+            serde_json::from_slice(&std::fs::read(out.path().join("p.json")).unwrap()).unwrap();
+        let here = s.get("p").unwrap().unwrap();
+        assert_eq!(back.seq, here.seq);
+        assert_eq!(
+            back.files["dir/b.txt"].content,
+            here.files["dir/b.txt"].content
+        );
+        assert_eq!(back.files.len(), 2);
+        // And a store opened on that directory brings it in again.
+        let reopened = Store::open(out.path(), MAX_STORE_BYTES).unwrap();
+        assert_eq!(
+            reopened.get("p").unwrap().unwrap().files["a.txt"].content,
+            "one"
+        );
+    }
+
+    #[test]
+    fn a_streamed_pad_says_each_files_hash() {
+        let (s, _d) = store();
+        let written = s
+            .write_within("p", &[put("a.txt", "one")], u64::MAX)
+            .unwrap();
+        let body = streamed(&s, "p");
+        assert_eq!(
+            body["files"]["a.txt"]["hash"],
+            written.hashes["a.txt"].as_str()
         );
     }
 }

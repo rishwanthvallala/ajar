@@ -55,30 +55,55 @@ store exists because the pad has no agent, so the files have to live
 somewhere; the accounts database because owning a pad has to outlive a
 restart.
 
+### What is on disk
+
+Since 11 October 2026: `store.db`, a SQLite file of pads, their files and
+leases, and `blobs/`, each file's text once, as the JSON string it is sent as,
+named by the SHA-256 of its encoding and contents. A save writes the blobs of
+the files it changes and then one transaction; a read sends the pad's fields
+and each file's blob in turn. [pad-store.md](pad-store.md) has the design and
+the measurements behind it.
+
+It was one JSON document per pad, and every save — every keystroke's, every
+half-second — read, parsed and wrote back the whole of it under a lock. On 11
+October, saving one small file into a 60 MB pad took 130 ms and four times the
+pad in memory, and a relay that had already saved a few large pads was killed
+by its own `MemoryMax` on the next.
+
 ### Concurrent writes
 
-`Store::write` is read-modify-write. Without a lock, two browsers writing at
-once did not merely lose an update — they **failed outright**, because both
-wrote to a shared temp filename and whichever renamed first destroyed the
-other's file in progress, leaving `No such file or directory`.
+One SQLite connection, and every change to the store under it: a write reads
+the pad's rows, checks the caps and the file-or-directory rule on the result,
+and commits, as one step. Two writes to one pad cannot both start from the same
+version. (The one-document store needed 64 striped locks and a unique temp name
+per call for the same thing: without them two saves failed with `No such file
+or directory` as each renamed the other's file away.)
 
-Two fixes together: 64 striped `parking_lot::Mutex` locks keyed by name, and a
-per-call atomic counter in the temp filename. Either alone is insufficient —
-the stripe serialises writers to one pad, the counter stops unrelated writers
-colliding on the temp path.
+### Reads are streamed from the blobs
 
-### Reads are streamed from the file
+A pad read does not load the pad. `Store::open_for_read` checks and renews the
+lease, takes the list of files, and hands back the response as pieces — fixed
+bytes, and the blob each file holds — with its length worked out from the
+blobs' sizes. The handler sends `{"exists":true,"access":{…},` and then the
+pieces, opening each blob only when it reaches it. Blobs never change, and one
+nothing holds any more is deleted only after ten minutes (`GRACE`), so a read
+sends the version it looked at even if a write lands meanwhile.
 
-A pad read does not load the pad. `Store::open_for_read` checks the lease from
-the file's modification time, then hands back the open file positioned past its
-opening brace, and the handler sends `{"exists":true,"access":{…},` followed
-by the file. The stored document already is the response; the only difference
-is those two fields — `access` is who the caller is to the pad. One descriptor serves the check and the bytes, so they are the
-same version even if a write renames a new file into place meanwhile.
+Each file in a read carries its `hash`, which is what a browser sends edits
+against. It used to parse, rebuild and re-serialise the whole pad per read —
+three copies in memory at once — and twelve concurrent reads of a 24 MiB pad
+grew the relay by 647 MiB. See
+[security.md](security.md#what-bounds-an-anonymous-caller).
 
-It used to parse, rebuild and re-serialise the whole pad per read — three copies
-in memory at once — and twelve concurrent reads of a 24 MiB pad grew the relay
-by 647 MiB. See [security.md](security.md#what-bounds-an-anonymous-caller).
+### A save can be the edit, not the file
+
+A write may name a file's stored `base` hash and `edits` — what to remove and
+insert where, in UTF-16 code units — instead of its `content`. The relay
+applies them only to the version that hash names, and refuses the whole write
+with 409 if it holds anything else; the browser then sends the files whole. A
+browser computes the hash of the text it believes is stored, so the relay
+applying an edit means the edit was measured against exactly that text. A
+keystroke in a 300 KB file is a 165-byte request.
 
 ### Writes are read whole, two at a time
 
@@ -121,26 +146,26 @@ is free again**: whoever opens it next starts an empty folder there. Reads check
 the lease too, so a lapsed pad is never served while it waits for the hourly
 sweep.
 
-The lease is the file's **modification time**, not a field in the document. A
-write renames a new file into place, which sets it; opening a pad renews it,
-at most once a day (`RENEW_EVERY`), with a metadata update rather than a
-rewrite. Neither path has to parse the pad, and the sweeper only `stat`s each
-file. It was seven days and counted writes only, which deleted exactly the pads
-people share — a demo opened daily and edited once a fortnight.
+The lease is the pad's `touched_ms`. A write sets it; opening a pad renews it,
+at most once a day (`RENEW_EVERY`). It was the file's modification time while a
+pad was one file. It was seven days and counted writes only, which deleted
+exactly the pads people share — a demo opened daily and edited once a
+fortnight.
 
 A long lease is only safe with a per-address limit on growth, or one address
 could fill the store and keep it full for a season: see
 [security.md](security.md#what-bounds-an-anonymous-caller).
 
-Only the sweeper deletes, and it decides under the pad's lock by looking at the
-file as it is at that moment. Deciding from an earlier read and deleting by path
-would remove whatever a write had just renamed onto that path — somebody's new
-folder.
+Only the sweeper deletes, and it decides under the store's lock by looking at
+the pad as it is at that moment. Deciding from an earlier look would remove a
+pad a write had just made fresh — somebody's new folder. The sweeper also
+deletes blobs nothing has held for ten minutes, and blob files the table never
+heard of — written for a save that was then refused.
 
 **A pad that belongs to an account never lapses.** The relay reads the owned
 names from the accounts database at start and pins them in the store, and a
 new one is pinned as it is made; the sweeper and the read path both skip a
-pinned name. Deleting an account pad removes its file at once and keeps the
+pinned name. Deleting an account pad removes its rows at once and keeps the
 name's row, so the name stays retired — nobody can take it over anonymously.
 See [accounts](accounts.md).
 

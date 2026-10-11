@@ -22,7 +22,7 @@ import { ICONS } from "./icons";
 import { openShare } from "./share";
 import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
-import { type Change, mintName, Store, StoreError, type Pad } from "./store";
+import { type Change, mintName, Store, StoreError, storedHash, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf } from "./sync";
 import type { PadWorkspace } from "./workspace";
@@ -39,6 +39,12 @@ const DOC_ANSWER_WAIT = 5000;
  * is thrown away and asked for again. See `onDoc`.
  */
 const STUCK_WAIT = 1500;
+
+/**
+ * How long a text file is before its saves go as edits. Below this the whole
+ * file is a small request anyway, and hashing it would cost more than sending it.
+ */
+const EDITS_FROM = 16 * 1024;
 
 const STARTER = `# Paste over this, or start typing.
 import csv
@@ -1051,6 +1057,28 @@ export class App {
     void this.saveEdits(true);
   }
 
+  /**
+   * Changes as edits where that is worth it: a text file of some size whose
+   * stored version this page knows. The rest go whole, as does everything to
+   * a relay that does not take edits.
+   */
+  private async asEdits(changes: { path: string; content: string }[]): Promise<Change[]> {
+    if (!this.store.editsWork) return changes;
+    let any = false;
+    const out: Change[] = [];
+    for (const c of changes) {
+      const was = this.known.get(c.path);
+      const edit = was !== undefined && was.length >= EDITS_FROM ? carryOver(was, c.content, was) : null;
+      if (was === undefined || !edit) {
+        out.push(c);
+        continue;
+      }
+      out.push({ path: c.path, content: null, base: await storedHash(was), edits: [edit] });
+      any = true;
+    }
+    return any ? out : changes;
+  }
+
   private async saveEdits(leaving = false): Promise<void> {
     this.saveTimer = null;
     const paths = [...this.dirty];
@@ -1076,7 +1104,17 @@ export class App {
         .filter((c) => this.known.get(c.path) !== c.content);
       if (changes.length === 0) return;
       try {
-        const seq = await this.store.write(this.name, changes, leaving);
+        // A large file goes as what changed in it, measured from the text the
+        // relay has: a keystroke in a 10 MB file sent 10 MB. If the relay
+        // holds something else by now, it says so, and the files go whole.
+        const sent = await this.asEdits(changes);
+        let seq: number;
+        try {
+          seq = await this.store.write(this.name, sent, leaving);
+        } catch (e) {
+          if (!(e instanceof StoreError && e.stale) || sent === changes) throw e;
+          seq = await this.store.write(this.name, changes, leaving);
+        }
         this.storeSeq = Math.max(this.storeSeq, seq);
         for (const c of changes) this.known.set(c.path, c.content);
         // Do not copy an older completed save over text edited while its

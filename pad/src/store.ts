@@ -14,6 +14,8 @@ export interface StoredFile {
   content: string;
   encoding: Encoding;
   seq: number;
+  /** What the relay stores it under. Absent from a relay before 11 October 2026. */
+  hash?: string;
 }
 
 export interface Pad {
@@ -25,11 +27,27 @@ export interface Pad {
   access?: Access;
 }
 
-/** One change. A `content` of `null` deletes. */
+/** One change. A `content` of `null` with no `edits` deletes. */
 export interface Change {
   path: string;
   content: string | null;
   encoding?: Encoding;
+  /** In place of `content`: the stored file's hash, which `edits` change. */
+  base?: string;
+  /** In UTF-16 code units, as a string here counts them. */
+  edits?: { at: number; remove: number; insert: string }[];
+}
+
+/**
+ * The hash a relay stores a text file under: SHA-256 of "u" and its UTF-8.
+ * Sent as `base` with edits, it says exactly which text they were measured
+ * against, so a relay holding anything else refuses rather than applying them
+ * somewhere wrong.
+ */
+export async function storedHash(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`u${text}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export class StoreError extends Error {
@@ -53,6 +71,11 @@ export class StoreError extends Error {
   /** Deleted by its owner. */
   get gone(): boolean {
     return this.status === 410;
+  }
+
+  /** Edits sent against a version the relay no longer holds. */
+  get stale(): boolean {
+    return this.status === 409;
   }
 }
 
@@ -91,6 +114,13 @@ export class Store {
    * `code` is the pad link's code, if this browser holds one: sent with every
    * request, because the server decides who may read and write.
    */
+  /**
+   * Whether this relay takes edits rather than whole files. Learnt from its
+   * answers, which carry hashes when it does: one from before would read an
+   * edit's `content: null` as deleting the file.
+   */
+  editsWork = false;
+
   constructor(
     private readonly base = "",
     private readonly code: (name: string) => string | null = () => null,
@@ -110,7 +140,9 @@ export class Store {
       cache: "no-store",
     }, this.deadline);
     if (!res.ok) await refuse(res);
-    return (await res.json()) as Pad;
+    const pad = (await res.json()) as Pad;
+    if (Object.values(pad.files ?? {}).some((f) => typeof f.hash === "string")) this.editsWork = true;
+    return pad;
   }
 
   /**
@@ -127,7 +159,8 @@ export class Store {
       keepalive: leaving && new Blob([body]).size < 60_000,
     }, this.deadline + body.length / 50);
     if (!res.ok) await refuse(res);
-    const { seq } = (await res.json()) as { seq: number };
+    const { seq, hashes } = (await res.json()) as { seq: number; hashes?: Record<string, string> };
+    if (hashes) this.editsWork = true;
     return seq;
   }
 }

@@ -571,9 +571,13 @@ never had a long task, at 4.8 MB.
 work, collection after — once per pause of half a second, which is most of
 them. Live collaboration does not depend on it — the room carries every
 keystroke as it is typed — so a file over 1 MB now saves 2 s after typing
-stops rather than 0.5 s, and the long tasks went. Sending only what changed
-would fix it at the root; it needs a patch operation in the store, and
-nothing measured asks for that yet.
+stops rather than 0.5 s, and the long tasks went. Since 11 October a save of
+a file over 16 KB sends only what changed — one edit, measured from the text
+the page last stored and named by that text's hash — and the relay applies it
+to exactly that version or answers 409, when the page sends the file whole
+([pad-store.md](pad-store.md)). A keystroke's save in a 300 KB file is 165
+bytes rather than 310 KB; the 2 s delay for a file over 1 MB stays, as hashing
+the stored text is still the size of the file.
 
 **Closing a tab inside the save delay used to lose that typing**, unless
 someone else in the room saved the same file. The page now saves what is

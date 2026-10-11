@@ -155,6 +155,12 @@ struct Args {
     /// Bytes one account's pads may hold together.
     #[arg(long, default_value_t = accounts::MAX_BYTES_PER_ACCOUNT)]
     account_max_bytes: u64,
+
+    /// Write every pad out as one JSON document each, the way the store kept
+    /// them before October 2026, into this directory, and exit. The way back:
+    /// what a relay from before the change reads.
+    #[arg(long, value_name = "DIR")]
+    export_pads: Option<String>,
 }
 
 #[derive(Clone)]
@@ -196,6 +202,13 @@ async fn main() -> anyhow::Result<()> {
         Store::open(&args.pad_dir, args.max_store_bytes)
             .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?,
     );
+    if let Some(out) = &args.export_pads {
+        let n = pads
+            .export_legacy(std::path::Path::new(out))
+            .map_err(|e| anyhow::anyhow!("exporting the pads failed: {}", e.message()))?;
+        info!("wrote {n} pads to {out}, one document each");
+        return Ok(());
+    }
     // Both numbers, because the interesting one is the gap. A relay that starts
     // already near its ceiling is a thing to know at boot rather than from the
     // first refused write.
@@ -371,6 +384,8 @@ struct WriteBody {
 #[derive(serde::Serialize)]
 struct Wrote {
     seq: u64,
+    /// Each written file's hash, to send edits against next time.
+    hashes: std::collections::BTreeMap<String, String>,
 }
 
 fn refuse(e: pad::Error) -> (StatusCode, String) {
@@ -383,6 +398,9 @@ fn refuse(e: pad::Error) -> (StatusCode, String) {
         // fault, and retryable later — which is what 429 says.
         pad::Error::OverAllowance => StatusCode::TOO_MANY_REQUESTS,
         pad::Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        // Edits against a version the store no longer holds: the browser sends
+        // the whole file instead.
+        pad::Error::Stale => StatusCode::CONFLICT,
         _ => StatusCode::BAD_REQUEST,
     };
     (code, e.message())
@@ -470,7 +488,7 @@ fn stream_pad(
     access: &http_accounts::AccessView,
     held: impl Send + 'static,
 ) -> axum::response::Response {
-    use futures_util::StreamExt;
+    use futures_util::{StreamExt, TryStreamExt};
 
     // `exists` and who you are to this pad, then the stored object's own
     // fields. The stored file starts with `{`, which `open_for_read` consumed.
@@ -479,7 +497,20 @@ fn stream_pad(
         serde_json::to_string(access).unwrap_or_else(|_| "{}".into())
     );
     let head_len = head.len() as u64;
-    let rest = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(opened.file));
+    // Each blob opened when it is reached, not all at the start: a read holds
+    // one file open, whatever the pad has in it.
+    let rest = futures_util::stream::iter(opened.parts)
+        .map(|part| match part {
+            pad::Part::Bytes(bytes) => futures_util::stream::once(async move {
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(bytes))
+            })
+            .boxed(),
+            pad::Part::Blob(path) => futures_util::stream::once(tokio::fs::File::open(path))
+                .map_ok(tokio_util::io::ReaderStream::new)
+                .try_flatten()
+                .boxed(),
+        })
+        .flatten();
     let body = futures_util::stream::once(async move {
         Ok::<_, std::io::Error>(axum::body::Bytes::from(head))
     })
@@ -616,7 +647,10 @@ async fn write_pad(
         let (bytes, files) = (written.bytes, written.files);
         http_accounts::blocking(move || accounts.record_size(&name, bytes, files)).await;
     }
-    Ok(Json(Wrote { seq: written.seq }))
+    Ok(Json(Wrote {
+        seq: written.seq,
+        hashes: written.hashes,
+    }))
 }
 
 /// `curl -sSf https://ajar.rishwanth.dev/run.sh | sh`

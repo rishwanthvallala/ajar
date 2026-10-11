@@ -536,9 +536,12 @@ hold the file, the parsed pad and the serialised response at once, and nothing
 limited how many ran together: twelve concurrent reads of one 24 MiB pad grew
 the relay by 647 MiB, past its own `MemoryMax`, and five OOM kills inside a
 minute is systemd giving up on the relay and every session in it. Now the lease
-is checked by a pass that skips everything but `updated_ms` without allocating
-it, and the stored file itself is the response, with `exists` spliced in front
-of its opening brace. The same twelve reads grow it by about 1 MiB.
+is a row in the store's table, and the response is sent as it is assembled —
+the pad's fields, then each file's blob from disk a chunk at a time — so the
+same twelve reads grow it by about 1 MiB. A save, since 11 October, reads and
+writes only the files it names, where it used to read, parse and rewrite the
+whole pad: at 60 MB that was about four times the pad in memory per save, and
+enough of them in a row killed the relay ([pad-store.md](pad-store.md)).
 
 The counts that remain bound descriptors and slow readers, not memory. The
 per-address slot and the global permit ride *inside the body stream*, so they are

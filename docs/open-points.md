@@ -100,6 +100,16 @@ so the cap goes back first; it does not notice the count left at two), and
 an address's 256 MiB a day, and the relay reads two pad writes at once rather
 than four.
 
+**What made 60 MB dangerous is gone since 11 October.** The store kept a pad as
+one document and every save rewrote it whole: measured then, a small save into
+a 60 MB pad cost 130 ms and about four times the pad in memory, and a relay that
+had saved a few large pads was killed by its own `MemoryMax` on the next. The
+store now writes only the files a save names, and a save can be just the edit
+([pad-store.md](dev/pad-store.md)): 1 ms and flat memory at 60 MB. What bounds a
+pad now is the request that carries a whole one — an upload or a copy sends
+every file at once, read off the wire whole — and the browser, which holds
+every file of the pad it opens, in the editor and in the sandbox.
+
 One thing the raise made possible and nothing handles yet: **a single text
 file over 32 MB cannot be shared live.** Files travel through the store, but
 a file open for editing is also a live document, and a browser answering
@@ -453,6 +463,8 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| Every save rewrote the whole pad: a keystroke in a 60 MB pad cost the relay 130 ms and about four times the pad in memory, and a relay that had saved a few large pads was killed by its own memory limit on the next — every session with it. The store now keeps each file once under its hash, with SQLite listing them, and a save writes only what it changes: 1 ms and flat memory | this commit |
+| A keystroke in a large file sent the whole file: a 300 KB file's save was 310 KB. A save of a large file is now the edit, against the stored version's hash, and goes whole only if that version has moved on — 165 bytes | this commit |
 | A host gone in the moment after a guest's own connection came back took the guest's ask for their open file with it, and what they typed while it was out went too: not counted as unsent, so closing the tab asked nothing; replaced on screen by the saved copy; and thrown away when another file was opened. Typing kept for a host that was away went the same way if the guest's own connection blipped before the host was back. CI's Mac found the first on 8 October; `check-guest` now holds the agent's hop so the ask never arrives | `c8bb7b3` |
 | Keystrokes handed to a guest's socket in the moments before it was found dead never reached the file, and the host's copy, put back on screen, took them away: the page replayed what was typed since it noticed, and its text then held them already. The replay is now measured from what the host has sent back — it passes every update on to its sender too — and typing that arrived with only its echo lost is not put in twice. `check-guest` stalls a hop one way, dropping bytes with the connection still up | `3352bef` |
 | Typing from a guest's outage was replayed at the offset it was typed at: "brave " typed after "hello ", with someone else's "Oh, " put in front meanwhile, made "Oh, hebrave llo world", and a replayed delete could take someone else's text. It now goes where the text around it still is, as the pad's `carryOver` puts it | `ca0a939` |

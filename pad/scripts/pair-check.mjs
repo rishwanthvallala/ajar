@@ -158,6 +158,39 @@ try {
     await b.context().close();
   }
 
+  // ---- a large file, saved as what changed in it ---------------------------
+  // A keystroke in a large file sent the whole file to the relay, and the
+  // relay wrote the whole pad back. Now the save is the edit, against the
+  // version the relay holds, and the result is the same everywhere.
+  {
+    const name = `pair-big-${Date.now().toString(36)}`;
+    const big = `${"0123456789 the quick brown fox\n".repeat(10_000)}end\n`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ writes: [{ path: "big.txt", content: big }] }),
+    });
+    const [a, b] = await pair(name);
+    const puts = [];
+    a.on("request", (r) => {
+      if (r.method() === "PUT" && r.url().includes("/api/pad/")) puts.push(r.postData() ?? "");
+    });
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("ABC", { delay: 400 });
+    await wait(a, 1500);
+    const want = `ABC${big}`;
+    await agree(a, b, want, "typing at the start of a 300 KB file is the same in both places");
+    const stored = (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["big.txt"].content;
+    const biggest = Math.max(0, ...puts.map((p) => p.length));
+    if (stored === want && puts.length > 0 && biggest < 4096 && puts.some((p) => p.includes('"edits"'))) {
+      ok(`and its saves went as edits — ${puts.length}, the largest ${biggest} bytes, not ${big.length}`);
+    } else {
+      fail(`and its saves went as edits — ${puts.length} saves, the largest ${biggest} bytes; stored ${stored === want ? "right" : "WRONG"}`);
+    }
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a place that drops out while another opens the file ----------------
   // Nobody answers the newcomer, so it seeds from the stored copy; the place
   // that dropped comes back with its own document of the file, and the two

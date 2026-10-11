@@ -241,14 +241,38 @@ The limits — 20 pads and 100 MB per account — are the defaults of two relay
 flags, `--account-max-pads` and `--account-max-bytes`; to change them, add the
 flags to `ExecStart` in the unit.
 
+`/var/lib/ajar/pads/` is the pad store, since 11 October 2026
+([pad-store.md](pad-store.md)): `store.db` (SQLite, WAL) lists the pads and
+their files and leases, and `blobs/` holds each file's text once, named by its
+hash. Back them up together, the database first: a blob nothing lists is
+harmless, a listed blob that is missing is a file that will not load. The
+first start of a relay with this store brought every `<name>.json` the old one
+kept into it, and moved those files into `pads/legacy/`, where they stay until
+someone deletes them.
+
+**Going back to a relay from before the change:** stop the relay, write the
+pads out the old way, and put them where the old binary looks.
+
+```sh
+sudo systemctl stop ajar-relay
+sudo -u ajar /usr/local/bin/ajar-relay --pad-dir /var/lib/ajar/pads \
+  --accounts-db /var/lib/ajar/accounts.db --export-pads /var/lib/ajar/pads-export
+# then install the older binary, and move pads-export/*.json into pads/
+```
+
+The export carries every pad as it stands, with each one's lease as the file's
+modification time, which is what the old relay reads. `pads/legacy/` is the
+store as it was when the new relay first started, and misses everything since.
+
 The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
-together) and `--pad-growth-per-address` (256 MiB a day per address — four
-full pads since a pad went to 60 MiB on 7 October). The size of one pad is not
-a flag, because memory depends on it: a write is read off the wire whole, up
-to 121 MiB, two at a time, and `main.rs` asserts that the 242 MiB they can hold
+together, each file's text counted once however many pads hold it) and
+`--pad-growth-per-address` (256 MiB a day per address — four full pads since a
+pad went to 60 MiB on 7 October). The size of one pad is not a flag. A save no
+longer costs the pad's size — the store reads and writes only the files a
+save names — but a single write is still read off the wire whole, up to 121
+MiB, two at a time, and `main.rs` asserts that the 242 MiB they can hold
 together stays under 256 MiB of the unit's `MemoryMax=512M`. Lowering
-`MemoryMax` is therefore a code change as well, and so is putting a pad back
-to 25 MiB ([open points](../open-points.md)). An account's 100 MB holds one
+`MemoryMax` is therefore a code change as well. An account's 100 MB holds one
 full pad and most of a second.
 
 ## Reaching the server
