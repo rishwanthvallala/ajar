@@ -39,34 +39,20 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### Found by reading on 9 October, not yet reproduced
+### The guest page: one found and left, three without checks
 
-An audit of every path text takes into or out of a live document, after the
-line-ending and write-back bugs, traced these by reading the code. The two it
-ranked first, and the doubled file below them, were reproduced and are closed above; these were not, and each
-needs a check that fails before it is fixed.
+Found while closing the guest page's typing losses on 11 October, and older
+than those fixes: a guest who goes back to a file whose typing is held for a
+host that is away, and stays on it until the host returns, has the file opened
+again *and* the held copy handed back with a close — and the host then drops
+them as a reader of the document they are editing. Left alone for now.
 
-- **The guest page loses typing in flight when its socket dies.** What it
-  replays after reconnecting is measured from the moment it noticed, which
-  already includes keystrokes handed to the dying socket.
-- **The guest page replays typing from an outage at the same offset,** where
-  `carry.ts` in the pad anchors it to the text around it; someone else's edit
-  before it meanwhile puts it in the wrong place.
+Fixed with the rest, but with no check of their own: a hand-back of held
+typing lost to a second blip during the hand-back itself; the toast that says
+held typing could not be saved, when the host refuses the file by then; and
+the guard that ignores a second answer for the same file.
 
 ### Unexplained once, and now able to explain themselves
-
-**Typing in the second after a guest reconnects is lost if the host drops in
-that second.** When a guest's own connection comes back, the file they have
-open is asked for again, and until the host answers, what they type is held
-in the editor and replayed once it does. If the host goes away inside that
-gap, the ask goes with it: the typing is not marked unsent, so closing the tab
-does not warn, and opening another file before the host is back discards it.
-It takes both connections failing within the same second. CI's Mac found it
-on 8 October, when `check-guest` cut the host before ana's file was back; the
-check now waits for the file, since the section is about the host away and
-not about this. The fix is to mark typing into a file being reopened as
-unsent, and to park it across a switch, as a document typed into while the
-host is away already is.
 
 **`accounts-check` failed twice on CI's Ubuntu runner,** on 8 and 9 October,
 at its last step: the owner's other tab, its pad deleted, was refused
@@ -467,6 +453,9 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| A host gone in the moment after a guest's own connection came back took the guest's ask for their open file with it, and what they typed while it was out went too: not counted as unsent, so closing the tab asked nothing; replaced on screen by the saved copy; and thrown away when another file was opened. Typing kept for a host that was away went the same way if the guest's own connection blipped before the host was back. CI's Mac found the first on 8 October; `check-guest` now holds the agent's hop so the ask never arrives | `c8bb7b3` |
+| Keystrokes handed to a guest's socket in the moments before it was found dead never reached the file, and the host's copy, put back on screen, took them away: the page replayed what was typed since it noticed, and its text then held them already. The replay is now measured from what the host has sent back — it passes every update on to its sender too — and typing that arrived with only its echo lost is not put in twice. `check-guest` stalls a hop one way, dropping bytes with the connection still up | `3352bef` |
+| Typing from a guest's outage was replayed at the offset it was typed at: "brave " typed after "hello ", with someone else's "Oh, " put in front meanwhile, made "Oh, hebrave llo world", and a replayed delete could take someone else's text. It now goes where the text around it still is, as the pad's `carryOver` puts it | `ca0a939` |
 | An owner signed out under a private pad and back in wrote every file the page had kept back into the pad — the ones not on screen as they were when last shown — over whatever collaborators had done meanwhile. Only files changed here go back now, each rebased onto the pad as it is | `648544c` |
 | A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | `648544c` |
 | Typing in a file while it was being moved went with the old file's document when the move landed | `648544c` |
