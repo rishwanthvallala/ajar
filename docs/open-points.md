@@ -198,6 +198,19 @@ server started in a *different* tab. That was the trade taken, and it is one
 line (`Scope::Signal`) if it turns out to be the wrong one. Sharing one domain
 across terminals would need a single confined parent that spawns every shell.
 
+### A pipe into `head` can end with the runtime talking
+
+`awk '{print $1}' poem.txt | head -1` printed `alpha` and then, on CI's Mac
+on 11 October, `Program recieved termination signal: Broken pipe` and a run of
+`Program recieved fatal signal: Aborted` — the runtime's words, typo
+included. `head` exits after its line; a command still writing then is ended
+by the runtime at the write, before Python's own `BrokenPipeError` handling in
+`awk.py` can see it, and the runtime says so on the terminal. A real shell
+ends it silently. Whether it shows depends on which of the two gets there
+first, so on a fast machine it never does. `browser-check` now checks the
+tool's output without those lines. The likely fix is the pad's terminal
+leaving out lines that are exactly the runtime's signal notices.
+
 ### Tools that do not fully work
 
 From `npm run probe --workspace=ajar-pad`, which installs each package and

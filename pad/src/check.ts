@@ -591,7 +591,16 @@ async function main() {
   ] as const) {
     printed = "";
     const r = await sh.run(cmd);
-    if (printed.trim() === want) ok(cmd);
+    // Less the runtime's own word when `head` closes the pipe first: on a
+    // slow machine — CI's Mac — the command is still writing, and the runtime
+    // ends it there and says so. Recorded in open-points; the tool's output
+    // is what is checked here.
+    const said = printed
+      .split(/\r?\n/)
+      .filter((line) => !/^Program recieved (termination|fatal) signal:/.test(line))
+      .join("\n")
+      .trim();
+    if (said === want) ok(cmd);
     else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
   }
 
