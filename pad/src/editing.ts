@@ -2,6 +2,7 @@ import type * as monaco from "monaco-editor";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import { asEditorHolds, eolOf, withEol } from "@ajar/workspace-ui/eol";
+import { wholeCharacters } from "./carry";
 
 export { asEditorHolds, eolOf, withEol };
 
@@ -148,6 +149,8 @@ export class DocSession {
     while (start < limit && old.charCodeAt(start) === text.charCodeAt(start)) start++;
     let end = 0;
     while (end < limit - start && old.charCodeAt(old.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
+    [start, end] = wholeCharacters(old, start, end);
+    [start, end] = wholeCharacters(text, start, end);
     this.ydoc.transact(() => {
       const gone = old.length - end - start;
       if (gone > 0) this.ytext.delete(start, gone);
@@ -548,8 +551,9 @@ export function replaceText(api: typeof monaco, model: monaco.editor.ITextModel,
   while (start < limit && old.charCodeAt(start) === text.charCodeAt(start)) start++;
   let end = 0;
   while (end < limit - start && old.charCodeAt(old.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
-  // Never split a surrogate pair: back off to the start of one.
-  if (start > 0 && start < old.length && /[\udc00-\udfff]/.test(old[start]!)) start--;
+  // Never split a surrogate pair, at either end.
+  [start, end] = wholeCharacters(old, start, end);
+  [start, end] = wholeCharacters(text, start, end);
   const range = api.Range.fromPositions(model.getPositionAt(start), model.getPositionAt(old.length - end));
   model.applyEdits([{ range, text: text.slice(start, text.length - end) }]);
 }

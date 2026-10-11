@@ -52,10 +52,6 @@ needs a check that fails before it is fixed.
 - **The guest page replays typing from an outage at the same offset,** where
   `carry.ts` in the pad anchors it to the text around it; someone else's edit
   before it meanwhile puts it in the wrong place.
-- **Signing out and back in** can
-  write stale copies of files collaborators edited meanwhile; **a command's
-  change that splits an emoji** corrupts it; **typing during a move** of the
-  same file can be dropped.
 
 ### Unexplained once, and now able to explain themselves
 
@@ -95,9 +91,9 @@ Run slower than 15 s or one that never finishes. The suspect is below.
 the prompt came back, the status said "saved", and `notes.txt` was not in the
 tree 30 s later. The run straight after passed, as has every local run. A
 publish waits its turn in the page's write queue, so the likeliest reading is
-a store request ahead of it that stalled on the network — a store `fetch` has
-no deadline. (The run before that one failed too, but it spanned the laptop
-sleeping, and says nothing.)
+a store request ahead of it that stalled on the network. Store requests have
+had a deadline since 11 October, so a stall now fails and is retried rather
+than holding the queue; if it recurs, it was something else.
 
 **A pad page threw "Atomics.wait cannot be called in this context", once.**
 On 7 October, on the macOS runner (CI run 37622394950), the second editor
@@ -448,6 +444,16 @@ the previous build in place, and the check then measures the fix it was meant
 to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
+
+## Closed on 11 October
+
+| | |
+|---|---|
+| An owner signed out under a private pad and back in wrote every file the page had kept back into the pad — the ones not on screen as they were when last shown — over whatever collaborators had done meanwhile. Only files changed here go back now, each rebased onto the pad as it is | this commit |
+| A command's change from one emoji to another of the same block — 👍 to 🔥 — began between the two halves of the character, and the document put a replacement character in each; the editor's own guard covered only the start | this commit |
+| Typing in a file while it was being moved went with the old file's document when the move landed | this commit |
+| A store request the server never answered held the page's write queue for good — every save and publish behind it | this commit |
+| A command that changed a file with typing in it not yet saved — the half-second before a save — lost its change: the page wrote its unsaved files into the sandbox after the command, over what it had done, before reading anything back. Found running the checks for the rest, as a flaky `user-check` | this commit |
 
 ## Closed on 9 October
 

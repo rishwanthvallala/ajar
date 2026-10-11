@@ -67,6 +67,8 @@ const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
+  // A server that takes a request and never answers it, for the store's deadline.
+  if (path === "/api/pad/never-answers") return;
   if (path.startsWith("/api/")) return proxy(req, res);
   try {
     const file = join(ROOT, path === "/" ? "index.html" : path);

@@ -64,11 +64,25 @@ async function refuse(res: Response): Promise<never> {
 }
 
 /** fetch, with a dropped connection as a StoreError like any other refusal. */
-async function request(url: string, init: RequestInit): Promise<Response> {
+/**
+ * With a deadline for the answer to start. A request that never answered held
+ * the page's write queue for good: every save and every command's publish
+ * after it waited behind it, and a file a command made never reached the tree
+ * — once, against production, on 5 October. Out of time, it fails like a lost
+ * connection, and a save is tried again.
+ */
+async function request(url: string, init: RequestInit, deadline: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deadline);
   try {
-    return await fetch(url, init);
+    return await fetch(url, { ...init, signal: controller.signal });
   } catch {
-    throw new StoreError(0, "can't reach the server right now — check your connection");
+    throw new StoreError(
+      0,
+      controller.signal.aborted ? "the server did not answer in time" : "can't reach the server right now — check your connection",
+    );
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -80,6 +94,8 @@ export class Store {
   constructor(
     private readonly base = "",
     private readonly code: (name: string) => string | null = () => null,
+    /** How long the server has to start answering. A write gets more for its size. */
+    private readonly deadline = 30_000,
   ) {}
 
   private headers(name: string): Record<string, string> {
@@ -92,7 +108,7 @@ export class Store {
       headers: this.headers(name),
       // A pad's answer depends on who asks. Never one from a cache.
       cache: "no-store",
-    });
+    }, this.deadline);
     if (!res.ok) await refuse(res);
     return (await res.json()) as Pad;
   }
@@ -109,7 +125,7 @@ export class Store {
       headers: { "content-type": "application/json", ...this.headers(name) },
       body,
       keepalive: leaving && new Blob([body]).size < 60_000,
-    });
+    }, this.deadline + body.length / 50);
     if (!res.ok) await refuse(res);
     const { seq } = (await res.json()) as { seq: number };
     return seq;

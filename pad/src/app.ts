@@ -11,7 +11,7 @@ import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
-import { carryOver, type Edit } from "./carry";
+import { carryOver, type Edit, putBack } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession, replaceText } from "./editing";
 import { FileTree } from "./files";
@@ -24,7 +24,7 @@ import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, type Pad } from "./store";
 import { seedFiles } from "./seed";
-import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder } from "./sync";
+import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf } from "./sync";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -185,6 +185,8 @@ export class App {
    * meanwhile (`rejoin`).
    */
   private atDrop = new Map<string, { text: string; at: number }>();
+  /** For each file this page kept when its access went, the stored text then. */
+  private keptFrom = new Map<string, string | undefined>();
   private dropGeneration = 0;
 
   constructor(
@@ -519,7 +521,10 @@ export class App {
     // already owns.
     await this.peers?.ready;
 
-    const stored = this.known.get(path) ?? this.models.get(path)?.getValue() ?? "";
+    // A model with unsaved text in it is newer than the store: a file moved
+    // with typing it carried, waiting for its save.
+    const unsaved = this.dirty.has(path) ? this.models.get(path)?.getValue() : undefined;
+    const stored = unsaved ?? this.known.get(path) ?? this.models.get(path)?.getValue() ?? "";
     if (!this.peers || this.peers.alone) {
       doc.seed(stored);
       return doc;
@@ -1126,9 +1131,18 @@ export class App {
    * it over what somebody just wrote.
    */
   private async flushModels(rt: Runtime): Promise<void> {
-    for (const path of this.dirty) {
+    await rt.settled();
+    for (const path of [...this.dirty]) {
       const text = this.current(path);
-      if (text !== undefined) await rt.write(path, text);
+      if (text === undefined) continue;
+      // Not over a command's change. This runs after the command, and a file
+      // it changed that also held typing not yet saved had the typing written
+      // over it — the command's change gone before anything read it. Such a
+      // file no longer holds what the page last wrote; the diff takes the
+      // command's change from it and puts it on top of the typing.
+      const wrote = rt.wrote(path);
+      if (wrote !== undefined && (await rt.readBytes(path).then(textOf, () => wrote)) !== wrote) continue;
+      await rt.write(path, text);
     }
   }
 
@@ -1742,11 +1756,22 @@ export class App {
     this.peers?.close();
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
-    for (const path of [...this.docs.keys()]) {
-      this.closeDoc(path);
-      this.local.add(path);
+    // Each model takes its document's text before the document goes. Only
+    // the one on screen followed it; the rest held what they had when last
+    // shown, and that older text was what came back.
+    this.applyingRemote = true;
+    try {
+      for (const path of [...this.docs.keys()]) {
+        const text = this.current(path);
+        if (text !== undefined) this.setFile(path, text);
+        this.closeDoc(path);
+        this.local.add(path);
+      }
+    } finally {
+      this.applyingRemote = false;
     }
     for (const path of this.dirty) this.local.add(path);
+    for (const path of this.local) if (!this.keptFrom.has(path)) this.keptFrom.set(path, this.known.get(path));
     this.access = { ...this.granted, role: "viewer" };
     this.renderFiles();
     this.paintBanner();
@@ -1818,7 +1843,8 @@ export class App {
       return;
     }
     if (pad.access?.role !== "owner") return;
-    const changes = [...this.local].map((path) => ({ path, content: this.models.get(path)?.getValue() ?? null }));
+    const kept = new Map([...this.local].map((path) => [path, { base: this.keptFrom.get(path), mine: this.models.get(path)?.getValue() ?? null }]));
+    const changes = putBack(kept, knownFrom(pad.files));
     try {
       if (changes.length) await this.store.write(this.name, changes);
     } catch (e) {
@@ -2051,6 +2077,10 @@ export class App {
         ];
         const seq = await this.store.write(this.name, changes);
         this.storeSeq = Math.max(this.storeSeq, seq);
+        // Typed while the write was on its way, into the file's old document:
+        // it goes with the file, to be saved next. Taken from before the
+        // write alone, it went when the old document was closed.
+        const later = new Map(textPairs.map(([p]) => [p, this.current(p) ?? text.get(p)!]));
         const rt = this.runtimeReady ? await this.runtime : null;
         const active = this.active;
         this.applyingRemote = true;
@@ -2077,9 +2107,10 @@ export class App {
           for (const [p, t] of textPairs) {
             this.binaries.delete(t);
             this.closeDoc(t);
-            this.setFile(t, text.get(p)!);
+            this.setFile(t, later.get(p)!);
             this.known.set(t, text.get(p)!);
-            this.dirty.delete(t);
+            if (later.get(p) === text.get(p)) this.dirty.delete(t);
+            else this.dirty.add(t);
           }
           // Onto the new path before the old model goes from under the editor,
           // and where it was in the file with it.
@@ -2102,7 +2133,7 @@ export class App {
             this.models.delete(p);
           }
           for (const [p, t] of textPairs) {
-            await rt?.write(t, text.get(p)!);
+            await rt?.write(t, later.get(p)!);
             if (!folder) await rt?.removeAndPrune(p);
           }
           // A folder goes whole, so nothing of it is left to be published back.
@@ -2113,6 +2144,7 @@ export class App {
         this.tree?.moved(from, to);
         this.renderFiles();
         this.peers?.moved(seq);
+        if (textPairs.some(([p]) => later.get(p) !== text.get(p))) this.saveSoon();
       });
       this.say("", `moved ${from} to ${to}`);
     } catch (e) {

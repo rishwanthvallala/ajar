@@ -618,6 +618,28 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await row("helper.py").dragTo(row("docs", true));
   await treeHas(["docs/helper.py"], ["helper.py"]);
   expect("typing not yet saved goes with the file", (await editorText("docs/helper.py"))?.includes("# typed-just-before-moving"), JSON.stringify((await editorText("docs/helper.py"))?.slice(-60)));
+  // And typing while the move is on its way to the store. The text was taken
+  // before the write, and what came after went with the old file's document.
+  const slowly = async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 1500));
+    await route.continue();
+  };
+  await page.route("**/api/pad/**", slowly);
+  await wait(800);
+  answer = "helper.py";
+  await row("docs/helper.py").focus();
+  await page.keyboard.press("F2");
+  answer = null;
+  await page.evaluate(() => {
+    const ed = window.monaco.editor.getEditors()[0];
+    ed.focus();
+    ed.setPosition(ed.getModel().getPositionAt(ed.getModel().getValueLength()));
+  });
+  await page.keyboard.type("# typed-while-moving");
+  await treeHas(["helper.py"], ["docs/helper.py"]);
+  await wait(400);
+  await page.unroute("**/api/pad/**", slowly);
+  expect("and so does typing while the move is being saved", (await editorText("helper.py"))?.includes("# typed-while-moving"), JSON.stringify((await editorText("helper.py"))?.slice(-60)));
   page.off("request", onPut);
 
   // ---- keys ----

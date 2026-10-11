@@ -237,6 +237,21 @@ try {
     await wait(a, 2500);
     await agree(a, b, "x = 42\ny = 2abcdefghijklmnop\n", "a command that changes the open file keeps its change and the other place's typing");
 
+    // Typing not yet saved, then a command in the same place that changes
+    // another line of that file. Before reading back what the command did,
+    // the page wrote its unsaved files into the sandbox — over the command's
+    // change, which was then never seen.
+    await b.locator("#files").getByText("main.py", { exact: true }).click();
+    await setAll(b, "one\ntwo\n");
+    await wait(b, 1500);
+    await caretAt(b, 1, 4);
+    await b.keyboard.type("X");
+    await term("sed -i 's/two/two-by-sed/' main.py");
+    await wait(b, 150);
+    await idle();
+    await wait(b, 2000);
+    await agree(a, b, "oneX\ntwo-by-sed\n", "typing not yet saved, and a command in the same place changing the file, are both kept");
+
     // A byte-order mark is part of a file — Excel's "CSV UTF-8" starts with
     // one — and a command run while the file is open leaves it there. Made in
     // the terminal: the editor's setValue would set the mark aside.

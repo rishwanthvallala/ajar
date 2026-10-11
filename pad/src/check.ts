@@ -7,7 +7,7 @@
 import { parsePadLink } from "./access";
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
-import { carryOver } from "./carry";
+import { carryOver, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId } from "./editing";
 import { Shell } from "./shell";
@@ -289,6 +289,51 @@ async function main() {
     is(after("one\ntwo\n", "one\ntwo\nmine\n", "theirs\none\ntwo\n"), "theirs\none\ntwo\nmine\n", "somebody's line above it stays, and it lands after the text it followed");
     is(after("x = 1\ny = 2\n", "x = 1\nz = 0\ny = 2\n", "x = 1\ny = 2\ntheirs\n"), "x = 1\nz = 0\ny = 2\ntheirs\n", "somebody's line below it stays too");
     is(after("keep this", "keep", "keep that"), "keep that", "a deletion over text somebody changed removes none of theirs");
+  }
+
+  // What a page signed out under puts back once it is signed in again. It
+  // wrote every file it had kept, as it held it, over what collaborators had
+  // done meanwhile — and the files not on screen it held as they were when
+  // last shown. Only what changed here goes back, onto the pad as it is.
+  {
+    const kept = new Map<string, { base: string | undefined; mine: string | null }>([
+      ["untouched.py", { base: "a\n", mine: "a\n" }],
+      ["mine.py", { base: "one\ntwo\n", mine: "one\ntwo\nmine\n" }],
+      ["gone.py", { base: "x\n", mine: null }],
+      ["new.py", { base: undefined, mine: "fresh\n" }],
+    ]);
+    const stored = new Map([
+      ["untouched.py", "a\ntheirs\n"],
+      ["mine.py", "theirs\none\ntwo\n"],
+      ["gone.py", "x\n"],
+    ]);
+    const back = Object.fromEntries(putBack(kept, stored).map((c) => [c.path, c.content]));
+    is("untouched.py" in back, false, "a file not changed here is not put back over somebody's newer one");
+    is(back["mine.py"], "theirs\none\ntwo\nmine\n", "one changed here goes back onto the pad as it is now, theirs kept");
+    is(back["gone.py"], null, "one deleted here is deleted");
+    is(back["new.py"], "fresh\n", "and one the pad never had goes in whole");
+  }
+
+  // Emoji are two UTF-16 units, and two from one block share the first. Changed
+  // one for the other, the difference began between the halves, and the
+  // document, asked to cut a character there, put a replacement character in
+  // each half.
+  {
+    const thumbs = "\ud83d\udc4d";
+    const fire = "\ud83d\udd25";
+    const e = carryOver(`a${thumbs}b`, `a${fire}b`, `a${thumbs}b`);
+    is(e?.at, 1, "a change from one emoji to another starts at the character, not inside it");
+    const doc = new DocSession(9, "e.txt", { id: 1, name: "t" }, () => {});
+    doc.seed(`a${thumbs}b`);
+    doc.replace(`a${fire}b`);
+    is(doc.contents(), `a${fire}b`, "and a document changed that way holds the new emoji whole");
+    // The same at the other end: two characters sharing their second half.
+    const doc2 = new DocSession(10, "f.txt", { id: 1, name: "t" }, () => {});
+    doc2.seed("x\ud83d\udc4dz");
+    doc2.replace("x\ud83e\udc4dz");
+    is(doc2.contents(), "x\ud83e\udc4dz", "and one that differs only in its first half too");
+    doc.destroy();
+    doc2.destroy();
   }
 
   // ---- line endings an editor converts ------------------------------------
@@ -680,6 +725,18 @@ async function main() {
   is(mintName() !== mintName(), true, "two minted names differ");
 
   // ---- the store, over real http ----
+  // A request the server never answers fails in time. It used to wait for
+  // good, and every save and publish behind it in the page's queue with it.
+  {
+    const impatient = new Store("", () => null, 400);
+    const began = performance.now();
+    const err = await impatient.read("never-answers").then(() => null, (e: unknown) => e);
+    is(
+      err instanceof StoreError && /did not answer in time/.test(err.message) && performance.now() - began < 3000,
+      true,
+      `a store request the server never answers fails in time (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
   const store = new Store();
   const name = mintName();
   const fresh = await store.read(name);
