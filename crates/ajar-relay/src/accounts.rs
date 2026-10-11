@@ -24,8 +24,9 @@ use sha2::{Digest, Sha256};
 pub const MAX_PADS_PER_ACCOUNT: usize = 20;
 /// Bytes every pad of one account may hold together. Each pad keeps its own
 /// cap (`pad::MAX_BYTES`) as well; this is what stops twenty of them filling
-/// the disk.
-pub const MAX_BYTES_PER_ACCOUNT: u64 = 100 * 1024 * 1024;
+/// the disk. 250 MiB since pads went to 100 on 11 October — at 100 an owned pad
+/// could never reach the cap a pad has.
+pub const MAX_BYTES_PER_ACCOUNT: u64 = 250 * 1024 * 1024;
 
 /// What one account may hold. Flags on the relay, so the numbers can move
 /// without a release and the checks can reach them without writing 100 MB.

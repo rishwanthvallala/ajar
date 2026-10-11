@@ -11,7 +11,7 @@ import { carryOver, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId } from "./editing";
 import { Shell } from "./shell";
-import { mintName, Store, StoreError, storedHash } from "./store";
+import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { seedFiles } from "./seed";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
@@ -792,6 +792,76 @@ async function main() {
     }
     is(stale, true, "an edit against a version the relay no longer holds is refused as stale");
     is((await store.read(name)).files["big.txt"]?.content.startsWith("LINE"), true, "and changes nothing");
+  }
+
+  // ---- a write too big for one request ----
+  // A pad holds 100 MiB and a request carries 24, so an upload, a copy or a
+  // large file goes in parts. Sizes are counted as the bytes JSON.stringify
+  // writes, which is what the relay's limit counts.
+  {
+    const samples = ["", "plain", 'quote " back \\ slash', "tab\tnl\nctl\u0001\u001f", "é漢😀", "lone \ud800 high", "lone \udc00 low", "😀".repeat(50)];
+    is(
+      samples.every((t) => jsonBytes(t) === new TextEncoder().encode(JSON.stringify(t)).length),
+      true,
+      "a string's size as JSON is counted as JSON.stringify writes it",
+    );
+    const text = "ab\"é漢😀\n".repeat(500);
+    const cut = pieces(text, 200);
+    is(cut.join(""), text, "pieces put back together are the text");
+    is(cut.every((p) => jsonBytes(p) <= 200), true, "and none is over its size");
+    is(cut.every((p) => !/^[\udc00-\udfff]/.test(p)), true, "and none starts inside a character");
+
+    const steps = plan(
+      [
+        { path: "a.txt", content: "a".repeat(100) },
+        { path: "b.txt", content: "b".repeat(100) },
+        { path: "big.txt", content: "c".repeat(5000) },
+        { path: "z.txt", content: "z" },
+      ],
+      2048,
+    );
+    is(steps[0]?.changes.map((c) => c.path).join(","), "a.txt,b.txt", "small changes go together");
+    const parts = steps.filter((st) => st.changes[0]?.path === "big.txt");
+    is(parts.length > 1 && parts.slice(1).every((st) => st.follows), true, "a large file goes as a first part and parts that follow it");
+    is(
+      parts.slice(1).map((st) => st.changes[0]?.edits?.[0]?.at).join(","),
+      parts.slice(0, -1).reduce<number[]>((ats, st, i) => [...ats, (ats[i - 1] ?? 0) + (st.changes[0]?.content ?? st.changes[0]?.edits?.[0]?.insert ?? "").length], []).join(","),
+      "each part goes at the end of the ones before it",
+    );
+    is(steps.at(-1)?.changes[0]?.path, "z.txt", "and what comes after it, after it");
+
+    // Against the relay, with requests made small enough that it all splits.
+    const small = new Store();
+    small.requestBytes = 16 * 1024;
+    const puts: number[] = [];
+    const realFetch = window.fetch;
+    window.fetch = (input, init) => {
+      if (init?.method === "PUT") puts.push(String(init.body).length);
+      return realFetch(input, init);
+    };
+    try {
+      const pad = mintName();
+      const huge = `${"line \"quoted\" é 漢 😀 \\ tab\t\n".repeat(6000)}end`;
+      const many = Array.from({ length: 30 }, (_, i) => ({ path: `many/${i}.txt`, content: `${i}`.repeat(2000) }));
+      const binary = btoa("\u0000\u00ff".repeat(20000));
+      await small.write(pad, [...many, { path: "huge.txt", content: huge }, { path: "logo.bin", content: binary, encoding: "base64" }]);
+      const got = (await small.read(pad)).files;
+      is(got["huge.txt"]?.content, huge, `a file bigger than a request arrives whole (${puts.length} requests)`);
+      is(got["huge.txt"]?.hash, await storedHash(huge), "and the relay's hash is the whole file's");
+      is(got["logo.bin"]?.content === binary && got["logo.bin"]?.encoding === "base64", true, "a binary file too");
+      is(many.every((m) => got[m.path]?.content === m.content), true, "and every small file beside them");
+      is(puts.every((n) => n <= 16 * 1024), true, `no request was over its size (largest ${Math.max(...puts)})`);
+      // A paste bigger than a request, into a file the relay already has.
+      const pasted = "pasted 😀 text\n".repeat(4000);
+      puts.length = 0;
+      await small.write(pad, [
+        { path: "huge.txt", content: null, base: await storedHash(huge), edits: [{ at: 4, remove: 1, insert: pasted }] },
+      ]);
+      const after = `${huge.slice(0, 4)}${pasted}${huge.slice(5)}`;
+      is((await small.read(pad)).files["huge.txt"]?.content, after, `a paste bigger than a request lands where it was made (${puts.length} requests)`);
+    } finally {
+      window.fetch = realFetch;
+    }
   }
 
   await sh.close();

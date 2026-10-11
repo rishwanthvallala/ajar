@@ -22,6 +22,13 @@ User=ajar
 Group=ajar
 ExecStart=/usr/local/bin/ajar-relay --bind 127.0.0.1:8787 --web /srv/ajar/web --trust-forwarded-for --pad-dir /var/lib/ajar/pads --accounts-db /var/lib/ajar/accounts.db
 Environment=RUST_LOG=ajar_relay=info
+# glibc's allocator gives a large block back to the system when it is freed —
+# until it has freed one, after which it raises that bar to the block's size,
+# up to 32 MB, and keeps the rest. A pad upload is a few 24 MiB requests, and a
+# relay that had taken uploads of 25, 60 and 99 MB files held 261 MB of its 512
+# afterwards with none of it in use; with the bar fixed at 1 MiB it held 59
+# (measured 11 October, docs/dev/pad-store.md).
+Environment=MALLOC_MMAP_THRESHOLD_=1048576
 # Signing in: the public origin, and each provider's client id and secret.
 # Kept on the box, root-only, and never in the repository; the deploy creates
 # it with the origin alone and never overwrites it. Without the ids, nobody is
@@ -64,8 +71,8 @@ ReadOnlyPaths=/srv/ajar
 # A stalled connection is bounded at 8 MB by the outbox, but a memory ceiling
 # is the backstop for whatever the next mistake turns out to be. Pad writes
 # are budgeted against it in the code: main.rs asserts that the writes read at
-# once (two, of up to 121 MiB) stay under half of it — so lowering this is a
-# code change too.
+# once (two, of up to 33 MiB, each with the text parsed from it) stay under
+# half of it — so lowering this is a code change too.
 MemoryMax=512M
 TasksMax=512
 

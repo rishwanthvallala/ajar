@@ -29,20 +29,22 @@ use tracing::info;
 use crate::pad::Store;
 use crate::session::Registry;
 
-// A pad may contain `pad::MAX_BYTES` of text. JSON escaping can expand each
-// byte on the wire, so the extractor limit must sit above the store's cap.
 /// The largest pad write this will read off the wire.
 ///
-/// A pad holds `pad::MAX_BYTES` of *content*; JSON escaping makes the request bigger than
-/// that. The multiplier used to be six, for the worst case where every byte is a
+/// One request, not one pad. It was tied to `pad::MAX_BYTES` — twice the cap,
+/// for JSON escaping, plus a margin — while a pad's every write could carry
+/// the whole of it: 121 MiB at the 60 MiB cap, and a request that size costs
+/// the body and the text parsed out of it at once, which took the relay to
+/// 268 MB of its 512 for one 60 MB file (11 October). Since then a browser
+/// sends at most 24 MiB a request — a large upload goes in several, and a
+/// large file as its first part and then edits adding the rest to its end —
+/// so this is 32 MiB and a margin, whatever a pad holds.
+///
+/// The multiplier used to be six, for the worst case where every byte is a
 /// control character and becomes `\u00XX` — which is pathological, and it priced
 /// every request as if it were: 151 MiB each, with nothing bounding how many
 /// arrived at once. Four of them exceed the service's own `MemoryMax=512M`.
-///
-/// Two covers escaping that happens in real text — quotes, backslashes and
-/// newlines all double — and a pad that genuinely cannot fit is refused with a
-/// size error rather than being allowed to reserve six times its weight.
-const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 2 + 1024 * 1024;
+const MAX_PAD_HTTP_BODY: usize = 33 * 1024 * 1024;
 
 /// Pad writes read off the wire at once.
 ///
@@ -53,7 +55,7 @@ const MAX_PAD_HTTP_BODY: usize = pad::MAX_BYTES * 2 + 1024 * 1024;
 ///
 /// A queue rather than a refusal, because waiting a moment is invisible and
 /// being told "busy" is not. Requests wait *before* their body is read, so
-/// queuing costs a connection rather than 121 MiB.
+/// queuing costs a connection rather than a body.
 ///
 /// Two since pads went to 60 MiB (it was four at 25): the assertion below is
 /// what the two numbers have to satisfy together.
@@ -63,8 +65,10 @@ const MAX_CONCURRENT_PAD_WRITES: usize = 2;
 // what they have to fit inside — along with every session, outbox and snapshot
 // the relay is also holding. Raising either one alone is how a limit stops being
 // one, so the product is stated here rather than left to be worked out after an
-// OOM. 242 MiB against 512 MiB leaves room for the rest of the process.
-const _: () = assert!(MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
+// OOM. A write holds its body and the text parsed from it, so twice the body
+// each: 132 MiB against 512 MiB leaves room for the rest of the process. What
+// the store does with a write after that streams, whatever the file's size.
+const _: () = assert!(MAX_PAD_HTTP_BODY * 2 * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
 
 /// Pad reads being streamed at once, from every caller together.
 ///
@@ -497,6 +501,9 @@ fn stream_pad(
         serde_json::to_string(access).unwrap_or_else(|_| "{}".into())
     );
     let head_len = head.len() as u64;
+    // Kept until the body is sent or dropped: the store deletes a blob a
+    // write let go of only once nothing is sending it.
+    let reading = opened.reading;
     // Each blob opened when it is reached, not all at the start: a read holds
     // one file open, whatever the pad has in it.
     let rest = futures_util::stream::iter(opened.parts)
@@ -516,7 +523,7 @@ fn stream_pad(
     })
     .chain(rest)
     .map(move |chunk| {
-        let _held = &held;
+        let _held = (&held, &reading);
         chunk
     });
     axum::response::Response::builder()

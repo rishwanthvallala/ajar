@@ -445,7 +445,7 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   the role of the link presented (`access.link`), so an edit link opened while
   editing is locked — a viewer for now — is never offered as the viewer's
   "link" to share.
-- **Quotas bound an account**, not just an address: 20 pads and 100 MB across
+- **Quotas bound an account**, not just an address: 20 pads and 250 MB across
   them, charged to the owner whoever writes. An edit link cannot be used to
   fill the owner's disk past that. Writes to one account's pads take turns,
   so the room left is read and spent as one step — parallel writes each saw
@@ -485,8 +485,9 @@ meets it.
 | Sessions opened per address | 8 at once, 20/min | `quota.rs` `MAX_OPEN_PER_IP` |
 | Sessions **joined** per address | 96 at once, 240/min | `quota.rs` `MAX_JOINS_PER_IP` |
 | Every pad together | 4 GB, `--max-store-bytes` | `pad.rs` `MAX_STORE_BYTES` |
-| What one address may add to the store | 256 MiB a day, growth only; `--pad-growth-per-address` | `quota.rs` `MAX_PAD_GROWTH_PER_IP` |
-| One pad write, off the wire | 121 MiB — twice a pad's 60 MiB, for JSON escaping, plus 1 MiB | `main.rs` `MAX_PAD_HTTP_BODY` |
+| What one address may add to the store | 512 MiB a day, growth only; `--pad-growth-per-address` | `quota.rs` `MAX_PAD_GROWTH_PER_IP` |
+| One pad write, off the wire | 33 MiB; a browser sends a larger write in parts of 24 | `main.rs` `MAX_PAD_HTTP_BODY` |
+| Memory one pad save costs | Its request; the files it changes are streamed to disk, an edit from one blob to the next | `pad.rs` `write_within`, `pad/splice.rs` |
 | Pad writes being read at once | 2 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
 | Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
@@ -513,19 +514,22 @@ its own header got that value back, and rotating it bought a fresh bucket per
 request. Caddy also replaces the header now rather than appending, so either
 half holds alone.
 
-**The body limit and the concurrency limit are one number, not two.** 121 MiB × 2
-is 242 MiB against the unit's `MemoryMax=512M` (it was 51 MiB × 4 while a pad
-held 25 MiB; the cap went to 60 MiB on 7 October and the count down to two). Raising either alone fails to
-compile — there is a `const` assertion on the product, because the ceiling that
-applied before was the OOM killer.
+**The body limit and the concurrency limit are one number, not two.** A write
+holds its body and the text parsed from it, so 33 MiB × 2 × 2 is 132 MiB against
+the unit's `MemoryMax=512M`. It was 51 MiB × 4 while a pad held 25 MiB, and
+121 MiB × 2 at 60 — when one request could carry a whole pad, and a 60 MB file
+took the relay to 268 MB. Since 11 October a request carries part of a large
+write rather than all of it, so the limit no longer follows the pad cap.
+Raising either alone fails to compile — there is a `const` assertion on the
+product, because the ceiling that applied before was the OOM killer.
 
 The permit for a pad write is taken in an **extractor, not the handler**.
 Extractors that do not touch the body run first, so a request waits before
-121 MiB is pulled off the wire; taken in the handler it would bound nothing.
+its body is pulled off the wire; taken in the handler it would bound nothing.
 
 **The store allowance counts bytes added, not pads created.** A cap on
-creations does not protect a disk: sixty pads an hour at 60 MiB each fills the
-ceiling before breakfast. So each address may add 256 MiB a day — four full pads, or
+creations does not protect a disk: sixty pads an hour at 100 MiB each fills the
+ceiling before breakfast. So each address may add 512 MiB a day — five full pads, or
 tens of thousands of ordinary ones — and only growth is charged, so an edit in
 place is always free and an address at its limit can still make room. It is
 what made a 90-day lease affordable: without it, one address could fill the
@@ -541,7 +545,11 @@ the pad's fields, then each file's blob from disk a chunk at a time — so the
 same twelve reads grow it by about 1 MiB. A save, since 11 October, reads and
 writes only the files it names, where it used to read, parse and rewrite the
 whole pad: at 60 MB that was about four times the pad in memory per save, and
-enough of them in a row killed the relay ([pad-store.md](pad-store.md)).
+enough of them in a row killed the relay ([pad-store.md](pad-store.md)). An
+edit to one large file is streamed from its blob to the next rather than
+loaded, and the blob it replaces is deleted then rather than ten minutes on:
+before, twenty one-character saves in a 60 MB file took the relay to 274 MB
+and left 1.3 GB on disk, outside the ceiling's count.
 
 The counts that remain bound descriptors and slow readers, not memory. The
 per-address slot and the global permit ride *inside the body stream*, so they are

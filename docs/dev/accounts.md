@@ -199,12 +199,12 @@ is all in the page — no relay change, and the original is only read.
 
 ## Limits and lifecycle
 
-- **Per account:** 20 pads, 100 MB in all, and 60 MB / 500 files each, the
-  same as an anonymous pad. A pad went from 25 MB to 60 MB on 7 October and the
-  account total did not move, so an account now holds one full pad and most of
-  a second rather than four. Every pad together is held to 4 GB by default,
-  whatever the accounts add up to. The disk has 15 GB free; these are the
-  numbers to revisit, not a promise.
+- **Per account:** 20 pads, 250 MB in all, and 100 MB / 500 files each, the
+  same as an anonymous pad. A pad went from 25 MB to 60 MB on 7 October and to
+  100 MB on 11 October, and the account total from 100 MB to 250 with it, so an
+  account holds two full pads and half a third. Every pad together is held to
+  4 GB by default, whatever the accounts add up to. The disk has 15 GB free;
+  these are the numbers to revisit, not a promise.
 - **No expiry** while the account exists. Deleting a pad deletes its files and
   retires its name for good — unlike anonymous expiry, which frees it.
 - **Deleting an account** deletes its pads. A read-only archive is the

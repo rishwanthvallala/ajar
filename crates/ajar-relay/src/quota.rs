@@ -209,11 +209,12 @@ impl Quota {
 /// in the few minutes some seventy full writes take. With a 90-day lease a store filled that way
 /// stays full for a season, so the lease could only grow once this existed.
 ///
-/// 256 MiB is four full-size pads, or tens of thousands of the scripts people
+/// 512 MiB is five full-size pads, or tens of thousands of the scripts people
 /// actually paste, and a classroom behind one address `pip install`ing the same
-/// small package — so ordinary use never meets it. Only growth is charged: an
-/// edit that leaves a pad the same size or smaller is free.
-pub const MAX_PAD_GROWTH_PER_IP: u64 = 256 * 1024 * 1024;
+/// small package — so ordinary use never meets it. It was 256 until pads went
+/// to 100 MiB on 11 October, which would have left room for two. Only growth
+/// is charged: an edit that leaves a pad the same size or smaller is free.
+pub const MAX_PAD_GROWTH_PER_IP: u64 = 512 * 1024 * 1024;
 
 /// The period a [`Growth`] allowance covers.
 pub const GROWTH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);

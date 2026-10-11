@@ -32,6 +32,40 @@ sequence that killed it before:
 A save costs the files it names; a read is streamed, as it was. A keystroke in a
 300 KB file, sent as the edit, is a 165-byte request (`pair-check`).
 
+### One large file
+
+Those pads were many 2 MB files. Later the same day, one large file and twenty
+one-character saves into it, the way the browser sends them, told a different
+story:
+
+| File | One save | Relay's peak memory | On disk after twenty saves |
+|---|---|---|---|
+| 25 MB | 188 ms | 170 MB | 535 MB |
+| 60 MB | 307 ms | 274 MB; killed when it followed the 25 MB one | 1.3 GB |
+
+An edit was applied by reading the stored file whole, decoding it, rebuilding
+it and encoding it again: three copies of the file at once. And a blob is never
+changed, so every save made a new one, while the one it replaced stayed ten
+minutes or more, uncounted by the ceiling. So now ([below](#a-save)) an edit is
+streamed from one blob to the next, a replaced blob goes at once, and a request
+is at most 24 MiB. The same run after, in one relay, one file after another:
+
+| File | One save | What a save adds to memory | On disk after ten saves |
+|---|---|---|---|
+| 25 MB | 92 ms | nothing | 26 MB, one copy |
+| 60 MB | 220 ms | nothing | one copy |
+| 99 MB | 370 ms | nothing | one copy |
+
+What is left is the uploads: each part is a request the relay holds with the
+text parsed out of it, and glibc kept what those used — 261 MB after files of
+25, 60 and 99 MB, none of it in use. With its mmap threshold fixed at 1 MiB
+(`MALLOC_MMAP_THRESHOLD_` in `deploy/ajar-relay.service`) the same run peaked at
+122 MB and held 59 afterwards.
+
+A save in a large file still copies it on disk, about 370 ms for 99 MB. Keeping
+a file in pieces, so that a save copies only the piece it changes, would end
+that; nothing has needed it yet.
+
 ## What is on disk
 
 ```
@@ -55,11 +89,18 @@ changed after.
 
 ## A save
 
-1. Each changed file's blob is written if no blob of that hash exists.
-2. One transaction moves the paths onto their new blobs, counts references,
-   advances the sequence and checks the caps. It either happens whole or not.
-3. A blob nothing refers to any more is deleted ten minutes later by the
-   sweeper, not at once: a read already streaming it keeps its file.
+1. Each changed file's next blob is written beside the store, without the
+   store's lock: a large one takes a while, and every pad's reads and saves
+   wait on that lock. Text that is already stored is not written again. An
+   edit is applied by streaming the blob it names into the new one.
+2. Under the lock, the blobs are renamed into place, and one transaction moves
+   the paths onto them, counts references, advances the sequence and checks the
+   caps. It either happens whole or not; if not, the blobs it put in place are
+   deleted.
+3. A blob nothing refers to any more is deleted then, unless something is
+   using it: a read still sending it, or an edit being applied to it. Those are
+   marked while they run, and what they kept goes at the next write, or the
+   hourly sweep.
 
 What a save costs is the files it changes. The rest of the pad is not read.
 
@@ -74,10 +115,27 @@ sizes. Memory is a chunk, whatever the pad's size.
 
 A browser saving a file it already holds can send the edit rather than the file:
 the stored file's hash, and what to remove and insert where, in UTF-16 code
-units, as a browser counts. The relay applies it only to the version it names;
-if the stored file has moved on, the whole write is refused with 409 and the
-browser sends the full file instead. Reads and writes return each file's hash
-so the browser knows what it has.
+units, as a browser counts. The relay applies it only to the version it names,
+of the encoding it names; if the stored file has moved on, the whole write is
+refused with 409 and the browser sends the full file instead. Reads and writes
+return each file's hash so the browser knows what it has.
+
+The edit is applied without loading the file (`pad/splice.rs`): the stored JSON
+string is read in 64 KiB pieces and copied through, the edit put in where it
+falls, and the result hashed on the way. Edits to one file go in order, and a
+file is edited in a request of its own.
+
+## A write bigger than one request
+
+A browser sends at most 24 MiB of JSON a request (`REQUEST_BYTES` in
+`pad/src/store.ts`) and the relay reads at most 33 MiB (`MAX_PAD_HTTP_BODY`).
+Small changes go together while they fit. A file bigger than that goes as its
+first part, then each next part as an edit adding it to the end, against the
+hash the answer before gave for it; a paste bigger than that, the same way from
+where it was made. An upload of a full 100 MB pad is five requests or so.
+
+The parts are separate writes. If one fails, the ones before it have landed,
+and a file sent in parts holds only those until it is saved again.
 
 ## Upgrading, and going back
 
@@ -91,5 +149,9 @@ binary.
 
 ## What it does not change
 
-The HTTP API, the caps, the leases, owned pads, the per-address and per-account
-allowances, and the store's ceiling, which now counts each blob once.
+The HTTP API, the leases, owned pads, and the store's ceiling, which now counts
+each blob once.
+
+The caps went up after it, on 11 October, once the measurements above held: a
+pad from 60 MB to 100 MB, what an address may add in a day from 256 MiB to 512,
+and an account's room from 100 MB to 250.

@@ -237,7 +237,7 @@ either alone is not. Neither is backed up yet — Litestream to S3 is the plan
 Losing the key costs only the dashboard's copies of existing links: owners
 reset them and share again.
 
-The limits — 20 pads and 100 MB per account — are the defaults of two relay
+The limits — 20 pads and 250 MB per account — are the defaults of two relay
 flags, `--account-max-pads` and `--account-max-bytes`; to change them, add the
 flags to `ExecStart` in the unit.
 
@@ -266,14 +266,19 @@ store as it was when the new relay first started, and misses everything since.
 
 The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
 together, each file's text counted once however many pads hold it) and
-`--pad-growth-per-address` (256 MiB a day per address — four full pads since a
-pad went to 60 MiB on 7 October). The size of one pad is not a flag. A save no
-longer costs the pad's size — the store reads and writes only the files a
-save names — but a single write is still read off the wire whole, up to 121
-MiB, two at a time, and `main.rs` asserts that the 242 MiB they can hold
-together stays under 256 MiB of the unit's `MemoryMax=512M`. Lowering
-`MemoryMax` is therefore a code change as well. An account's 100 MB holds one
-full pad and most of a second.
+`--pad-growth-per-address` (512 MiB a day per address — five full pads since a
+pad went to 100 MiB on 11 October). The size of one pad is not a flag. A save no
+longer costs the pad's size — the store streams the files a save names, and
+an edit from one blob to the next — but a single request is still read off
+the wire whole, up to 33 MiB, two at a time, and `main.rs` asserts that what
+they hold with the text parsed out of them, 132 MiB, stays under 256 MiB of
+the unit's `MemoryMax=512M`. Lowering `MemoryMax` is therefore a code change as
+well. An account's 250 MB holds two full pads and half a third.
+
+The unit also fixes glibc's mmap threshold at 1 MiB
+(`MALLOC_MMAP_THRESHOLD_`). Without it the allocator keeps what large requests
+used: after uploads of 25, 60 and 99 MB files a relay held 261 MB with none of
+it in use, and 59 MB with it ([pad-store.md](pad-store.md#one-large-file)).
 
 ## Reaching the server
 

@@ -75,7 +75,9 @@ by its own `MemoryMax` on the next.
 One SQLite connection, and every change to the store under it: a write reads
 the pad's rows, checks the caps and the file-or-directory rule on the result,
 and commits, as one step. Two writes to one pad cannot both start from the same
-version. (The one-document store needed 64 striped locks and a unique temp name
+version. A write's blobs are written before that, off the lock, so a large file
+does not hold up every other pad; an edit applied meanwhile to a file another
+write moved on is refused as stale when the write takes the lock. (The one-document store needed 64 striped locks and a unique temp name
 per call for the same thing: without them two saves failed with `No such file
 or directory` as each renamed the other's file away.)
 
@@ -85,9 +87,10 @@ A pad read does not load the pad. `Store::open_for_read` checks and renews the
 lease, takes the list of files, and hands back the response as pieces — fixed
 bytes, and the blob each file holds — with its length worked out from the
 blobs' sizes. The handler sends `{"exists":true,"access":{…},` and then the
-pieces, opening each blob only when it reaches it. Blobs never change, and one
-nothing holds any more is deleted only after ten minutes (`GRACE`), so a read
-sends the version it looked at even if a write lands meanwhile.
+pieces, opening each blob only when it reaches it. Blobs never change, and the
+read marks the ones it is sending as in use until its body is sent or dropped,
+so it sends the version it looked at even if a write lands meanwhile. Any other
+blob nothing holds is deleted as soon as a write lets go of it.
 
 Each file in a read carries its `hash`, which is what a browser sends edits
 against. It used to parse, rebuild and re-serialise the whole pad per read —
@@ -103,20 +106,24 @@ applies them only to the version that hash names, and refuses the whole write
 with 409 if it holds anything else; the browser then sends the files whole. A
 browser computes the hash of the text it believes is stored, so the relay
 applying an edit means the edit was measured against exactly that text. A
-keystroke in a 300 KB file is a 165-byte request.
+keystroke in a 300 KB file is a 165-byte request. The relay streams the edit
+from one blob to the next rather than loading the file: memory stays flat
+whatever the file's size ([pad-store.md](pad-store.md#one-large-file)).
 
 ### Writes are read whole, two at a time
 
 A write is the opposite case: its body is read off the wire before anything
 can be checked, so its size is what it costs. The limit is
-`MAX_PAD_HTTP_BODY`, twice `pad::MAX_BYTES` plus 1 MiB — 121 MiB since a pad
-went to 60 MiB on 7 October — because JSON escaping doubles quotes, backslashes
-and newlines. `MAX_CONCURRENT_PAD_WRITES`, now two (it was four at 25 MiB),
-bounds how many are read at once. The permit is taken before the body is read,
-so a queued write costs a connection rather than 121 MiB. The two numbers only
-mean something together: `main.rs` asserts their product, 242 MiB, stays under
-256 MiB, which leaves the rest of the unit's `MemoryMax=512M` for sessions.
-Raising one alone does not compile. See
+`MAX_PAD_HTTP_BODY`, 33 MiB. It was twice `pad::MAX_BYTES` plus 1 MiB — 121 MiB
+at a 60 MiB cap — while a write could carry a whole pad; since 11 October a
+browser sends at most 24 MiB a request, and a pad of up to 100 MiB, or one file
+that big, in several ([pad-store.md](pad-store.md#a-write-bigger-than-one-request)).
+`MAX_CONCURRENT_PAD_WRITES`, two, bounds how many are read at once. The permit
+is taken before the body is read, so a queued write costs a connection rather
+than a body. The two numbers only mean something together: a write holds its
+body and the text parsed from it, and `main.rs` asserts that twice the body
+times two, 132 MiB, stays under 256 MiB, which leaves the rest of the unit's
+`MemoryMax=512M` for sessions. Raising one alone does not compile. See
 [security.md](security.md#what-bounds-an-anonymous-caller).
 
 ### Reserved names
@@ -159,8 +166,9 @@ could fill the store and keep it full for a season: see
 Only the sweeper deletes, and it decides under the store's lock by looking at
 the pad as it is at that moment. Deciding from an earlier look would remove a
 pad a write had just made fresh — somebody's new folder. The sweeper also
-deletes blobs nothing has held for ten minutes, and blob files the table never
-heard of — written for a save that was then refused.
+deletes blobs a read kept past the write that let go of them, and blob files
+the table has not known for ten minutes (`GRACE`) — left by a relay that
+stopped between writing a blob and recording it.
 
 **A pad that belongs to an account never lapses.** The relay reads the owned
 names from the accounts database at start and pins them in the store, and a

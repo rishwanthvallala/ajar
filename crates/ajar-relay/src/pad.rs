@@ -31,16 +31,22 @@ use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+mod splice;
 
 /// Total bytes one pad may hold.
 ///
-/// Raised from 25 MiB on 7 October, for public pads that need to hold a larger
-/// project — and meant to come back down when that need does. It is tied to
-/// `MAX_PAD_HTTP_BODY` and the number of writes read at once in `main.rs`,
-/// whose product is asserted to fit the service's memory: raising this alone
-/// does not compile, which is the point. Reverting is this line and that count.
-pub const MAX_BYTES: usize = 60 * 1024 * 1024;
+/// 25 MiB until 7 October, 60 until 11 October, 100 since. What kept it down
+/// was the store: a pad was one document every save rewrote whole, and at 60
+/// MiB that could take the relay down. A save now writes only what it changes
+/// (see docs/dev/pad-store.md), so this is no longer a memory figure. What it
+/// costs is the download: opening a pad fetches all of it, for everyone who
+/// opens it. One request is still bounded on its own, by `MAX_PAD_HTTP_BODY`;
+/// a browser sends a bigger write in several.
+pub const MAX_BYTES: usize = 100 * 1024 * 1024;
 
 /// Files one pad may hold.
 ///
@@ -323,7 +329,9 @@ pub struct Edit {
 }
 
 /// One write to apply. `content` replaces the file; `edits` against `base`
-/// change it; neither removes it.
+/// change it; neither removes it. Edits apply to a file of the encoding they
+/// say, which is how a browser sends a file too big for one request: the first
+/// part as content, the rest added to the end of it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Write {
     pub path: String,
@@ -348,12 +356,13 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// How long a blob nothing refers to stays on disk before it is deleted.
+/// How long a file in the blob directory that the store has no row for is
+/// left alone: a write puts its blobs there before the transaction that
+/// records them, and may still be about to commit.
 ///
-/// Not deleted at once: a read takes the list of blobs it will send and then
-/// sends them, and a write landing in between can leave one of them held by
-/// nothing. A stalled reader is closed by the kernel within a minute
-/// (`TCP_USER_TIMEOUT` in `main.rs`), so ten is room to spare.
+/// It was also how long a blob no file held stayed, for a read still sending
+/// it. Since 11 October a read says which blobs it is sending instead, and
+/// any other goes at once — see [`Store::release`].
 pub const GRACE: Duration = Duration::from_secs(10 * 60);
 
 fn hash_of(encoding: Encoding, content: &str) -> String {
@@ -388,31 +397,6 @@ fn encoding_name(e: Encoding) -> &'static str {
     }
 }
 
-/// `remove` UTF-16 units at `at` replaced by `insert`, or why not.
-fn apply_edit(text: &str, edit: &Edit) -> Result<String, Error> {
-    // A byte offset for a UTF-16 one, or None if it falls inside a character.
-    let byte_at = |units: usize| -> Option<usize> {
-        let mut seen = 0usize;
-        for (i, c) in text.char_indices() {
-            if seen == units {
-                return Some(i);
-            }
-            seen += c.len_utf16();
-            if seen > units {
-                return None;
-            }
-        }
-        (seen == units).then_some(text.len())
-    };
-    let from = byte_at(edit.at).ok_or(Error::BadEdit("it starts outside the text"))?;
-    let to = byte_at(edit.at + edit.remove).ok_or(Error::BadEdit("it ends outside the text"))?;
-    let mut out = String::with_capacity(text.len() - (to - from) + edit.insert.len());
-    out.push_str(&text[..from]);
-    out.push_str(&edit.insert);
-    out.push_str(&text[to..]);
-    Ok(out)
-}
-
 /// One file of a pad as the store holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Row {
@@ -434,6 +418,94 @@ struct Row {
 pub struct Opened {
     pub parts: Vec<Part>,
     pub remaining: u64,
+    /// The blobs in `parts`, kept from being deleted until this is dropped,
+    /// which a caller does when it has sent them or given up.
+    pub reading: Reading,
+}
+
+/// Blobs in use — being sent to a reader, or edited — and by how many.
+type InUse = Arc<Mutex<HashMap<String, usize>>>;
+
+/// Blobs kept from [`Store::release`] until this is dropped.
+pub struct Reading {
+    blobs: Vec<String>,
+    in_use: InUse,
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        let mut in_use = self.in_use.lock();
+        for hash in &self.blobs {
+            if let Some(n) = in_use.get_mut(hash) {
+                *n -= 1;
+                if *n == 0 {
+                    in_use.remove(hash);
+                }
+            }
+        }
+    }
+}
+
+/// A file's next blob, written beside the store until a write puts it in
+/// place: its hash, the bytes of its text, and its bytes on disk. `tmp` is
+/// none when the store already had it.
+struct Staged {
+    hash: String,
+    size: u64,
+    stored: u64,
+    tmp: Option<PathBuf>,
+}
+
+impl Staged {
+    fn discard(&mut self) {
+        if let Some(tmp) = self.tmp.take() {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        self.discard();
+    }
+}
+
+/// Blobs a write put in place, deleted again unless it went in.
+struct Placed(Vec<PathBuf>);
+
+impl Placed {
+    fn keep(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl Drop for Placed {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Whether `row` is the version `w`'s edits were made against.
+fn names_version(row: Option<&Row>, w: &Write) -> bool {
+    row.is_some_and(|r| Some(&r.blob) == w.base.as_ref() && r.encoding == w.encoding)
+}
+
+/// `content` written to `path` as a JSON string, and how many bytes that is.
+/// Straight to the file: building it first was another copy of the file in
+/// memory.
+fn write_json_string(path: &Path, content: &str) -> Result<u64, Error> {
+    let write = || -> std::io::Result<u64> {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        serde_json::to_writer(&mut out, content)?;
+        let file = out.into_inner().map_err(|e| e.into_error())?;
+        Ok(file.metadata()?.len())
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(path);
+        Error::Io(e.to_string())
+    })
 }
 
 pub enum Part {
@@ -448,6 +520,7 @@ impl Opened {
         PartsReader {
             parts: self.parts.into_iter(),
             current: None,
+            _reading: self.reading,
         }
     }
 }
@@ -456,6 +529,7 @@ impl Opened {
 struct PartsReader {
     parts: std::vec::IntoIter<Part>,
     current: Option<Box<dyn std::io::Read>>,
+    _reading: Reading,
 }
 
 #[cfg(test)]
@@ -497,6 +571,8 @@ pub struct Store {
     /// Pads that belong to an account. Their lease never lapses: an owned
     /// pad lasts as long as its account, and deleting it is the owner's call.
     pinned: parking_lot::RwLock<std::collections::HashSet<String>>,
+    /// Blobs being read or edited, which a release leaves where they are.
+    in_use: InUse,
 }
 
 const SCHEMA: &str = "
@@ -573,6 +649,7 @@ impl Store {
             db: Mutex::new(db),
             used: AtomicU64::new(0),
             pinned: Default::default(),
+            in_use: Default::default(),
         };
         store.import_legacy()?;
         // Nothing is being read yet, so a blob held by nothing can go now.
@@ -705,21 +782,17 @@ impl Store {
         if let Ok(meta) = std::fs::metadata(&path) {
             return Ok((hash, meta.len()));
         }
-        let body = serde_json::to_vec(content).map_err(|e| Error::Io(e.to_string()))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         // Written beside its place and renamed into it: a blob is either all
-        // there or not there. Unique per call, as two writers storing the same
-        // text at once is ordinary.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.blobs.join(format!(".{}.{n}.tmp", std::process::id()));
-        std::fs::write(&tmp, &body)?;
+        // there or not there.
+        let tmp = self.tmp_path();
+        let stored = write_json_string(&tmp, content)?;
         std::fs::rename(&tmp, &path).inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
         })?;
-        Ok((hash, body.len() as u64))
+        Ok((hash, stored))
     }
 
     fn blob_text(&self, hash: &str) -> Result<String, Error> {
@@ -850,6 +923,7 @@ impl Store {
         tx.execute("DELETE FROM pads WHERE name = ?1", [name])?;
         tx.commit()?;
         self.adjust(held);
+        self.release(&db);
         Ok(true)
     }
 
@@ -883,7 +957,7 @@ impl Store {
     /// belongs to the sweeper, so a read never removes a pad a write replaced
     /// after the read looked.
     fn load(&self, name: &str, lapsed_too: bool) -> Result<Option<Pad>, Error> {
-        let (head, rows) = {
+        let (head, rows, _reading) = {
             let db = self.db.lock();
             let Some(head) = Self::head(&db, name)? else {
                 return Ok(None);
@@ -891,7 +965,9 @@ impl Store {
             if !lapsed_too && self.lapsed(name, head.touched_ms) {
                 return Ok(None);
             }
-            (head, Self::rows(&db, name)?)
+            let rows = Self::rows(&db, name)?;
+            let reading = self.hold(&db, rows.values().map(|r| r.blob.clone()).collect());
+            (head, rows, reading)
         };
         let mut files = BTreeMap::new();
         for (path, row) in rows {
@@ -917,10 +993,10 @@ impl Store {
     ///
     /// Opening counts as touching it, so its lease starts again — at most once
     /// a day, as renewing is a write. What is sent is the version this looked
-    /// at: its blobs never change, and none is deleted inside [`GRACE`].
+    /// at: its blobs never change, and none is deleted while it is in use.
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
         check_name(name)?;
-        let (head, rows) = {
+        let (head, rows, reading) = {
             let db = self.db.lock();
             let Some(head) = Self::head(&db, name)? else {
                 return Ok(None);
@@ -937,7 +1013,9 @@ impl Store {
                     params![name, now as i64],
                 )?;
             }
-            (head, Self::rows(&db, name)?)
+            let rows = Self::rows(&db, name)?;
+            let reading = self.hold(&db, rows.values().map(|r| r.blob.clone()).collect());
+            (head, rows, reading)
         };
 
         let mut parts = Vec::new();
@@ -966,7 +1044,11 @@ impl Store {
         text.push_str("}}");
         remaining += text.len() as u64;
         parts.push(Part::Bytes(text.into_bytes()));
-        Ok(Some(Opened { parts, remaining }))
+        Ok(Some(Opened {
+            parts,
+            remaining,
+            reading,
+        }))
     }
 
     /// Apply writes and removals with no allowance, and return the new sequence
@@ -997,16 +1079,68 @@ impl Store {
         allowance: u64,
     ) -> Result<Written, Error> {
         check_name(name)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut edited = Vec::new();
         for w in writes {
             check_path(&w.path)?;
-            if w.content.is_none() && w.edits.is_some() && w.base.is_none() {
-                return Err(Error::BadEdit(
-                    "edits need the hash of the file they apply to",
-                ));
+            if w.content.is_none() && w.edits.is_some() {
+                if w.base.is_none() {
+                    return Err(Error::BadEdit(
+                        "edits need the hash of the file they apply to",
+                    ));
+                }
+                // Against what is stored, not against another write in the
+                // same request: each is worked out on its own.
+                if seen.contains(w.path.as_str()) {
+                    return Err(Error::BadEdit("a file is edited in a request of its own"));
+                }
+                edited.push(w);
             }
+            seen.insert(w.path.as_str());
+        }
+
+        // Edits apply to the version they name. Checked now, and held so
+        // nothing deletes it while they are applied, which is off the lock.
+        let bases = if edited.is_empty() {
+            None
+        } else {
+            let db = self.db.lock();
+            let rows = match Self::head(&db, name)? {
+                Some(h) if !self.lapsed(name, h.touched_ms) => Self::rows(&db, name)?,
+                _ => BTreeMap::new(),
+            };
+            for w in &edited {
+                if !names_version(rows.get(&w.path), w) {
+                    return Err(Error::Stale);
+                }
+            }
+            Some(self.hold(&db, edited.iter().filter_map(|w| w.base.clone()).collect()))
+        };
+
+        // A file written twice in one request ends as the second; the first
+        // is not stored at all.
+        let last: Vec<bool> = (0..writes.len())
+            .map(|i| !writes[i + 1..].iter().any(|w| w.path == writes[i].path))
+            .collect();
+
+        // Each new file's blob, written beside the store with nobody waiting:
+        // a large file takes a while, and every pad's reads and saves wait on
+        // the lock. What could go wrong in the meantime is checked once it is
+        // taken.
+        let mut staged = Vec::with_capacity(writes.len());
+        for (w, &last) in writes.iter().zip(&last) {
+            staged.push(match (&w.content, &w.edits, &w.base) {
+                _ if !last => None,
+                (Some(content), _, _) => Some(self.stage_text(w.encoding, content)?),
+                (None, Some(edits), Some(base)) => Some(self.stage_edits(base, w.encoding, edits)?),
+                _ => None,
+            });
         }
 
         let mut db = self.db.lock();
+        // Blobs this write puts in place, deleted again if it does not go in.
+        // Declared after the lock, so dropped before it is let go.
+        let mut placed = Placed(Vec::new());
         let now = now_ms();
         let head = Self::head(&db, name)?;
         let old = Self::rows(&db, name)?;
@@ -1022,51 +1156,34 @@ impl Store {
         let created_ms = head.as_ref().filter(|_| live).map_or(now, |h| h.created_ms);
         let mut new = if live { old.clone() } else { BTreeMap::new() };
 
+        // Another write may have moved an edited file on since it was looked
+        // at; then these edits were applied to the wrong text.
+        for w in &edited {
+            if !names_version(new.get(&w.path), w) {
+                return Err(Error::Stale);
+            }
+        }
+
         let mut changed = Vec::new();
-        for w in writes {
-            match (&w.content, &w.edits) {
-                (Some(content), _) => {
-                    let (blob, stored) = self.put_blob(w.encoding, content)?;
-                    let size = content.len() as u64;
+        for ((w, staged), &last) in writes.iter().zip(staged.iter_mut()).zip(&last) {
+            if !last {
+                continue;
+            }
+            match staged {
+                Some(staged) => {
+                    let stored = self.place(staged, w, &mut placed)?;
                     new.insert(
                         w.path.clone(),
                         Row {
-                            blob,
+                            blob: staged.hash.clone(),
                             encoding: w.encoding,
                             seq,
-                            size,
+                            size: staged.size,
                             stored,
                         },
                     );
                 }
-                (None, Some(edits)) => {
-                    // Against the version named, and only that one: applied to
-                    // anything else they would put text in the wrong place.
-                    let Some(current) = new.get(&w.path) else {
-                        return Err(Error::Stale);
-                    };
-                    if Some(&current.blob) != w.base.as_ref() || current.encoding != Encoding::Utf8
-                    {
-                        return Err(Error::Stale);
-                    }
-                    let mut text = self.blob_text(&current.blob)?;
-                    for edit in edits {
-                        text = apply_edit(&text, edit)?;
-                    }
-                    let (blob, stored) = self.put_blob(Encoding::Utf8, &text)?;
-                    let size = text.len() as u64;
-                    new.insert(
-                        w.path.clone(),
-                        Row {
-                            blob,
-                            encoding: Encoding::Utf8,
-                            seq,
-                            size,
-                            stored,
-                        },
-                    );
-                }
-                (None, None) => {
+                None => {
                     new.remove(&w.path);
                 }
             }
@@ -1112,8 +1229,8 @@ impl Store {
         let tx = db.transaction()?;
         let held = Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
         if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
-            // Rolled back with the transaction; the blobs written for it are
-            // held by nothing, and go when the sweeper next looks.
+            // Rolled back with the transaction, and the blobs put in place
+            // for it deleted.
             return Err(Error::StoreFull);
         }
         tx.execute(
@@ -1122,9 +1239,14 @@ impl Store {
             params![name, seq as i64, created_ms as i64, now as i64, bytes as i64],
         )?;
         tx.commit()?;
+        placed.keep();
         // Only once it is committed: counting before would charge the store
         // for bytes no pad holds.
         self.adjust(held);
+        // The versions this replaced, the ones its edits started from among
+        // them, unless somebody is still reading one.
+        drop(bases);
+        self.release(&db);
         let hashes = writes
             .iter()
             .filter_map(|w| new.get(&w.path).map(|r| (w.path.clone(), r.blob.clone())))
@@ -1136,6 +1258,140 @@ impl Store {
             files: new.len() as u64,
             hashes,
         })
+    }
+
+    /// A file's new blob from its text, written to a temporary file unless
+    /// the store already has it.
+    fn stage_text(&self, encoding: Encoding, content: &str) -> Result<Staged, Error> {
+        let hash = hash_of(encoding, content);
+        let size = content.len() as u64;
+        if self.blob_path(&hash).exists() {
+            return Ok(Staged {
+                hash,
+                size,
+                stored: 0,
+                tmp: None,
+            });
+        }
+        let tmp = self.tmp_path();
+        let stored = write_json_string(&tmp, content)?;
+        Ok(Staged {
+            hash,
+            size,
+            stored,
+            tmp: Some(tmp),
+        })
+    }
+
+    /// A file's new blob from edits to the one it holds, streamed from one to
+    /// the other. The one it holds is in use while this runs.
+    fn stage_edits(&self, base: &str, encoding: Encoding, edits: &[Edit]) -> Result<Staged, Error> {
+        let cuts = splice::cuts(edits).map_err(Error::BadEdit)?;
+        let mut staged = Staged {
+            hash: String::new(),
+            size: 0,
+            stored: 0,
+            tmp: Some(self.tmp_path()),
+        };
+        let out = std::fs::File::create(staged.tmp.as_ref().expect("just set"))?;
+        let from = std::fs::File::open(self.blob_path(base))?;
+        let prefix: &[u8] = match encoding {
+            Encoding::Utf8 => b"u",
+            Encoding::Base64 => b"b",
+        };
+        let done = splice::splice(from, prefix, &cuts, out).map_err(|e| match e {
+            splice::Error::Edit(why) => Error::BadEdit(why),
+            splice::Error::Io(e) => Error::Io(e.to_string()),
+            splice::Error::Corrupt => {
+                Error::Io(format!("the stored file {base} is not a JSON string"))
+            }
+        })?;
+        staged.hash = done.hash;
+        staged.size = done.size;
+        staged.stored = done.stored;
+        Ok(staged)
+    }
+
+    /// A staged blob in its place, and its bytes on disk. Under the store's
+    /// lock: nothing deletes a blob without it, so one found here stays.
+    fn place(&self, staged: &mut Staged, w: &Write, placed: &mut Placed) -> Result<u64, Error> {
+        let path = self.blob_path(&staged.hash);
+        if let Ok(meta) = std::fs::metadata(&path) {
+            staged.discard();
+            return Ok(meta.len());
+        }
+        let stored = match staged.tmp.take() {
+            Some(tmp) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&tmp, &path).inspect_err(|_| {
+                    let _ = std::fs::remove_file(&tmp);
+                })?;
+                staged.stored
+            }
+            // Already stored when it was staged, and deleted since.
+            None => {
+                let content = w
+                    .content
+                    .as_deref()
+                    .ok_or_else(|| Error::Io("a staged file went missing".into()))?;
+                self.put_blob(w.encoding, content)?.1
+            }
+        };
+        placed.0.push(path);
+        Ok(stored)
+    }
+
+    fn tmp_path(&self) -> PathBuf {
+        // Unique per call, as two writers storing the same text at once is
+        // ordinary.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        self.blobs.join(format!(".{}.{n}.tmp", std::process::id()))
+    }
+
+    /// Mark blobs as in use until the guard is dropped. Takes the store's
+    /// lock as proof it is held: nothing can be deleted between looking a
+    /// blob up and marking it.
+    fn hold(&self, _db: &Connection, blobs: Vec<String>) -> Reading {
+        let mut in_use = self.in_use.lock();
+        for hash in &blobs {
+            *in_use.entry(hash.clone()).or_insert(0) += 1;
+        }
+        Reading {
+            blobs,
+            in_use: self.in_use.clone(),
+        }
+    }
+
+    /// Delete the blobs no file holds and nothing is reading.
+    ///
+    /// Under the store's lock, which a write keeps from finding a blob in
+    /// place to holding it. The one-document store rewrote a file in place; a
+    /// blob is never changed, so every save of a file makes a new one, and
+    /// until 11 October the old one stayed for ten minutes or more, uncounted:
+    /// twenty one-character saves in a 60 MB file left 1.3 GB on disk.
+    fn release(&self, db: &Connection) {
+        let unheld: Vec<String> = {
+            let Ok(mut q) = db.prepare_cached("SELECT hash FROM blobs WHERE refs = 0") else {
+                return;
+            };
+            let Ok(rows) = q.query_map([], |r| r.get::<_, String>(0)) else {
+                return;
+            };
+            rows.flatten().collect()
+        };
+        let in_use = self.in_use.lock();
+        for hash in unheld.iter().filter(|h| !in_use.contains_key(*h)) {
+            if db
+                .execute("DELETE FROM blobs WHERE hash = ?1 AND refs = 0", [hash])
+                .unwrap_or(0)
+                == 1
+            {
+                let _ = std::fs::remove_file(self.blob_path(hash));
+            }
+        }
     }
 
     /// Delete a pad whose lease has lapsed, and give its bytes back. True if it
@@ -1175,6 +1431,7 @@ impl Store {
             return false;
         }
         self.adjust(held);
+        self.release(&db);
         true
     }
 
@@ -1235,7 +1492,7 @@ impl Store {
     }
 
     /// Delete everything past its lease, freeing the names, and the blobs
-    /// nothing has held for [`GRACE`]. Returns the names.
+    /// nothing holds or is reading. Returns the names.
     pub fn sweep(&self) -> Vec<String> {
         let cutoff = now_ms().saturating_sub(LEASE.as_millis() as u64);
         let candidates: Vec<String> = {
@@ -1256,35 +1513,14 @@ impl Store {
         expired
     }
 
-    /// Delete blobs nothing has held for `grace`, and files in the blob
-    /// directory the table does not know — written for a write that was then
-    /// refused, or by a process that stopped between the two.
+    /// Delete blobs nothing holds or is reading, and files in the blob
+    /// directory the table has not known for `grace` — written for a write
+    /// that was then refused, or by a process that stopped between the two.
     fn collect(&self, grace: Duration) {
-        let cutoff = now_ms().saturating_sub(grace.as_millis() as u64);
-        let gone: Vec<String> = {
-            let db = self.db.lock();
-            let Ok(mut q) = db.prepare("SELECT hash FROM blobs WHERE refs = 0 AND unheld_ms <= ?1")
-            else {
-                return;
-            };
-            let Ok(rows) = q.query_map([cutoff as i64], |r| r.get::<_, String>(0)) else {
-                return;
-            };
-            rows.flatten().collect()
-        };
-        for hash in &gone {
-            let db = self.db.lock();
-            // Held again since it was listed: kept.
-            if db
-                .execute("DELETE FROM blobs WHERE hash = ?1 AND refs = 0", [hash])
-                .unwrap_or(0)
-                == 1
-            {
-                let _ = std::fs::remove_file(self.blob_path(hash));
-            }
-        }
-        // Files the table never heard of, past the same grace — their writes
-        // may still be about to commit.
+        // Blobs a read was still sending when a write let go of them.
+        self.release(&self.db.lock());
+        // Files the table never heard of, past the grace — their writes may
+        // still be about to commit.
         let Ok(shards) = std::fs::read_dir(&self.blobs) else {
             return;
         };
@@ -2206,22 +2442,69 @@ mod tests {
     }
 
     #[test]
-    fn a_blob_nothing_holds_waits_out_the_grace() {
-        // A read takes its list of blobs and then sends them; a write in
-        // between can leave one held by nothing. It stays long enough for any
-        // read to finish.
+    fn a_replaced_blob_is_deleted_at_once() {
+        // Every save of a file makes a new blob. The old one used to wait ten
+        // minutes or more, uncounted: twenty one-character saves in a 60 MB
+        // file left 1.3 GB on disk.
+        let (s, _d) = store();
+        let mut base = s
+            .write_within("p", &[put("a.txt", &"x".repeat(100_000))], u64::MAX)
+            .unwrap()
+            .hashes["a.txt"]
+            .clone();
+        for i in 0..20 {
+            base = s
+                .write_within("p", &[edit("a.txt", &base, i, 0, "y")], u64::MAX)
+                .unwrap()
+                .hashes["a.txt"]
+                .clone();
+            assert_eq!(blob_count(&s), 1, "after save {i}");
+        }
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            format!("{}{}", "y".repeat(20), "x".repeat(100_000))
+        );
+        // Removing a file lets go of its blob as well.
+        s.write("p", &[remove("a.txt")]).unwrap();
+        assert_eq!(blob_count(&s), 0);
+    }
+
+    #[test]
+    fn a_blob_being_read_stays_until_the_read_is_done() {
+        // A read lists its blobs and then sends them; a write in between lets
+        // go of one. It has to stay for the read, and go after it.
         let (s, _d) = store();
         s.write("p", &[put("a.txt", "first")]).unwrap();
         let old = s.blob_path(&hash(&s, "p", "a.txt"));
+        let opened = s.open_for_read("p").unwrap().unwrap();
         s.write("p", &[put("a.txt", "second")]).unwrap();
-        s.collect(GRACE);
-        assert!(old.exists(), "an unheld blob went before its grace");
-        s.collect(Duration::ZERO);
-        assert!(!old.exists(), "an unheld blob outlived its grace");
+        assert!(old.exists(), "a blob went while a read was sending it");
+        let mut sent = String::new();
+        std::io::Read::read_to_string(&mut opened.into_reader(), &mut sent).unwrap();
+        assert!(sent.contains(r#""content":"first""#), "{sent}");
+        // Done with: the next write, or the sweep, takes it.
+        s.write("p", &[put("b.txt", "other")]).unwrap();
+        assert!(!old.exists(), "a blob outlived the read that kept it");
         assert_eq!(
             s.get("p").unwrap().unwrap().files["a.txt"].content,
             "second"
         );
+    }
+
+    #[test]
+    fn a_blob_two_reads_hold_stays_for_the_second() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.txt", "first")]).unwrap();
+        let old = s.blob_path(&hash(&s, "p", "a.txt"));
+        let one = s.open_for_read("p").unwrap().unwrap();
+        let two = s.open_for_read("p").unwrap().unwrap();
+        s.write("p", &[put("a.txt", "second")]).unwrap();
+        drop(one);
+        s.collect(GRACE);
+        assert!(old.exists(), "a blob went while a second read held it");
+        drop(two);
+        s.collect(GRACE);
+        assert!(!old.exists());
     }
 
     #[test]
@@ -2233,8 +2516,16 @@ mod tests {
             s.write("p", &[put("big.txt", &big)]),
             Err(Error::TooBig { .. })
         ));
-        s.collect(Duration::ZERO);
         assert_eq!(blob_count(&s), 1, "the refused write's blob was kept");
+        assert_eq!(
+            std::fs::read_dir(&s.blobs)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .count(),
+            0,
+            "a temporary file was left"
+        );
         assert!(!s.get("p").unwrap().unwrap().files.contains_key("big.txt"));
     }
 
@@ -2288,6 +2579,112 @@ mod tests {
         assert_eq!(
             s.get("p").unwrap().unwrap().files["a.txt"].content,
             "a\u{1F600}c"
+        );
+    }
+
+    #[test]
+    fn a_file_too_big_for_one_request_arrives_in_parts() {
+        // What a browser does with a file over its request size: the first
+        // part as content, then each next part added to the end of what the
+        // last write left. Binary files too, which are base64 text.
+        let (s, _d) = store();
+        for (path, encoding, parts) in [
+            (
+                "big.txt",
+                Encoding::Utf8,
+                ["héllo ", "wörld ", "😀 and the rest"],
+            ),
+            ("big.bin", Encoding::Base64, ["AAAA", "BBBB", "CCC="]),
+        ] {
+            let mut sent = String::new();
+            let mut base = String::new();
+            for (i, part) in parts.iter().enumerate() {
+                let w = if i == 0 {
+                    Write {
+                        encoding,
+                        ..put(path, part)
+                    }
+                } else {
+                    Write {
+                        encoding,
+                        ..edit(path, &base, sent.encode_utf16().count(), 0, part)
+                    }
+                };
+                base = s.write_within("p", &[w], u64::MAX).unwrap().hashes[path].clone();
+                sent.push_str(part);
+            }
+            let file = &s.get("p").unwrap().unwrap().files[path];
+            assert_eq!(
+                (file.content.as_str(), file.encoding),
+                (sent.as_str(), encoding)
+            );
+            assert_eq!(base, hash_of(encoding, &sent));
+        }
+        // An edit naming the other encoding is against another file.
+        let base = hash(&s, "p", "big.bin");
+        assert_eq!(
+            s.write("p", &[edit("big.bin", &base, 0, 0, "x")]),
+            Err(Error::Stale)
+        );
+    }
+
+    #[test]
+    fn a_file_is_edited_in_a_request_of_its_own() {
+        let (s, _d) = store();
+        let base = s
+            .write_within("p", &[put("a.txt", "abc")], u64::MAX)
+            .unwrap()
+            .hashes["a.txt"]
+            .clone();
+        assert!(matches!(
+            s.write("p", &[put("a.txt", "new"), edit("a.txt", &base, 0, 0, "x")]),
+            Err(Error::BadEdit(_))
+        ));
+        assert!(matches!(
+            s.write(
+                "p",
+                &[
+                    edit("a.txt", &base, 0, 0, "x"),
+                    edit("a.txt", &base, 1, 0, "y")
+                ]
+            ),
+            Err(Error::BadEdit(_))
+        ));
+        // Replacing after an edit is a write like any other: the last wins.
+        s.write(
+            "p",
+            &[edit("a.txt", &base, 0, 0, "x"), put("a.txt", "whole")],
+        )
+        .unwrap();
+        assert_eq!(s.get("p").unwrap().unwrap().files["a.txt"].content, "whole");
+        assert_eq!(blob_count(&s), 1);
+    }
+
+    #[test]
+    fn edits_that_do_not_apply_leave_nothing_behind() {
+        let (s, _d) = store();
+        let base = s
+            .write_within("p", &[put("a.txt", "abc")], u64::MAX)
+            .unwrap()
+            .hashes["a.txt"]
+            .clone();
+        assert_eq!(
+            s.write("p", &[edit("a.txt", &base, 9, 0, "x")]),
+            Err(Error::BadEdit("it starts outside the text"))
+        );
+        assert_eq!(blob_count(&s), 1);
+        assert_eq!(
+            std::fs::read_dir(&s.blobs)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .count(),
+            0,
+            "a temporary file was left"
+        );
+        assert!(
+            s.in_use.lock().is_empty(),
+            "the edited blob is still marked in use"
         );
     }
 
