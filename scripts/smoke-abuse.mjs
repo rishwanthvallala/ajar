@@ -157,13 +157,16 @@ async function main() {
   const SMALL = `http://127.0.0.1:${PORT + 1}`;
   await waitForHealth(SMALL);
 
+  // Each pad's text its own. The store keeps the same text once however many
+  // pads hold it (since 11 October), so six copies of one megabyte were one
+  // megabyte, and the ceiling was never reached.
   const mb = "x".repeat(1024 * 1024);
   const statuses = [];
   for (let i = 0; i < 6; i++) {
     const r = await fetch(`${SMALL}/api/pad/filler-${i}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ writes: [{ path: "big.txt", content: mb }] }),
+      body: JSON.stringify({ writes: [{ path: "big.txt", content: `${i}${mb}` }] }),
     });
     statuses.push(r.status);
     if (r.status !== 200) break;
