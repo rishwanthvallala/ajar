@@ -11,7 +11,13 @@
 // package pulls in on its own. Running the app once and recording what it asks
 // for cannot be wrong about either.
 //
+// The registry's answers are recorded in the same run, into registry.json:
+// where each package is, which the runtime asks registry.wasmer.io on every
+// start — eleven lookups, one after another. The service worker answers them
+// from the recording, so a pad starts without the registry at all.
+//
 //   npx vite build && node scripts/fetch-packages.mjs
+//   node scripts/fetch-packages.mjs --registry-only   # the answers alone, through the mirror
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -22,6 +28,10 @@ import { extname, join, normalize } from "node:path";
 import { chromium } from "playwright";
 
 const run = promisify(execFile);
+// Only the registry's answers, recorded through the mirror this directory
+// already holds: the same answers, without downloading every package from
+// the CDN again.
+const REGISTRY_ONLY = process.argv.includes("--registry-only");
 
 const OUT = new URL("../public/packages/", import.meta.url);
 const ROOT = new URL("../dist/", import.meta.url).pathname;
@@ -74,7 +84,8 @@ const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
-  if (path.startsWith("/packages/")) {
+  // Without the registry's recording, whichever mode: the run has to ask it.
+  if (path === "/packages/registry.json" || (path.startsWith("/packages/") && !REGISTRY_ONLY)) {
     res.statusCode = 404;
     return res.end("not while recording");
   }
@@ -102,10 +113,27 @@ await new Promise((r) => server.listen(PORT, r));
 
 console.log("  recording what the runtime asks for…");
 const browser = await chromium.launch();
-const page = await browser.newPage();
+const context = await browser.newContext();
+const page = await context.newPage();
 const wanted = new Set();
 page.on("request", (r) => {
   if (r.url().startsWith("https://cdn.wasmer.io/")) wanted.add(r.url());
+});
+// Each registry lookup and the answer the page got — after the service worker
+// pinned it, so what is recorded is what a visitor is meant to receive.
+const answers = {};
+const answering = [];
+context.on("requestfinished", (r) => {
+  if (!r.url().startsWith("https://registry.wasmer.io/") || r.serviceWorker()) return;
+  answering.push(
+    (async () => {
+      const name = /getPackage\(name: "([^"]+)"\)/.exec(JSON.parse(r.postData() ?? "{}").query ?? "")?.[1];
+      const res = await r.response();
+      if (!name || !res?.ok()) return;
+      const body = await res.json().catch(() => null);
+      if (body?.data?.getPackage?.versions?.length) answers[name] = body;
+    })().catch(() => {}),
+  );
 });
 
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
@@ -116,10 +144,17 @@ await page
     timeout: 300_000,
   })
   .catch(() => console.log("  (the run did not finish; recording what was asked for anyway)"));
+await Promise.all(answering);
 await browser.close();
 server.close();
 
 await mkdir(OUT, { recursive: true });
+const names = Object.keys(answers).sort();
+if (names.length === 0) throw new Error("the run asked the registry nothing — is the page starting its runtime?");
+await writeFile(new URL("registry.json", OUT), JSON.stringify(answers));
+console.log(`  ${names.length} registry answers recorded: ${names.join(", ")}`);
+if (REGISTRY_ONLY) process.exit(0);
+
 const manifest = {};
 let total = 0;
 
@@ -207,6 +242,7 @@ const keep = new Set(
   }),
 );
 keep.add("manifest.json");
+keep.add("registry.json");
 let freed = 0;
 for (const name of await readdir(OUT)) {
   if (keep.has(name)) continue;

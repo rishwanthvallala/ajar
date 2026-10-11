@@ -30,6 +30,8 @@ WISP=$(events pad_wisp)
 mkdir -p "$tmp/pad/packages" "$tmp/pad/vendor" "$tmp/pad/assets"
 head -c 200000 /dev/zero > "$tmp/pad/packages/big.webc"
 echo small > "$tmp/pad/packages/small.webc"
+echo '{}' > "$tmp/pad/packages/manifest.json"
+echo '{}' > "$tmp/pad/packages/registry.json"
 echo 'export {}' > "$tmp/pad/vendor/sdk.js"
 echo '<!doctype html><title>pad</title>' > "$tmp/pad/index.html"
 echo '<!doctype html><title>Privacy — pad</title>' > "$tmp/pad/privacy.html"
@@ -102,6 +104,18 @@ r=$(spend $((FILES + 5)) 127.0.0.1 /packages/no-such-file.webc)
 cc=$(curl -s -D - -o /dev/null --interface 127.0.0.2 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" \
     "http://code.rishwanth.dev:$PORT/vendor/sdk.js" | tr -d '\r' | grep -i '^cache-control')
 echo "$cc" | grep -q immutable && ok "a served file is still immutable" || bad "served file: $cc"
+# cachecontrol <path>: the Cache-Control a file is served with
+cachecontrol() {
+    curl -s -D - -o /dev/null --interface 127.0.0.2 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" \
+        "http://code.rishwanth.dev:$PORT$1" | tr -d '\r' | grep -i '^cache-control' || true
+}
+cc=$(cachecontrol /packages/small.webc)
+echo "$cc" | grep -q immutable && ok "a package is immutable" || bad "a package: $cc"
+for list in manifest.json registry.json; do
+    cc=$(cachecontrol "/packages/$list")
+    echo "$cc" | grep -qi 'no-cache' && ! echo "$cc" | grep -q immutable &&
+        ok "$list is asked again each visit ($cc)" || bad "$list: $cc"
+done
 
 echo "pad_dns: $DNS a minute per address"
 r=$(spend "$DNS" 127.0.0.1 /dns-query)

@@ -96,8 +96,19 @@ code.rishwanth.dev {
 	# The wasm packages are content-addressed by the registry and the vendored
 	# SDK is rebuilt under a new hash whenever it changes, so nothing here is
 	# worth revalidating. This is most of what makes a second visit free.
-	@immutable path /assets/* /vendor/* /packages/*
+	#
+	# Except the two lists beside the packages: which file is which package,
+	# and what the registry answered for each. They change when a package does,
+	# and until 12 October they were kept for a year with the rest — a
+	# returning browser held a list naming files a later deploy had removed,
+	# and fell back to Wasmer for all of it. They are small, and asked again
+	# each visit, an empty 304 when nothing changed.
+	@immutable {
+		path /assets/* /vendor/* /packages/*
+		not path /packages/*.json
+	}
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	header /packages/*.json Cache-Control "no-cache"
 
 	# Per-address limits on what the relay never sees — the files Caddy serves
 	# off disk, name resolution and the way out — because nothing else can

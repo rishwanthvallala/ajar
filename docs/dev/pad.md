@@ -651,6 +651,27 @@ against the registry's hash — the strings `image hash mismatch` and
 bytes differ. `app-check.mjs` goes through the mirror and presses Run, so an
 SDK that stopped accepting one would fail there before it reached anybody.
 
+### The registry's answers
+
+The bytes were never all of it. On every start the runtime asks
+`registry.wasmer.io` where each package is — ten lookups, one after another,
+about three seconds of a cold Run — and when one failed, as it did from one
+network in three local runs of eight on 2 October, the terminal said so and Run
+never answered. Since 12 October `fetch-packages.mjs` records the answers the
+page received into `packages/registry.json` (59 KB, coreutils already pinned),
+and the service worker answers each lookup from it; a package it has no answer
+for still asks the registry. `--registry-only` records them again through the
+mirror already on disk, without the downloads. `app-check` runs a browser that
+cannot resolve `registry.wasmer.io` at all, not one with a route — a route does
+not see what a service worker fetches — and presses Run; with the worker
+asking the registry instead, that check fails. `deploy.sh` refuses to ship
+without the file.
+
+The two lists, `manifest.json` and `registry.json`, are not cached as
+immutable with the packages: they change when a package does, and a returning
+browser holding a year-old list was pointed at files a later deploy removed.
+They revalidate each visit (`deploy/caddy/check.sh` asserts both headers).
+
 The URL list is **observed, not derived**: `pad/scripts/fetch-packages.mjs`
 runs the app once and records what it asks for. Asking the registry for each
 package's download URL returned, for coreutils, a `.tar.gz` the runtime never

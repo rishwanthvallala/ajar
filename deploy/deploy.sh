@@ -143,6 +143,14 @@ if [ ! -f pad/public/packages/manifest.json ]; then
     echo "      npm run build:pad && node pad/scripts/fetch-packages.mjs" >&2
     exit 1
 fi
+# The registry's answers, likewise: without them every start asks
+# registry.wasmer.io where each package is, and Run never answers if it does
+# not reply. The packages being there says nothing about these.
+if [ ! -f pad/public/packages/registry.json ]; then
+    echo "  pad/public/packages has no registry.json — run:" >&2
+    echo "      npm run build:pad && node pad/scripts/fetch-packages.mjs --registry-only" >&2
+    exit 1
+fi
 # The preview origin is compiled in: the pad has to know which origin may
 # serve what a visitor runs, and an empty value disables previews entirely,
 # which is the right behaviour for a deploy without that subdomain.

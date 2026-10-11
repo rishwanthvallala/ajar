@@ -89,21 +89,6 @@ same commit and the rerun failed elsewhere. `Atomics.wait` on the main thread
 is the Wasmer SDK's, so the suspect is its start-up racing the page's first
 use of the runtime. Not reproduced locally.
 
-### The pad's runtime cannot start without registry.wasmer.io
-
-Only the packages' bytes are mirrored. On every start the runtime asks
-`registry.wasmer.io` where each package is — ten lookups, one after another,
-about three seconds of a cold Run — and nothing here holds those answers. On 2
-October they failed intermittently from one network: three local runs in eight
-stopped at `unable to load package wasmer/bash … Could not fetch
-registry.wasmer.io/graphql`, always on the coreutils lookup, and one first visit
-to production never answered Run in four minutes. When one fails the terminal
-says so and Run never does.
-
-The answers for pinned packages do not change, so they can be mirrored like the
-bytes: `fetch-packages.mjs` records them and the service worker serves them,
-falling through to the registry only for what it has not seen. Not done yet.
-
 ### Still unbounded or unexplained
 
 From the 22-finding review merged as PR #3 — the findings are in

@@ -15,9 +15,17 @@
 //
 // Anything not in the manifest passes straight through. A package we forgot to
 // mirror still works, just slowly, which is the right way round.
+//
+// The registry is answered from here too. The runtime asks registry.wasmer.io
+// where each package is, eleven times on every start, one after another — and
+// when that failed, as it did from one network in three runs of eight on 2
+// October, the terminal said so and Run never answered. fetch-packages.mjs
+// records the answers with the bytes; a package it did not record still asks.
 
 const MANIFEST = "/packages/manifest.json";
+const ANSWERS = "/packages/registry.json";
 let mirrors = null;
+let answers = null;
 
 async function map() {
   mirrors ??= fetch(MANIFEST)
@@ -26,10 +34,17 @@ async function map() {
   return mirrors;
 }
 
+async function recorded() {
+  answers ??= fetch(ANSWERS)
+    .then((r) => (r.ok ? r.json() : {}))
+    .catch(() => ({}));
+  return answers;
+}
+
 self.addEventListener("install", (event) => {
   // Active immediately rather than after the next navigation: the page that
   // registers this is the page about to download 60 MB.
-  event.waitUntil(map().then(() => self.skipWaiting()));
+  event.waitUntil(Promise.all([map(), recorded()]).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
@@ -61,14 +76,32 @@ const PINS = {
 };
 const REGISTRY = "https://registry.wasmer.io/graphql";
 
-/** The registry's answer, with a pinned package's other versions left out. */
-async function pinned(request) {
-  let name = null;
+/** The package a registry lookup asks about, or null for any other query. */
+async function packageOf(request) {
   try {
-    name = /getPackage\(name: "([^"]+)"\)/.exec(JSON.parse(await request.clone().text()).query)?.[1] ?? null;
+    return /getPackage\(name: "([^"]+)"\)/.exec(JSON.parse(await request.clone().text()).query)?.[1] ?? null;
   } catch {
     // Not a query this knows how to read; pass it through untouched.
+    return null;
   }
+}
+
+/** The recorded answer for a lookup, or the registry's, pinned. */
+async function lookup(request) {
+  const name = await packageOf(request);
+  const known = name && (await recorded())[name];
+  if (known) {
+    answered += 1;
+    return new Response(JSON.stringify(known), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return pinned(request, name);
+}
+
+/** The registry's answer, with a pinned package's other versions left out. */
+async function pinned(request, name) {
   const res = await fetch(request);
   const version = name && PINS[name];
   if (!version || !res.ok) return res;
@@ -91,17 +124,18 @@ async function pinned(request) {
 let intercepted = 0;
 let mirrored = 0;
 let pinnedCount = 0;
+let answered = 0;
 
 self.addEventListener("message", (event) => {
   if (event.data === "stats") {
-    event.source?.postMessage({ intercepted, mirrored, pinned: pinnedCount });
+    event.source?.postMessage({ intercepted, mirrored, pinned: pinnedCount, answered });
   }
 });
 
 self.addEventListener("fetch", (event) => {
   const url = event.request.url;
   if (url === REGISTRY && event.request.method === "POST") {
-    event.respondWith(pinned(event.request));
+    event.respondWith(lookup(event.request));
     return;
   }
   if (!url.startsWith("https://cdn.wasmer.io/")) return;

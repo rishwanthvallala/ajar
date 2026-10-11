@@ -865,7 +865,7 @@ try {
   // keeps the original request URL, so playwright attributes a mirrored
   // download to cdn.wasmer.io and the network view says the opposite of the
   // truth — which is exactly what it said while this was working.
-  const swStats = await page.evaluate(async () => {
+  const statsOf = (tab) => tab.evaluate(async () => {
     const sw = navigator.serviceWorker.controller;
     if (!sw) return null;
     return await new Promise((resolve) => {
@@ -878,6 +878,9 @@ try {
       setTimeout(() => resolve(null), 3000);
     });
   });
+  const swStats = await statsOf(page);
+  // What the worker answers the registry with, where it has a recording.
+  const recording = await fetch(`${ORIGIN}/packages/registry.json`).then((r) => (r.ok ? r.json() : null), () => null);
   if (!swStats) {
     fail("the service worker never took control");
   } else {
@@ -890,8 +893,47 @@ try {
     );
     // The pin works by rewriting a registry answer whose shape the SDK
     // chooses. If that shape changes, the pin quietly stops applying and the
-    // dependency floats again; this is what notices.
-    is(swStats.pinned > 0, true, "bash's coreutils resolved through the pin in sw.js");
+    // dependency floats again; this is what notices. Answered from the
+    // recording, the rewriting happened when it was made, and the recorded
+    // answer is what has to hold one version.
+    results.push(`note: registry lookups answered from the recording ${swStats.answered ?? 0}, pinned live ${swStats.pinned}`);
+    if (swStats.answered > 0) {
+      const versions = recording?.["wasmer/coreutils"]?.data?.getPackage?.versions?.map((v) => v.version) ?? [];
+      is(versions.length, 1, `bash's coreutils resolved through the pin, recorded in registry.json (${versions.join(", ")})`);
+    } else {
+      is(swStats.pinned > 0, true, "bash's coreutils resolved through the pin in sw.js");
+    }
+  }
+
+  // ---- without the registry ----
+  // The runtime asks registry.wasmer.io where each package is on every start,
+  // and from one network on 2 October that failed in three runs of eight: the
+  // terminal said so, and Run never answered. The worker answers from
+  // registry.json now. Unreachable at the browser's resolver, not by a route:
+  // a route does not see what the service worker fetches, so a check that
+  // routed it would pass with the registry answering.
+  if (!recording) {
+    if (LIVE) fail("the live site has no /packages/registry.json, so every start still needs registry.wasmer.io");
+    else results.push("note: no registry.json in this build — run fetch-packages.mjs --registry-only; the check without the registry is skipped");
+  } else {
+    const cut = await chromium.launch({
+      channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
+      args: ["--host-resolver-rules=MAP registry.wasmer.io ~NOTFOUND"],
+    });
+    try {
+      const tab = await cut.newPage();
+      watchLimits(tab, "no registry");
+      await tab.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+      await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
+      await tab.click("#run");
+      const ran = await tab
+        .waitForFunction(() => document.getElementById("terminal")?.textContent?.includes("wrote 10 rows"), null, { timeout: 180_000 })
+        .then(() => true, () => false);
+      const stats = await statsOf(tab);
+      is(ran, true, `with registry.wasmer.io unreachable, Run still prints its output (${stats?.answered ?? 0} lookups answered from the recording)`);
+    } finally {
+      await cut.close();
+    }
   }
 
 } catch (e) {
