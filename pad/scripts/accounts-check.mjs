@@ -363,6 +363,7 @@ try {
   // missed, the browser's reasons are noted. Every check below holds on
   // either path; the first must have come from the cache, or none of this
   // tested what it is for.
+  let whyNotCached = "";
   const backFromCache = async (page, label) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) {
@@ -373,7 +374,11 @@ try {
       await page.goBack({ waitUntil: "commit" });
       if (await page.waitForFunction((n) => window.__restored > n, before, { timeout: 10_000 }).then(() => true, () => false)) return true;
     }
-    results.push(`note: ${label}: Back was a fresh load, not the cached page: ${await page.evaluate(() => JSON.stringify(performance.getEntriesByType("navigation")[0]?.notRestoredReasons ?? null)).catch((e) => e.message)}`);
+    // The browser's own reasons, kept for the failure itself: a note among
+    // the results scrolled out of what CI keeps of the run, so the failure on
+    // its Mac on 12 October said only that it happened.
+    whyNotCached = await page.evaluate(() => JSON.stringify(performance.getEntriesByType("navigation")[0]?.notRestoredReasons ?? null)).catch((e) => e.message);
+    results.push(`note: ${label}: Back was a fresh load, not the cached page: ${whyNotCached}`);
     return false;
   };
   await tab.goto(`${ORIGIN}/${name}`);
@@ -389,7 +394,7 @@ try {
   const fromCacheA = await backFromCache(tab, "Back to the pad");
   await tab.waitForSelector(".monaco-editor .view-lines", { timeout: 30_000 }).catch(() => {});
   const editorBack = await tab.evaluate(() => !!window.monaco?.editor.getEditors()[0]?.getModel() && !!document.querySelector(".monaco-editor .view-lines"));
-  is(fromCacheA, true, "Back from Your pads comes out of the back-forward cache here, so the checks below test the page people get");
+  is(fromCacheA, true, `Back from Your pads comes out of the back-forward cache here, so the checks below test the page people get${fromCacheA ? "" : ` (the browser's reasons: ${whyNotCached.slice(0, 600)})`}`);
   is(editorBack, true, `and the pad is still there (cached ${fromCacheA})`);
   await typeAtEnd(tab, "main.py", "# typed-after-back\n");
   is(await storedHas(name, "main.py", "typed-after-back"), true, "and typing in it is saved");
