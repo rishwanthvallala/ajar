@@ -77,7 +77,7 @@ const server = createServer(async (req, res) => {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "font-src 'self' data:",
-      "connect-src 'self' ws: wss: https://registry.wasmer.io https://cdn.wasmer.io",
+      "connect-src 'self' ws: wss: https://registry.wasmer.io https://cdn.wasmer.io https://packages.ajar.invalid",
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join("; "),

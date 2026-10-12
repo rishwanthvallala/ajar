@@ -170,6 +170,7 @@ exercises its capabilities.
 | `go` (fetched on first use) | Single files only: Go cannot open a relative path or learn its working directory, so `go.py` hands it absolute ones, and a module (`go mod init`, `go run .`) fails with `getwd: File name too long`. A Go program opening a file by a relative path fails too, and a binary `go build` makes runs once — the second exec is `Exec format error` — so `go run` is the way |
 | C++ (clang, on first use) | `#include <iostream>` does not finish compiling — fifteen minutes on a three-line program — where `<cstdio>` takes seconds. Run on a file that includes it says so first |
 | `repl`, Common Lisp (on first use) | Expressions and the REPL; a file passed to it crashes, exit 11 |
+| `java`, `javac` (on first use) | `javac` is interpreted: about 6 s for a small file, and `java Main.java` the same. Faster would be a javac compiled ahead of time — teavm-javac against the real class library. Storing an `Integer` in a `String[]` does not throw `ArrayStoreException`; two exception messages are less detailed than HotSpot's; `Thread.getAllStackTraces` and `jshell` do not exist. The patch to Ristretto is ours alone, not offered upstream |
 | `ruby` | `-e` only; a script file exits 1, and `-e "$(cat f.rb)"` prints nothing. Not offered |
 | `zig` | `zig version` only; `zig run` and `zig cc` fail with FileNotFound. Not offered |
 
@@ -203,12 +204,13 @@ diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 
 **Fetched the first time they are used, since 12 October:** C and C++
 (`clang`, with `gcc`, `g++`, `cc` and `c++` as aliases to it), `node`, `npm`
-and `pnpm`, `php`, `go`, and Common Lisp as `repl` — none on a visit, each
-when a line names it or Run is pressed on a file it runs. See
-[dev/pad.md](dev/pad.md#languages-on-first-use). **Not offered at all:** Java
-and `gcc` itself, which do not exist for this sandbox; `git` (85 MB, and it
-needs `GIT_PAGER=cat`), which is a tool rather than a language and was not
-asked for.
+and `pnpm`, `php`, `go`, Common Lisp as `repl`, and Java — `java` and `javac`,
+a package of our own — none on a visit, each when a line names it or Run is
+pressed on a file it runs. See
+[dev/pad.md](dev/pad.md#languages-on-first-use). **Not offered at all:** `gcc`
+itself, which does not exist for this sandbox; `git` (85 MB, and it needs
+`GIT_PAGER=cat`), which is a tool rather than a language and was not asked
+for.
 
 ---
 

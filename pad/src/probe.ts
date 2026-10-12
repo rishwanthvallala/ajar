@@ -207,8 +207,50 @@ async function lazy(pkg: string, command: string): Promise<Record<string, unknow
   return out;
 }
 
+/**
+ * Seed the workspace from a manifest — `{files: {path: url}, commands: [...]}`
+ * — and run each command in one shell, for trying a program that is not a
+ * package yet.
+ */
+async function seeded(manifest: string): Promise<Record<string, unknown>[]> {
+  const { files, commands } = (await (await fetch(manifest)).json()) as {
+    files: Record<string, string>;
+    commands: string[];
+  };
+  const seed: Record<string, Uint8Array> = {};
+  for (const [path, url] of Object.entries(files)) {
+    seed[path] = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  }
+  let captured = "";
+  const rt = await Runtime.start(seed);
+  const sh = await Shell.open(rt, { columns: 120, rows: 40 }, (t) => {
+    captured += t;
+  });
+  const ms = Number(new URLSearchParams(location.search).get("ms") ?? 300_000);
+  const out: Record<string, unknown>[] = [];
+  for (const line of commands) {
+    captured = "";
+    const began = performance.now();
+    try {
+      const r = await within(line, ms, sh.run(line));
+      out.push({ line, exit: r.exitCode, ms: Math.round(performance.now() - began), said: norm(captured).slice(-3000) });
+    } catch (e) {
+      out.push({ line, error: String(e), ms: Math.round(performance.now() - began), said: norm(captured).slice(-3000) });
+      break;
+    }
+    (window as unknown as { __progress: unknown }).__progress = out;
+  }
+  return out;
+}
+
 async function main() {
   const params = new URLSearchParams(location.search);
+  const files = params.get("files");
+  if (files) {
+    (window as unknown as { __results: unknown }).__results = await seeded(files).catch((e) => [{ error: String(e) }]);
+    (window as unknown as { __done: boolean }).__done = true;
+    return;
+  }
   const lazyPkg = params.get("lazy");
   if (lazyPkg) {
     (window as unknown as { __results: unknown }).__results = [await lazy(lazyPkg, params.get("cmd") ?? "true").catch((e) => ({ error: String(e) }))];

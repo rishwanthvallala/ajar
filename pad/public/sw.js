@@ -24,8 +24,13 @@
 
 const MANIFEST = "/packages/manifest.json";
 const ANSWERS = "/packages/registry.json";
+// Packages of our own, which no registry has: Java (build-java.mjs). Their
+// answers and files, from one file, under a host nothing else answers for.
+const OWN = "/packages/own.json";
+const OWN_HOST = "https://packages.ajar.invalid/";
 let mirrors = null;
 let answers = null;
+let own = null;
 
 async function map() {
   mirrors ??= fetch(MANIFEST)
@@ -41,10 +46,17 @@ async function recorded() {
   return answers;
 }
 
+async function ours() {
+  own ??= fetch(OWN)
+    .then((r) => (r.ok ? r.json() : {}))
+    .catch(() => ({}));
+  return own;
+}
+
 self.addEventListener("install", (event) => {
   // Active immediately rather than after the next navigation: the page that
   // registers this is the page about to download 60 MB.
-  event.waitUntil(Promise.all([map(), recorded()]).then(() => self.skipWaiting()));
+  event.waitUntil(Promise.all([map(), recorded(), ours()]).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
@@ -89,7 +101,7 @@ async function packageOf(request) {
 /** The recorded answer for a lookup, or the registry's, pinned. */
 async function lookup(request) {
   const name = await packageOf(request);
-  const known = name && (await recorded())[name];
+  const known = name && ((await recorded())[name] ?? (await ours()).answers?.[name]);
   if (known) {
     answered += 1;
     return new Response(JSON.stringify(known), {
@@ -138,11 +150,11 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(lookup(event.request));
     return;
   }
-  if (!url.startsWith("https://cdn.wasmer.io/")) return;
+  if (!url.startsWith("https://cdn.wasmer.io/") && !url.startsWith(OWN_HOST)) return;
   intercepted += 1;
   event.respondWith(
     (async () => {
-      const local = (await map())[url];
+      const local = (await map())[url] ?? (await ours()).files?.[url];
       if (!local) return fetch(event.request);
       const res = await fetch(local);
       // A mirror that 404s must not break the app — fall back to the origin it

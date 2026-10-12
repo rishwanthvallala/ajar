@@ -1465,6 +1465,7 @@ export class App {
         return null;
       }
       this.term?.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
+      if (t.note) this.term?.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
     }
     return this.replaceShell();
   }

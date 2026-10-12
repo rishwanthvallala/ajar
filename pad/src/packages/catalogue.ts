@@ -568,7 +568,8 @@ export const CANDIDATES: Candidate[] = [
   // gcc or tcc at all — found by listing it (47,033 packages, most of them
   // app deployments) and then looking up every likely name, because its
   // listing repeats and skips. These are the languages it does have that had
-  // never been tried here. Sizes are as published, before compression.
+  // never been tried here. Sizes are as published, before compression. Java
+  // is our own package (build-java.mjs), so it is not probed here.
   {
     // 105.6 MB. Newer than syrusakbary's, under its own namespace. Its
     // commands are clang, clang-16, lld, llvm-ar, llvm-nm and wasm-ld: no

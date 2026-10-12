@@ -12,8 +12,9 @@
  * means a fresh shell, opened where the old one was and with what it had
  * exported: see `App.prepare`.
  *
- * Asked for java and javac: the registry has no JVM, no javac, no gcc and no
- * tcc. C is clang. See docs/dev/pad.md, "Languages on first use".
+ * The registry has no JVM, no javac, no gcc and no tcc. C is clang; Java is a
+ * package of our own, built by pad/scripts/build-java.mjs and answered for by
+ * the service worker. See docs/dev/pad.md, "Languages on first use" and "Java".
  */
 
 export interface Toolchain {
@@ -27,6 +28,8 @@ export interface Toolchain {
   mb: number;
   /** How Run runs a file of this kind, by extension. */
   runs?: Readonly<Record<string, (file: string) => string>>;
+  /** Said once, when it arrives: what would otherwise look like a fault. */
+  note?: string;
 }
 
 /** Names people type for a C or C++ compiler, and what each stands for here. */
@@ -88,6 +91,17 @@ export const TOOLCHAINS: readonly Toolchain[] = [
     commands: ["go", "gofmt"],
     mb: 273,
     runs: { go: (f) => `go run ${quoted(f)}` },
+  },
+  {
+    // Ours, not the registry's: Ristretto, a JVM written in Rust, with Amazon
+    // Corretto 25's class library, and the JDK's own javac run by it. A file is
+    // run as `java File.java` runs it anywhere, compiled in memory first.
+    name: "Java",
+    pkg: "ajar/java@=1.0.0",
+    commands: ["java", "javac"],
+    mb: 61,
+    note: "javac runs in an interpreter here, so compiling takes several seconds; a compiled class runs in under one",
+    runs: { java: (f) => `java ${quoted(f)}` },
   },
   {
     // Its one command is called `repl`; there is no `clisp`. A file passed to

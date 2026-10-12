@@ -85,7 +85,10 @@ const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
   // Without the registry's recording, whichever mode: the run has to ask it.
-  if (path === "/packages/registry.json" || (path.startsWith("/packages/") && !REGISTRY_ONLY)) {
+  // Our own packages are served, though — no registry has them to record, and
+  // without them Java could not be used once.
+  const ours = path === "/packages/own.json" || path.startsWith("/packages/ajar-");
+  if (path === "/packages/registry.json" || (path.startsWith("/packages/") && !REGISTRY_ONLY && !ours)) {
     res.statusCode = 404;
     return res.end("not while recording");
   }
@@ -263,9 +266,11 @@ const keep = new Set(
 );
 keep.add("manifest.json");
 keep.add("registry.json");
+// Ours, from build-java.mjs, which keeps them current itself.
+keep.add("own.json");
 let freed = 0;
 for (const name of await readdir(OUT)) {
-  if (keep.has(name)) continue;
+  if (keep.has(name) || name.startsWith("ajar-")) continue;
   const path = new URL(name, OUT);
   freed += (await stat(path)).size;
   await rm(path);

@@ -1,0 +1,860 @@
+diff --git a/ristretto_classloader/Cargo.toml b/ristretto_classloader/Cargo.toml
+index 5631dff..eb7bf8a 100644
+--- a/ristretto_classloader/Cargo.toml
++++ b/ristretto_classloader/Cargo.toml
+@@ -46,7 +46,7 @@ walkdir = { workspace = true }
+ [target.'cfg(target_family = "wasm")'.dependencies]
+ tokio = { workspace = true }
+ 
+-[target.'cfg(target_os = "wasi")'.dependencies]
++[target.'cfg(all(target_os = "wasi", target_env = "p2"))'.dependencies]
+ wstd = { workspace = true }
+ 
+ [dev-dependencies]
+diff --git a/ristretto_classloader/src/runtime/http.rs b/ristretto_classloader/src/runtime/http.rs
+index 5977c1c..f2ee48f 100644
+--- a/ristretto_classloader/src/runtime/http.rs
++++ b/ristretto_classloader/src/runtime/http.rs
+@@ -47,7 +47,7 @@ where
+     serde_json::from_slice::<T>(&bytes).map_err(|error| Error::SerdeError(error.to_string()))
+ }
+ 
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ #[expect(clippy::unused_async)]
+ pub(crate) async fn get_bytes(
+     url: &str,
+@@ -59,7 +59,7 @@ pub(crate) async fn get_bytes(
+     wstd::runtime::block_on(async move { fetch_bytes(&url, &headers).await })
+ }
+ 
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ pub(crate) async fn get_json<T>(url: &str, headers: &Headers, query: &[(&str, &str)]) -> Result<T>
+ where
+     T: serde::de::DeserializeOwned,
+@@ -68,7 +68,7 @@ where
+     serde_json::from_slice::<T>(&bytes).map_err(|error| Error::SerdeError(error.to_string()))
+ }
+ 
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ fn build_url(url: &str, query: &[(&str, &str)]) -> String {
+     if query.is_empty() {
+         return url.to_string();
+@@ -82,7 +82,7 @@ fn build_url(url: &str, query: &[(&str, &str)]) -> String {
+     format!("{url}{separator}{pairs}")
+ }
+ 
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ fn urlencode(value: &str) -> String {
+     use std::fmt::Write;
+     let mut out = String::with_capacity(value.len());
+@@ -100,7 +100,7 @@ fn urlencode(value: &str) -> String {
+ }
+ 
+ /// Follow up to 10 redirects when fetching a URL via wstd, detecting cycles.
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ async fn fetch_bytes(initial_url: &str, headers: &Headers) -> Result<Vec<u8>> {
+     use std::collections::HashSet;
+     use wstd::http::{Body, Client, Request};
+@@ -159,7 +159,7 @@ async fn fetch_bytes(initial_url: &str, headers: &Headers) -> Result<Vec<u8>> {
+     )))
+ }
+ 
+-#[cfg(target_os = "wasi")]
++#[cfg(all(target_os = "wasi", target_env = "p2"))]
+ fn resolve_redirect(base: &str, location: &str) -> String {
+     if location.starts_with("http://") || location.starts_with("https://") {
+         return location.to_string();
+@@ -179,3 +179,25 @@ fn resolve_redirect(base: &str, location: &str) -> String {
+         location.to_string()
+     }
+ }
++
++/// WASI preview 1 has no HTTP; the runtime is supplied through `RISTRETTO_JDK_HOME`.
++#[cfg(all(target_os = "wasi", not(target_env = "p2")))]
++#[expect(clippy::unused_async)]
++pub(crate) async fn get_bytes(
++    url: &str,
++    _headers: &Headers,
++    _query: &[(&str, &str)],
++) -> Result<Vec<u8>> {
++    Err(Error::IoError(std::io::Error::other(format!(
++        "cannot download {url} on WASI preview 1; set RISTRETTO_JDK_HOME"
++    ))))
++}
++
++#[cfg(all(target_os = "wasi", not(target_env = "p2")))]
++pub(crate) async fn get_json<T>(url: &str, headers: &Headers, query: &[(&str, &str)]) -> Result<T>
++where
++    T: serde::de::DeserializeOwned,
++{
++    let bytes = get_bytes(url, headers, query).await?;
++    serde_json::from_slice::<T>(&bytes).map_err(|error| Error::SerdeError(error.to_string()))
++}
+diff --git a/ristretto_intrinsics/src/java/io/fileinputstream.rs b/ristretto_intrinsics/src/java/io/fileinputstream.rs
+index 0cbbb46..71d43fc 100644
+--- a/ristretto_intrinsics/src/java/io/fileinputstream.rs
++++ b/ristretto_intrinsics/src/java/io/fileinputstream.rs
+@@ -69,6 +69,11 @@ pub async fn available_0<T: Thread + 'static>(
+     let vm = thread.vm()?;
+     let file_handles = vm.file_handles();
+     let fd = file_descriptor_from_java_object(&vm, &file_descriptor)?;
++    if fd == 0 {
++        // Standard input is the VM's stdin stream rather than a file handle, and how much of it is
++        // buffered is unknown; 0 means a read may block, as it does on a terminal.
++        return Ok(Some(Value::Int(0)));
++    }
+     let mut file_handle = file_handles
+         .get_mut(&fd)
+         .await
+diff --git a/ristretto_intrinsics/src/java/lang/thread.rs b/ristretto_intrinsics/src/java/lang/thread.rs
+index 553c882..1974953 100644
+--- a/ristretto_intrinsics/src/java/lang/thread.rs
++++ b/ristretto_intrinsics/src/java/lang/thread.rs
+@@ -430,7 +430,7 @@ pub fn set_scoped_value_cache<T: Thread + 'static>(
+ 
+ #[intrinsic_method("java/lang/Thread.sleep(J)V", LessThanOrEqual(JAVA_17))]
+ pub async fn sleep<T: Thread + 'static>(
+-    #[cfg_attr(target_family = "wasm", expect(unused_variables))] thread: Arc<T>,
++    #[cfg_attr(all(target_family = "wasm", not(target_os = "wasi")), expect(unused_variables))] thread: Arc<T>,
+     mut parameters: Parameters,
+ ) -> Result<Option<Value>> {
+     let millis = parameters.pop_long()?;
+@@ -442,10 +442,12 @@ pub async fn sleep<T: Thread + 'static>(
+     let millis = u64::try_from(millis)?;
+     let duration = Duration::from_millis(millis);
+ 
+-    #[cfg(target_family = "wasm")]
++    // A blocking sleep would stop every Java thread on the single-threaded browser runtime;
++    // WASI has tokio timers, so it sleeps the way native threads do.
++    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+     std::thread::sleep(duration);
+ 
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+     {
+         let thread_object = thread.java_object().await;
+         let _ = set_thread_status(&thread_object, ThreadState::TIMED_WAITING);
+@@ -469,7 +471,7 @@ pub async fn sleep_0<T: Thread + 'static>(
+ 
+ #[intrinsic_method("java/lang/Thread.sleepNanos0(J)V", GreaterThanOrEqual(JAVA_25))]
+ pub async fn sleep_nanos_0<T: Thread + 'static>(
+-    #[cfg_attr(target_family = "wasm", expect(unused_variables))] thread: Arc<T>,
++    #[cfg_attr(all(target_family = "wasm", not(target_os = "wasi")), expect(unused_variables))] thread: Arc<T>,
+     mut parameters: Parameters,
+ ) -> Result<Option<Value>> {
+     let nanos = parameters.pop_long()?;
+@@ -481,10 +483,12 @@ pub async fn sleep_nanos_0<T: Thread + 'static>(
+     let nanos = u64::try_from(nanos)?;
+     let duration = Duration::from_nanos(nanos);
+ 
+-    #[cfg(target_family = "wasm")]
++    // A blocking sleep would stop every Java thread on the single-threaded browser runtime;
++    // WASI has tokio timers, so it sleeps the way native threads do.
++    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+     std::thread::sleep(duration);
+ 
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+     {
+         let thread_object = thread.java_object().await;
+         let _ = set_thread_status(&thread_object, ThreadState::TIMED_WAITING);
+@@ -509,7 +513,7 @@ pub async fn start_0<T: Thread + 'static>(
+     // First, get the VM to generate a unique internal thread ID
+     let vm = thread.vm()?;
+ 
+-    #[cfg_attr(target_family = "wasm", expect(unused_variables))]
++    #[cfg_attr(all(target_family = "wasm", not(target_os = "wasi")), expect(unused_variables))]
+     let (thread_class, internal_thread_id, is_daemon) = {
+         let mut thread_object = thread_object.as_object_mut()?;
+         let thread_class = thread_object.class().clone();
+@@ -713,7 +717,11 @@ pub async fn start_0<T: Thread + 'static>(
+             thread_handles.remove(&spawn_thread_id).await;
+         });
+ 
+-        let thread_handle = ThreadHandle::from(new_thread);
++        // The daemon flag decides whether the VM waits for this thread before exiting.
++        let thread_handle = ThreadHandle {
++            thread: new_thread,
++            daemon: is_daemon,
++        };
+         let thread_handles = vm.thread_handles();
+         thread_handles
+             .insert(internal_thread_id, thread_handle)
+diff --git a/ristretto_intrinsics/src/sun/nio/fs.rs b/ristretto_intrinsics/src/sun/nio/fs.rs
+index e0c4674..26adf70 100644
+--- a/ristretto_intrinsics/src/sun/nio/fs.rs
++++ b/ristretto_intrinsics/src/sun/nio/fs.rs
+@@ -22,7 +22,7 @@ pub mod registryfiletypedetector;
+ pub mod unixcopyfile;
+ #[cfg(target_os = "wasi")]
+ pub mod unixfileattributes;
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ pub mod unixfilesystem;
+ pub mod unixnativedispatcher;
+ #[cfg(target_os = "macos")]
+diff --git a/ristretto_intrinsics/src/sun/nio/fs/unixfilesystem.rs b/ristretto_intrinsics/src/sun/nio/fs/unixfilesystem.rs
+index e581363..3fd7e8b 100644
+--- a/ristretto_intrinsics/src/sun/nio/fs/unixfilesystem.rs
++++ b/ristretto_intrinsics/src/sun/nio/fs/unixfilesystem.rs
+@@ -10,6 +10,16 @@ use std::sync::Arc;
+ use super::common::throw_unix_exception;
+ use super::managed_files;
+ 
++#[cfg(target_family = "unix")]
++const EFAULT: i32 = libc::EFAULT;
++#[cfg(target_family = "unix")]
++const ECANCELED: i32 = libc::ECANCELED;
++// WASI runs the Linux class library, which reads Linux errno values.
++#[cfg(target_os = "wasi")]
++const EFAULT: i32 = 14;
++#[cfg(target_os = "wasi")]
++const ECANCELED: i32 = 125;
++
+ #[intrinsic_method(
+     "sun/nio/fs/UnixFileSystem.bufferedCopy0(IIJIJ)V",
+     GreaterThanOrEqual(JAVA_21)
+@@ -42,7 +52,7 @@ pub async fn buffered_copy_0<T: Thread + 'static>(
+             .try_read_bytes(address, buf_size)
+             .is_none()
+     {
+-        return Err(throw_unix_exception(&thread, libc::EFAULT).await);
++        return Err(throw_unix_exception(&thread, EFAULT).await);
+     }
+     let file_handles = vm.file_handles();
+     let mut buf = vec![0u8; buf_size];
+@@ -50,10 +60,10 @@ pub async fn buffered_copy_0<T: Thread + 'static>(
+     loop {
+         if cancel != 0 {
+             let Some(cancelled) = vm.native_memory().read_i32(cancel) else {
+-                return Err(throw_unix_exception(&thread, libc::EFAULT).await);
++                return Err(throw_unix_exception(&thread, EFAULT).await);
+             };
+             if cancelled != 0 {
+-                return Err(throw_unix_exception(&thread, libc::ECANCELED).await);
++                return Err(throw_unix_exception(&thread, ECANCELED).await);
+             }
+         }
+         let n = match managed_files::read(file_handles, i64::from(src), &mut buf).await {
+diff --git a/ristretto_intrinsics/src/sun/nio/fs/unixnativedispatcher.rs b/ristretto_intrinsics/src/sun/nio/fs/unixnativedispatcher.rs
+index 2b6b294..bad99d8 100644
+--- a/ristretto_intrinsics/src/sun/nio/fs/unixnativedispatcher.rs
++++ b/ristretto_intrinsics/src/sun/nio/fs/unixnativedispatcher.rs
+@@ -526,13 +526,31 @@ fn clear_errno() {}
+ fn wasm_linux_errno(error: &std::io::Error) -> i32 {
+     use std::io::ErrorKind;
+     match error.kind() {
+-        ErrorKind::NotFound => 2,          // ENOENT
+-        ErrorKind::PermissionDenied => 13, // EACCES
+-        ErrorKind::AlreadyExists => 17,    // EEXIST
+-        _ => error.raw_os_error().unwrap_or(2),
++        ErrorKind::NotFound => 2,           // ENOENT
++        ErrorKind::PermissionDenied => 13,  // EACCES
++        ErrorKind::AlreadyExists => 17,     // EEXIST
++        ErrorKind::CrossesDevices => 18,    // EXDEV
++        ErrorKind::NotADirectory => 20,     // ENOTDIR
++        ErrorKind::IsADirectory => 21,      // EISDIR
++        ErrorKind::InvalidInput => 22,      // EINVAL
++        ErrorKind::ReadOnlyFilesystem => 30, // EROFS
++        ErrorKind::DirectoryNotEmpty => 39, // ENOTEMPTY
++        ErrorKind::InvalidFilename => 36,   // ENAMETOOLONG
++        ErrorKind::Unsupported => 95,       // EOPNOTSUPP
++        // WASI numbers mean something else to the Linux class library.
++        _ => 5, // EIO
+     }
+ }
+ 
++/// The `errno` a failed `std::fs` call reports, in the numbering the class library expects.
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
++fn io_errno(error: &std::io::Error) -> i32 {
++    #[cfg(target_family = "unix")]
++    return error.raw_os_error().unwrap_or(5);
++    #[cfg(target_os = "wasi")]
++    return wasm_linux_errno(error);
++}
++
+ #[cfg(any(target_family = "unix", target_family = "wasm"))]
+ use super::common::throw_unix_exception;
+ 
+@@ -594,7 +612,8 @@ pub fn access_0_1<T: Thread + 'static>(
+     let path = to_cstring(&path_bytes)?;
+     #[expect(unsafe_code)]
+     let result = unsafe { libc::access(path.as_ptr(), mode) };
+-    Ok(Some(Value::Int(result)))
++    // Java 21 and later expect the errno, not access(2)'s -1.
++    Ok(Some(Value::Int(if result < 0 { last_errno() } else { 0 })))
+ }
+ 
+ #[cfg(target_os = "wasi")]
+@@ -606,11 +625,10 @@ pub async fn access_0_0<T: Thread + 'static>(
+     thread: Arc<T>,
+     parameters: Parameters,
+ ) -> Result<Option<Value>> {
+-    let result = access_0_1(thread.clone(), parameters)?;
+-    if result == Some(Value::Int(0)) {
+-        Ok(None)
+-    } else {
+-        Err(throw_unix_exception(&thread, 13 /* EACCES */).await)
++    match access_0_1(thread.clone(), parameters)? {
++        Some(Value::Int(0)) => Ok(None),
++        Some(Value::Int(errno)) => Err(throw_unix_exception(&thread, errno).await),
++        _ => Err(throw_unix_exception(&thread, 13 /* EACCES */).await),
+     }
+ }
+ 
+@@ -648,11 +666,14 @@ pub fn access_0_1<T: Thread + 'static>(
+         }
+         Ok(true)
+     })();
+-    Ok(Some(Value::Int(if accessible.unwrap_or(false) {
+-        0
+-    } else {
+-        -1
+-    })))
++    // The class library is Linux's, so it reads Linux errno values: ENOENT is what tells
++    // `Files.createDirectories` that a parent is missing rather than inaccessible.
++    let errno = match accessible {
++        Ok(true) => 0,
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 2, // ENOENT
++        Ok(false) | Err(_) => 13,                                        // EACCES
++    };
++    Ok(Some(Value::Int(errno)))
+ }
+ 
+ #[cfg(target_family = "unix")]
+@@ -729,7 +750,7 @@ pub async fn close<T: Thread + 'static>(
+     close_0(thread, parameters).await
+ }
+ 
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ #[intrinsic_method(
+     "sun/nio/fs/UnixNativeDispatcher.close0(I)V",
+     GreaterThanOrEqual(JAVA_11)
+@@ -741,7 +762,7 @@ pub async fn close_0<T: Thread + 'static>(
+     let fd = parameters.pop_int()?;
+     let vm = thread.vm()?;
+     if !managed_files::close(vm.file_handles(), i64::from(fd)).await {
+-        return Err(throw_unix_exception(&thread, libc::EBADF).await);
++        return Err(throw_unix_exception(&thread, 9 /* EBADF */).await);
+     }
+     Ok(None)
+ }
+@@ -1926,7 +1947,7 @@ pub async fn lchown_0<T: Thread + 'static>(
+     }
+ }
+ 
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ #[intrinsic_method("sun/nio/fs/UnixNativeDispatcher.link0(JJ)V", Any)]
+ pub async fn link_0<T: Thread + 'static>(
+     thread: Arc<T>,
+@@ -1940,7 +1961,7 @@ pub async fn link_0<T: Thread + 'static>(
+ 
+     if let Err(e) = std::fs::hard_link(path_from_bytes(&existing_path), path_from_bytes(&new_path))
+     {
+-        let errno = e.raw_os_error().unwrap_or(5);
++        let errno = io_errno(&e);
+         return Err(throw_unix_exception(&thread, errno).await);
+     }
+     Ok(None)
+@@ -2561,7 +2582,7 @@ pub async fn realpath_0<T: Thread + 'static>(
+     )))
+ }
+ 
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ #[intrinsic_method("sun/nio/fs/UnixNativeDispatcher.rename0(JJ)V", Any)]
+ pub async fn rename_0<T: Thread + 'static>(
+     thread: Arc<T>,
+@@ -2574,7 +2595,7 @@ pub async fn rename_0<T: Thread + 'static>(
+     let to_path = read_native_path(&*vm, to_address)?;
+ 
+     if let Err(e) = std::fs::rename(path_from_bytes(&from_path), path_from_bytes(&to_path)) {
+-        let errno = e.raw_os_error().unwrap_or(5);
++        let errno = io_errno(&e);
+         return Err(throw_unix_exception(&thread, errno).await);
+     }
+     Ok(None)
+@@ -2645,7 +2666,7 @@ pub async fn rewind<T: Thread + 'static>(
+     }
+ }
+ 
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ #[intrinsic_method("sun/nio/fs/UnixNativeDispatcher.rmdir0(J)V", Any)]
+ pub async fn rmdir_0<T: Thread + 'static>(
+     thread: Arc<T>,
+@@ -2656,7 +2677,7 @@ pub async fn rmdir_0<T: Thread + 'static>(
+     let path_str = read_native_path(&*vm, path_address)?;
+ 
+     if let Err(e) = std::fs::remove_dir(path_from_bytes(&path_str)) {
+-        let errno = e.raw_os_error().unwrap_or(5);
++        let errno = io_errno(&e);
+         return Err(throw_unix_exception(&thread, errno).await);
+     }
+     Ok(None)
+@@ -2902,7 +2923,7 @@ pub async fn symlink_0<T: Thread + 'static>(
+     }
+ }
+ 
+-#[cfg(target_family = "unix")]
++#[cfg(any(target_family = "unix", target_os = "wasi"))]
+ #[intrinsic_method("sun/nio/fs/UnixNativeDispatcher.unlink0(J)V", Any)]
+ pub async fn unlink_0<T: Thread + 'static>(
+     thread: Arc<T>,
+@@ -2913,7 +2934,7 @@ pub async fn unlink_0<T: Thread + 'static>(
+     let path_str = read_native_path(&*vm, path_address)?;
+ 
+     if let Err(e) = std::fs::remove_file(path_from_bytes(&path_str)) {
+-        let errno = e.raw_os_error().unwrap_or(5);
++        let errno = io_errno(&e);
+         return Err(throw_unix_exception(&thread, errno).await);
+     }
+     Ok(None)
+@@ -4438,3 +4459,55 @@ mod tests {
+         Ok(())
+     }
+ }
++
++// On WASI the class library is still Linux's, so `LinuxFileSystem` loads `LinuxNativeDispatcher`.
++// These are the natives its file system calls; there is no kernel behind them to call into.
++
++#[cfg(target_os = "wasi")]
++#[intrinsic_method("sun/nio/fs/LinuxNativeDispatcher.init()V", Any)]
++pub fn linux_init<T: Thread + 'static>(
++    _thread: Arc<T>,
++    _parameters: Parameters,
++) -> Result<Option<Value>> {
++    Ok(None)
++}
++
++/// `IOStatus.UNSUPPORTED`, so `Files.copy` falls back to its buffered copy.
++#[cfg(target_os = "wasi")]
++#[intrinsic_method(
++    "sun/nio/fs/LinuxNativeDispatcher.directCopy0(IIJ)I",
++    GreaterThanOrEqual(JAVA_21)
++)]
++pub fn linux_direct_copy_0<T: Thread + 'static>(
++    _thread: Arc<T>,
++    _parameters: Parameters,
++) -> Result<Option<Value>> {
++    Ok(Some(Value::Int(-4)))
++}
++
++/// Advice only, and there is nothing to advise.
++#[cfg(target_os = "wasi")]
++#[intrinsic_method(
++    "sun/nio/fs/LinuxNativeDispatcher.posix_fadvise(IJJI)I",
++    GreaterThanOrEqual(JAVA_21)
++)]
++pub fn linux_posix_fadvise<T: Thread + 'static>(
++    _thread: Arc<T>,
++    _parameters: Parameters,
++) -> Result<Option<Value>> {
++    Ok(Some(Value::Int(0)))
++}
++
++/// WASI has no file-store statistics. `UnixException` is what callers handle: `Files.copy` then
++/// picks its default buffer size, and `FileStore` queries report an `IOException`.
++#[cfg(target_os = "wasi")]
++#[intrinsic_method(
++    "sun/nio/fs/UnixNativeDispatcher.statvfs0(JLsun/nio/fs/UnixFileStoreAttributes;)V",
++    Any
++)]
++pub async fn statvfs_0<T: Thread + 'static>(
++    thread: Arc<T>,
++    _parameters: Parameters,
++) -> Result<Option<Value>> {
++    Err(throw_unix_exception(&thread, 38 /* ENOSYS */).await)
++}
+diff --git a/ristretto_java/src/main.rs b/ristretto_java/src/main.rs
+index 6f8903e..53e1147 100644
+--- a/ristretto_java/src/main.rs
++++ b/ristretto_java/src/main.rs
+@@ -19,11 +19,12 @@ use clap::CommandFactory;
+ use ristretto_gc::{ConfigurationBuilder as GcConfigurationBuilder, GarbageCollector};
+ use ristretto_vm::Error::{InternalError, Throwable};
+ use ristretto_vm::{
+-    ClassPath, ConfigurationBuilder, Error, Result, VM, Value, VerifyMode, startup_trace,
++    ClassPath, ClassPathEntry, Compiler, ConfigurationBuilder, Error, Memory, Result, VM, Value,
++    VerifyMode, startup_trace,
+ };
+ use std::env;
+ use std::env::consts::{ARCH, OS};
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ use tracing::debug;
+ 
+ const VERSION: &str = env!("CARGO_PKG_VERSION");
+@@ -37,6 +38,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
+ ))]
+ #[tokio::main(flavor = "current_thread")]
+ async fn main() -> Result<()> {
++    // A WASI preview 1 process starts in "/" whatever directory it was started from; the shell
++    // that started it says where that was, and relative paths should resolve from there.
++    #[cfg(target_os = "wasi")]
++    if let Some(directory) = env::var_os("PWD") {
++        let _ = env::set_current_dir(directory);
++    }
+     startup_trace!("[cli] entry point");
+     let cli = Arguments::parse();
+     logging::initialize()?;
+@@ -86,10 +93,22 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+     }
+ 
+     debug!("ristretto/{VERSION}/{OS}/{ARCH}");
++    // `java Main.java` runs a source file, as the JDK's source launcher does: compiled in memory,
++    // ahead of anything named by --class-path.
++    let source = match cli.mainclass.as_deref() {
++        Some(name) if name.ends_with(".java") => Some(compile_source_file(Path::new(name)).await?),
++        _ => None,
++    };
++
+     let mut configuration_builder = ConfigurationBuilder::new();
+-    if let Some(ref class_path) = cli.classpath {
+-        let class_paths = env::split_paths(class_path).collect::<Vec<_>>();
+-        let class_path = ClassPath::from(&class_paths);
++    if let Some((_, ref memory)) = source {
++        let mut entries = vec![ClassPathEntry::Memory(memory.clone())];
++        if let Some(ref class_path) = cli.classpath {
++            entries.extend(ClassPath::from(&split_class_path(class_path)).iter().cloned());
++        }
++        configuration_builder = configuration_builder.class_path(ClassPath::new(entries));
++    } else if let Some(ref class_path) = cli.classpath {
++        let class_path = ClassPath::from(&split_class_path(class_path));
+         configuration_builder = configuration_builder.class_path(class_path);
+     }
+ 
+@@ -97,7 +116,9 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+         configuration_builder = configuration_builder.java_version(java_version);
+     }
+ 
+-    if let Some(ref main_class) = cli.mainclass {
++    if let Some((ref main_class, _)) = source {
++        configuration_builder = configuration_builder.main_class(main_class);
++    } else if let Some(ref main_class) = cli.mainclass {
+         configuration_builder = configuration_builder.main_class(main_class);
+     } else if let Some(ref jar) = cli.jar {
+         configuration_builder = configuration_builder.jar(PathBuf::from(jar));
+@@ -151,7 +172,7 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+     let parameters = cli.parameters.unwrap_or_default();
+     let result = match vm.invoke_main(&parameters).await {
+         Ok(_) => Ok(()),
+-        Err(error) => process_error(error),
++        Err(error) => uncaught(&vm, error).await,
+     };
+ 
+     // Wait for all non-daemon threads to complete before exiting
+@@ -163,6 +184,86 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+     result
+ }
+ 
++/// The entries of a `--class-path` value.
++fn split_class_path(class_path: &std::ffi::OsStr) -> Vec<PathBuf> {
++    #[cfg(not(target_os = "wasi"))]
++    return env::split_paths(class_path).collect();
++    // WASI exposes a POSIX filesystem, but std::env::split_paths is unsupported.
++    #[cfg(target_os = "wasi")]
++    return class_path
++        .to_string_lossy()
++        .split(':')
++        .filter(|path| !path.is_empty())
++        .map(PathBuf::from)
++        .collect();
++}
++
++/// Compile a source file in memory, returning the class to run and the compiled classes.
++///
++/// The class to run is the one named after the file, which is also what javac names the class of
++/// a compact source file; otherwise it is the file's only top-level class.
++async fn compile_source_file(path: &Path) -> Result<(String, Memory)> {
++    let source = std::fs::read_to_string(path)
++        .map_err(|error| InternalError(format!("error: can't read {}: {error}", path.display())))?;
++    let stem = path
++        .file_stem()
++        .map(|stem| stem.to_string_lossy().into_owned())
++        .unwrap_or_default();
++    let compiler = Compiler::new(ConfigurationBuilder::new().build()?)
++        .await
++        .map_err(|error| InternalError(error.to_string()))?;
++    let Ok(classes) = compiler
++        .compile_source_with_options(&stem, &source, &["-proc:none"])
++        .await
++    else {
++        // javac has printed its diagnostics.
++        eprintln!("error: compilation failed");
++        std::process::exit(1);
++    };
++    // The compiler's VM is done; drop it before the program's starts.
++    drop(compiler);
++    let main_class = if classes.get(&stem).is_some() {
++        stem
++    } else {
++        let mut top_level = classes.iter().map(|(name, _)| name).filter(|name| !name.contains('$'));
++        match (top_level.next(), top_level.next()) {
++            (Some(name), None) => name.to_string(),
++            _ => {
++                eprintln!("error: no class named {stem} declared in {}", path.display());
++                std::process::exit(1);
++            }
++        }
++    };
++    let memory = Memory::new("source");
++    classes
++        .load_into(&memory)
++        .await
++        .map_err(|error| InternalError(error.to_string()))?;
++    Ok((main_class, memory))
++}
++
++/// Report an exception that escaped `main` as the JDK launcher does: the thread's name, then the
++/// stack trace as Java itself prints it, so causes and suppressed exceptions read the same.
++async fn uncaught(vm: &VM, error: Error) -> Result<()> {
++    let Throwable(ref throwable) = error else {
++        return process_error(error);
++    };
++    eprint!("Exception in thread \"main\" ");
++    if vm
++        .invoke(
++            "java.lang.Throwable",
++            "printStackTrace()V",
++            std::slice::from_ref(throwable),
++        )
++        .await
++        .is_err()
++    {
++        eprintln!();
++        return process_error(error);
++    }
++    Err(error)
++}
++
+ fn process_error(error: Error) -> Result<()> {
+     let Throwable(ref throwable) = error else {
+         eprintln!("{error}");
+diff --git a/ristretto_java/src/version.rs b/ristretto_java/src/version.rs
+index dc10a4b..7679155 100644
+--- a/ristretto_java/src/version.rs
++++ b/ristretto_java/src/version.rs
+@@ -18,7 +18,28 @@ pub fn full() -> String {
+ 
+     #[cfg(target_family = "wasm")]
+     {
+-        format!("{program_name}/{version}/{java_version} wasm/unknown/wasm32")
++        // As the JDK's launcher prints it, from the class library in use, and naming the VM it
++        // really is: scripts read the first line.
++        let release = env::var_os("RISTRETTO_JDK_HOME")
++            .and_then(|home| std::fs::read_to_string(std::path::Path::new(&home).join("release")).ok())
++            .unwrap_or_default();
++        let field = |name: &str| {
++            release.lines().find_map(|line| {
++                line.strip_prefix(name)
++                    .and_then(|rest| rest.strip_prefix('='))
++                    .map(|value| value.trim_matches('"').to_string())
++            })
++        };
++        let Some(java_version) = field("JAVA_VERSION") else {
++            return format!("{program_name}/{version}/{java_version} wasm/unknown/wasm32");
++        };
++        let runtime = field("JAVA_RUNTIME_VERSION").unwrap_or_else(|| java_version.clone());
++        let date = field("JAVA_VERSION_DATE").map(|date| format!(" {date}")).unwrap_or_default();
++        let lts = if runtime.ends_with("-LTS") { " LTS" } else { "" };
++        let implementor = field("IMPLEMENTOR_VERSION").unwrap_or_else(|| "OpenJDK".to_string());
++        format!(
++            "openjdk version \"{java_version}\"{date}{lts}\nOpenJDK Runtime Environment {implementor} (build {runtime})\nRistretto VM {version} (interpreted, wasm32)"
++        )
+     }
+ }
+ 
+diff --git a/ristretto_javac/src/main.rs b/ristretto_javac/src/main.rs
+index 63fb375..aa0b11e 100644
+--- a/ristretto_javac/src/main.rs
++++ b/ristretto_javac/src/main.rs
+@@ -17,6 +17,12 @@ use std::process::ExitCode;
+ ))]
+ #[tokio::main(flavor = "current_thread")]
+ async fn main() -> ExitCode {
++    // A WASI preview 1 process starts in "/" whatever directory it was started from; the shell
++    // that started it says where that was, and relative paths should resolve from there.
++    #[cfg(target_os = "wasi")]
++    if let Some(directory) = env::var_os("PWD") {
++        let _ = env::set_current_dir(directory);
++    }
+     common_main().await
+ }
+ 
+diff --git a/ristretto_vm/src/compiler/java/org/ristretto/compiler/CompilerBridge.java b/ristretto_vm/src/compiler/java/org/ristretto/compiler/CompilerBridge.java
+index c9d5fbe..fc1ac59 100644
+--- a/ristretto_vm/src/compiler/java/org/ristretto/compiler/CompilerBridge.java
++++ b/ristretto_vm/src/compiler/java/org/ristretto/compiler/CompilerBridge.java
+@@ -105,6 +105,12 @@ public final class CompilerBridge {
+         public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+             return source;
+         }
++
++        // Diagnostics name the file as it was given: Main.java, not /Main.java.
++        @Override
++        public String getName() {
++            return binaryName.replace('.', '/') + Kind.SOURCE.extension;
++        }
+     }
+ 
+     private static final class MemoryOutput extends SimpleJavaFileObject {
+diff --git a/ristretto_vm/src/vm.rs b/ristretto_vm/src/vm.rs
+index 60f9aea..04808c2 100644
+--- a/ristretto_vm/src/vm.rs
++++ b/ristretto_vm/src/vm.rs
+@@ -42,9 +42,25 @@ use tracing::{debug, warn};
+ /// paths (notably `Thread.start_0`) dispatch via `tokio::task::spawn_local`,
+ /// which requires an active `LocalSet`. On non-wasi targets this is a
+ /// transparent passthrough.
++///
++/// One set holds every Java thread, so a thread started inside one call keeps running after that
++/// call returns, as it would on a JVM; a set dropped at the end of each call would cancel it.
++/// Calls made while the set is already being driven simply await.
+ #[cfg(target_os = "wasi")]
+ async fn run_local<F: Future>(future: F) -> F::Output {
+-    tokio::task::LocalSet::new().run_until(future).await
++    thread_local! {
++        static LOCAL_SET: &'static tokio::task::LocalSet =
++            Box::leak(Box::new(tokio::task::LocalSet::new()));
++        static ENTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    }
++    if ENTERED.with(std::cell::Cell::get) {
++        return future.await;
++    }
++    let local_set = LOCAL_SET.with(|set| *set);
++    ENTERED.with(|entered| entered.set(true));
++    let output = local_set.run_until(future).await;
++    ENTERED.with(|entered| entered.set(false));
++    output
+ }
+ #[cfg(not(target_os = "wasi"))]
+ async fn run_local<F: Future>(future: F) -> F::Output {
+@@ -871,26 +887,62 @@ impl VM {
+                 return Err(InternalError("No main class specified".into()));
+             };
+             let main_class = self.class(&main_class_name).await?;
+-            let Some(main_method) = main_class.main_method() else {
+-                return Err(InternalError(format!(
+-                    "No main method found for {main_class_name}"
+-                )));
+-            };
+-
+             let thread = self.primordial_thread().await?;
+             let string_parameter =
+                 ristretto_types::JavaObject::to_object(parameters, &*thread).await?;
+ 
+-            self.invoke(
+-                &main_class_name,
+-                main_method.signature(),
+-                &[string_parameter],
+-            )
+-            .await
++            if let Some(main_method) = main_class.main_method() {
++                return self
++                    .invoke(
++                        &main_class_name,
++                        main_method.signature(),
++                        &[string_parameter],
++                    )
++                    .await;
++            }
++
++            // Java 25 (JEP 512) also launches `main()` and instance main methods: `main(String[])`
++            // is preferred to `main()`, either may be inherited, and neither may be private. An
++            // instance method is called on an object made with the no-argument constructor.
++            let Some((declaring, main_method)) = Self::launchable_main(&main_class)? else {
++                return Err(InternalError(format!(
++                    "No main method found for {main_class_name}"
++                )));
++            };
++            let mut arguments = Vec::new();
++            if !main_method.is_static() {
++                arguments.push(
++                    self.object(&main_class_name, "", &[] as &[Value])
++                        .await?,
++                );
++            }
++            if main_method.descriptor() == "([Ljava/lang/String;)V" {
++                arguments.push(string_parameter);
++            }
++            self.invoke(declaring.name(), main_method.signature(), &arguments)
++                .await
+         })
+         .await
+     }
+ 
++    /// The main method the launcher would choose when there is no `public static main(String[])`.
++    fn launchable_main(
++        class: &Arc<Class>,
++    ) -> Result<Option<(Arc<Class>, Arc<ristretto_classloader::Method>)>> {
++        for descriptor in ["([Ljava/lang/String;)V", "()V"] {
++            let mut current = Some(Arc::clone(class));
++            while let Some(candidate) = current {
++                if let Some(method) = candidate.method("main", descriptor)
++                    && !method.is_private()
++                {
++                    return Ok(Some((candidate, method)));
++                }
++                current = candidate.parent()?;
++            }
++        }
++        Ok(None)
++    }
++
+     /// Invoke a method.  To invoke a method on an object reference, the object reference must be
+     /// the first parameter in the parameter vector.
+     ///
+@@ -1047,13 +1099,43 @@ impl VM {
+         Ok(())
+     }
+ 
+-    /// Wait for all non-daemon threads to complete (WASM version; no-op).
++    /// Wait for all non-daemon threads to complete (WASI version).
++    ///
++    /// Threads are local tasks that cannot be joined, but each removes its handle when it ends, so
++    /// this waits until no non-daemon thread other than the primordial one is left.
++    ///
++    /// # Errors
++    ///
++    /// This implementation never returns an error; the `Result` is kept for signature
++    /// consistency with the native implementation.
++    #[cfg(target_os = "wasi")]
++    pub async fn wait_for_non_daemon_threads(&self) -> Result<()> {
++        // Inside the set the threads run in, or they would never get to finish.
++        run_local(async {
++            loop {
++                let remaining = self
++                    .thread_handles
++                    .read()
++                    .await
++                    .iter()
++                    .filter(|(id, handle)| **id != 1 && !handle.daemon)
++                    .count();
++                if remaining == 0 {
++                    return Ok(());
++                }
++                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++            }
++        })
++        .await
++    }
++
++    /// Wait for all non-daemon threads to complete (browser WASM version; no-op).
+     ///
+     /// # Errors
+     ///
+     /// This implementation never returns an error; the `Result` is kept for signature
+     /// consistency with the non-wasm implementation.
+-    #[cfg(target_family = "wasm")]
++    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+     #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
+     pub async fn wait_for_non_daemon_threads(&self) -> Result<()> {
+         // WASM uses spawn_local which doesn't support joining

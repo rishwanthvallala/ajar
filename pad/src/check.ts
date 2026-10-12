@@ -762,6 +762,8 @@ async function main() {
     is(cpp.includes("clang++ 'hello.cpp'") && cpp.includes("<iostream>"), true, "a .cpp file compiles with clang++, saying first if it needs <iostream>");
     is(neededBy("gcc hi.c && ./a.out", none)[0]?.pkg, runnerFor("hi.c")?.toolchain.pkg, "and gcc is clang's, so typing it fetches C");
     is(runnerFor("notes.txt"), null, "and nothing runs what no language does");
+    is(neededBy("javac Main.java && java Main", none).map((t) => t.name).join(","), "Java", "javac and java are one language, fetched once");
+    is(runnerFor("src/Main.java")?.line, "java 'src/Main.java'", "and Run runs a .java file as a source file");
   }
 
   // ---- the runtime's word when a pipe's reader leaves ----

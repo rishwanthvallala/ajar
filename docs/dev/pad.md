@@ -304,6 +304,13 @@ The `__shipped__` entry is a control, not a candidate: it installs exactly what
 the product installs. When it passes and a candidate fails, the candidate is at
 fault; when it fails, the harness is. It caught all three mistakes above.
 
+A program that is not a package yet can be tried the same way:
+`probe.html?files=<url>` fetches a manifest — `{"files": {path: url},
+"commands": [...]}` — seeds the folder with those files, and runs each command
+in one shell, reporting what each printed and how long it took. The sandbox
+runs a `.wasm` straight from the folder (`./java.wasm -cp . Main`), which is
+how Java was tried before it was packed.
+
 ### What the probe found
 
 **Most of what it first reported as broken was the tests, not the tools.**
@@ -346,8 +353,9 @@ entries stay.
 Asked for on 12 October: java and javac, gcc, and other languages. The registry
 has **no JVM, no javac, no gcc and no tcc** — found by listing it (47,033
 packages, most of them app deployments; its listing repeats and skips, so every
-likely name was then looked up too). What it has, probed in the browser that
-day (`probe-packages.mjs`, the catalogue's "languages" block):
+likely name was then looked up too). So Java is a package of our own — see
+[Java](#java) below. What the registry has, probed in the browser that day
+(`probe-packages.mjs`, the catalogue's "languages" block):
 
 | | Package | As published | What works |
 |---|---|---|---|
@@ -392,6 +400,85 @@ is a pre-release, which a bare name never resolves to. Pinned, it installs.
 `fetch-packages.mjs` uses each of them once while recording, so they are
 mirrored and their registry answers recorded like the rest; a first `go` from
 Wasmer's CDN would otherwise be 273 MB uncompressed.
+
+### Java
+
+`java` and `javac` are **Ristretto** (github.com/theseus-rs/ristretto, Apache-2.0
+OR MIT), a JVM written in Rust, built for WASI preview 1, running **Amazon
+Corretto 25's class library** — the real one, not a reimplementation. `javac` is
+the JDK's own compiler, run by that JVM. `pad/scripts/build-java.mjs` builds the
+whole thing from pinned inputs: Ristretto at a commit, with
+`pad/scripts/java/ristretto.patch`; Ristretto's own pinned Rust; the Corretto
+linux/amd64 image by digest, trimmed with jlink to java.base, the compiler, and
+the modules course and exercise code reaches for (logging, XML, SQL, the HTTP
+client, prefs, scripting). It packs them with `webc-pack` into
+`pad/public/packages/ajar-java-<hash>.webc`: two atoms, `java` and `javac`, and
+the JDK as a volume mounted at `/usr/lib/jvm/java-25`, which the commands find
+through `RISTRETTO_JDK_HOME` in their own environment. 60.5 MB, 11.1 MB zstd. The
+same inputs make the same bytes, and so the same URL.
+
+No registry has it, so `build-java.mjs` also writes `own.json`: the answer
+registry.wasmer.io would give for `ajar/java`, and where its file is. The
+service worker answers from it as it does from `registry.json`, and serves the
+download for `packages.ajar.invalid` — a host nothing else answers for — from
+the mirror. Nothing is published anywhere. `fetch-packages.mjs` serves both
+while it records and keeps them when it prunes; deploy refuses without
+`own.json`.
+
+The alternatives, looked at that day: TeaVM compiles Java ahead of time to wasm
+with a class library of its own, which lacks `Scanner` on `System.in`,
+`printStackTrace` and more; CheerpJ runs a real JDK in the browser but is
+proprietary, and needs a commercial licence to self-host. Ristretto ran the
+real class library and already built for WASI.
+
+**What the patch changes**, each found by a program that behaved differently
+from HotSpot:
+
+- WASI preview 1 has no HTTP, and Ristretto's runtime downloader pulled in
+  wasip2 imports through `wstd`, which no preview 1 host can satisfy. It is
+  compiled out there; the JDK comes from `RISTRETTO_JDK_HOME`.
+- A preview 1 process starts in `/` whatever its shell's directory: both
+  commands `chdir` to `$PWD` first, so `-cp .`, `javac Main.java` and a
+  program's `new File("data.txt")` resolve as they would anywhere.
+- `env::split_paths` is unsupported on WASI; `-cp` is split on `:`.
+- `System.in.available()` threw, and `Scanner` swallowed it and read nothing.
+- `Files.createDirectories`, `move`, `delete` and `copy`: `access0` returned -1
+  where Java 21 and later want an errno, and WASI's errno numbers are not the
+  Linux ones the class library compares against; `rename0`, `unlink0`, `rmdir0`,
+  `link0`, `close0`, `statvfs0`, `bufferedCopy0` and `LinuxNativeDispatcher`'s
+  natives had no WASI version.
+- `Thread.sleep` blocked every Java thread, and a thread still running when
+  `main` returned was cancelled: each call made its own task set, which died
+  with it. One set now holds every thread, `sleep` yields, and the VM waits for
+  non-daemon threads as a JVM does.
+- An uncaught exception printed Ristretto's own summary without a trace; it is
+  now `Exception in thread "main"` and Java's own `printStackTrace`.
+- Java 25's launch protocol: `void main()` and instance main methods, so a
+  compact source file runs.
+- `java Main.java` compiles in memory and runs, as the JDK's source launcher
+  does, and its diagnostics say `Main.java`, not `/Main.java`.
+- `java -version` prints the class library's version as the JDK's launcher
+  would, with Ristretto named on its last line.
+
+**Measured**, on 12 October: 14 programs — strings and formatting, collections
+and streams, records and pattern switches, `BigDecimal`, `java.time` with zones,
+regex, threads and executors, exceptions with causes, `Scanner` on stdin, files,
+`System.exit` — run on HotSpot 25 and here, compared byte for byte: 13 identical.
+The 14th is two messages HotSpot words in more detail (a `ClassCastException`'s
+module suffix, a `NullPointerException`'s method names) and a missing
+`ArrayStoreException`: Ristretto's `aastore` does not check the element type yet.
+`javac`'s class files are byte-identical to HotSpot's javac. In the pad, in
+Chromium: `java` on a compiled class about 0.7 s; `javac` on a small file about
+6 s and `java Main.java` about the same, because the compiler is interpreted — a
+warm compiler in one VM was still 4.5 s, so a resident compiler would not fix it.
+The first use says so. A faster `javac` would be one compiled ahead of time
+(teavm-javac against the real class library); not done.
+`Thread.getAllStackTraces` and the desktop do not work; there is no `jshell`.
+
+The licences: Ristretto is Apache-2.0 OR MIT; the class library is GPLv2 with
+the Classpath Exception, its notices in the package at
+`/usr/lib/jvm/java-25/legal`, its source at github.com/corretto/corretto-25,
+tag 25.0.4.10.1.
 
 ## The shell, and detecting when a command ends
 

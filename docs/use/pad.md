@@ -247,12 +247,12 @@ both work.
 A server you start can be previewed by you, but it is not reachable from
 anywhere else.
 
-**C, Go, JavaScript and PHP come the first time you use them.** Type `clang`,
-`go`, `node` or `php` — or press Run on a `.c`, `.go`, `.js` or `.php` file —
-and the terminal says it is fetching that language, how big it is, and then
-runs your line: about 106 MB for C, 273 MB for Go, 75 for Node and 82 for PHP
-before compression, the first time a tab uses it — so nobody who only writes
-Python pays for them. The terminal
+**C, Go, Java, JavaScript and PHP come the first time you use them.** Type
+`clang`, `go`, `java`, `node` or `php` — or press Run on a `.c`, `.go`, `.java`,
+`.js` or `.php` file — and the terminal says it is fetching that language, how
+big it is, and then runs your line: about 106 MB for C, 273 MB for Go, 61 for
+Java, 75 for Node and 82 for PHP before compression, the first time a tab uses
+it — so nobody who only writes Python pays for them. The terminal
 starts a fresh shell when one arrives; you stay in the same folder, with what
 you exported. Common Lisp is there the same way, as `repl`.
 
@@ -263,9 +263,16 @@ compiles, but not `#include <iostream>` — it never finishes; use `<cstdio>` an
 (`/workspace/data.txt`), and a program `go build` makes runs only once, so use
 `go run`. Lisp runs expressions and its REPL, not files.
 
-**No Java, no `gcc`, no Ruby, no `git` or `make`.** There is no Java runtime or
-`gcc` for this kind of sandbox at all; C is clang. Ruby and Zig exist but do not
-work well enough yet.
+Java is Java 25 — the real class library, run by a JVM built for this sandbox.
+`javac Main.java` then `java Main` works, and so does `java Main.java` on its
+own, which is what Run does. Compiling is slow — several seconds, about six on
+a fast laptop — because the compiler is interpreted here; running a compiled
+class takes under one. Programs
+read input with `Scanner` as usual. There is no `jshell`, and nothing that opens
+a window.
+
+**No `gcc`, no Ruby, no `git` or `make`.** There is no `gcc` for this kind of
+sandbox at all; C is clang. Ruby and Zig exist but do not work well enough yet.
 
 **No `ssh`, `vim` or `less`.** `nano` is there; the other two are not.
 

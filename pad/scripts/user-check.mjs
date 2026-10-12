@@ -675,6 +675,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
       ["hello.js", "console.log('js says', 6 * 7);\n", /js says 42/],
       ["hello.php", "<?php echo 'php says ' . (6 * 7) . PHP_EOL;\n", /php says 42/],
       ["hello.go", 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("go says", 6*7) }\n', /go says 42/],
+      ["Hello.java", 'public class Hello {\n  public static void main(String[] args) {\n    System.out.println("java says " + 6 * 7);\n  }\n}\n', /java says 42/],
     ]) {
       await clear();
       await newFile(file, source);
@@ -688,6 +689,11 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     await page.click("#run");
     await wait(300);
     expect("and runs it again, with nothing fetched", (await idle(120_000)) && (await shows(/go says 42/, 5000)) && !(await tail(6)).includes("fetching"), await tail(6));
+    // Java from the terminal: javac, then the class, reading what it is given.
+    await clear();
+    await newFile("Ask.java", 'import java.util.Scanner;\n\npublic class Ask {\n  public static void main(String[] args) {\n    Scanner in = new Scanner(System.in);\n    int n = in.nextInt();\n    System.out.println("twice " + n + " is " + 2 * n);\n  }\n}\n');
+    await typed("javac Ask.java && printf '21\\n' | java Ask", 300_000);
+    expect("javac compiles a class and java runs it, reading stdin", await shows(/twice 21 is 42/, 5000), await tail(6));
     await open("main.py");
   }
 
