@@ -562,6 +562,85 @@ export const CANDIDATES: Candidate[] = [
     ],
   },
 
+  // ---- languages, asked for on 12 October ---------------------------------
+  //
+  // Asked for java, javac and gcc. The registry has no JVM, no javac and no
+  // gcc or tcc at all — found by listing it (47,033 packages, most of them
+  // app deployments) and then looking up every likely name, because its
+  // listing repeats and skips. These are the languages it does have that had
+  // never been tried here. Sizes are as published, before compression.
+  {
+    // 105.6 MB. Newer than syrusakbary's, under its own namespace. Its
+    // commands are clang, clang-16, lld, llvm-ar, llvm-nm and wasm-ld: no
+    // clang++, so C++ is clang told to be one.
+    name: "clang/clang",
+    gives: "clang — C, and C++ through --driver-mode=g++",
+    heavy: true,
+    checks: [
+      { covers: "version", run: "clang --version | head -1", match: "clang" },
+      { covers: "compiles and runs C", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > n.c && clang n.c -o n 2>/dev/null && ./n", want: "42", timeoutMs: 180_000 },
+      { covers: "exit status passes through", run: "printf 'int main(){return 3;}' > e.c && clang e.c -o e 2>/dev/null && ./e; echo $?", want: "3", timeoutMs: 180_000 },
+      { covers: "compiles and runs C++", run: "printf '#include <iostream>\\nint main(){std::cout<<\"cpp\"<<std::endl;return 0;}' > p.cpp && clang --driver-mode=g++ p.cpp -o p 2>/dev/null && ./p", want: "cpp", timeoutMs: 180_000 },
+    ],
+  },
+  {
+    // Runno's build, its commands named runno-clang and runno-wasm-ld.
+    name: "taybenlor/runno-clang",
+    gives: "clang, as runno builds it",
+    heavy: true,
+    checks: [
+      { covers: "version", run: "runno-clang --version | head -1", match: "clang" },
+      { covers: "compiles and runs C", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > n.c && runno-clang n.c -o n 2>/dev/null && ./n", want: "42", timeoutMs: 180_000 },
+    ],
+  },
+  {
+    // 272.6 MB: the whole Go toolchain, 1.25.5 built for WASIX. Asked for by
+    // name alone it "is not in the registry": its only version is a
+    // pre-release, which a bare name never resolves to. Pinned, it installs.
+    name: "golang/go@=1.25.5-wasix-1",
+    gives: "go — the Go toolchain",
+    heavy: true,
+    checks: [
+      { covers: "version", run: "go version", match: "^go version go1\\." },
+      { covers: "go run", run: "printf 'package main\\nimport \"fmt\"\\nfunc main() { fmt.Println(6 * 7) }\\n' > m.go && go run m.go", want: "42", timeoutMs: 300_000 },
+      { covers: "go build, then the binary", run: "go build -o mg m.go && ./mg", want: "42", timeoutMs: 300_000 },
+    ],
+  },
+  {
+    // `zig version` answers; `zig run` fails with FileNotFound and `zig cc`
+    // with nothing at all — its library directory is not where it looks.
+    name: "fschuett/zig",
+    gives: "zig, and zig cc — a C compiler",
+    heavy: true,
+    checks: [
+      { covers: "version", run: "zig version", match: "^0\\.|^[0-9]+\\." },
+      { covers: "zig run", run: "printf 'const std = @import(\"std\");\\npub fn main() void { std.debug.print(\"z{d}\\\\n\", .{6 * 7}); }\\n' > m.zig && zig run m.zig 2>&1", want: "z42", timeoutMs: 300_000 },
+      { covers: "zig cc compiles C", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > z.c && zig cc z.c -o z 2>/dev/null && ./z", want: "42", timeoutMs: 300_000 },
+    ],
+  },
+  {
+    // 203.4 MB, a 0.10 development build — a pre-release, so pinned, as Go.
+    name: "topolarity/zig@=0.10.0-dev.4735+d02242661",
+    gives: "zig, and zig cc — a C compiler",
+    heavy: true,
+    checks: [
+      { covers: "version", run: "zig version", match: "^0\\." },
+      { covers: "zig cc compiles C", run: "printf '#include <stdio.h>\\nint main(){printf(\"%%d\",6*7);return 0;}' > z.c && zig cc z.c -o z 2>/dev/null && ./z", want: "42", timeoutMs: 300_000 },
+    ],
+  },
+  {
+    // 4.1 MB, the one small language here. Its one command is called
+    // `repl`; there is no `clisp`. (madao/ruby-wasm, also listed, exports no
+    // command at all.)
+    name: "selwynsimsek/clisp",
+    gives: "clisp — Common Lisp, as the command `repl`",
+    checks: [
+      { covers: "version", run: "repl --version 2>&1 | head -1", match: "CLISP|clisp|GNU" },
+      { covers: "evaluates", run: "repl -q -x '(+ 1 2)'", match: "3" },
+      { covers: "runs a file", run: "echo '(princ (* 6 7))' > l.lisp && repl -q l.lisp", match: "42" },
+    ],
+  },
+
   // ---- found by enumerating the registry rather than guessing names -------
   //
   // An earlier search probed 420 name guesses across six namespaces and

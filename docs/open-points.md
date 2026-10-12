@@ -167,6 +167,11 @@ exercises its capabilities.
 | | |
 |---|---|
 | `lua` | Does not start; even `lua -v` exits 45. The only published build |
+| `go` (fetched on first use) | Single files only: Go cannot open a relative path or learn its working directory, so `go.py` hands it absolute ones, and a module (`go mod init`, `go run .`) fails with `getwd: File name too long`. A Go program opening a file by a relative path fails too, and a binary `go build` makes runs once — the second exec is `Exec format error` — so `go run` is the way |
+| C++ (clang, on first use) | `#include <iostream>` does not finish compiling — fifteen minutes on a three-line program — where `<cstdio>` takes seconds. Run on a file that includes it says so first |
+| `repl`, Common Lisp (on first use) | Expressions and the REPL; a file passed to it crashes, exit 11 |
+| `ruby` | `-e` only; a script file exits 1, and `-e "$(cat f.rb)"` prints nothing. Not offered |
+| `zig` | `zig version` only; `zig run` and `zig cc` fail with FileNotFound. Not offered |
 
 That is the whole list, and it is now one line long. `sort`, `tail`, `split`,
 `stat`, `du`, `sha256sum` and `md5sum` were on it until they became python
@@ -196,9 +201,14 @@ does not exist and exits 79 with no output, which is indistinguishable from a
 commit that never happened and was reported that way here before being
 diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 
-**Not shipped, working, and each a first-load decision of its own:** `node`,
-`npm` and `pnpm` at 73.7 MB, `php` at 81.7, `git` at 85.1, `clang` at 104.3 —
-against a mirror that is currently 80 MB.
+**Fetched the first time they are used, since 12 October:** C and C++
+(`clang`, with `gcc`, `g++`, `cc` and `c++` as aliases to it), `node`, `npm`
+and `pnpm`, `php`, `go`, and Common Lisp as `repl` — none on a visit, each
+when a line names it or Run is pressed on a file it runs. See
+[dev/pad.md](dev/pad.md#languages-on-first-use). **Not offered at all:** Java
+and `gcc` itself, which do not exist for this sandbox; `git` (85 MB, and it
+needs `GIT_PAGER=cat`), which is a tool rather than a language and was not
+asked for.
 
 ---
 

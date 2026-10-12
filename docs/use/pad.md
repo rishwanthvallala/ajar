@@ -247,7 +247,25 @@ both work.
 A server you start can be previewed by you, but it is not reachable from
 anywhere else.
 
-**No `git`, `make`, or compilers.** It is for scripts and text, not builds.
+**C, Go, JavaScript and PHP come the first time you use them.** Type `clang`,
+`go`, `node` or `php` — or press Run on a `.c`, `.go`, `.js` or `.php` file —
+and the terminal says it is fetching that language, how big it is, and then
+runs your line: about 106 MB for C, 273 MB for Go, 75 for Node and 82 for PHP
+before compression, the first time a tab uses it — so nobody who only writes
+Python pays for them. The terminal
+starts a fresh shell when one arrives; you stay in the same folder, with what
+you exported. Common Lisp is there the same way, as `repl`.
+
+Each has its limits. `gcc`, `g++` and `cc` are clang under those names. C++
+compiles, but not `#include <iostream>` — it never finishes; use `<cstdio>` and
+`printf`. Go runs a single file with `go run`, not a module —
+`go mod init` does not work — a Go program opens files by their full path
+(`/workspace/data.txt`), and a program `go build` makes runs only once, so use
+`go run`. Lisp runs expressions and its REPL, not files.
+
+**No Java, no `gcc`, no Ruby, no `git` or `make`.** There is no Java runtime or
+`gcc` for this kind of sandbox at all; C is clang. Ruby and Zig exist but do not
+work well enough yet.
 
 **No `ssh`, `vim` or `less`.** `nano` is there; the other two are not.
 

@@ -144,6 +144,26 @@ await page
     timeout: 300_000,
   })
   .catch(() => console.log("  (the run did not finish; recording what was asked for anyway)"));
+// The languages fetched on first use, each used once so their packages and
+// registry answers are recorded too — or a first `go` would come from Wasmer's
+// CDN uncompressed, 273 MB of it, and need the registry to find it.
+const toolchains = await page.evaluate(() => window.__pad?.toolchains?.() ?? []);
+if (toolchains.length) {
+  await page.click("#terminal");
+  for (const t of toolchains) {
+    console.log(`  using ${t.name} once (${t.command})…`);
+    await page.locator("#terminal .xterm-helper-textarea").focus();
+    // Quoted apart, so the line as typed does not already read as its answer.
+    await page.keyboard.type(`${t.command} --version >/dev/null 2>&1; echo used-"${t.command}"`);
+    await page.keyboard.press("Enter");
+    await page
+      .waitForFunction((c) => (document.querySelector("#terminal .xterm-rows")?.textContent ?? "").includes(`used-${c}`), t.command, { timeout: 900_000 })
+      .catch(() => console.log(`  (${t.name} did not answer; recording what was asked for anyway)`));
+    // What the terminal said, so a language that was not fetched says why.
+    const said = await page.evaluate(() => [...document.querySelectorAll("#terminal .xterm-rows > div")].map((d) => d.textContent.trim()).filter(Boolean).slice(-4));
+    for (const line of said) console.log(`      | ${line.slice(0, 160)}`);
+  }
+}
 await Promise.all(answering);
 await browser.close();
 server.close();

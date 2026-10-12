@@ -166,8 +166,55 @@ async function one(sh: Shell, check: Check, printed: () => string): Promise<Chec
   return base;
 }
 
+/**
+ * Whether a package installed into a sandbox already running — the product's,
+ * with its shell open — gives that shell its commands. What a language loaded
+ * on first use, rather than on every visit, depends on.
+ */
+async function lazy(pkg: string, command: string): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = { pkg, command };
+  let captured = "";
+  const rt = await Runtime.start({ "seed.txt": "seeded\n" });
+  const sh = await Shell.open(rt, { columns: 80, rows: 24 }, (t) => {
+    captured += t;
+  });
+  const run = async (line: string) => {
+    captured = "";
+    const r = await within(line, Number(new URLSearchParams(location.search).get("ms") ?? 300_000), sh.run(line));
+    return { exit: r.exitCode, said: captured.replace(ANSI, "").trim().slice(-400) };
+  };
+  out.before = await run(command);
+  const began = performance.now();
+  try {
+    await within(`install ${pkg}`, 600_000, rt.install(pkg));
+    out.installMs = Math.round(performance.now() - began);
+  } catch (e) {
+    out.installError = (e as Error).message;
+    return out;
+  }
+  out.after = await run(command);
+  out.hashed = await run(`hash -r; ${command}`);
+  const name = command.split(/\s/)[0];
+  out.inBin = await run(`ls /bin /usr/bin /usr/local/bin 2>/dev/null | grep -x ${name} | head -3; echo "PATH=$PATH"`);
+  out.childBash = await run(`bash -c '${command.replace(/'/g, "")}'`);
+  out.absolute = await run(`/bin/${command}`);
+  // And a shell opened after the install, as a fresh terminal would be.
+  let fresh = "";
+  const sh2 = await within("second shell", 120_000, Shell.open(rt, { columns: 80, rows: 24 }, (t) => { fresh += t; }));
+  fresh = "";
+  const r2 = await within("fresh shell", Number(new URLSearchParams(location.search).get("ms") ?? 300_000), sh2.run(command));
+  out.freshShell = { exit: r2.exitCode, said: fresh.replace(ANSI, "").trim().slice(-400) };
+  return out;
+}
+
 async function main() {
   const params = new URLSearchParams(location.search);
+  const lazyPkg = params.get("lazy");
+  if (lazyPkg) {
+    (window as unknown as { __results: unknown }).__results = [await lazy(lazyPkg, params.get("cmd") ?? "true").catch((e) => ({ error: String(e) }))];
+    (window as unknown as { __done: boolean }).__done = true;
+    return;
+  }
   const all = params.get("all") === "1";
   const only = params.get("only");
 

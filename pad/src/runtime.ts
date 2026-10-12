@@ -184,6 +184,18 @@ export class Runtime {
   private readonly written = new Map<string, string>();
   private inFlight = new Set<Promise<unknown>>();
 
+  /**
+   * Add a package to the running sandbox, by registry name: its commands are
+   * there for the next one run.
+   */
+  async install(pkg: string): Promise<void> {
+    await this.box.installPackage(pkg);
+    this.installed.add(pkg);
+  }
+
+  /** The packages `install` has added, by the name it was given. */
+  readonly installed = new Set<string>();
+
   /** What the page last wrote to `path`, if it was text and is still there. */
   wrote(path: string): string | undefined {
     return this.written.get(path);

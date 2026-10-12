@@ -642,6 +642,55 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   expect("and so does typing while the move is being saved", (await editorText("helper.py"))?.includes("# typed-while-moving"), JSON.stringify((await editorText("helper.py"))?.slice(-60)));
   page.off("request", onPut);
 
+  // ---- a language on first use ----
+  // Fetched the first time a line names it, not on every visit, and run in a
+  // fresh shell — a package installed into a running sandbox is not seen by
+  // the shell already open. Common Lisp, because it is 4 MB; C, Go, Node and
+  // PHP go the same way.
+  section = "languages";
+  await clear();
+  await typed("mkdir -p lang && cd lang && export KEPT=kept");
+  await clear();
+  await typed('repl --version | head -1; pwd; echo "is $KEPT"', 240_000);
+  expect("a language a line names is fetched first, and the terminal says so", await shows(/fetching Common Lisp \(clisp\) for this pad/), await tail(6));
+  expect("and the line then runs with it", await shows(/GNU CLISP/), await tail(6));
+  expect(
+    "in a fresh shell, where the last one was and with what it exported",
+    (await shows(/\/workspace\/lang/)) && (await shows(/is kept/)),
+    await tail(6),
+  );
+  await clear();
+  await typed("repl --version | head -1", 60_000);
+  const again = await tail(6);
+  expect("and the next time it is there already", (await shows(/GNU CLISP/)) && !again.includes("fetching"), again);
+  await typed("cd /workspace");
+
+  // Every language, through Run — opt in: several hundred MB on a first use,
+  // too much for every CI run, and what a deploy is checked with.
+  //   PAD_LANGUAGES=1 node pad/scripts/user-check.mjs
+  if (process.env.PAD_LANGUAGES) {
+    for (const [file, source, want] of [
+      ["hello.c", '#include <stdio.h>\nint main(){ printf("c says %d\\n", 6*7); return 0; }\n', /c says 42/],
+      ["hello.cpp", '#include <cstdio>\nint main(){ auto f = [](int a){ return a * 2; }; std::printf("cpp says %d\\n", f(21)); }\n', /cpp says 42/],
+      ["hello.js", "console.log('js says', 6 * 7);\n", /js says 42/],
+      ["hello.php", "<?php echo 'php says ' . (6 * 7) . PHP_EOL;\n", /php says 42/],
+      ["hello.go", 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("go says", 6*7) }\n', /go says 42/],
+    ]) {
+      await clear();
+      await newFile(file, source);
+      await page.click("#run");
+      await wait(300);
+      const done = await idle(600_000);
+      expect(`Run on ${file} fetches its language the first time and runs it`, done && (await shows(want, 5000)), await tail(6));
+    }
+    await clear();
+    await open("hello.go");
+    await page.click("#run");
+    await wait(300);
+    expect("and runs it again, with nothing fetched", (await idle(120_000)) && (await shows(/go says 42/, 5000)) && !(await tail(6)).includes("fetching"), await tail(6));
+    await open("main.py");
+  }
+
   // ---- keys ----
   section = "keys";
   await page.evaluate(() => {

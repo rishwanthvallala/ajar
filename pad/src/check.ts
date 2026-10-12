@@ -13,6 +13,7 @@ import { asEditorHolds, cssString, DocSession, eolOf, participantId, utf8Of } fr
 import { RuntimeNotices, Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
+import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { seedFiles } from "./seed";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
@@ -743,6 +744,25 @@ async function main() {
   const noise = await diff(rt, known, bins);
   is(noise.changes.length, 0, "generated files are not published");
   is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
+
+  // ---- languages on first use ----
+  // What a line runs decides what is fetched before it does.
+  {
+    is(commandsIn("FOO=1 time go build ./... && ./app | grep x; sudo node a.js").join(","), "go,app,grep,node", "the commands a line runs, past assignments and the words that run the next");
+    is(commandsIn("echo $(php -v) `clang --version`").join(","), "echo,php,clang", "including inside $( ) and backticks");
+    const none = new Set<string>();
+    is(neededBy("go run m.go | node x.js && go vet", none).map((t) => t.name).join(","), "Go,Node.js", "a line needs each language it names, once, in order");
+    is(neededBy("ls -la; python x.py && clangs", none).length, 0, "and none for commands already here, or ones only like a language's");
+    const go = TOOLCHAINS.find((t) => t.name === "Go")!;
+    is(neededBy("go version", new Set([go.pkg])).length, 0, "nor one already fetched");
+    is(runnerFor("src/main.c")?.line, "clang 'src/main.c' -o /tmp/a.out && /tmp/a.out", "Run compiles a C file and runs it");
+    is(runnerFor("it's.go")?.line, "go run 'it'\\''s.go'", "a name with a quote in it is quoted");
+    is(runnerFor("app.js")?.toolchain.name, "Node.js", "a .js file runs with node");
+    const cpp = runnerFor("hello.cpp")?.line ?? "";
+    is(cpp.includes("clang++ 'hello.cpp'") && cpp.includes("<iostream>"), true, "a .cpp file compiles with clang++, saying first if it needs <iostream>");
+    is(neededBy("gcc hi.c && ./a.out", none)[0]?.pkg, runnerFor("hi.c")?.toolchain.pkg, "and gcc is clang's, so typing it fetches C");
+    is(runnerFor("notes.txt"), null, "and nothing runs what no language does");
+  }
 
   // ---- the runtime's word when a pipe's reader leaves ----
   // A real tool dies of SIGPIPE without a word; the runtime said so on the

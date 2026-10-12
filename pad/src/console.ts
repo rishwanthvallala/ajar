@@ -40,6 +40,12 @@ export interface ConsoleHooks {
   onBusy?: (busy: boolean) => void;
   /** Whether a program has the whole screen — the alternate buffer is up. */
   fullScreen?: () => boolean;
+  /**
+   * Called with each line before it runs. Fetches a language the line names
+   * that this pad does not have yet, and hands back the fresh shell that then
+   * runs it — or nothing, when the shell it has will do.
+   */
+  prepare?: (command: string) => Promise<Shell | null>;
 }
 
 interface Search {
@@ -562,6 +568,8 @@ export class Console {
         }
         this.shell = await this.hooks.shellFor();
       }
+      const fresh = await this.hooks.prepare?.(command);
+      if (fresh) this.shell = fresh;
       finished = await this.shell.run(command);
     } catch (e) {
       this.screen.write(`${this.freshRow()}\x1b[31m${(e as Error).message}\x1b[0m\r\n`);

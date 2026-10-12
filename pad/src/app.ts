@@ -17,6 +17,7 @@ import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
+import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { Shell, type Finished } from "./shell";
 import { ICONS } from "./icons";
 import { openShare } from "./share";
@@ -254,6 +255,8 @@ export class App {
       shellBusy: () => this.console?.busy ?? false,
       role: () => this.access.role,
       local: () => [...this.local].sort(),
+      // For fetch-packages.mjs, which records each by using it once.
+      toolchains: () => TOOLCHAINS.map((t) => ({ name: t.name, pkg: t.pkg, command: t.commands[0] })),
     };
   }
 
@@ -810,7 +813,7 @@ export class App {
    */
   private paintRun(): void {
     const running = this.console?.busy ?? false;
-    const runnable = interpreterFor(this.active) !== null;
+    const runnable = interpreterFor(this.active) !== null || runnerFor(this.active) !== null;
     this.el.run.querySelector("span")!.textContent = running ? "Stop" : "Run";
     this.el.run.querySelector("path")?.setAttribute("d", running ? "M4.5 4.5h7v7h-7z" : "M5 3.5l7 4.5-7 4.5V3.5Z");
     this.el.run.disabled = !running && (this.busy || !runnable);
@@ -1432,6 +1435,7 @@ export class App {
       columns: () => this.cols,
       onBusy: () => this.paintRun(),
       fullScreen: () => term.buffer.active.type === "alternate",
+      prepare: (command) => this.prepare(command),
     });
     term.onData((data) => this.console?.handle(data));
     term.onResize(({ cols, rows }) => {
@@ -1440,6 +1444,53 @@ export class App {
       void this.shell?.resize(cols, rows);
     });
     this.console.start();
+  }
+
+  /**
+   * Fetch any language a line needs that this pad does not have yet, and hand
+   * back the fresh shell that has to run it — or null when nothing changed.
+   * See toolchains.ts for why a fresh one.
+   */
+  private async prepare(command: string): Promise<Shell | null> {
+    const rt = await this.ensureRuntime();
+    const needed = neededBy(command, rt.installed);
+    if (!needed.length) return null;
+    for (const t of needed) {
+      this.term?.write(`\x1b[2mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
+      const began = performance.now();
+      try {
+        await rt.install(t.pkg);
+      } catch (e) {
+        this.term?.write(`\x1b[31m${t.name} could not be fetched: ${(e as Error).message}\x1b[0m\r\n`);
+        return null;
+      }
+      this.term?.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
+    }
+    return this.replaceShell();
+  }
+
+  /**
+   * A fresh shell where the old one was, with what it had exported. Shell
+   * variables that were not exported, functions and aliases of the person's
+   * own go with the old one.
+   */
+  private async replaceShell(): Promise<Shell> {
+    const old = this.shell?.alive ? this.shell : null;
+    const where = old ? (await old.query("pwd")).trim() : "";
+    const exported = old ? await old.query("export -p") : "";
+    this.shell = null;
+    await old?.close().catch(() => {});
+    const sh = await this.ensureShell();
+    // `export -p` writes `declare -x` lines bash reads back as they are —
+    // only whole ones: a value with a line break in it spans lines, and half
+    // of one would leave the shell waiting for a closing quote.
+    const back = exported
+      .split(/\r?\n/)
+      .filter((l) => /^declare -x [A-Za-z_][A-Za-z0-9_]*(="(?:[^"\\]|\\.)*")?$/.test(l))
+      .filter((l) => !/^declare -x (PWD|OLDPWD|SHLVL|_)[=]?/.test(l));
+    if (back.length) await sh.query(back.join("; "));
+    if (where && where !== "/workspace") await sh.query(`cd '${where.replace(/'/g, "'\\''")}'`);
+    return sh;
   }
 
   private async ensureShell(): Promise<Shell> {
@@ -1507,9 +1558,11 @@ export class App {
 
   private async run(): Promise<void> {
     const program = interpreterFor(this.active);
+    // A language fetched the first time it is used — C, Go, Node, PHP.
+    const runner = program ? null : runnerFor(this.active);
     // Not over a command already running, typed or not: the button is Stop
     // then, and ⌘⏎ is ignored rather than answered with an error.
-    if (!program || this.busy || this.console?.busy) return;
+    if ((!program && !runner) || this.busy || this.console?.busy) return;
 
     this.busy = true;
     this.runPressed = performance.now();
@@ -1519,7 +1572,7 @@ export class App {
       // it is ready — only a Run pressed within the first seconds waits here.
       this.say("loading", this.runtimeReady ? "" : "getting python ready…");
       const rt = await this.ensureRuntime();
-      const sh = await this.ensureShell();
+      let sh = await this.ensureShell();
       this.console?.attach(sh);
 
       // Flush every model before running. The editor holds the text; the
@@ -1534,7 +1587,14 @@ export class App {
       // file '/workspace/sub/main.py'". A subshell, so the terminal stays where
       // it was put; and only when it is needed, so the usual command is the
       // one a person would type. /workspace is the folder — see runtime.ts.
-      const plain = `${program} ${JSON.stringify(this.active)}`;
+      const plain = runner ? runner.line : `${program} ${JSON.stringify(this.active)}`;
+      if (runner) {
+        const fresh = await this.prepare(plain);
+        if (fresh) {
+          sh = fresh;
+          this.console?.attach(fresh);
+        }
+      }
       const here = (await sh.query("pwd")).trim();
       const command = !here || here === "/workspace" ? plain : `(cd /workspace && ${plain})`;
       // Shown the way a typed one would be, because that is what it is: the

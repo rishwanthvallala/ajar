@@ -341,6 +341,58 @@ registry rather than one bad publisher. `kilyanni/coreutils` is GNU 9.11 at
 half the size of ours and would remove seven shims if that ever changes, so the
 entries stay.
 
+## Languages on first use
+
+Asked for on 12 October: java and javac, gcc, and other languages. The registry
+has **no JVM, no javac, no gcc and no tcc** — found by listing it (47,033
+packages, most of them app deployments; its listing repeats and skips, so every
+likely name was then looked up too). What it has, probed in the browser that
+day (`probe-packages.mjs`, the catalogue's "languages" block):
+
+| | Package | As published | What works |
+|---|---|---|---|
+| C | `clang/clang` | 106 MB | compiling and running C, exit status (`syrusakbary/clang`, the same build, also 4/4); a C binary runs as often as it likes |
+| C++ | the same, `--driver-mode=g++` | — | lambdas, `<cstdio>`; `<iostream>` did not finish compiling in fifteen minutes, so Run says so first |
+| JavaScript | `wasmer/edgejs` | 75 MB | `node`, `npm`, `pnpm` — all ten checks |
+| PHP | `php/php` | 82 MB | all six checks |
+| Go | `golang/go@=1.25.5-wasix-1` | 273 MB | single-file programs through `go run`, given absolute paths — see below |
+| Common Lisp | `selwynsimsek/clisp` | 4 MB | the REPL and `-x` expressions; the command is `repl`; a file crashes it (exit 11) |
+| Ruby | `katei/ruby` | — | `-e` only; a script file exits 1, and `-e "$(cat f.rb)"` prints nothing. Not offered |
+| Zig | `fschuett/zig` | — | `zig version` only; `zig run` and `zig cc` fail with FileNotFound. Not offered |
+
+None of them is installed on a visit. Every one is heavier than everything the
+pad does ship, so each is fetched into the sandbox the first time a line names
+one of its commands, or Run is pressed on a file it runs (`toolchains.ts`): the
+terminal says what is being fetched and how big it is, and the line then runs.
+
+**A package installed into a running sandbox is seen only by processes it
+starts afterwards** (`sandbox.installPackage`, measured 12 October): not the
+shell already open, not a `bash -c` from it, and nothing under `/bin`. So after
+fetching, the page opens a fresh shell where the old one was, with what it had
+exported (`App.replaceShell`), and the line runs there. Variables that were not
+exported, and the person's own aliases, stay with the old shell.
+
+**Go cannot open a relative path, or learn its working directory.** `go run
+main.go` answers `stat main.go: Bad file number`; in a module, `getwd: File name
+too long`. With an absolute path a single-file program runs and builds, so `go`
+and `gofmt` are aliases to `tools/go.py`, which makes every `.go` argument and
+the path after `-o` absolute and runs the real command from the folder root,
+where Go can tell where it is — an alias rather than a shell function because
+calling a function hangs in this bash. Modules, and so anything with more than
+one package, do not work. Inside a Go program a relative path fails the same
+way (`open data.txt: Math result not representable`), so a program opens files
+by absolute path. And a binary `go build` makes runs once: the second time,
+`cannot execute binary file: Exec format error` — so `go run`, which builds
+afresh each time, is the way to run one, and what Run uses. A C binary runs as
+often as it likes.
+
+Asked for by name alone, `golang/go` is "not in the registry": its only version
+is a pre-release, which a bare name never resolves to. Pinned, it installs.
+
+`fetch-packages.mjs` uses each of them once while recording, so they are
+mirrored and their registry answers recorded like the rest; a first `go` from
+Wasmer's CDN would otherwise be 273 MB uncompressed.
+
 ## The shell, and detecting when a command ends
 
 One shell per session. A sentinel is appended to the command **on the same

@@ -32,6 +32,8 @@ import TAIL_PY from "./tools/tail.py?raw";
 import BOX_PY from "./tools/box.py?raw";
 import EDIT_PY from "./tools/edit.py?raw";
 import SITE_PY from "./tools/sitecustomize.py?raw";
+import GO_PY from "./tools/go.py?raw";
+import { CLANG_ALIASES } from "./toolchains";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
@@ -113,6 +115,14 @@ export const SITE = ".ajar/site/sitecustomize.py";
 
 /** Where pip installs, inside the folder rather than the interpreter. */
 export const DEPS = ".deps";
+
+/**
+ * go and gofmt, through a shim that hands them absolute paths: the Go the pad
+ * fetches on first use cannot open a relative one. See tools/go.py. Aliased
+ * whether or not Go has been fetched yet, so the line that names it is what
+ * fetches it.
+ */
+export const GO = ".ajar/go.py";
 export const EDITORS = ["nano", "edit"] as const;
 
 const MARK = "";
@@ -274,6 +284,7 @@ export class Shell {
     await rt.write(BOX, BOX_PY);
     await rt.write(EDIT, EDIT_PY);
     await rt.write(SITE, SITE_PY);
+    await rt.write(GO, GO_PY);
 
     // One `run` for every alias rather than one each: each is a round trip
     // through the pty, and fourteen of them is a visible pause before the
@@ -284,6 +295,8 @@ export class Shell {
       ),
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
+      ...["go", "gofmt"].map((name) => `alias ${name}='python /workspace/${GO} ${name}'`),
+      ...CLANG_ALIASES.map(([name, to]) => `alias ${name}='${to}'`),
       // No `clear` ships in any package here, and it is the first thing
       // people type to tidy a terminal. It only has to say two sequences.
       `alias clear='printf "\\033[H\\033[2J\\033[3J"'`,
@@ -596,6 +609,9 @@ export class Shell {
    */
   close(): Promise<void> {
     this.closed = true;
+    // Gone as far as anyone asking is concerned, from now: a shell replaced
+    // for a language just fetched is handed on before bash has finished dying.
+    this.alive = false;
     return this.proc.terminate();
   }
 }
