@@ -191,6 +191,11 @@ export class App {
    * twice — `abc` typed straight after New file was `abcabc`.
    */
   private seeds = new Map<string, string>();
+  /**
+   * A command has run here and what it changed is not read back yet: from
+   * the moment it starts until the diff after it has read the sandbox.
+   */
+  private commandOut = false;
   private byStream = new Map<number, string>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
@@ -447,6 +452,24 @@ export class App {
   }
 
   /**
+   * Somebody else's text into this sandbox — but not over a command's change
+   * before it is read back (`commandOut`). Written over, the file held what
+   * the page last wrote and read as untouched, and the change was lost for
+   * everyone: somebody typing in another place while a command here edited
+   * the file, each keystroke and each save of theirs written in as it came.
+   * macOS CI caught it on 15 October. Left alone, the diff after the command
+   * puts its change on the document, and the document goes back in once it
+   * is saved.
+   */
+  private async intoSandbox(rt: Runtime, path: string, text: () => string): Promise<void> {
+    if (this.commandOut) {
+      const wrote = rt.wrote(path);
+      if (wrote !== undefined && (await rt.readBytes(path).then(textOf, () => null)) !== wrote) return;
+    }
+    await rt.write(path, text());
+  }
+
+  /**
    * Somebody else changed the folder. Re-read it rather than trusting the
    * broadcast, which carries only the fact that something moved.
    *
@@ -498,7 +521,7 @@ export class App {
       if (!doc) this.setFile(path, content);
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
-      if (rt) await rt.write(path, doc?.contents() ?? content);
+      if (rt) await this.intoSandbox(rt, path, () => doc?.contents() ?? content);
     }
     for (const path of this.known.keys()) {
       if (incoming.has(path) || this.local.has(path)) continue;
@@ -705,7 +728,7 @@ export class App {
       // The document is also the source executed by the sandbox. Keeping only
       // Monaco current lets the next harmless command publish stale runtime
       // bytes over somebody else's edit.
-      void this.runtime?.then((rt) => rt.write(path, doc.contents()));
+      void this.runtime?.then((rt) => this.intoSandbox(rt, path, () => doc.contents()));
     }
     else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
     else if (kind === DOC_WANT) {
@@ -1628,6 +1651,7 @@ export class App {
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
       onBusy: (busy) => {
+        if (busy) this.commandOut = true;
         this.paintRun();
         this.javac.busy(busy);
       },
@@ -1906,6 +1930,9 @@ export class App {
       // Read nothing back before what the page has already written is there.
       await rt.settled();
       const found = await diff(rt, this.known, this.binaries);
+      // Read back: what a command changed is in `found` now, and a document
+      // may be written into the sandbox again whatever it holds.
+      if (!this.console?.busy) this.commandOut = false;
       const { next, nextBinaries } = found;
       // A file with a live document is the document's. What the sandbox
       // holds of it is the page's own copy, written in as the document moved
@@ -1962,6 +1989,15 @@ export class App {
       // the command's text, whatever the documents have since made of it.
       for (const change of found.changes) {
         if (change.content !== null && change.encoding !== "base64") rt.saw(change.path, change.content);
+      }
+      // And what the documents made of it goes back in, so the next command
+      // runs the text everybody has: typing that came while this one ran was
+      // kept out of the sandbox (intoSandbox), not lost.
+      for (const change of found.changes) {
+        const doc = this.docs.get(change.path);
+        if (!doc?.ready || change.content === null || change.encoding === "base64" || isMarker(change.path, change.content)) continue;
+        const text = doc.contents();
+        if (text !== change.content) await rt.write(change.path, text);
       }
       if (changes.length === 0) {
         this.known = next;

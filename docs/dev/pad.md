@@ -741,6 +741,19 @@ command did change takes only that change, rebased onto the live text by
 with a byte-order mark read back without one and every command published it
 so. `pair-check.mjs` plays both, two places at once.
 
+Until 15 October that held only if nothing wrote the file between the
+command's change and the diff, and something did: every keystroke from
+another place, and every save of theirs re-read here, is written into this
+sandbox as it arrives, so the next command runs what everyone has. Landing
+in that window, it put the old text back over the command's change, which
+then read as untouched and was lost for everyone — macOS CI hit it once. Now
+`commandOut` is set from a command's start until the diff after it has read
+the sandbox, and in that time `intoSandbox` writes somebody else's text only
+over a file that still holds what the page last wrote. The rest waits for
+the diff, which puts the command's change on the document; the document then
+goes back into the sandbox. `pair-check.mjs` makes the window certain with a
+command that sleeps after its change.
+
 **Two histories of one file are told apart, not merged,** since 9 October.
 Seeding from the stored copy is safe only when nobody holds a live document,
 and "nobody answered" is not the same thing: a place whose connection dropped

@@ -335,6 +335,27 @@ try {
     await wait(a, 2500);
     await agree(a, b, "x = 42\ny = 2abcdefghijklmnop\n", "a command that changes the open file keeps its change and the other place's typing");
 
+    // The same, with the command still running when the typing arrives: the
+    // other place's keystrokes were written into this sandbox as they came,
+    // over the command's change, which then read as untouched and was lost
+    // for everyone. Narrow above — macOS CI hit it on 15 October — and
+    // certain here, where the command waits after its change.
+    await setAll(a, "x = 1\ny = 2\n");
+    await wait(a, 1200);
+    await caretAt(a, 2, 6);
+    await Promise.all([
+      (async () => { await wait(a, 1200); await a.keyboard.type("qrstuvwx", { delay: 80 }); })(),
+      (async () => { await term("sed -i 's/x = 1/x = 7/' main.py && sleep 3"); await wait(b, 150); await idle(); })(),
+    ]);
+    await wait(a, 2500);
+    await agree(a, b, "x = 7\ny = 2qrstuvwx\n", "a command that changes the open file, then takes a while, keeps its change and the typing that came meanwhile");
+    await term("cat main.py | tr '\\n' '|'; echo");
+    await wait(b, 150);
+    await idle();
+    const sandboxHas = await b.evaluate(() => document.querySelector("#terminal .xterm-rows")?.innerText.includes("x = 7|y = 2qrstuvwx|") ?? false);
+    if (sandboxHas) ok("and the sandbox there has both, for the next command");
+    else fail(`and the sandbox there has both, for the next command — ${JSON.stringify((await b.evaluate(() => document.querySelector("#terminal .xterm-rows")?.innerText ?? "")).slice(-200))}`);
+
     // Typing not yet saved, then a command in the same place that changes
     // another line of that file. Before reading back what the command did,
     // the page wrote its unsaved files into the sandbox — over the command's
