@@ -19,7 +19,36 @@ has the address. A pad that is only yours comes from signing in (below).
 
 Make files and folders, edit them, and run shell commands. A new file or
 folder is saved as soon as you make it, empty or not, and so is an empty
-folder a command makes. The bin icon beside a file deletes it, and beside a
+folder a command makes.
+
+**Making a file.** New file, above the file list, opens a row in the list
+where the file will be, and you type its name there: in the folder you clicked
+last, or beside the file that is open. Enter makes it, Escape does not, and a
+name that is taken or will not do is said under it as you type. A `/` in the
+name makes the folders on the way (`src/app.py`); one at the start means from
+the top of the pad. New folder works the same way.
+
+**Starting from something.** An empty file of a kind the pad knows — Python,
+Java, C, C++, Go, JavaScript, TypeScript, PHP, shell, HTML, CSS, JSON, SQL,
+Markdown, YAML, TOML — offers a starter on its first line: a few lines that
+run and print, the way an online compiler opens. A Java one is a class named
+after the file. Click it, or Insert Starter Code in the editor's right-click
+menu; one undo takes it out again. Typing anything instead makes the offer go.
+
+**Formatting.** Format, above the editor, formats the file — Python with Ruff,
+C, C++ and Java with clang-format, Go with gofmt, JavaScript, TypeScript, CSS
+and HTML with Biome's formatters, and JSON, SQL, YAML, TOML, Markdown, shell,
+PHP and Lua. Shift-Alt-F does the same, and so does Format Document in the
+right-click menu. Each formatter is fetched the first time a file of its kind
+is formatted, under a second on most connections. A file that will not parse
+is left as it is, and the status says which line. One undo takes the
+formatting back.
+
+**4 spaces, or 2.** Spaces: 4, beside Format, is how much an indent is: what
+Tab types, what Format indents by, and what a starter is written with. Click
+it for 2, and again for 4. It is your browser's, like the theme, and what is
+written already keeps its indent until you format it. Go and Makefiles are
+indented with tabs whatever it says, as gofmt and make want. The bin icon beside a file deletes it, and beside a
 folder deletes the folder and everything in it — for everyone with the link. The editor colours Python and
 over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
@@ -33,9 +62,11 @@ meanwhile.
 **Moving files.** Drag a file or a folder in the file list onto a folder to
 move it inside, onto a file to put it beside that file, or onto the empty
 space below to bring it to the top. With the keyboard, F2 on a file or folder
-asks for its new path, which also renames it. A move is for everyone on the
-pad, takes typing you have not saved yet with it, and asks first if it would
-replace a file that is already there. People viewing a pad cannot move
+turns its row into its name, ready to type over: a `/` in the new name moves
+it into a folder, and one at the start moves it from the top. A move is for
+everyone on the pad and takes typing you have not saved yet with it. Renamed,
+a file cannot take a name that is taken; dragged onto a file of the same name,
+it asks first whether to replace it. People viewing a pad cannot move
 anything, or import a zip.
 
 **Zips in and out.** Above the file list, the down arrow downloads the whole
@@ -56,7 +87,7 @@ for everyone on it:
   refused.
 
 **Colours** above the editor turns the colouring off, for every file, and
-shows plain text. The button at the end of the top bar picks the theme: System
+shows plain text — Format still works. The button at the end of the top bar picks the theme: System
 (follow the device), Light, or Dark. Both are remembered by your browser, not
 shared with the people you sent the link to.
 

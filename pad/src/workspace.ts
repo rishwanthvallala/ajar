@@ -14,6 +14,10 @@ export interface PadElements {
   share: HTMLButtonElement;
   preview: HTMLButtonElement;
   backToEditor: HTMLButtonElement;
+  /** Format the file in the editor; hidden where nothing formats it. */
+  format: HTMLButtonElement;
+  /** The indent, 4 spaces or 2. */
+  indent: HTMLButtonElement;
   previewPane: HTMLElement;
   status: HTMLElement;
   presence: HTMLElement;
@@ -33,6 +37,7 @@ function button(id: string, label: string, icon: string, title: string, primary 
 export class PadWorkspace {
   readonly shell: WorkspaceShell;
   readonly elements: PadElements;
+  private readonly tools: HTMLElement;
 
   constructor(root: HTMLElement, title: string, storage?: LayoutStorage | null) {
     this.shell = new WorkspaceShell(root, {
@@ -69,7 +74,22 @@ export class PadWorkspace {
 
     const backToEditor = button("back-to-editor", "Back to editor", "", "Return to the editor");
     backToEditor.hidden = true;
-    this.shell.el("editor-actions").append(backToEditor);
+    // What the editor does to the file in it, quiet beside Colours as an
+    // editor's status bar has them: no more than a word each until wanted.
+    this.tools = document.createElement("span");
+    this.tools.className = "editor-tools";
+    const tool = (id: string, label: string) => {
+      const element = document.createElement("button");
+      element.id = id;
+      element.className = "editor-tool";
+      element.textContent = label;
+      return element;
+    };
+    const format = tool("format-file", "Format");
+    format.hidden = true;
+    const indent = tool("indent", "Spaces: 4");
+    this.tools.append(format, indent);
+    this.shell.el("editor-actions").append(this.tools, backToEditor);
     this.shell.el("close-file").hidden = true;
 
     const files = this.shell.el("tree");
@@ -105,6 +125,8 @@ export class PadWorkspace {
       share,
       preview,
       backToEditor,
+      format,
+      indent,
       previewPane,
       status: this.shell.el("status"),
       presence,
@@ -147,6 +169,7 @@ export class PadWorkspace {
     this.elements.backToEditor.hidden = !open;
     this.shell.el("viewer-pane").setAttribute("aria-label", open ? "Server preview" : "Editor");
     this.shell.el("highlight-toggle").hidden = open;
+    this.tools.hidden = open;
     this.shell.el("viewer-title").textContent = open ? "Server preview" : this.elements.editor.dataset.active ?? "No file selected";
     this.shell.requestLayout();
   }

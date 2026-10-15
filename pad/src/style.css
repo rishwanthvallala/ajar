@@ -29,6 +29,21 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .pad-action.on { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .pad-shell .pad-action svg { width: 0.8125rem; height: 0.8125rem; }
 .pad-shell #back-to-editor { margin-left: auto; }
+/* Format and the indent: quiet beside Colours, as it is. */
+.pad-shell .editor-tools { display: flex; align-items: center; gap: 0.15rem; }
+.pad-shell .editor-tools[hidden], .pad-shell .editor-tool[hidden] { display: none; }
+.pad-shell .editor-tool {
+  flex: none; font: inherit; font-size: 0.75rem; line-height: 1.4; padding: 0.35rem 0.65rem;
+  border: 1px solid transparent; border-radius: 5px; background: var(--surface); color: var(--ink-2); cursor: pointer;
+}
+.pad-shell .editor-tool:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pad-shell .editor-tool:disabled { color: var(--muted); cursor: progress; }
+/* An empty file's offer of what it could start as, on its first line. */
+/* Monaco sets a widget's display itself, so the space between is a margin. */
+.pad-shell .starter-hint { padding-left: 0.3rem; white-space: nowrap; font: 0.75rem/1.6 system-ui, sans-serif; color: var(--muted); }
+.pad-shell .starter-hint span { margin-left: 0.35rem; }
+.pad-shell .starter-hint button { font: inherit; padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; }
+.pad-shell .starter-hint button:hover { text-decoration: underline; }
 
 .pad-shell .files { min-width: 0; min-height: 0; overflow: auto; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .pad-shell .tree-bar { display: flex; gap: 2px; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--rule); }
@@ -77,6 +92,20 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }
 /* No hover to reveal it on a touch screen, so it is always there. */
 @media (hover: none) { .pad-shell .file-row > :is(.delete, .get) { opacity: 0.7; } }
+/* A name typed into the tree, where the thing will be; what is wrong with it under it. */
+.pad-shell .row.naming { cursor: default; overflow: visible; padding-right: 0.5rem; }
+.pad-shell .row.naming:hover { background: transparent; }
+.pad-shell .name-input {
+  flex: 1; min-width: 0; height: calc(var(--tree-row) - 0.3rem); margin: 0; padding: 0 0.3rem;
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--accent); border-radius: 2px; outline: 0;
+}
+.pad-shell .name-input[aria-invalid] { border-color: var(--hard); }
+.pad-shell .name-problem {
+  position: absolute; top: calc(100% - 0.15rem); right: 0.5rem; z-index: 3; padding: 0.3rem 0.45rem;
+  font: 0.6875rem/1.4 system-ui, sans-serif; color: var(--ink); white-space: normal;
+  background: color-mix(in srgb, var(--hard) 14%, var(--surface)); border: 1px solid var(--hard); border-radius: 0 0 3px 3px;
+}
+.pad-shell .name-problem[hidden] { display: none; }
 
 .pad-shell #viewer { position: relative; display: block; overflow: hidden; }
 .pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }

@@ -15,6 +15,7 @@ import { carryOver, type Edit, putBack } from "./carry";
 import { Console } from "./console";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
+import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { JavacBridge } from "./javac/bridge";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
@@ -26,6 +27,7 @@ import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, storedHash, type Pad } from "./store";
 import { seedFiles } from "./seed";
+import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf } from "./sync";
 import type { PadWorkspace } from "./workspace";
 
@@ -102,12 +104,35 @@ export interface AppHooks {
 const WISP_URL: string = import.meta.env.VITE_WISP_URL ?? "";
 const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
 
+/** Where the indent is kept: this browser's, like the theme. */
+const INDENT_KEY = "pad.indent";
+
+function readIndent(): 2 | 4 {
+  try {
+    return localStorage.getItem(INDENT_KEY) === "2" ? 2 : 4;
+  } catch {
+    return 4;
+  }
+}
+
 export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private monaco: typeof Monaco | null = null;
   private models = new Map<string, Monaco.editor.ITextModel>();
   private active = "";
+  /**
+   * Spaces to a level of indent, in every file: 4 unless set to 2, with
+   * Spaces in the editor's bar. What Tab types, what Format indents by, and
+   * what a starter is written with.
+   */
+  private indent = readIndent();
+  private formatting = false;
+  /** Whether Format Document, and Insert Starter Code, have anything to do: Monaco's own conditions. */
+  private canFormat: Monaco.editor.IContextKey<boolean> | null = null;
+  private canStart: Monaco.editor.IContextKey<boolean> | null = null;
+  /** An empty file's offer of what it could start as, and for which file. */
+  private starterHint: { widget: Monaco.editor.IContentWidget; key: string } | null = null;
   private runtime: Promise<Runtime> | null = null;
   private shell: Shell | null = null;
   private console: Console | null = null;
@@ -159,6 +184,13 @@ export class App {
    * so typing in between can be carried over rather than replaced.
    */
   private shownUnbound = new Map<string, string>();
+  /**
+   * What this browser seeded a file's document with, until it is bound. A
+   * seed is the stored copy or the model, and either can hold typing done
+   * while the binding waited: carried over from what was shown, it went in
+   * twice — `abc` typed straight after New file was `abcabc`.
+   */
+  private seeds = new Map<string, string>();
   private byStream = new Map<number, string>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
@@ -233,6 +265,8 @@ export class App {
       share: HTMLButtonElement;
       preview: HTMLButtonElement;
       backToEditor: HTMLButtonElement;
+      format: HTMLButtonElement;
+      indent: HTMLButtonElement;
       previewPane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
@@ -564,6 +598,7 @@ export class App {
     const stored = unsaved ?? this.known.get(path) ?? this.models.get(path)?.getValue() ?? "";
     if (!this.peers || this.peers.alone) {
       doc.seed(stored);
+      this.seeds.set(path, stored);
       return doc;
     }
 
@@ -593,7 +628,10 @@ export class App {
     this.awaiting.delete(path);
     this.unanswered.delete(path);
     // Nobody answered, so nobody else has it open and the stored copy is safe.
-    if (!answered) doc.seed(stored);
+    if (!answered) {
+      doc.seed(stored);
+      this.seeds.set(path, stored);
+    }
     return doc;
   }
 
@@ -615,6 +653,7 @@ export class App {
     this.docs.delete(path);
     this.docReady.delete(path);
     this.shownUnbound.delete(path);
+    this.seeds.delete(path);
     this.byStream.delete(streamFor(path));
     this.awaiting.delete(path);
     this.unanswered.delete(path);
@@ -723,7 +762,32 @@ export class App {
       monaco.editor.setTheme(editorTheme());
       this.editor?.updateOptions({ fontSize: this.codeFontPx() });
     }, this.events.signal);
-    this.editor.onDidChangeModelContent(() => this.warm());
+    this.editor.onDidChangeModelContent(() => {
+      this.warm();
+      this.paintStarter();
+    });
+    // Monaco's Format Document, with its key and its place in the menu, for
+    // the formatters here (format.ts) — its own are in the workers that
+    // cannot start. And an empty file's starter, for the keyboard.
+    this.canFormat = this.editor.createContextKey("padCanFormat", false);
+    this.canStart = this.editor.createContextKey("padCanStart", false);
+    this.editor.addAction({
+      id: "pad.format",
+      label: "Format Document",
+      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+      precondition: "padCanFormat",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 1.3,
+      run: () => this.formatActive(),
+    });
+    this.editor.addAction({
+      id: "pad.starter",
+      label: "Insert Starter Code",
+      precondition: "padCanStart",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 1.4,
+      run: () => this.insertStarter(),
+    });
   }
 
   private setFile(path: string, content: string): void {
@@ -735,6 +799,8 @@ export class App {
       return;
     }
     const model = this.monaco.editor.createModel(content, this.languageOf(path));
+    // The indent set here, not one guessed from the file.
+    model.updateOptions(this.indentOptions(path));
     // Per model, not on the editor. `onDidChangeModelContent` fires only for
     // whichever model is attached right now, so a change to any other file —
     // including one arriving from the shell — would never be noticed.
@@ -800,6 +866,8 @@ export class App {
       const mb = Math.round(model.getValueLength() / (1024 * 1024));
       this.say("", `${path} is about ${mb} MB, too large to edit together live — read-only here; change it from the terminal`);
     }
+    this.paintTools();
+    this.paintStarter();
     // Bound once the document is ready, which may mean waiting for another
     // browser to send it. The model already shows the stored copy meanwhile,
     // so the wait is invisible rather than blank.
@@ -837,13 +905,12 @@ export class App {
    * see it immediately — someone who makes `notes.py` and types `python
    * notes.py` should not have to press Run first to bring it into existence.
    */
-  private addFile(inDirectory = ""): void {
-    const name = this.askFor("New file", "untitled.py", inDirectory);
-    if (!name) return;
-    if (this.models.has(name)) return this.show(name);
+  private addFile(name: string, open = true): void {
+    if (this.models.has(name)) return open ? this.show(name) : undefined;
     if (this.viewer) this.local.add(name);
     this.setFile(name, "");
-    this.show(name);
+    if (open) this.show(name);
+    else this.renderFiles();
     // Into the sandbox too, so `python notes.py` works without pressing Run
     // first to bring the file into existence.
     void this.runtime?.then((rt) => rt.write(name, ""));
@@ -854,7 +921,7 @@ export class App {
       this.dirty.add(name);
       this.saveSoon();
     }
-    this.editor?.focus();
+    if (open) this.editor?.focus();
   }
 
   /**
@@ -865,9 +932,7 @@ export class App {
    * used to exist only in the tab that made it until something landed inside.
    * A viewer's stays in their tab, as their files do.
    */
-  private addFolder(inDirectory = ""): void {
-    const name = this.askFor("New folder", "data", inDirectory);
-    if (!name) return;
+  private addFolder(name: string): void {
     this.tree?.addPendingFolder(name);
     void this.runtime?.then((rt) => rt.write(`${name}/${MARKER}`, "").catch(() => {}));
     this.renderFiles();
@@ -892,18 +957,6 @@ export class App {
     }
   }
 
-  /** One prompt, one set of rules, so both buttons refuse the same paths. */
-  private askFor(title: string, placeholder: string, inDirectory: string): string | null {
-    const raw = prompt(title, inDirectory ? `${inDirectory}/${placeholder}` : placeholder);
-    const name = raw?.trim().replace(/^\/+|\/+$/g, "") ?? "";
-    if (!name) return null;
-    if (name.split("/").some((p) => !p || p === "." || p === "..")) {
-      this.say("error", "that path will not work");
-      return null;
-    }
-    return name;
-  }
-
 
   private async attach(path: string, model: Monaco.editor.ITextModel): Promise<void> {
     // A viewer's own copy has no live document: that is what makes it theirs.
@@ -924,7 +977,16 @@ export class App {
     // while it was on its way. That typing goes back in as an ordinary edit,
     // so it reaches everybody and is saved like any other.
     this.unbind = doc.bind(this.monaco, this.editor, model);
-    const edit = carryOver(shown, typed, model.getValue());
+    // A document this browser seeded, and nobody has changed since, is this
+    // browser's own text: what it lacks of the typing is all there is to
+    // carry. One from somebody else carries what was typed since it was shown.
+    // Compared as the editor held it — Monaco sets a file's byte-order mark
+    // aside when it makes the model, so the typing never had one, and against
+    // the document's that read as the mark deleted.
+    const seed = this.seeds.get(path);
+    this.seeds.delete(path);
+    const now = model.getValue();
+    const edit = carryOver(seed !== undefined && seed === now ? now.replace(/^\uFEFF/, "") : shown, typed, now);
     if (!edit) return;
     const from = model.getPositionAt(edit.at);
     const to = model.getPositionAt(edit.at + edit.remove);
@@ -934,6 +996,132 @@ export class App {
       () => null,
     );
     this.editor.setPosition(model.getPositionAt(edit.at + edit.insert.length));
+  }
+
+  // ------------------------------------------------------- format, starters
+
+  /** How a file is indented: by the indent set here, or with tabs where its kind says so. */
+  private indentOptions(path: string): Monaco.editor.ITextModelUpdateOptions {
+    return { tabSize: this.indent, indentSize: this.indent, insertSpaces: !usesTabs(path) };
+  }
+
+  private unitFor(path: string): string {
+    return usesTabs(path) ? "\t" : " ".repeat(this.indent);
+  }
+
+  /** Format, and the indent, for the file in the editor. */
+  private paintTools(): void {
+    const formatter = this.active && !this.solo(this.active) ? formatterFor(this.active) : null;
+    this.el.format.hidden = formatter === null;
+    this.el.format.disabled = this.formatting;
+    this.el.format.textContent = this.formatting ? "Formatting…" : "Format";
+    if (formatter) this.el.format.title = `Format this file with ${formatter.name} (⇧⌥F)`;
+    this.canFormat?.set(formatter !== null && !this.formatting);
+    const other = this.indent === 4 ? 2 : 4;
+    const tabs = usesTabs(this.active);
+    this.el.indent.textContent = tabs ? `Tab size: ${this.indent}` : `Spaces: ${this.indent}`;
+    this.el.indent.title = tabs
+      ? `This file is indented with tabs, shown ${this.indent} wide — show them ${other} wide`
+      : `Indenting with ${this.indent} spaces, in every file — switch to ${other}`;
+  }
+
+  /** 4 spaces or 2: for every file open here, and for this browser from now on. */
+  private setIndent(size: 2 | 4): void {
+    this.indent = size;
+    try {
+      localStorage.setItem(INDENT_KEY, String(size));
+    } catch {
+      // For this visit, then.
+    }
+    for (const [path, model] of this.models) model.updateOptions(this.indentOptions(path));
+    this.paintTools();
+    // What is written already keeps its indent until it is formatted.
+    this.say("", `indenting with ${size} spaces — Format re-indents a file`);
+  }
+
+  /**
+   * The file in the editor, formatted. One edit, of only what changed, so one
+   * undo takes it back and it reaches everyone on the pad as typing does.
+   */
+  private async formatActive(): Promise<void> {
+    const editor = this.editor;
+    const monaco = this.monaco;
+    const path = this.active;
+    const model = this.models.get(path);
+    if (!editor || !monaco || !model || this.formatting || this.solo(path) || !formatterFor(path)) return;
+    this.formatting = true;
+    this.paintTools();
+    try {
+      const before = model.getValue();
+      // The first time, this fetches the formatter.
+      const after = await formatText(path, before, this.indent);
+      // Typed in meanwhile: formatting what was there would throw that away.
+      if (model.isDisposed() || model.getValue() !== before) return this.say("", `${path} changed while it was being formatted — format it again`);
+      const edit = carryOver(before, after, before);
+      if (!edit) return this.say("", `${path} is formatted already`);
+      const range = monaco.Range.fromPositions(model.getPositionAt(edit.at), model.getPositionAt(edit.at + edit.remove));
+      if (editor.getModel() === model) {
+        editor.pushUndoStop();
+        editor.executeEdits("pad.format", [{ range, text: edit.insert }]);
+        editor.pushUndoStop();
+      } else {
+        model.pushEditOperations([], [{ range, text: edit.insert }], () => null);
+      }
+      this.say("", `formatted ${path}`);
+    } catch (e) {
+      this.say("error", `${path} was not formatted: ${problemOf(e, model.getValue())}`);
+    } finally {
+      this.formatting = false;
+      this.paintTools();
+    }
+  }
+
+  /** An empty file's offer of what it could start as, on its first line where the code would go. */
+  private paintStarter(): void {
+    const editor = this.editor;
+    const monaco = this.monaco;
+    if (!editor || !monaco) return;
+    const model = editor.getModel();
+    const starter = model && model.getValueLength() === 0 && !this.solo(this.active) ? starterFor(this.active, this.unitFor(this.active)) : null;
+    this.canStart?.set(starter !== null);
+    const key = starter ? `${this.active}\n${starter.label}` : "";
+    if (this.starterHint?.key === key) return;
+    if (this.starterHint) editor.removeContentWidget(this.starterHint.widget);
+    this.starterHint = null;
+    if (!starter) return;
+    const node = document.createElement("div");
+    node.className = "starter-hint";
+    const take = document.createElement("button");
+    take.type = "button";
+    take.textContent = `Insert ${starter.label}`;
+    take.title = "A few lines that run and print — undo takes them out again";
+    take.onclick = () => this.insertStarter();
+    const or = document.createElement("span");
+    or.textContent = "or start typing";
+    node.append(take, or);
+    const widget: Monaco.editor.IContentWidget = {
+      getId: () => "pad.starter-hint",
+      getDomNode: () => node,
+      getPosition: () => ({ position: { lineNumber: 1, column: 1 }, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] }),
+    };
+    editor.addContentWidget(widget);
+    this.starterHint = { widget, key };
+  }
+
+  /** The starter, put in as typing would be: one undo takes it out, and everyone on the pad sees it. */
+  private insertStarter(): void {
+    const editor = this.editor;
+    const model = editor?.getModel();
+    if (!editor || !model || model.getValueLength() !== 0) return;
+    const starter = starterFor(this.active, this.unitFor(this.active));
+    if (!starter) return;
+    editor.pushUndoStop();
+    editor.executeEdits("pad.starter", [{ range: model.getFullModelRange(), text: starter.text }]);
+    editor.pushUndoStop();
+    const line = Math.min(starter.line, model.getLineCount());
+    editor.setPosition({ lineNumber: line, column: model.getLineMaxColumn(line) });
+    editor.revealLineInCenterIfOutsideViewport(line);
+    editor.focus();
   }
 
   private renderFiles(): void {
@@ -946,8 +1134,8 @@ export class App {
         this.show(path);
         if (this.ui?.fileSelected()) this.editor?.focus();
       },
-      onNewFile: (dir) => this.addFile(dir),
-      onNewFolder: (dir) => this.addFolder(dir),
+      onCreateFile: (path, open) => this.addFile(path, open),
+      onCreateFolder: (path) => this.addFolder(path),
       onDelete: (path) => void this.deleteFile(path),
       onDeleteFolder: (path) => void this.deleteFolder(path),
       onDownload: (path, folder) => void this.download(path, folder),
@@ -1561,6 +1749,9 @@ export class App {
     addEventListener("pagehide", () => this.flushSaves(), { signal: this.events.signal });
     this.el.preview.onclick = () => void this.togglePreview();
     this.el.backToEditor.onclick = () => void this.togglePreview();
+    this.el.format.onclick = () => void this.formatActive();
+    this.el.indent.onclick = () => this.setIndent(this.indent === 4 ? 2 : 4);
+    this.paintTools();
     addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();

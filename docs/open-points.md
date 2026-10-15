@@ -397,6 +397,63 @@ still open in it:
 - **Encrypted private pads,** so that "only people with a view link" is
   something the server cannot read rather than something it enforces.
 
+**Backgrounds for the pad — for review, not built.** Asked for on 15 October:
+dark stays the default, and a person can set their own background, or
+shuffle through a set of them. Written up here to decide whether it is worth
+doing, and in what shape, before any of it is built.
+
+*What there is now.* Three looks — System, Light, Dark — on the round button
+at the end of the top bar, one press each. Every colour is a token in
+`packages/workspace-ui/src/theme.css` (`--bg`, `--surface`, `--ink`, `--accent`
+and the rest), and `theme.ts` gives Monaco and the terminal matching palettes.
+Both products share it, so whatever this becomes, ajar's viewer gets too.
+
+*Two ways to read "background", and which to build.*
+
+1. **Palettes**: whole looks, each a set of the tokens plus an editor and a
+   terminal palette — say Dark (today's), Light, Midnight, Solarized, Nord,
+   Paper, a high-contrast one. "Shuffle" picks another at random; a custom one
+   is a background colour and an accent, the rest worked out from them.
+   Everything stays legible because every look is made the same way as the
+   two that exist, and checked for contrast the same way (the muted grey is
+   already chosen for 5:1).
+2. **Wallpapers**: a picture or gradient behind the panes, the editor and the
+   terminal made see-through. Pretty in a screenshot; worse to read code on,
+   since contrast changes along every line. Monaco takes a transparent
+   background but then draws its selections and current-line highlight over
+   the picture. A custom picture cannot be a link — the pad's CSP allows
+   images only from itself — so it would have to be uploaded into browser
+   storage, a few MB at most, and would be lost when that is cleared.
+
+The recommendation is **palettes**, with wallpapers left out, or limited to a
+faint gradient behind the bars and never behind code.
+
+*Where it would go, without clutter.* Not a new button. The theme button
+becomes a small menu: the looks, each shown as a swatch, a Shuffle entry, and
+Custom… which opens two colour pickers. Pressing the button itself could keep
+stepping to the next look, as it does now.
+
+*Decisions it needs.*
+
+- **Whose it is.** Proposed: the browser's, like the theme, Colours and the
+  indent are today. A pad-wide look, set by its owner for everyone who opens it, is a
+  second feature — it would be stored with the pad and has to stay legible on
+  every device.
+- **What Shuffle means.** A new look on every visit is a surprise nobody asked
+  for when they come back to work; a new look each time it is pressed is a
+  toy. Proposed: only when pressed, and remembered after.
+- **How many looks.** Each is about twenty colours for the page, a Monaco
+  theme and a terminal palette, and a contrast check. Six is a day's work;
+  every one after is an hour, and a promise to keep it looking right as the UI
+  changes.
+
+*What it costs.* `THEME_CHOICES` becomes a list of named palettes, `theme.css`
+a block per palette (or the tokens set from `theme.ts`), `defineEditorThemes`
+one Monaco theme per palette, and the terminal's colours per palette as well.
+About two days with the checks: a screenshot of each look in the browser
+checks, and a contrast assertion on the tokens. No new dependencies, no change
+to the store.
+
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of

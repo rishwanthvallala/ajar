@@ -388,8 +388,9 @@ try {
     else fail(`a command here that rewrites a file open only in the other place shows there — it shows ${JSON.stringify((await state(a)).screen)}`);
 
     // A new file, opened while empty, then written by a command.
-    b.once("dialog", (d) => d.accept("out.csv"));
     await b.locator('#files button[aria-label="New file"]').click();
+    await b.locator("#files input.name-input").fill("/out.csv");
+    await b.locator("#files input.name-input").press("Enter");
     await wait(b, 1500);
     await b.locator("#files").getByText("main.py", { exact: true }).click();
     await term("printf 'a,b\\n1,2\\n' > out.csv");

@@ -148,9 +148,8 @@ async function person(label) {
   page.on("console", (m) => {
     if (/Content Security Policy|Refused to/i.test(m.text())) fail(`${label}: CSP: ${m.text().slice(0, 160)}`);
   });
-  // Confirms are answered yes, prompts with what they suggest, and leaving
-  // with local changes is let through.
-  page.on("dialog", (d) => void (d.type() === "prompt" ? d.accept(d.defaultValue()) : d.accept()));
+  // Confirms are answered yes, and leaving with local changes is let through.
+  page.on("dialog", (d) => void d.accept());
   pages.set(label, page);
   return page;
 }
@@ -252,6 +251,8 @@ try {
   // else types in while you look at another keeps an old copy in your editor,
   // and Run used to write that copy into the sandbox and save it over theirs.
   await editor.click('#files button[aria-label="New file"]');
+  await editor.locator("#files input.name-input").fill("/untitled.py");
+  await editor.locator("#files input.name-input").press("Enter");
   await until(editor, () => window.__pad?.active() === "untitled.py");
   await typeAtEnd(owner, "main.py", "# while-you-were-away\n");
   await until(editor, () => window.__pad?.text("main.py")?.includes("while-you-were-away"));

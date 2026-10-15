@@ -663,8 +663,9 @@ try {
   ok("and the shell runs commands again afterwards");
 
   // ---- making a file from the page ----
-  page.once("dialog", (d) => d.accept("notes.py"));
   await page.click('#files button[aria-label="New file"]');
+  await page.locator("#files input.name-input").fill("notes.py");
+  await page.locator("#files input.name-input").press("Enter");
   await page.waitForFunction(
     () => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.py"),
     null, { timeout: 15_000 },
@@ -702,11 +703,13 @@ try {
       await new Promise((r) => setTimeout(r, 250));
     }
   };
-  page.once("dialog", (d) => d.accept("kept-empty"));
   await page.click('#files button[aria-label="New folder"]');
+  await page.locator("#files input.name-input").fill("/kept-empty");
+  await page.locator("#files input.name-input").press("Enter");
   await page.waitForTimeout(300);
-  page.once("dialog", (d) => d.accept("kept-empty-2/blank.md"));
   await page.click('#files button[aria-label="New file"]');
+  await page.locator("#files input.name-input").fill("/kept-empty-2/blank.md");
+  await page.locator("#files input.name-input").press("Enter");
   is(await onServer(["kept-empty/.keep", "kept-empty-2/blank.md"]), true, "a new empty folder and a new empty file are stored as they are made, with no command run");
   await page.keyboard.press("Escape");
   await page.click("#terminal");

@@ -68,8 +68,22 @@ const pageErrors = [];
 // "Canceled" alone is never all there is to go on.
 let section = "loading";
 page.on("pageerror", (e) => pageErrors.push(`${section}: ${e.message} ${(e.stack ?? "").split("\n").slice(1, 4).map((l) => l.trim()).join(" < ")}`));
+// The browser's own confirm, which deleting a file still asks with.
 let answer = null;
 page.on("dialog", (d) => (answer === null ? d.dismiss() : d.accept(answer)));
+/** A name typed into the row the tree opens for it, as a person would, and Enter. */
+async function nameInTree(name) {
+  const input = page.locator("#files input.name-input");
+  await input.waitFor({ timeout: 5000 });
+  await input.fill(name);
+  await input.press("Enter");
+}
+/** F2 on a row, and its new name. */
+async function renameInTree(path, name) {
+  await page.locator(`#files .row[data-path="${path}"]`).focus();
+  await page.keyboard.press("F2");
+  await nameInTree(name);
+}
 
 let failures = 0;
 const ok = (m) => console.log(`  ok   ${m}`);
@@ -112,10 +126,10 @@ async function run(code, { wait: waitFor = true, ms = 60_000 } = {}) {
   await wait(300);
   return idle(ms);
 }
+/** A file at `name` from the top — wherever New file would put it — with `content` in it. */
 async function newFile(name, content) {
-  answer = name;
   await page.locator('#files button[aria-label="New file"]').click();
-  answer = null;
+  await nameInTree(`/${name}`);
   await wait(400);
   await page.evaluate((c) => window.monaco.editor.getEditors()[0].setValue(c), content);
   await wait(300);
@@ -310,6 +324,72 @@ try {
   expect("ctrl-f opens find", await page.waitForSelector(".monaco-editor .find-widget.visible", { timeout: 5000 }).then(() => true, () => false));
   await page.keyboard.press("Escape");
 
+  // New file in the folder clicked last: its name typed in a row there, as
+  // in an editor's explorer, before anything is made.
+  const shownText = () => page.evaluate(() => window.monaco.editor.getEditors()[0].getValue());
+  await open("main.py");
+  await page.locator('#files .row.dir[data-path="elsewhere"]').click();
+  await page.locator('#files button[aria-label="New file"]').click();
+  const placed = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#files .file-row")];
+    const at = rows.findIndex((r) => r.querySelector('.row.dir[data-path="elsewhere"]'));
+    const naming = rows.findIndex((r) => r.classList.contains("naming"));
+    const pad = (r) => parseFloat(r.querySelector(".row").style.paddingLeft);
+    return naming === at + 1 && pad(rows[naming]) > pad(rows[at]);
+  });
+  await nameInTree("starter.py");
+  const made = await page.waitForFunction(() => window.__pad.active() === "elsewhere/starter.py", null, { timeout: 5000 }).then(() => true, () => false);
+  expect("New file opens a row for its name inside the folder clicked last, and makes it there", placed && made, `placed ${placed}, active ${await page.evaluate(() => window.__pad.active())}`);
+
+  // Empty, it offers what it could start as; taken, that is one edit.
+  const offered = await page.locator(".starter-hint button").textContent({ timeout: 5000 }).catch(() => "");
+  await page.locator(".starter-hint button").click();
+  const started = await shownText();
+  await page.keyboard.press("ControlOrMeta+z");
+  await wait(200);
+  const undone = await shownText();
+  const offeredAgain = await page.locator(".starter-hint button").isVisible().catch(() => false);
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await wait(200);
+  expect("an empty file offers a starter, and undo takes the starter out again",
+    offered === "Insert a Python starter" && started.startsWith("def main():\n    name = ") && undone === "" && offeredAgain && (await shownText()) === started,
+    `"${offered}", ${JSON.stringify(started.slice(0, 30))}, undone ${JSON.stringify(undone)}, offered again ${offeredAgain}`);
+  await clear();
+  await page.click("#run");
+  await wait(300);
+  await idle(60_000);
+  expect("and the starter runs", (await shows(/Hello, world!/)) && (await shows(/3 squared is 9/)), await tail(4));
+
+  // Format, with 4 spaces; Spaces makes it 2, and the key does it too.
+  await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("def f(a,b):\n  return {'x':a}\nprint(f(1,2))\n"));
+  await page.locator("#format-file").click();
+  const four = await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === 'def f(a, b):\n    return {"x": a}\n\n\nprint(f(1, 2))\n', null, { timeout: 20_000 }).then(() => true, () => false);
+  await page.locator("#indent").click();
+  const indentLabel = await page.locator("#indent").textContent();
+  await page.locator(".monaco-editor textarea").first().focus();
+  await page.keyboard.press("Shift+Alt+KeyF");
+  const two = await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === 'def f(a, b):\n  return {"x": a}\n\n\nprint(f(1, 2))\n', null, { timeout: 10_000 }).then(() => true, () => false);
+  await page.locator("#indent").click();
+  expect("Format formats with 4 spaces, Spaces switches it to 2, and shift-alt-f formats too", four && indentLabel === "Spaces: 2" && two && (await page.locator("#indent").textContent()) === "Spaces: 4",
+    `four ${four}, "${indentLabel}", two ${two}: ${JSON.stringify(await shownText())}`);
+  await page.evaluate(() => window.monaco.editor.getEditors()[0].setValue("def f(:\n"));
+  await page.locator("#format-file").click();
+  const refused = await page.waitForFunction(() => /was not formatted: .* on line 1/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("a file that will not parse is left as it is, and the status says where", refused && (await shownText()) === "def f(:\n", await page.locator("#status").textContent());
+  const formatShown = async (name) => {
+    await newFile(name, "");
+    return page.locator("#format-file").isVisible();
+  };
+  expect("Format is there for a file something formats, and not for one nothing does", (await formatShown("fmt.json")) && !(await formatShown("fmt.txt")));
+
+  // Typed the moment the file is made, before its document is ready: there
+  // once. It was there twice until 15 October.
+  await page.locator('#files button[aria-label="New file"]').click();
+  await nameInTree("/typed-at-once.txt");
+  await page.keyboard.type("abc");
+  await wait(1500);
+  expect("typing straight after New file is in the file once", (await shownText()) === "abc", JSON.stringify(await shownText()));
+
   // Where a file was left is where it opens again: scrolled to line 1000 of
   // 3000, away to another file, back. It opened at line 1 every time until 6
   // October, and at line 1 too after anything changed it meanwhile.
@@ -347,10 +427,7 @@ try {
   const changedOnScreen = (await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLineContent(3))) === "line three, rewritten on screen";
   expect("a command changing the file on screen does not move the view", changedOnScreen && onScreen.top === leftAt.top, `changed ${changedOnScreen}, ${JSON.stringify(onScreen)}`);
   // Moved while open, the place goes with it.
-  answer = "long-moved.txt";
-  await page.locator('#files .row.file[data-path="long.txt"]').focus();
-  await page.keyboard.press("F2");
-  answer = null;
+  await renameInTree("long.txt", "long-moved.txt");
   await page.waitForFunction(() => window.__pad.active() === "long-moved.txt", null, { timeout: 10_000 }).catch(() => {});
   await wait(300);
   const afterMove = await placeIn();
@@ -469,9 +546,8 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   };
   const padName = new URL(page.url()).pathname.slice(1);
   // An empty folder, so the round trip below has one to bring back.
-  answer = "kept-in-zip";
   await page.locator('#files button[aria-label="New folder"]').click();
-  answer = null;
+  await nameInTree("/kept-in-zip");
   await page.waitForSelector('#files .row.dir[data-path="kept-in-zip"]', { timeout: 5000 });
   const whole = await got(() => page.locator('#files button[aria-label="Download as zip"]').click());
   const all = unzip(whole.to);
@@ -584,29 +660,46 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await wait(500);
   expect("a folder cannot be dropped into itself", JSON.stringify(await paths()) === treeBefore, JSON.stringify(await paths()));
 
-  answer = "notes/renamed.txt";
-  await row("naïve.txt").focus();
-  await page.keyboard.press("F2");
-  answer = null;
-  expect("F2 moves and renames by a typed path — the keyboard's way to do it", await treeHas(["notes/renamed.txt"], ["naïve.txt"]), JSON.stringify(await paths()));
+  await renameInTree("naïve.txt", "notes/renamed.txt");
+  expect("F2 renames in place, and a / in the name moves it into a folder — the keyboard's way to do it", await treeHas(["notes/renamed.txt"], ["naïve.txt"]), JSON.stringify(await paths()));
 
-  answer = "docs/readme.md";
-  await row("todo.txt").focus();
-  await page.keyboard.press("F2");
-  answer = null;
+  // A name that is taken is said under the name as it is typed, and Enter
+  // does not take it; Escape leaves both as they were.
+  await renameInTree("todo.txt", "docs/readme.md");
+  const problem = await page.locator("#files .name-problem").textContent({ timeout: 3000 }).catch(() => "");
+  const stillNaming = await page.locator("#files input.name-input").isVisible();
+  await page.keyboard.press("Escape");
+  await wait(300);
+  expect("renamed to a name that is taken, it says so under the name, and Escape keeps both",
+    problem === "there is already a file called docs/readme.md" && stillNaming && (await paths()).includes("todo.txt") && (await editorText("docs/readme.md")) === "# hi\n",
+    `"${problem}", naming ${stillNaming}, ${JSON.stringify(await paths())}`);
+
+  // A drag onto a folder with a file of that name asks instead. Dropped by
+  // its events rather than the mouse: with this many rows the tree scrolls to
+  // show the folder, and the mouse's drag then began on the row above.
+  const dropOn = async (from, to) => {
+    const carried = await page.evaluateHandle(() => new DataTransfer());
+    await from.dispatchEvent("dragstart", { dataTransfer: carried });
+    await to.dispatchEvent("dragover", { dataTransfer: carried });
+    await to.dispatchEvent("drop", { dataTransfer: carried });
+    await from.dispatchEvent("dragend", { dataTransfer: carried });
+  };
+  await renameInTree("todo.txt", "readme.md");
+  await treeHas(["readme.md"], ["todo.txt"]);
+  await page.waitForFunction(() => /moved todo\.txt/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).catch(() => {});
+  const renamedStatus = await page.locator("#status").textContent();
+  await dropOn(row("readme.md"), row("docs", true));
   const asksFirst = await confirmShown();
+  const dragStatus = await page.locator("#status").textContent();
   if (asksFirst) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Cancel" }).click();
   await wait(400);
-  const keptBoth = (await paths()).includes("todo.txt") && (await editorText("docs/readme.md")) === "# hi\n";
+  const keptBoth = (await paths()).includes("readme.md") && (await editorText("docs/readme.md")) === "# hi\n";
   if (keptBoth) {
-    answer = "docs/readme.md";
-    await row("todo.txt").focus();
-    await page.keyboard.press("F2");
-    answer = null;
+    await dropOn(row("readme.md"), row("docs", true));
     if (await confirmShown()) await page.locator("dialog.modal-confirm[open]").getByRole("button", { name: "Replace" }).click();
   }
-  const replacedIt = (await treeHas(["docs/readme.md"], ["todo.txt"])) && (await editorText("docs/readme.md")) === "later\n";
-  expect("moving onto a file that is there asks first; Cancel keeps both, Replace replaces", asksFirst && keptBoth && replacedIt, `asked ${asksFirst}, kept ${keptBoth}, replaced ${replacedIt}`);
+  const replacedIt = (await treeHas(["docs/readme.md"], ["readme.md"])) && (await editorText("docs/readme.md")) === "later\n";
+  expect("moving onto a file that is there asks first; Cancel keeps both, Replace replaces", asksFirst && keptBoth && replacedIt, `asked ${asksFirst}, kept ${keptBoth}, replaced ${replacedIt}; "${renamedStatus}", then "${dragStatus}"; ${JSON.stringify(await paths())}`);
 
   await open("helper.py");
   await page.evaluate(() => {
@@ -626,10 +719,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   };
   await page.route("**/api/pad/**", slowly);
   await wait(800);
-  answer = "helper.py";
-  await row("docs/helper.py").focus();
-  await page.keyboard.press("F2");
-  answer = null;
+  await renameInTree("docs/helper.py", "/helper.py");
   await page.evaluate(() => {
     const ed = window.monaco.editor.getEditors()[0];
     ed.focus();
@@ -683,6 +773,16 @@ with zipfile.ZipFile(sys.argv[1]) as z:
       await wait(300);
       const done = await idle(600_000);
       expect(`Run on ${file} fetches its language the first time and runs it`, done && (await shows(want, 5000)), await tail(6));
+    }
+    // Each language's starter, as an empty file offers it, runs as it is.
+    for (const file of ["starter.c", "starter.cpp", "starter.js", "starter.php", "starter.go", "Starter.java"]) {
+      await clear();
+      await newFile(file, "");
+      await page.locator(".starter-hint button").click();
+      await page.click("#run");
+      await wait(300);
+      const done = await idle(300_000);
+      expect(`${file}'s starter runs as it is`, done && (await shows(/Hello, world!/, 5000)) && (await shows(/3 squared is 9/, 5000)), await tail(6));
     }
     await clear();
     await open("hello.go");

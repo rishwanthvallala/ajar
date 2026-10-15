@@ -16,6 +16,9 @@ import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./javac/protocol";
 import { seedFiles } from "./seed";
+import { nameProblem, pathFor } from "./files";
+import { formatterFor, formatText, problemOf, usesTabs } from "./format";
+import { starterFor } from "./starters";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 
@@ -772,6 +775,50 @@ async function main() {
     const answer = decodeAnswer(encodeAnswer({ exit: 1, stdout: "", stderr: "A.java:1: error: ';' expected\n", written: [{ path: "/workspace/out/A.class", data: bytes }] }));
     is(JSON.stringify([answer.exit, answer.stderr, answer.written.map((w) => [w.path, [...w.data]])]), JSON.stringify([1, "A.java:1: error: ';' expected\n", [["/workspace/out/A.class", [0xca, 0xfe, 0, 255]]]]), "and so does its answer");
     is(decodeAnswer(encodeAnswer({ exit: -1, stdout: "", stderr: "", written: [] })).exit, -1, "including the one that says to compile it in the sandbox");
+  }
+
+  // ---- a name typed into the tree ----
+  {
+    const taken = { files: new Set(["main.py", "src/util.py"]), folders: new Set(["src", "docs"]) };
+    is(pathFor("notes.py", "src"), "src/notes.py", "a name is in the folder it is typed in");
+    is(pathFor("/notes.py", "src"), "notes.py", "and from the top with a / in front");
+    is(pathFor(" a/b.py/ ", ""), "a/b.py", "a slash within makes folders on the way; one at the end, and spaces around, go");
+    is(nameProblem("src/util.py", taken), "there is already a file called src/util.py", "a file that is there is said, not replaced");
+    is(nameProblem("docs", taken), "there is already a folder called docs", "and a folder");
+    is(nameProblem("main.py/x.py", taken), "main.py is a file, not a folder", "a file cannot hold another");
+    is(nameProblem("a/../b", taken), "a/../b is not a path a pad can hold", "nor a path that climbs");
+    is(nameProblem("a\\b", taken) !== null && nameProblem("a /b", taken) !== null, true, "nor a backslash, nor spaces at the end of a folder's name");
+    is(nameProblem("src/util.py", taken, { path: "src/util.py", folder: false }), null, "renamed to itself, it is no change rather than a clash");
+    is(nameProblem("src/deep", taken, { path: "src", folder: true }), "a folder cannot go inside itself", "a folder cannot be renamed into itself");
+    is(nameProblem("café/naïve 1.txt", taken), null, "any other name will do");
+  }
+
+  // ---- what an empty file can start as ----
+  {
+    is(starterFor("Hello.java", "    ")?.text.startsWith("public class Hello {\n    public static void main"), true, "a Java starter is a class named for its file, indented as set");
+    is(starterFor("my-prog.java", "  ")?.text.startsWith("class Main {\n  public"), true, "and not public where the file's name cannot be a class's, so javac takes it too");
+    is(starterFor("class.java", "  ")?.text.startsWith("class Main"), true, "nor where it is a keyword");
+    is(starterFor("x/main.go", "  ")?.text.includes("\n\tname := "), true, "Go's is indented with a tab whatever the indent");
+    const cpp = starterFor("a.cpp", "    ")?.text ?? "";
+    is(cpp.includes("#include <cstdio>") && !cpp.includes("#include <iostream>"), true, "C++'s includes <cstdio>, which compiles here, and not <iostream>");
+    is(starterFor("notes.txt", "    ") === null && starterFor("Makefile", "    ") === null && starterFor(".py", "    ") === null, true, "a kind with nothing to offer offers nothing");
+    is(starterFor("a.YAML", "  ")?.text.includes("\n  - pad\n"), true, "an extension in capitals is the same kind");
+  }
+
+  // ---- formatting ----
+  {
+    is(formatterFor("a/b.py")?.name, "Ruff", "Python is formatted by Ruff");
+    is(formatterFor("Main.java")?.name, "clang-format", "Java by clang-format");
+    is(formatterFor("notes.txt"), null, "and a kind nothing formats has no Format");
+    is(usesTabs("main.go") && usesTabs("Makefile") && !usesTabs("main.py"), true, "Go and Makefiles are tabs whatever the indent");
+    is(await formatText("main.py", "def f(a,b):\n  return {'x':a}\n", 4), "def f(a, b):\n    return {\"x\": a}\n", "Python, with 4 spaces");
+    is(await formatText("main.py", "def f():\n    return 1\n", 2), "def f():\n  return 1\n", "and with 2");
+    is(await formatText("Main.java", "class Main{void f(){int x=1;}}", 4), "class Main {\n    void f() {\n        int x = 1;\n    }\n}", "Java");
+    is(await formatText("a.json", '{"n":1.0,"big":12345678901234567890,"a":[1]}', 2), '{\n  "n": 1.0,\n  "big": 12345678901234567890,\n  "a": [\n    1\n  ]\n}', "JSON expanded, every number as it was written");
+    is(await formatText("a.go", "package main\nfunc main(){\nprintln(1)}\n", 2), "package main\n\nfunc main() {\n\tprintln(1)\n}\n", "Go with gofmt's tabs");
+    is(await formatText("a.ts", "const a:number=1", 4), "const a: number = 1;\n", "TypeScript");
+    const bad = await formatText("bad.py", "x = 1\ndef f(:\n", 4).then(() => "", (e) => problemOf(e, "x = 1\ndef f(:\n"));
+    is(/on line 2$/.test(bad), true, `a file that will not parse says where, by line (${bad})`);
   }
 
   // ---- the runtime's word when a pipe's reader leaves ----

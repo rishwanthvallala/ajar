@@ -651,6 +651,16 @@ found on 2 October and all in `app.ts`'s `readyDoc`, `attach` and `onDoc`:
   went with it. `pad/src/carry.ts` turns it into one edit, made again after
   binding so it reaches everybody and is saved; it lands where the text
   around it still matches, and never removes anything somebody else wrote.
+- **Typing straight after New file went in twice** until 15 October: `abc`
+  was `abcabc`. A new file is unsaved from the start, so the document was
+  seeded from the model — typing and all — and binding then carried the same
+  typing over from the empty file shown. The stored copy can hold some of it
+  too, saved while the room was asked. So a document this browser seeded, and
+  nothing has changed since, is carried over from itself — only what it lacks
+  of the typing goes in (`App.seeds`) — and one from somebody else, from what
+  was shown, as before. Compared without a leading byte-order mark: Monaco
+  sets one aside when it makes a model, and the difference read as the mark
+  deleted (`pair-check.mjs` caught it).
 
 `app-check.mjs` slows one browser's relay by 400 ms, types the moment the
 editor appears, and checks the file never blanks and the line stays where it
@@ -1070,7 +1080,7 @@ empty ones.
 
 ## Moving files
 
-Drag and drop in the tree (`files.ts`), and F2 with a typed path for the
+Drag and drop in the tree (`files.ts`), and F2 with a new name for the
 keyboard; both end in `App.move`. A move is **one store write** holding the
 new paths and `null` for the old ones, so nobody can read the pad between the
 two and see the file in both places or in neither. Then this page catches up
@@ -1082,8 +1092,10 @@ for the sandbox, so a move on a first visit is immediate.
 
 The text that moves is `current(path)` — the live document when there is one —
 so typing not yet saved goes along. A folder's binary files, which only the
-store holds, go in the same write. Moving onto a file that exists asks first;
-a folder into itself, or a file onto a folder's name, is refused in words.
+store holds, go in the same write. Dragged onto a file that exists, it asks
+first; a folder into itself, or a file onto a folder's name, is refused in
+words. Renamed with F2, a name that is taken is refused under the name
+instead: a rename that replaced a file would do it by a typo.
 
 The tree is not redrawn while a drag is under way: the row being dragged has to
 outlive it, so a collapsed folder does not open on hover as it would in an
@@ -1091,6 +1103,89 @@ editor — drop on it, and it opens after. Two things a move does not do for
 someone else on the pad: a person who had the old file open is moved to
 another file rather than following it, and typing they did in the old file in
 the moment between the move and their re-read is lost with it.
+
+## Naming in the tree
+
+New file, New folder and F2 type the name into the tree, where the thing will
+be, as an editor's explorer does; they were `prompt()`s, which asked for a
+whole path and said nothing of where that was. The row is an input in a row
+like the others (`FileTree.startNaming`): a new file's goes first among the
+files of its folder, a folder's first among the folders, a rename's in place
+of the row, its name selected up to the extension.
+
+- **Where it goes** is the folder clicked last, as in VS Code, or beside the
+  open file when a file was clicked since; the space under the rows is the
+  top. That folder opens, so the row can be seen.
+- **The name is the path within that folder**; a `/` makes the folders on the
+  way, and a leading `/` is from the top — the keyboard's way to move a file
+  up, which a name within its folder cannot. `pathFor` and `nameProblem` in
+  `files.ts`, checked in `check.ts`.
+- **What is wrong is said under it as it is typed**, and Enter does nothing
+  until it is put right; Escape, or an empty name, makes nothing.
+- **Clicking elsewhere keeps a name that will do**, and drops one that will
+  not. Not until the click is over: the tree is redrawn from scratch whenever
+  anything changes, and redrawn on the blur, the row being clicked was gone
+  before its click, which then went nowhere. A file made that way is not
+  opened either: what was clicked is what was wanted.
+- **The tree is redrawn under it all the time** — a save, someone else's
+  change, a command — so the same input goes into each new tree, with its
+  caret, and its focus if it had it. A row whose folder somebody moved or
+  deleted meanwhile ends the naming.
+
+## Starters
+
+An empty file of a kind the pad knows offers what it could start as, on its
+first line: a Monaco content widget (`App.paintStarter`), a link and "or start
+typing", gone with the first character. Taking it is an ordinary edit, so it
+is undone by one undo and reaches everyone as typing does. `starters.ts`
+writes them with a tab per level and gives them the editor's indent; each
+prints the same two things, so one that runs is easy to tell. Java's class
+is named after the file when the name can be a class's, and otherwise is a
+`class Main` that is not public, which `javac` and `java File.java` both take.
+C++'s uses `<cstdio>`, since `<iostream>` does not finish compiling here. Each
+runnable one is run by `PAD_LANGUAGES=1 user-check.mjs`; Python's by every
+run.
+
+## Format
+
+Monaco's formatters live in its language workers, which cannot start here, so
+the editor had none. `format.ts` maps an extension to a formatter compiled to
+WebAssembly, each fetched the first time a file of its kind is formatted — by
+dynamic `import()` of its Vite entry, whose `.wasm` Vite emits under
+`/assets`, so a page that never formats fetches none of them:
+
+| Files | Formatter | npm | wasm |
+|---|---|---|---|
+| `.py` `.pyi` | Ruff | `@wasm-fmt/ruff_fmt` | 1.2 MB |
+| C, C++, Java, C#, `.proto` | clang-format | `@wasm-fmt/clang-format` | 2.6 MB |
+| `.go` | gofmt | `@wasm-fmt/gofmt` | 0.27 MB |
+| JS, TS, JSX, CSS, SCSS, Less, HTML, Vue, Svelte, GraphQL | Biome, malva, markup_fmt | `@wasm-fmt/web_fmt` | 3.4 MB |
+| `.json` | VS Code's own, jsonc-parser | `jsonc-parser` | — |
+| `.sql` | sqlformat | `@wasm-fmt/sql_fmt` | 0.24 MB |
+| `.yaml` | pretty_yaml | `@wasm-fmt/yamlfmt` | 0.30 MB |
+| `.toml` | Taplo | `@wasm-fmt/taplo_fmt` | 0.34 MB |
+| `.md` | dprint | `@wasm-fmt/markdown` | 0.52 MB |
+| `.sh` `.bash` | shfmt | `@wasm-fmt/shfmt` | 0.40 MB |
+| `.php` | Mago | `@wasm-fmt/mago_fmt` | 1.3 MB |
+| `.lua` | StyLua | `@wasm-fmt/lua_fmt` | 0.59 MB |
+
+All MIT, pinned exactly. JSON is not Biome's: it keeps an object that fits on
+a line on one line, so minified JSON stayed minified, where jsonc-parser
+expands it as VS Code does and writes every number as it was written. Java is
+Google's style and C and C++ LLVM's, with the indent set here.
+
+The result goes in as one edit of only what changed (`carryOver` against
+itself), so one undo takes it back and somebody typing further down is not
+replaced under. Text typed while a formatter loads is not formatted over; the
+status says to format again. A formatter's complaint is said by line: Ruff and
+Mago give a byte offset, which `problemOf` turns into one.
+
+The indent is the browser's (`pad.indent` in local storage), 4 unless set to
+2, and every model is given it rather than one Monaco guesses from the file,
+so Tab, Format and a starter agree. Go and Makefiles take tabs whatever it is.
+Format and Spaces sit beside Colours, quiet as it is; Format only where
+something formats the file. Format Document and Insert Starter Code are also
+Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 
 ## What it does not do
 
