@@ -692,8 +692,14 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     // Java from the terminal: javac, then the class, reading what it is given.
     await clear();
     await newFile("Ask.java", 'import java.util.Scanner;\n\npublic class Ask {\n  public static void main(String[] args) {\n    Scanner in = new Scanner(System.in);\n    int n = in.nextInt();\n    System.out.println("twice " + n + " is " + 2 * n);\n  }\n}\n');
-    await typed("javac Ask.java && printf '21\\n' | java Ask", 300_000);
-    expect("javac compiles a class and java runs it, reading stdin", await shows(/twice 21 is 42/, 5000), await tail(6));
+    // The page's javac answers it: tenths of a second where the sandbox's own
+    // takes several (pad/src/javac/).
+    const compiling = Date.now();
+    await typed("javac Ask.java", 300_000);
+    const compiled = Date.now() - compiling;
+    expect("javac compiles quickly, with the page's compiler", compiled < 3000 && !(await tail(6)).includes("error"), `${compiled} ms: ${await tail(4)}`);
+    await typed("printf '21\\n' | java Ask", 120_000);
+    expect("and java runs the class, reading stdin", await shows(/twice 21 is 42/, 5000), await tail(6));
     await open("main.py");
   }
 

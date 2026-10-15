@@ -94,13 +94,17 @@ export const TOOLCHAINS: readonly Toolchain[] = [
   },
   {
     // Ours, not the registry's: Ristretto, a JVM written in Rust, with Amazon
-    // Corretto 25's class library, and the JDK's own javac run by it. A file is
-    // run as `java File.java` runs it anywhere, compiled in memory first.
+    // Corretto 25's class library. javac is compiled by the page with javac
+    // compiled to WebAssembly (javac/bridge.ts), or where that cannot run, by the
+    // JDK's own javac interpreted in the sandbox. A file is run as `java
+    // File.java` runs it anywhere, compiled first.
     name: "Java",
     pkg: "ajar/java@=1.0.0",
     commands: ["java", "javac"],
-    mb: 61,
-    note: "javac runs in an interpreter here, so compiling takes several seconds; a compiled class runs in under one",
+    // The package, 61, and the fast javac with its class library, 4.6.
+    mb: 66,
+    // Said only when the fast javac is not there (App.prepare).
+    note: "javac compiles in the sandbox here, which takes several seconds; a compiled class runs in under one",
     runs: { java: (f) => `java ${quoted(f)}` },
   },
   {

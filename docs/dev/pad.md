@@ -459,26 +459,106 @@ from HotSpot:
   does, and its diagnostics say `Main.java`, not `/Main.java`.
 - `java -version` prints the class library's version as the JDK's launcher
   would, with Ristretto named on its last line.
+- `javac` and `java Main.java` ask the page to compile first (`bridge.rs`;
+  see the fast javac below), and compile here only when it does not answer.
 
-**Measured**, on 12 October: 14 programs — strings and formatting, collections
-and streams, records and pattern switches, `BigDecimal`, `java.time` with zones,
-regex, threads and executors, exceptions with causes, `Scanner` on stdin, files,
-`System.exit` — run on HotSpot 25 and here, compared byte for byte: 13 identical.
-The 14th is two messages HotSpot words in more detail (a `ClassCastException`'s
-module suffix, a `NullPointerException`'s method names) and a missing
+**Measured** with `java-fidelity.mjs` (below), on 15 October: 15 programs —
+strings and formatting, collections and streams, records and pattern switches,
+`BigDecimal`, `java.time` with zones, regex, threads and executors, exceptions
+with causes, `Scanner` on stdin, files, `System.exit`, compile-time constants —
+run on HotSpot 25 and here, compared byte for byte: 14 identical. The 15th is
+two messages HotSpot words in more detail (a `ClassCastException`'s module
+suffix, a `NullPointerException`'s method names) and a missing
 `ArrayStoreException`: Ristretto's `aastore` does not check the element type yet.
-`javac`'s class files are byte-identical to HotSpot's javac. In the pad, in
-Chromium: `java` on a compiled class about 0.7 s; `javac` on a small file about
-6 s and `java Main.java` about the same, because the compiler is interpreted — a
-warm compiler in one VM was still 4.5 s, so a resident compiler would not fix it.
-The first use says so. A faster `javac` would be one compiled ahead of time
-(teavm-javac against the real class library); not done.
-`Thread.getAllStackTraces` and the desktop do not work; there is no `jshell`.
+One run in about ten, `FilesIO` hung after its first line and was killed; not
+seen again in the runs after it. In the pad, in Chromium: `java` on a compiled
+class about 0.7 s. `Thread.getAllStackTraces` and the desktop do not work; there
+is no `jshell`.
 
-The licences: Ristretto is Apache-2.0 OR MIT; the class library is GPLv2 with
-the Classpath Exception, its notices in the package at
-`/usr/lib/jvm/java-25/legal`, its source at github.com/corretto/corretto-25,
-tag 25.0.4.10.1.
+#### The fast javac
+
+The package's `javac` interprets the JDK's compiler: about 6 s for a small file,
+and a warm compiler in one VM was still 4.5 s. So the page compiles instead,
+with javac compiled ahead of time to WebAssembly: 0.12 s for the same file in
+the pad, `java Main.java` about 1 s with the run.
+
+It is **teavm-javac** (github.com/konsoletyper/teavm-javac, Apache-2.0), which
+compiles javac's own source with TeaVM to WebAssembly GC, built by
+`build-java.mjs` with `pad/scripts/java/teavm-javac.patch`:
+
+- javac's source is Corretto's, at the tag the class library is
+  (`corretto-25` 25.0.4.10.1), not OpenJDK's jdk-25+36, so `javac -version`
+  says what Corretto's says, and with a version bundle the JDK's build makes and
+  teavm-javac did not have.
+- It compiles against the real class library: `SdkBuilder.java` takes every
+  class of the runtime's modules — less javac's own and zipfs — as its API,
+  with constant values, signatures and annotations, and private members, which
+  javac needs to say "has private access" rather than "cannot find symbol".
+  1.8 MB. teavm-javac's own is TeaVM's class library, with gaps.
+- TeaVM's class library parses and prints some numbers differently from the
+  JDK — `4.9e-324` read as zero, so javac said "floating-point number too
+  small" — and its WebAssembly traps on an integer division by zero, which
+  javac folds in `int x = 10 / 0;` and expects to throw. TeaVM rewrites
+  `Double`'s and `Float`'s parsing and printing to the JDK's own code, copied
+  from the JDK in the build (`org.ajar.javac.jdkmath`), and constant folding's
+  division, remainder and negation to `org.ajar.javac.Exact`. Found by, and
+  checked with, the constants program in the fidelity set — they were found by
+  Java Arena first (github.com/AntonyPerez0/Java-Arena).
+- A command line, `PadJavac`: javac's own option table, help, errors and exit
+  status over an in-memory folder (`MemoryFileManager`) that answers as javac's
+  file manager does for -d, -cp, -sourcepath and a class or source found on the
+  class path. `--help` prints the option list javac printed at build time,
+  because javac sorts it with `java.text.Collator`, which TeaVM does not have.
+  Annotation processing, plugins and doclint are not there; `--release` is 25
+  only; `JDK_JAVAC_OPTIONS` is not read.
+
+2.8 MB, 0.8 MB zstd, and the 1.8 MB class library; both load when Java arrives,
+so they are ready by the first `javac`. How it is asked (`src/javac/`): while a
+command runs, the page looks at `.ajar/javac/` every 40 ms. The sandbox's
+`javac` writes everything javac would read — its folder, its arguments with
+`@files` expanded, the sources they name, what is on the class and source
+paths, `$CLASSPATH` — into one request; the page claims it with a file of its
+own beside it, compiles it in a worker, and answers with what javac printed,
+its exit status and the files it wrote, which the program in the sandbox then
+writes, so they arrive as any program's files do. The page never renames or
+removes the sandbox's files: a rename made from the page left the old name
+listed in the sandbox, unreadable. The sandbox removes everything once it has
+its answer. `java Main.java` sends the options the JDK's
+source launcher gives javac, without `-implicit:none`, so classes from other
+source files are compiled too, and loads the classes from the answer.
+
+It needs WebAssembly GC and exception references — Chrome 137, Firefox 131,
+Safari 18.4. Where it cannot load, the page says so once, writes no `ready`,
+and `javac` compiles in the sandbox as before; checked by blocking its download.
+A request the page has not claimed in two seconds, or one it could not
+compile, is compiled in the sandbox too. 48 command lines compared with
+HotSpot's javac below, identical in what they printed, their exit status and
+every class file: 2 to 400 ms each, median 45 ms, under Node.
+
+#### Checking it against HotSpot
+
+`node pad/scripts/java-fidelity.mjs` runs the programs in
+`pad/scripts/java/fidelity/run` on Corretto's HotSpot (podman, the pinned
+image) and on the package as it ships (its atoms, extracted from the `.webc`
+and run under Node's WASI), and compares what they printed. Then javac:
+each of those programs, each program in `fidelity/errors` (which do not
+compile), and the command lines in the script — help, a bad flag, -d with
+packages, a class found on the class path, an error in a file compiled
+implicitly, -Xlint, -Werror, -g, an `@file`, -Xmaxerrs, -XDrawDiagnostics — run
+by HotSpot's javac and by the fast javac (`fast-javac.mjs`, as the page runs it),
+or with `--javac sandbox` the package's own. A difference not in its `KNOWN`
+list fails it. About four minutes; ten with `--javac both`.
+
+On 15 October: 14 of 15 programs ran identically, the 15th the known one above;
+the fast javac matched in all 48 javac cases; the package's own in 45. The other
+three are one gap: its JDK has no `lib/ct.sym`, javac's signatures of every
+release, which would be 10 MB for the slow javac alone — so it refuses
+`--release 25` and its help lists no releases.
+
+The licences: Ristretto and teavm-javac are Apache-2.0 (Ristretto also MIT);
+the class library and javac are GPLv2 with the Classpath Exception, the class
+library's notices in the package at `/usr/lib/jvm/java-25/legal`, the source of
+both at github.com/corretto/corretto-25, tag 25.0.4.10.1.
 
 ## The shell, and detecting when a command ends
 
@@ -529,6 +609,14 @@ into the sandbox, and the save after the run stored it over the newer — the
 other person's last edit gone from the store until they typed again.
 `accounts-check.mjs` has an editor press Run in one file while the owner types
 in another.
+
+**A typed line reads what the editor holds.** An edit reaches the sandbox when
+its save comes round, a moment later; Run wrote the files first, a typed line
+did not, so `javac Main.java` typed straight after an edit compiled the copy
+from before it — found on 15 October, when javac began answering in
+milliseconds from the page. `App.prepare` now writes edited files into the
+sandbox before every typed line, through the same queue as the save after it.
+`user-check.mjs` makes a Java file and compiles it at once.
 
 ### Seeding a document is the subtle part
 

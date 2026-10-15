@@ -16,6 +16,7 @@ import { Console } from "./console";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
+import { JavacBridge } from "./javac/bridge";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { Shell, type Finished } from "./shell";
@@ -128,6 +129,11 @@ export class App {
   private prefetched = false;
   /** The runtime has started, not merely been asked for. */
   private runtimeReady = false;
+  /** Answers the sandbox's `javac` with the fast one, once Java is here: javac/bridge.ts. */
+  private readonly javac = new JavacBridge(
+    async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
+    (line) => this.term?.write(`\x1b[2mnote: ${line}\x1b[0m\r\n`),
+  );
   private shellOpening: Promise<Shell> | null = null;
   private peers: Peers | null = null;
   private busy = false;
@@ -1433,7 +1439,10 @@ export class App {
       onFinished: () => void this.afterCommand(),
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
-      onBusy: () => this.paintRun(),
+      onBusy: (busy) => {
+        this.paintRun();
+        this.javac.busy(busy);
+      },
       fullScreen: () => term.buffer.active.type === "alternate",
       prepare: (command) => this.prepare(command),
     });
@@ -1453,19 +1462,29 @@ export class App {
    */
   private async prepare(command: string): Promise<Shell | null> {
     const rt = await this.ensureRuntime();
+    // What the editor holds, in the sandbox before the line reads it, as Run
+    // does: a file edited a moment ago is otherwise still being saved, and a
+    // command quick enough to read it first — javac answered by the page, in
+    // milliseconds — compiles the copy from before the edit.
+    await this.queueWrite(() => this.flushModels(rt));
     const needed = neededBy(command, rt.installed);
     if (!needed.length) return null;
     for (const t of needed) {
       this.term?.write(`\x1b[2mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
       const began = performance.now();
+      // Java's fast javac loads alongside the package, so the line about to
+      // run finds it ready rather than compiling the slow way.
+      const javac = t.commands.includes("javac") ? this.javac.load() : null;
       try {
         await rt.install(t.pkg);
       } catch (e) {
         this.term?.write(`\x1b[31m${t.name} could not be fetched: ${(e as Error).message}\x1b[0m\r\n`);
         return null;
       }
+      const fast = javac ? await this.javac.whenReady(20_000) : false;
       this.term?.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
-      if (t.note) this.term?.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
+      // The note says compiling is slow; with the fast javac it is not.
+      if (t.note && !fast) this.term?.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
     }
     return this.replaceShell();
   }

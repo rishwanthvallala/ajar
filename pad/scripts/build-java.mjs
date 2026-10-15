@@ -4,49 +4,43 @@
 // Wasmer's registry has no JVM and no javac, so this makes one. The JVM is
 // Ristretto (github.com/theseus-rs/ristretto, Apache-2.0 OR MIT), a JVM written
 // in Rust, built for WASI preview 1 so the pad's sandbox can run it. It runs
-// the real class library: Amazon Corretto 25's, trimmed with jlink. `javac` is
-// the JDK's own compiler, run by that JVM. See docs/dev/pad.md, "Java".
+// the real class library: Amazon Corretto 25's, trimmed with jlink. The
+// package's `javac` is the JDK's own compiler, run by that JVM; the page
+// answers `javac` faster, with javac compiled ahead of time to WebAssembly by
+// teavm-javac (Apache-2.0) from Corretto's source. See docs/dev/pad.md, "Java".
 //
-// What comes out is a `.webc` and its registry answer, in pad/public/packages
-// beside the mirror: `ajar-java-<hash>.webc` (with .zst and .gz) and
-// `own.json`. The service worker answers the registry from own.json as it does
-// from registry.json, so `ajar/java` installs like any other toolchain, and
-// nothing about it is published anywhere.
+// What comes out, in pad/public/packages beside the mirror:
+//
+//   ajar-java-<hash>.webc          the package (with .zst and .gz)
+//   ajar-javac-wasm-<hash>.wasm    the fast javac, with its TeaVM runtime
+//   ajar-javac-runtime-<hash>.js   (ajar-javac-sdk-<hash>.bin is the class
+//                                  library it compiles against)
+//   own.json                       the registry's answer for ajar/java, where
+//                                  its file is, and where the fast javac's are
+//
+// The service worker answers the registry from own.json as it does from
+// registry.json, so `ajar/java` installs like any other toolchain, and nothing
+// about it is published anywhere.
 //
 //   node pad/scripts/build-java.mjs
 //
 // Needs: git; rustup with Ristretto's pinned toolchain and its wasm32-wasip1
-// target (the script says how); podman, for jlink and for javac on the
-// compiler bridge; zstd and gzip. Scratch lives in target/java.
+// target (the script says how); podman, for jlink, javac and teavm-javac's
+// Gradle build, all in the pinned Corretto image; zstd and gzip. Scratch lives
+// in target/java, which keeps Gradle's downloads and Corretto's source between
+// runs: about two minutes then, rather than ten.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { CORRETTO, CORRETTO_NATIVE, JAVA_VERSION, MODULES, RELEASE, RISTRETTO, TEAVM_JAVAC } from "./java/pins.mjs";
 
 const run = promisify(execFile);
 const say = (s) => console.log(`  ${s}`);
 
-// Everything that decides the bytes, pinned.
-const RISTRETTO = {
-  repo: "https://github.com/theseus-rs/ristretto",
-  // 10 October 2026, "Merge pull request #879 from theseus-rs/wide-branch-overflow".
-  commit: "78837078129e6db91c276499d3ce68c35b37652a",
-};
-// Corretto 25.0.4.10.1, linux/amd64: the JDK Ristretto's own tests run on.
-// The image is multi-arch; this is the amd64 manifest, which an arm64 podman
-// runs under emulation (jlink takes about 20 s that way).
-const CORRETTO = "docker.io/library/amazoncorretto@sha256:bdcb93b1fa4b54427b35d94160114f6b05bf461624898e25f8fdfdf30ae233fa";
-const JAVA_VERSION = "25.0.4.1";
-// The class library: java.base and the compiler, and the modules a program
-// written for a course or an exercise reaches for. Not jdk.localedata, which
-// is 26 MB of formats for locales other than English; nor the desktop, which
-// cannot draw here.
-const MODULES = [
-  "java.base", "java.compiler", "jdk.compiler", "jdk.zipfs", "java.logging", "java.xml",
-  "java.sql", "java.net.http", "jdk.unsupported", "java.prefs", "java.scripting",
-];
+// Everything that decides the bytes is pinned in pins.mjs.
 // Ristretto reads jimage entries uncompressed; the package is compressed
 // whole instead.
 const JLINK = [
@@ -86,7 +80,7 @@ if (!existsSync(`${SRC}.git`)) {
 const have = await sh("git", ["-C", SRC, "cat-file", "-t", RISTRETTO.commit]).catch(() => "");
 if (!have.includes("commit")) await sh("git", ["-C", SRC, "fetch", "-q", "--depth", "1", "origin", RISTRETTO.commit]);
 // The scratch clone is ours alone; anything in it besides the patch is stale.
-await sh("git", ["-C", SRC, "checkout", "-q", "--force", RISTRETTO.commit]);
+await sh("git", ["-C", SRC, "reset", "-q", "--hard", RISTRETTO.commit]);
 await sh("git", ["-C", SRC, "clean", "-q", "-fd", "--exclude=target/"]);
 await sh("git", ["-C", SRC, "apply", PATCH]);
 // The patch changes the compiler bridge's Java; its class files are checked in
@@ -175,18 +169,74 @@ say((await sh(`${TOOLS}release/webc-pack`, [
 ])).trim());
 
 // 5. Into the mirror, named by content so the immutable cache header is safe.
-const bytes = await readFile(packed);
-const sha256 = createHash("sha256").update(bytes).digest("hex");
-const file = `ajar-java-${sha256.slice(0, 16)}.webc`;
-for (const old of await readdir(OUT)) {
-  if (old.startsWith("ajar-java-") && !old.startsWith(file)) await rm(`${OUT}${old}`);
+const mb = (n) => (n / 1048576).toFixed(1);
+/**
+ * Put a file in the mirror under a name with its hash, compressed beside it, and
+ * drop older ones: anything else with the prefix, so no prefix may be another's.
+ */
+async function mirror(bytes, prefix, suffix) {
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const file = `${prefix}${sha256.slice(0, 16)}${suffix}`;
+  for (const old of await readdir(OUT)) {
+    if (old.startsWith(prefix) && !old.startsWith(file)) await rm(`${OUT}${old}`);
+  }
+  await writeFile(`${OUT}${file}`, bytes);
+  for (const [tool, args, ext] of [["zstd", ["-19", "-q", "-f", "--keep"], ".zst"], ["gzip", ["-9", "-f", "--keep"], ".gz"]]) {
+    if (!existsSync(`${OUT}${file}${ext}`)) await sh(tool, [...args, `${OUT}${file}`]);
+  }
+  say(`${file}: ${mb(bytes.length)} MB, ${mb((await stat(`${OUT}${file}.zst`)).size)} MB zstd`);
+  return { file, sha256 };
 }
-await writeFile(`${OUT}${file}`, bytes);
-for (const [tool, args, ext] of [["zstd", ["-19", "-q", "-f", "--keep"], ".zst"], ["gzip", ["-9", "-f", "--keep"], ".gz"]]) {
-  if (!existsSync(`${OUT}${file}${ext}`)) await sh(tool, [...args, `${OUT}${file}`]);
-}
+const { file, sha256 } = await mirror(await readFile(packed), "ajar-java-", ".webc");
 const url = `${HOST}${sha256}.webc`;
-// The registry's answer, shaped as registry.wasmer.io gives it.
+
+// 6. The fast javac: javac compiled ahead of time to WebAssembly, for the
+// page to answer the sandbox's `javac` with (pad/src/javac/). teavm-javac at
+// the pinned commit, with our patch: javac from Corretto's source at the class
+// library's tag, numbers and constant folding as the JDK does them, and a
+// command line. Built in the Corretto image native to this machine — the same
+// release — because TeaVM under emulation takes many times as long.
+say(`teavm-javac ${TEAVM_JAVAC.commit.slice(0, 10)}, patched…`);
+const TJ = `${SCRATCH}teavm-javac/`;
+const GRADLE_HOME = `${SCRATCH}gradle-home/`;
+if (!existsSync(`${TJ}.git`)) {
+  await sh("git", ["init", "-q", TJ]);
+  await sh("git", ["-C", TJ, "remote", "add", "origin", TEAVM_JAVAC.repo]);
+}
+const haveTj = await sh("git", ["-C", TJ, "cat-file", "-t", TEAVM_JAVAC.commit]).catch(() => "");
+if (!haveTj.includes("commit")) await sh("git", ["-C", TJ, "fetch", "-q", "--depth", "1", "origin", TEAVM_JAVAC.commit]);
+await sh("git", ["-C", TJ, "reset", "-q", "--hard", TEAVM_JAVAC.commit]);
+// Untracked files are the patch's new ones from last time; build output is ignored and kept.
+await sh("git", ["-C", TJ, "clean", "-q", "-fd"]);
+await sh("git", ["-C", TJ, "apply", new URL("./java/teavm-javac.patch", import.meta.url).pathname]);
+await mkdir(GRADLE_HOME, { recursive: true });
+say("building javac for WebAssembly (javac's source the first time, then TeaVM; a few minutes)…");
+await sh("podman", [
+  "run", "--rm", "-v", `${TJ}:/w:Z`, "-v", `${GRADLE_HOME}:/gh:Z`, "-w", "/w", "-e", "GRADLE_USER_HOME=/gh",
+  CORRETTO_NATIVE, "java", "-cp", "gradle/wrapper/gradle-wrapper.jar", "org.gradle.wrapper.GradleWrapperMain",
+  "--no-daemon", "--console=plain", "-q", "-Dorg.gradle.jvmargs=-Xmx1g", ":compiler:buildWasmGC",
+], { timeout: 3_600_000 });
+const TEAVM_OUT = `${TJ}compiler/build/generated/teavm/wasm-gc/`;
+// The class library javac compiles against: the same modules' API, but for
+// javac's own (jdk.compiler) and a file system provider (jdk.zipfs), which
+// programs do not compile against — 0.4 MB of the download for com.sun.source.
+const API = MODULES.filter((m) => m !== "jdk.compiler" && m !== "jdk.zipfs");
+say("the class library javac compiles against…");
+const SDK = `${SCRATCH}sdk/`;
+await mkdir(SDK, { recursive: true });
+say((await sh("podman", [
+  "run", "--rm", "--platform", "linux/amd64", "-v", `${new URL("./java/", import.meta.url).pathname}:/src:ro,Z`,
+  "-v", `${SDK}:/out:Z`, CORRETTO, "java", "/src/SdkBuilder.java", "/out/sdk.bin", ...API,
+])).trim());
+const javac = {
+  runtime: `/packages/${(await mirror(await readFile(`${TEAVM_OUT}compiler.wasm-runtime.js`), "ajar-javac-runtime-", ".js")).file}`,
+  wasm: `/packages/${(await mirror(await readFile(`${TEAVM_OUT}compiler.wasm`), "ajar-javac-wasm-", ".wasm")).file}`,
+  sdk: `/packages/${(await mirror(await readFile(`${SDK}sdk.bin`), "ajar-javac-sdk-", ".bin")).file}`,
+  release: RELEASE,
+};
+
+// 7. What the service worker and the page read: the registry's answer for
+// the package, where its file is, and where the fast javac's are.
 const pirita = { piritaDownloadUrl: url, piritaSha256Hash: sha256, webcManifest: JSON.stringify(manifest) };
 const answer = {
   data: {
@@ -199,9 +249,8 @@ const answer = {
     info: { defaultFrontend: "https://wasmer.io/" },
   },
 };
-await writeFile(`${OUT}own.json`, JSON.stringify({ answers: { [NAME]: answer }, files: { [url]: `/packages/${file}` } }, null, 1));
-
-const mb = (n) => (n / 1048576).toFixed(1);
-const zst = (await stat(`${OUT}${file}.zst`)).size;
-say(`${file}: ${mb(bytes.length)} MB, ${mb(zst)} MB zstd`);
-say(`${NAME}@=${VERSION} is in pad/public/packages/own.json`);
+await writeFile(
+  `${OUT}own.json`,
+  JSON.stringify({ answers: { [NAME]: answer }, files: { [url]: `/packages/${file}` }, javac }, null, 1),
+);
+say(`${NAME}@=${VERSION} and the fast javac are in pad/public/packages/own.json`);

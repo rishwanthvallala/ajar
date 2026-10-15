@@ -1,0 +1,1595 @@
+diff --git a/compiler/build.gradle b/compiler/build.gradle
+index f359f95..65b93c9 100644
+--- a/compiler/build.gradle
++++ b/compiler/build.gradle
+@@ -46,9 +46,118 @@ compileJava {
+     options.compilerArgs.addAll("--limit-modules", "java.base")
+ }
+ 
++// The JDK's own number parsing and printing, from the JDK the javac comes
++// from, for javac to use instead of TeaVM's class library (ajar; see
++// org.ajar.javac.jdkmath.Internals and Patches.transformNumberText).
++def jdkRevision = providers.gradleProperty("jdk.revision").get()
++def jdkRepo = providers.gradleProperty("jdk.repo").getOrElse("openjdk/jdk25u")
++def jdkRepoName = jdkRepo.substring(jdkRepo.lastIndexOf('/') + 1)
++def jdkMathDir = layout.buildDirectory.dir("generated/jdkmath")
++def copyJdkMath = tasks.register("copyJdkMath", Copy) {
++    dependsOn ":javac:unpackJDK"
++    from(project(":javac").layout.buildDirectory.dir(
++            "jdk/${jdkRepoName}-${jdkRevision}/src/java.base/share/classes/jdk/internal/math")) {
++        include "DoubleConsts.java", "FloatConsts.java", "DoubleToDecimal.java", "FloatToDecimal.java",
++                "ToDecimal.java", "MathUtils.java", "FloatingDecimal.java", "FDBigInteger.java",
++                "FormattedFPDecimal.java"
++    }
++    into jdkMathDir.map { it.dir("org/ajar/javac/jdkmath") }
++    // A filter's code is not an input Gradle sees: bump this when changing it.
++    inputs.property("rules", 2)
++    filter { String line ->
++        if (line.startsWith("import jdk.internal.access.") || line.startsWith("import jdk.internal.misc.")
++                || line.startsWith("import jdk.internal.vm.") || line.startsWith("import sun.nio.cs.")) {
++            return null
++        }
++        line.replace("package jdk.internal.math;", "package org.ajar.javac.jdkmath;")
++                .replace("jdk.internal.math.", "org.ajar.javac.jdkmath.")
++                .replace("import static java.lang.Math.multiplyHigh;",
++                        "import static org.ajar.javac.jdkmath.Internals.multiplyHigh;")
++                .replace("JavaLangAccess JLA = SharedSecrets.getJavaLangAccess();", "Internals JLA = Internals.JLA;")
++                .replace("CDS.initializeFromArchive(FDBigInteger.class);", "")
++                .replace("@Stable", "")
++                .replace("ISO_8859_1.INSTANCE", "java.nio.charset.StandardCharsets.ISO_8859_1")
++                // Java 21's String.indexOf(str, from, to), which TeaVM lacks; the
++                // line before it has already checked the bounds.
++                .replace("in.indexOf(sub, i, high) == i", "in.startsWith(sub, i)")
++    }
++}
++sourceSets.main.java.srcDir(jdkMathDir)
++compileJava.dependsOn(copyJdkMath)
++
++// javac's version bundle, which the JDK's build generates and teavm-javac had
++// not: without it `javac -version` says "version not available" (ajar).
++def versionDir = layout.buildDirectory.dir("generated/version")
++def writeJavacVersion = tasks.register("writeJavacVersion") {
++    def release = providers.gradleProperty("javac.version.release").get()
++    def full = providers.gradleProperty("javac.version.full").get()
++    def out = versionDir.map { it.file("com/sun/tools/javac/resources/version.java") }
++    inputs.property("release", release)
++    inputs.property("full", full)
++    outputs.file out
++    doLast {
++        def file = out.get().asFile
++        file.parentFile.mkdirs()
++        file.text = """package com.sun.tools.javac.resources;
++
++public final class version extends java.util.ListResourceBundle {
++    protected Object[][] getContents() {
++        return new Object[][] { { "jdk", "${release}" }, { "full", "${full}" }, { "release", "${release}" } };
++    }
++}
++"""
++    }
++}
++sourceSets.main.java.srcDir(versionDir)
++compileJava.dependsOn(writeJavacVersion)
++
++// javac's option lists for --help and --help-extra, as this JDK's javac prints
++// them (ajar; see org.ajar.javac.Help). The build runs on that JDK.
++def helpDir = layout.buildDirectory.dir("generated/help")
++def writeHelpText = tasks.register("writeHelpText") {
++    def out = helpDir.map { it.file("org/ajar/javac/HelpText.java") }
++    inputs.property("javac", providers.gradleProperty("javac.version.full").get())
++    outputs.file out
++    doLast {
++        def javac = { String option ->
++            def process = new ProcessBuilder("javac", option).redirectErrorStream(true).start()
++            def text = process.inputStream.getText("UTF-8")
++            if (process.waitFor() != 0) {
++                throw new GradleException("javac ${option} failed: ${text}")
++            }
++            text.readLines()
++        }
++        // --help: two header lines, the list, a blank line. --help-extra: the
++        // list, a blank line, the footer.
++        def standard = javac("--help")
++        standard = standard.subList(2, standard.size() - 1)
++        def extended = javac("--help-extra")
++        extended = extended.subList(0, extended.size() - 2)
++        def literal = { List<String> lines ->
++            '"' + lines.join("\n").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
++        }
++        def file = out.get().asFile
++        file.parentFile.mkdirs()
++        file.text = """package org.ajar.javac;
++
++final class HelpText {
++    static final String STANDARD = ${literal(standard)};
++    static final String EXTENDED = ${literal(extended)};
++
++    private HelpText() {
++    }
++}
++"""
++    }
++}
++sourceSets.main.java.srcDir(helpDir)
++compileJava.dependsOn(writeHelpText)
++
+ teavm {
+     all {
+-        mainClass = "org.teavm.javac.CompilerLib"
++        // The pad's javac only (ajar): TeaVM's own compiler, which turns class
++        // files into Wasm in the browser, is not reachable from it and is left out.
++        mainClass = "org.ajar.javac.PadLib"
+     }
+     wasmGC {
+         outOfProcess = true
+diff --git a/compiler/src/main/java/com/sun/tools/javac/main/PadJavac.java b/compiler/src/main/java/com/sun/tools/javac/main/PadJavac.java
+new file mode 100644
+index 0000000..c1a99cb
+--- /dev/null
++++ b/compiler/src/main/java/com/sun/tools/javac/main/PadJavac.java
+@@ -0,0 +1,342 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.sun.tools.javac.main;
++
++import com.sun.tools.javac.resources.CompilerProperties.Errors;
++import com.sun.tools.javac.util.Context;
++import com.sun.tools.javac.util.Log;
++import com.sun.tools.javac.util.Log.PrefixKind;
++import com.sun.tools.javac.util.Log.WriterKind;
++import com.sun.tools.javac.util.Options;
++import java.io.PrintWriter;
++import java.io.StringWriter;
++import java.nio.charset.Charset;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import javax.tools.JavaFileManager;
++import javax.tools.JavaFileObject;
++import javax.tools.StandardLocation;
++import org.ajar.javac.MemoryFileManager;
++
++/**
++ * The javac command line, over a folder the sandbox sent (ajar).
++ *
++ * <p>What javac's Main does for `javac [options] files`, with the parts that
++ * need a real file system done over {@link MemoryFileManager}: options go
++ * through javac's own Option table, so a bad flag, a missing argument and
++ * --help read as they do anywhere; diagnostics are printed by javac's own Log;
++ * the exit status is Main's (0, 1 for errors in the code, 2 for the command
++ * line, 4 for a crash). Annotation processing, plugins and doclint are not
++ * here (teavm-javac removes them), and neither is --release for anything but
++ * the class library that is here.
++ *
++ * <p>In javac's package because its option helper's file and class-name hooks
++ * are package-private.
++ */
++public final class PadJavac {
++    private static final int OK = 0;
++    private static final int ERROR = 1;
++    private static final int CMDERR = 2;
++    private static final int ABNORMAL = 4;
++
++    private final Map<String, byte[]> sdk;
++    private final String release;
++
++    private String cwd = "/";
++    private final List<String> args = new ArrayList<>();
++    private final Map<String, MemoryFileManager.Input> files = new LinkedHashMap<>();
++    private String envClassPath;
++
++    private String stdout = "";
++    private String stderr = "";
++    private Map<String, byte[]> written = Map.of();
++
++    /** The SDK's files by path; the Java version the class library is, as `--release` names it. */
++    public PadJavac(Map<String, byte[]> sdk, String release) {
++        this.sdk = sdk;
++        this.release = release;
++    }
++
++    public void reset() {
++        cwd = "/";
++        args.clear();
++        files.clear();
++        envClassPath = null;
++        stdout = "";
++        stderr = "";
++        written = Map.of();
++    }
++
++    public void setCwd(String cwd) {
++        this.cwd = cwd;
++    }
++
++    public void addArg(String arg) {
++        args.add(arg);
++    }
++
++    public void addFile(String path, byte[] data, long modified) {
++        files.put(path, new MemoryFileManager.Input(data, modified));
++    }
++
++    /** $CLASSPATH, which javac uses when no -cp is given. */
++    public void setEnvClassPath(String value) {
++        envClassPath = value;
++    }
++
++    public String stdout() {
++        return stdout;
++    }
++
++    public String stderr() {
++        return stderr;
++    }
++
++    public Map<String, byte[]> written() {
++        return written;
++    }
++
++    public int run() {
++        var outText = new StringWriter();
++        var errText = new StringWriter();
++        var out = new PrintWriter(outText, true);
++        var err = new PrintWriter(errText, true);
++        var context = new Context();
++        context.put(Log.outKey, out);
++        context.put(Log.errKey, err);
++        var log = Log.instance(context);
++        var fm = new MemoryFileManager(sdk, files, cwd);
++        context.put(JavaFileManager.class, fm);
++        int result;
++        try {
++            result = compile(context, log, fm);
++        } catch (Throwable e) {
++            // As Main reports a compiler crash.
++            log.printLines(PrefixKind.JAVAC, "msg.bug", JavaCompiler.version());
++            e.printStackTrace(log.getWriter(WriterKind.NOTICE));
++            result = ABNORMAL;
++        }
++        log.flush();
++        out.flush();
++        err.flush();
++        stdout = outText.toString();
++        stderr = errText.toString();
++        written = fm.written();
++        return result;
++    }
++
++    private int compile(Context context, Log log, MemoryFileManager fm) {
++        var helper = new Helper(log, Options.instance(context), fm);
++        if (args.isEmpty()) {
++            try {
++                Option.HELP.process(helper, "-help");
++            } catch (Option.InvalidValueException ignore) {
++                // Printing help cannot fail.
++            }
++            return CMDERR;
++        }
++
++        var sources = new ArrayList<JavaFileObject>();
++        var classNames = new LinkedHashSet<String>();
++        var allowed = Option.getJavaCompilerOptions();
++        var it = args.iterator();
++        boolean errors = false;
++        while (it.hasNext() && !errors) {
++            var arg = it.next();
++            try {
++                if (arg.isEmpty()) {
++                    log.error(Errors.InvalidFlag(arg));
++                    errors = true;
++                } else if (arg.equals("--module-version") || arg.startsWith("--module-version=")
++                        || arg.equals("--inherit-runtime-environment")) {
++                    helper.refused = "error: " + arg.replaceAll("=.*", "") + " is not available here";
++                } else if (arg.startsWith("-")) {
++                    var option = Option.lookup(arg, allowed);
++                    if (option == null) {
++                        log.error(Errors.InvalidFlag(arg));
++                        errors = true;
++                    } else {
++                        option.handleOption(helper, arg, it);
++                    }
++                } else if (Option.SOURCEFILE.matches(arg)) {
++                    if (arg.endsWith(".java")) {
++                        var file = fm.commandLineFile(arg);
++                        if (file == null) {
++                            throw helper.newInvalidValueException(Errors.FileNotFound(arg));
++                        }
++                        sources.add(file);
++                    } else {
++                        classNames.add(arg);
++                    }
++                } else {
++                    log.error(Errors.InvalidFlag(arg));
++                    errors = true;
++                }
++            } catch (Option.InvalidValueException e) {
++                log.printRawLines(e.getMessage());
++                errors = true;
++            }
++            if (helper.refused != null) {
++                log.printRawLines(helper.refused);
++                errors = true;
++            }
++        }
++        if (errors) {
++            log.printLines(PrefixKind.JAVAC, "msg.usage", helper.getOwnName());
++            return CMDERR;
++        }
++
++        var options = Options.instance(context);
++        // As Arguments does once the options are in: Log, among others, reads
++        // -Xmaxerrs and -XDrawDiagnostics when told.
++        options.notifyListeners();
++        var release = options.get(Option.RELEASE);
++        if (release != null && !release.equals(this.release)) {
++            log.printRawLines("error: --release " + release + " is not available here: this javac compiles "
++                    + "against Java " + this.release + "'s class library only");
++            return CMDERR;
++        }
++        if (sources.isEmpty() && classNames.isEmpty()) {
++            // It is allowed to compile nothing if just asking for help or version info.
++            if (options.isSet(Option.HELP) || options.isSet(Option.X) || options.isSet(Option.HELP_LINT)
++                    || options.isSet(Option.VERSION) || options.isSet(Option.FULLVERSION)) {
++                return OK;
++            }
++            log.error(Errors.NoSourceFiles);
++            return CMDERR;
++        }
++
++        fm.setClassPath(helper.classPath != null ? helper.classPath
++                : envClassPath != null ? envClassPath : ".");
++        if (helper.sourcePath != null) {
++            fm.setSourcePath(helper.sourcePath);
++        }
++        for (var output : helper.outputs.entrySet()) {
++            fm.setOutput(output.getKey(), output.getValue());
++        }
++
++        var compiler = new PadCompiler(context);
++        compiler.prepare();
++        if (!classNames.isEmpty()) {
++            // javac says this when it sets up annotation processing, which is not here.
++            log.error(Errors.ProcNoExplicitAnnotationProcessingRequested(classNames));
++        }
++        compiler.compile(com.sun.tools.javac.util.List.from(sources), com.sun.tools.javac.util.List.nil(), null,
++                com.sun.tools.javac.util.List.nil());
++        return compiler.errorCount() == 0 ? OK : ERROR;
++    }
++
++    /** javac's compiler, with its unnamed module reading the one module the SDK is. */
++    private static final class PadCompiler extends JavaCompiler {
++        PadCompiler(Context context) {
++            super(context);
++        }
++
++        void prepare() {
++            syms.unnamedModule.visiblePackages = new LinkedHashMap<>();
++            syms.unnamedModule.readModules = Set.of(syms.unnamedModule, syms.java_base);
++            syms.java_base.complete();
++            for (var export : syms.java_base.exports) {
++                syms.unnamedModule.visiblePackages.put(export.packge.fullname, export.packge);
++            }
++        }
++    }
++
++    /** Options into javac's Options; the file manager's into the folder's. */
++    private static final class Helper extends OptionHelper {
++        private final Log log;
++        private final Options options;
++        private final MemoryFileManager fm;
++        String classPath;
++        String sourcePath;
++        final Map<JavaFileManager.Location, String> outputs = new LinkedHashMap<>();
++        String refused;
++
++        Helper(Log log, Options options, MemoryFileManager fm) {
++            this.log = log;
++            this.options = options;
++            this.fm = fm;
++        }
++
++        @Override
++        public String get(Option option) {
++            return options.get(option);
++        }
++
++        @Override
++        public void put(String name, String value) {
++            options.put(name, value);
++        }
++
++        @Override
++        public void remove(String name) {
++            options.remove(name);
++        }
++
++        @Override
++        public boolean handleFileManagerOption(Option option, String value) {
++            switch (option) {
++                case CLASS_PATH -> classPath = value;
++                case SOURCE_PATH -> sourcePath = value;
++                case D -> outputs.put(StandardLocation.CLASS_OUTPUT, value);
++                case S -> outputs.put(StandardLocation.SOURCE_OUTPUT, value);
++                case H -> outputs.put(StandardLocation.NATIVE_HEADER_OUTPUT, value);
++                case ENCODING -> {
++                    try {
++                        fm.setEncoding(Charset.forName(value));
++                    } catch (RuntimeException e) {
++                        refused = "error: unsupported encoding: " + value;
++                    }
++                }
++                default -> refused = "error: " + option.primaryName + " is not available here";
++            }
++            return true;
++        }
++
++        @Override
++        public Log getLog() {
++            return log;
++        }
++
++        @Override
++        public String getOwnName() {
++            return "javac";
++        }
++
++        @Override
++        public void initialize() {
++            // As Arguments' helper does: Options otherwise takes an option read
++            // before it is set for one never set, and asserts so later.
++            options.initialize();
++        }
++
++        @Override
++        void addFile(Path p) {
++            // Source files are handled before an option ever sees them.
++            throw new IllegalStateException(p.toString());
++        }
++
++        @Override
++        void addClassName(String s) {
++            throw new IllegalStateException(s);
++        }
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/Exact.java b/compiler/src/main/java/org/ajar/javac/Exact.java
+new file mode 100644
+index 0000000..b137268
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/Exact.java
+@@ -0,0 +1,87 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac;
++
++import java.math.BigDecimal;
++
++/**
++ * The arithmetic javac's constant folding does, as a JVM does it.
++ *
++ * <p>Compiled to Wasm by TeaVM, an integer division by zero or of MIN_VALUE by
++ * -1 traps instead of throwing — ConstFold catches ArithmeticException to
++ * leave {@code 1 / 0} for run time, so the trap took javac down — and floating
++ * point {@code %} is not exact. Patches.java points ConstFold's divisions,
++ * remainders and negations here.
++ */
++public final class Exact {
++    private Exact() {
++    }
++
++    public static int idiv(int a, int b) {
++        if (b == 0) {
++            throw new ArithmeticException("/ by zero");
++        }
++        return b == -1 ? -a : a / b;
++    }
++
++    public static int irem(int a, int b) {
++        if (b == 0) {
++            throw new ArithmeticException("/ by zero");
++        }
++        return b == -1 ? 0 : a % b;
++    }
++
++    public static long ldiv(long a, long b) {
++        if (b == 0) {
++            throw new ArithmeticException("/ by zero");
++        }
++        return b == -1 ? -a : a / b;
++    }
++
++    public static long lrem(long a, long b) {
++        if (b == 0) {
++            throw new ArithmeticException("/ by zero");
++        }
++        return b == -1 ? 0 : a % b;
++    }
++
++    /** {@code a % b} as the JLS defines it: exact, with the sign of {@code a}. */
++    public static double drem(double a, double b) {
++        if (Double.isNaN(a) || Double.isNaN(b) || Double.isInfinite(a) || b == 0) {
++            return Double.NaN;
++        }
++        if (Double.isInfinite(b) || a == 0) {
++            return a;
++        }
++        // Both are exact as decimals, and so is the remainder, which is also
++        // exactly a double: no rounding happens anywhere.
++        double r = new BigDecimal(a).remainder(new BigDecimal(b)).doubleValue();
++        return r == 0 ? (a < 0 ? -0.0 : 0.0) : r;
++    }
++
++    /** The float remainder is exact in double too, so it is computed there. */
++    public static float frem(float a, float b) {
++        return (float) drem(a, b);
++    }
++
++    public static double dneg(double a) {
++        return Double.longBitsToDouble(Double.doubleToRawLongBits(a) ^ Long.MIN_VALUE);
++    }
++
++    public static float fneg(float a) {
++        return Float.intBitsToFloat(Float.floatToRawIntBits(a) ^ Integer.MIN_VALUE);
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/Help.java b/compiler/src/main/java/org/ajar/javac/Help.java
+new file mode 100644
+index 0000000..fddbad3
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/Help.java
+@@ -0,0 +1,35 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac;
++
++import com.sun.tools.javac.main.Option;
++import com.sun.tools.javac.util.Log;
++import com.sun.tools.javac.util.Log.WriterKind;
++
++/**
++ * javac's option list for --help and --help-extra (ajar). javac sorts it with
++ * java.text.Collator, which TeaVM does not have, so Patches.java has
++ * Option.showHelp print the list javac printed at build time instead; the
++ * header and footer around it are still javac's own.
++ */
++public final class Help {
++    private Help() {
++    }
++
++    public static void show(Log log, Option.OptionKind kind) {
++        log.printRawLines(WriterKind.STDOUT, kind == Option.OptionKind.STANDARD ? HelpText.STANDARD : HelpText.EXTENDED);
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/Javac.java b/compiler/src/main/java/org/ajar/javac/Javac.java
+new file mode 100644
+index 0000000..3772d4c
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/Javac.java
+@@ -0,0 +1,92 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac;
++
++import com.sun.tools.javac.main.PadJavac;
++import org.teavm.jso.JSExport;
++import org.teavm.jso.typedarrays.Int8Array;
++
++/**
++ * One javac, run as many times as asked: set the folder, the arguments and the
++ * files, {@link #run}, then read what it printed and wrote. Paths are absolute
++ * sandbox paths; what was written is every file javac produced, by path.
++ */
++public final class Javac {
++    private final PadJavac javac;
++    private String[] outputPaths = new String[0];
++    private byte[][] outputData = new byte[0][];
++
++    Javac(PadJavac javac) {
++        this.javac = javac;
++    }
++
++    @JSExport
++    public void reset() {
++        javac.reset();
++        outputPaths = new String[0];
++        outputData = new byte[0][];
++    }
++
++    @JSExport
++    public void setCwd(String cwd) {
++        javac.setCwd(cwd);
++    }
++
++    @JSExport
++    public void addArg(String arg) {
++        javac.addArg(arg);
++    }
++
++    @JSExport
++    public void addFile(String path, Int8Array data, double modified) {
++        javac.addFile(path, data.copyToJavaArray(), (long) modified);
++    }
++
++    @JSExport
++    public void setEnvClassPath(String value) {
++        javac.setEnvClassPath(value);
++    }
++
++    /** The exit status javac would give. */
++    @JSExport
++    public int run() {
++        var result = javac.run();
++        var written = javac.written();
++        outputPaths = written.keySet().toArray(new String[0]);
++        outputData = written.values().toArray(new byte[0][]);
++        return result;
++    }
++
++    @JSExport
++    public String stdout() {
++        return javac.stdout();
++    }
++
++    @JSExport
++    public String stderr() {
++        return javac.stderr();
++    }
++
++    @JSExport
++    public String[] outputPaths() {
++        return outputPaths;
++    }
++
++    @JSExport
++    public Int8Array outputData(int index) {
++        return Int8Array.copyFromJavaArray(outputData[index]);
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/MemoryFileManager.java b/compiler/src/main/java/org/ajar/javac/MemoryFileManager.java
+new file mode 100644
+index 0000000..7e02c7e
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/MemoryFileManager.java
+@@ -0,0 +1,508 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac;
++
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.InputStreamReader;
++import java.io.OutputStream;
++import java.io.OutputStreamWriter;
++import java.io.Reader;
++import java.io.Writer;
++import java.net.URI;
++import java.nio.charset.Charset;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipInputStream;
++import javax.lang.model.element.Modifier;
++import javax.lang.model.element.NestingKind;
++import javax.tools.FileObject;
++import javax.tools.JavaFileManager;
++import javax.tools.JavaFileObject;
++import javax.tools.StandardLocation;
++
++/**
++ * A folder as javac sees it, from the files the sandbox sent: each at its
++ * absolute path, with what the class path, source path and output directories
++ * were given as. It answers as javac's own file manager does for `javac -d out
++ * -cp lib Main.java`: a class on the class path is found in its package's
++ * directory under each entry in turn, a source file there too when there is
++ * no source path, and a class file goes under -d, or beside its source file.
++ * The class library is the SDK, as module java.base.
++ */
++public final class MemoryFileManager implements JavaFileManager {
++    /** A file the sandbox sent. */
++    public record Input(byte[] data, long modified) {
++    }
++
++    /** A class path or source path entry: a directory, or a jar's entries. */
++    private record Root(String path, String given, Map<String, byte[]> jar) {
++    }
++
++    private static final Map<String, JavaFileObject.Kind> KINDS = new HashMap<>();
++
++    static {
++        for (var kind : JavaFileObject.Kind.values()) {
++            if (!kind.extension.isEmpty()) {
++                KINDS.put(kind.extension, kind);
++            }
++        }
++    }
++
++    private final Map<String, MemoryFile> platform;
++    private final Map<String, Input> disk;
++    private final String cwd;
++    private final Map<String, MemoryFile> written = new LinkedHashMap<>();
++    private List<Root> classPath = List.of();
++    private List<Root> sourcePath;
++    private final Map<JavaFileManager.Location, String> outputs = new HashMap<>();
++    private Charset charset = StandardCharsets.UTF_8;
++
++    public MemoryFileManager(Map<String, byte[]> sdk, Map<String, Input> disk, String cwd) {
++        this.platform = new HashMap<>();
++        for (var entry : sdk.entrySet()) {
++            var file = new MemoryFile(entry.getKey(), entry.getKey(), binaryName(entry.getKey()), entry.getValue(), 0);
++            file.javaBase = true;
++            platform.put(entry.getKey(), file);
++        }
++        this.disk = disk;
++        this.cwd = cwd;
++    }
++
++    // ---- what the command line set up ----
++
++    /** A path as the program gave it, made absolute against the folder it ran in. */
++    public String resolve(String path) {
++        var full = path.startsWith("/") ? path : cwd + "/" + path;
++        var parts = new ArrayList<String>();
++        for (var part : full.split("/")) {
++            if (part.isEmpty() || part.equals(".")) {
++                continue;
++            }
++            if (part.equals("..")) {
++                if (!parts.isEmpty()) {
++                    parts.remove(parts.size() - 1);
++                }
++                continue;
++            }
++            parts.add(part);
++        }
++        return "/" + String.join("/", parts);
++    }
++
++    public void setClassPath(String value) {
++        classPath = roots(value);
++    }
++
++    public void setSourcePath(String value) {
++        sourcePath = roots(value);
++    }
++
++    public void setOutput(JavaFileManager.Location location, String dir) {
++        outputs.put(location, resolve(dir));
++    }
++
++    public void setEncoding(Charset charset) {
++        this.charset = charset;
++    }
++
++    private List<Root> roots(String value) {
++        var roots = new ArrayList<Root>();
++        for (var entry : value.split(":", -1)) {
++            // An empty entry is the current directory, as on any JVM.
++            var given = entry.isEmpty() ? "." : entry;
++            var path = resolve(given);
++            Map<String, byte[]> jar = null;
++            var input = disk.get(path);
++            if (input != null && (path.endsWith(".jar") || path.endsWith(".zip"))) {
++                jar = readJar(input.data());
++            }
++            roots.add(new Root(path, given, jar));
++        }
++        return roots;
++    }
++
++    private static Map<String, byte[]> readJar(byte[] data) {
++        var entries = new LinkedHashMap<String, byte[]>();
++        try (var zip = new ZipInputStream(new ByteArrayInputStream(data))) {
++            ZipEntry entry;
++            while ((entry = zip.getNextEntry()) != null) {
++                if (!entry.isDirectory()) {
++                    entries.put(entry.getName(), zip.readAllBytes());
++                }
++            }
++        } catch (IOException e) {
++            // An unreadable jar contributes nothing, as javac's would.
++        }
++        return entries;
++    }
++
++    /** A source file named on the command line, or null when there is none. */
++    public JavaFileObject commandLineFile(String given) {
++        var path = resolve(given);
++        var input = disk.get(path);
++        if (input == null) {
++            return null;
++        }
++        return new MemoryFile(path, given, null, input.data(), input.modified());
++    }
++
++    /** What javac wrote, by absolute path. */
++    public Map<String, byte[]> written() {
++        var result = new LinkedHashMap<String, byte[]>();
++        for (var entry : written.entrySet()) {
++            result.put(entry.getKey(), entry.getValue().data);
++        }
++        return result;
++    }
++
++    // ---- javac's questions ----
++
++    private List<Root> rootsOf(JavaFileManager.Location location) {
++        if (location == StandardLocation.CLASS_PATH) {
++            return classPath;
++        }
++        if (location == StandardLocation.SOURCE_PATH) {
++            return sourcePath != null ? sourcePath : List.of();
++        }
++        return List.of();
++    }
++
++    @Override
++    public ClassLoader getClassLoader(JavaFileManager.Location location) {
++        return MemoryFileManager.class.getClassLoader();
++    }
++
++    @Override
++    public Iterable<JavaFileObject> list(JavaFileManager.Location location, String packageName,
++            Set<JavaFileObject.Kind> kinds, boolean recurse) {
++        var pkg = packageName.replace('.', '/');
++        var result = new ArrayList<JavaFileObject>();
++        if (location == StandardLocation.PLATFORM_CLASS_PATH) {
++            for (var file : platform.values()) {
++                if (within(file.path, pkg, recurse) && kinds.contains(file.getKind())) {
++                    result.add(file);
++                }
++            }
++            return result;
++        }
++        // Each entry in order, so the first one with a class is the one used.
++        for (var root : rootsOf(location)) {
++            if (root.jar != null) {
++                for (var entry : root.jar.entrySet()) {
++                    if (within(entry.getKey(), pkg, recurse) && kinds.contains(kindOf(entry.getKey()))) {
++                        result.add(new MemoryFile(root.path + "(" + entry.getKey() + ")",
++                                root.given + "(" + entry.getKey() + ")", binaryName(entry.getKey()),
++                                entry.getValue(), 0));
++                    }
++                }
++                continue;
++            }
++            var prefix = root.path.equals("/") ? "" : root.path;
++            var names = new ArrayList<String>();
++            for (var path : disk.keySet()) {
++                if (path.startsWith(prefix + "/")) {
++                    var relative = path.substring(prefix.length() + 1);
++                    if (within(relative, pkg, recurse) && kinds.contains(kindOf(relative))) {
++                        names.add(relative);
++                    }
++                }
++            }
++            Collections.sort(names);
++            for (var relative : names) {
++                var input = disk.get(prefix + "/" + relative);
++                result.add(new MemoryFile(prefix + "/" + relative, join(root.given, relative),
++                        binaryName(relative), input.data(), input.modified()));
++            }
++        }
++        return result;
++    }
++
++    /** Whether a path is in a package — directly, or anywhere below it. */
++    private static boolean within(String path, String pkg, boolean recurse) {
++        if (!pkg.isEmpty()) {
++            if (!path.startsWith(pkg + "/")) {
++                return false;
++            }
++            path = path.substring(pkg.length() + 1);
++        }
++        return recurse || path.indexOf('/') < 0;
++    }
++
++    /** A path as javac names it: the entry as given, then the file below it. */
++    private static String join(String given, String relative) {
++        return given.endsWith("/") ? given + relative : given + "/" + relative;
++    }
++
++    private static JavaFileObject.Kind kindOf(String path) {
++        var dot = path.lastIndexOf('.');
++        var kind = dot < 0 ? null : KINDS.get(path.substring(dot));
++        return kind != null ? kind : JavaFileObject.Kind.OTHER;
++    }
++
++    private static String binaryName(String relative) {
++        var dot = relative.lastIndexOf('.');
++        return (dot < 0 ? relative : relative.substring(0, dot)).replace('/', '.');
++    }
++
++    @Override
++    public String inferBinaryName(JavaFileManager.Location location, JavaFileObject file) {
++        return file instanceof MemoryFile memory ? memory.binaryName : null;
++    }
++
++    @Override
++    public boolean isSameFile(FileObject a, FileObject b) {
++        return a instanceof MemoryFile x && b instanceof MemoryFile y && x.path.equals(y.path);
++    }
++
++    @Override
++    public boolean handleOption(String current, java.util.Iterator<String> remaining) {
++        return false;
++    }
++
++    @Override
++    public boolean hasLocation(JavaFileManager.Location location) {
++        if (location == StandardLocation.PLATFORM_CLASS_PATH || location == StandardLocation.CLASS_PATH
++                || location == StandardLocation.CLASS_OUTPUT) {
++            return true;
++        }
++        if (location == StandardLocation.SOURCE_PATH) {
++            return sourcePath != null;
++        }
++        return outputs.containsKey(location);
++    }
++
++    @Override
++    public JavaFileObject getJavaFileForInput(JavaFileManager.Location location, String className,
++            JavaFileObject.Kind kind) {
++        return getFileForInput(location, "", className.replace('.', '/') + kind.extension);
++    }
++
++    @Override
++    public MemoryFile getFileForInput(JavaFileManager.Location location, String packageName,
++            String relativeName) {
++        var relative = packageName.isEmpty() ? relativeName : packageName.replace('.', '/') + "/" + relativeName;
++        if (location == StandardLocation.PLATFORM_CLASS_PATH) {
++            return platform.get(relative);
++        }
++        for (var root : rootsOf(location)) {
++            if (root.jar != null) {
++                var data = root.jar.get(relative);
++                if (data != null) {
++                    return new MemoryFile(root.path + "(" + relative + ")", root.given + "(" + relative + ")",
++                            binaryName(relative), data, 0);
++                }
++                continue;
++            }
++            var path = (root.path.equals("/") ? "" : root.path) + "/" + relative;
++            var input = disk.get(path);
++            if (input != null) {
++                return new MemoryFile(path, join(root.given, relative), binaryName(relative), input.data(),
++                        input.modified());
++            }
++        }
++        return null;
++    }
++
++    @Override
++    public JavaFileObject getJavaFileForOutput(JavaFileManager.Location location, String className,
++            JavaFileObject.Kind kind, FileObject sibling) {
++        var dir = outputs.get(location);
++        String path;
++        if (dir != null) {
++            path = (dir.equals("/") ? "" : dir) + "/" + className.replace('.', '/') + kind.extension;
++        } else {
++            // No -d: beside the source it came from, as javac does it.
++            var simple = className.substring(className.lastIndexOf('.') + 1);
++            var beside = sibling instanceof MemoryFile memory && memory.path.startsWith("/")
++                    ? memory.path.substring(0, memory.path.lastIndexOf('/'))
++                    : cwd;
++            path = (beside.equals("/") ? "" : beside) + "/" + simple + kind.extension;
++        }
++        var file = new MemoryFile(path, path, className, new byte[0], 0);
++        file.output = true;
++        return file;
++    }
++
++    @Override
++    public FileObject getFileForOutput(JavaFileManager.Location location, String packageName,
++            String relativeName, FileObject sibling) {
++        var dir = outputs.getOrDefault(location, cwd);
++        var relative = packageName.isEmpty() ? relativeName : packageName.replace('.', '/') + "/" + relativeName;
++        var path = (dir.equals("/") ? "" : dir) + "/" + relative;
++        var file = new MemoryFile(path, path, null, new byte[0], 0);
++        file.output = true;
++        return file;
++    }
++
++    @Override
++    public void flush() {
++    }
++
++    @Override
++    public void close() {
++    }
++
++    @Override
++    public int isSupportedOption(String option) {
++        return -1;
++    }
++
++    @Override
++    public Iterable<Set<JavaFileManager.Location>> listLocationsForModules(JavaFileManager.Location location) {
++        return List.of(Set.of(StandardLocation.PLATFORM_CLASS_PATH));
++    }
++
++    @Override
++    public JavaFileManager.Location getLocationForModule(JavaFileManager.Location location, String moduleName) {
++        return moduleName.equals("java.base") ? StandardLocation.PLATFORM_CLASS_PATH : null;
++    }
++
++    @Override
++    public JavaFileManager.Location getLocationForModule(JavaFileManager.Location location, JavaFileObject fo) {
++        return fo instanceof MemoryFile file && file.javaBase ? StandardLocation.PLATFORM_CLASS_PATH : null;
++    }
++
++    @Override
++    public String inferModuleName(JavaFileManager.Location location) {
++        return location == StandardLocation.PLATFORM_CLASS_PATH ? "java.base" : null;
++    }
++
++    @Override
++    public boolean contains(JavaFileManager.Location location, FileObject fo) {
++        return fo instanceof MemoryFile file && (location == StandardLocation.PLATFORM_CLASS_PATH) == file.javaBase;
++    }
++
++    /** One file: read from the sandbox, from the SDK, or being written. */
++    final class MemoryFile implements JavaFileObject {
++        final String path;
++        final String name;
++        final String binaryName;
++        byte[] data;
++        final long modified;
++        boolean javaBase;
++        boolean output;
++
++        MemoryFile(String path, String name, String binaryName, byte[] data, long modified) {
++            this.path = path;
++            this.name = name;
++            this.binaryName = binaryName;
++            this.data = data;
++            this.modified = modified;
++        }
++
++        @Override
++        public Kind getKind() {
++            return kindOf(path);
++        }
++
++        @Override
++        public boolean isNameCompatible(String simpleName, Kind kind) {
++            var base = path.substring(path.lastIndexOf('/') + 1);
++            return kind == getKind() && base.equals(simpleName + kind.extension);
++        }
++
++        @Override
++        public NestingKind getNestingKind() {
++            return null;
++        }
++
++        @Override
++        public Modifier getAccessLevel() {
++            return null;
++        }
++
++        @Override
++        public URI toUri() {
++            try {
++                return new URI("file", null, path.startsWith("/") ? path : "/" + path, null);
++            } catch (java.net.URISyntaxException e) {
++                throw new IllegalStateException(e);
++            }
++        }
++
++        @Override
++        public String getName() {
++            return name;
++        }
++
++        @Override
++        public InputStream openInputStream() {
++            return new ByteArrayInputStream(data);
++        }
++
++        @Override
++        public OutputStream openOutputStream() {
++            return new ByteArrayOutputStream() {
++                @Override
++                public void close() throws IOException {
++                    super.close();
++                    data = toByteArray();
++                    written.put(path, MemoryFile.this);
++                }
++            };
++        }
++
++        @Override
++        public Reader openReader(boolean ignoreEncodingErrors) {
++            return new InputStreamReader(openInputStream(), charset);
++        }
++
++        @Override
++        public CharSequence getCharContent(boolean ignoreEncodingErrors) {
++            return new String(data, charset);
++        }
++
++        @Override
++        public Writer openWriter() {
++            return new OutputStreamWriter(openOutputStream(), charset);
++        }
++
++        @Override
++        public long getLastModified() {
++            return modified;
++        }
++
++        @Override
++        public boolean delete() {
++            return written.remove(path) != null;
++        }
++
++        @Override
++        public boolean equals(Object other) {
++            return other instanceof MemoryFile file && file.path.equals(path);
++        }
++
++        @Override
++        public int hashCode() {
++            return path.hashCode();
++        }
++
++        @Override
++        public String toString() {
++            return name;
++        }
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/PadLib.java b/compiler/src/main/java/org/ajar/javac/PadLib.java
+new file mode 100644
+index 0000000..9fce8e4
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/PadLib.java
+@@ -0,0 +1,46 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac;
++
++import java.io.ByteArrayInputStream;
++import java.io.IOException;
++import java.util.LinkedHashMap;
++import org.teavm.javac.ArchiveReader;
++import org.teavm.jso.JSExport;
++import org.teavm.jso.typedarrays.Int8Array;
++
++/**
++ * The module's one export: a javac for the pad (ajar). The JavaScript side
++ * makes one per page, given the SDK — the class library to compile against, in
++ * teavm-javac's archive format — and runs it once per `javac` the sandbox asks
++ * for. See {@link Javac}.
++ */
++public final class PadLib {
++    private PadLib() {
++    }
++
++    @JSExport
++    public static Javac createJavac(Int8Array sdk, String release) throws IOException {
++        var files = new LinkedHashMap<String, byte[]>();
++        try (var input = new ArchiveReader(new ByteArrayInputStream(sdk.copyToJavaArray()))) {
++            String name;
++            while ((name = input.readNext()) != null) {
++                files.put(name, input.readData());
++            }
++        }
++        return new Javac(new com.sun.tools.javac.main.PadJavac(files, release));
++    }
++}
+diff --git a/compiler/src/main/java/org/ajar/javac/jdkmath/Internals.java b/compiler/src/main/java/org/ajar/javac/jdkmath/Internals.java
+new file mode 100644
+index 0000000..3673ed8
+--- /dev/null
++++ b/compiler/src/main/java/org/ajar/javac/jdkmath/Internals.java
+@@ -0,0 +1,57 @@
++/*
++ * Copyright 2026 the ajar authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.ajar.javac.jdkmath;
++
++/**
++ * What the JDK's jdk.internal.math classes reach for outside themselves.
++ *
++ * <p>The rest of this package is copied from the JDK the javac comes from, at
++ * build time (compiler/build.gradle, {@code copyJdkMath}), so javac parses and
++ * prints numbers exactly as the JDK does rather than as TeaVM's class library
++ * does. The JDK's code asks {@code SharedSecrets} for UTF-16 string internals
++ * and uses {@code Math.multiplyHigh}; these stand in. The UTF-16 paths serve
++ * the JDK's own StringBuilder and are not reached here; they only have to agree
++ * with each other.
++ */
++final class Internals {
++    static final Internals JLA = new Internals();
++
++    private Internals() {
++    }
++
++    void uncheckedPutCharUTF16(byte[] str, int index, int c) {
++        str[index << 1] = (byte) c;
++        str[(index << 1) + 1] = (byte) (c >> 8);
++    }
++
++    char uncheckedGetUTF16Char(byte[] str, int index) {
++        return (char) ((str[index << 1] & 0xFF) | ((str[(index << 1) + 1] & 0xFF) << 8));
++    }
++
++    /** {@link Math#multiplyHigh}, as the JDK computes it without an intrinsic. */
++    static long multiplyHigh(long x, long y) {
++        long x1 = x >> 32;
++        long x2 = x & 0xFFFFFFFFL;
++        long y1 = y >> 32;
++        long y2 = y & 0xFFFFFFFFL;
++        long z2 = x2 * y2;
++        long t = x1 * y2 + (z2 >>> 32);
++        long z1 = t & 0xFFFFFFFFL;
++        long z0 = t >> 32;
++        z1 += x2 * y1;
++        return x1 * y1 + z0 + (z1 >> 32);
++    }
++}
+diff --git a/compiler/src/main/java/org/teavm/javac/Patches.java b/compiler/src/main/java/org/teavm/javac/Patches.java
+index 3366a07..eee132d 100644
+--- a/compiler/src/main/java/org/teavm/javac/Patches.java
++++ b/compiler/src/main/java/org/teavm/javac/Patches.java
+@@ -17,15 +17,24 @@
+ package org.teavm.javac;
+ 
+ import java.lang.annotation.Annotation;
++import java.util.ArrayList;
+ import java.util.stream.Stream;
++import org.teavm.model.BasicBlock;
+ import org.teavm.model.ClassHolder;
+ import org.teavm.model.ClassHolderTransformer;
+ import org.teavm.model.ClassHolderTransformerContext;
+ import org.teavm.model.MethodDescriptor;
++import org.teavm.model.Instruction;
+ import org.teavm.model.MethodHolder;
++import org.teavm.model.MethodReference;
+ import org.teavm.model.ValueType;
+ import org.teavm.model.emit.ProgramEmitter;
++import org.teavm.model.instructions.BinaryInstruction;
++import org.teavm.model.instructions.BinaryOperation;
++import org.teavm.model.instructions.InvocationType;
+ import org.teavm.model.instructions.InvokeInstruction;
++import org.teavm.model.instructions.NegateInstruction;
++import org.teavm.model.instructions.NumericOperandType;
+ import org.teavm.vm.spi.TeaVMHost;
+ import org.teavm.vm.spi.TeaVMPlugin;
+ 
+@@ -59,7 +68,186 @@ public class Patches implements TeaVMPlugin, ClassHolderTransformer {
+             case "org.teavm.rhino.javascript.config.RhinoProperties":
+                 transformRhinoProperties(cls, context);
+                 break;
++            case "java.lang.Double":
++                transformNumberText(cls, context, ValueType.DOUBLE, "org.ajar.javac.jdkmath.DoubleToDecimal",
++                        "parseDouble");
++                break;
++            case "java.lang.Float":
++                transformNumberText(cls, context, ValueType.FLOAT, "org.ajar.javac.jdkmath.FloatToDecimal",
++                        "parseFloat");
++                break;
++            case "com.sun.tools.javac.comp.ConstFold":
++                transformConstFold(cls);
++                break;
++            case "com.sun.tools.javac.main.Option":
++                transformShowHelp(cls, context);
++                break;
++            default:
++                if (cls.getName().startsWith("com.sun.tools.javac.main.Option$")) {
++                    transformUnavailableOptions(cls, context);
++                }
++                break;
++        }
++    }
++
++    /* The option list, as javac printed it at build time: see org.ajar.javac.Help (ajar). */
++    private void transformShowHelp(ClassHolder cls, ClassHolderTransformerContext context) {
++        var log = ValueType.object("com.sun.tools.javac.util.Log");
++        var kind = ValueType.object("com.sun.tools.javac.main.Option$OptionKind");
++        var method = cls.getMethod(new MethodDescriptor("showHelp", log, kind, ValueType.VOID));
++        var pe = ProgramEmitter.create(method, context.getHierarchy());
++        pe.invoke("org.ajar.javac.Help", "show", ValueType.VOID, pe.var(1, log), pe.var(2, kind));
++        pe.exit();
++    }
++
++    /*
++     * Options whose handling needs what TeaVM's class library does not have
++     * (ajar): -Xdoclint: asks doclint, which is not here, so it matches nothing;
++     * --module-version and --inherit-runtime-environment, which PadJavac refuses
++     * before they are processed, throw.
++     */
++    private static final java.util.Set<String> UNAVAILABLE = java.util.Set.of(
++            "com.sun.tools.doclint.DocLint", "java.lang.module.ModuleDescriptor$Version", "jdk.internal.misc.VM");
++
++    private void transformUnavailableOptions(ClassHolder cls, ClassHolderTransformerContext context) {
++        for (var method : cls.getMethods()) {
++            var program = method.getProgram();
++            if (program == null || !references(program, UNAVAILABLE)) {
++                continue;
++            }
++            var pe = ProgramEmitter.create(method, context.getHierarchy());
++            if (method.getResultType() == ValueType.BOOLEAN) {
++                pe.constant(0).returnValue();
++            } else {
++                pe.construct(IllegalStateException.class).raise();
++            }
++        }
++    }
++
++    private static boolean references(org.teavm.model.Program program, java.util.Set<String> classes) {
++        for (BasicBlock block : program.getBasicBlocks()) {
++            for (var instruction : block) {
++                if (instruction instanceof InvokeInstruction invoke
++                        && classes.contains(invoke.getMethod().getClassName())) {
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
++
++    /*
++     * Numbers to text and back, as the JDK does it (ajar). TeaVM's class library
++     * misreads some literals — 4.9e-324 as zero, so javac said "floating-point
++     * number too small" — and prints some doubles differently, which changes
++     * what a folded "x" + 1e-5 writes into a class file. Every conversion in
++     * the module goes through these, so javac's do.
++     */
++    private void transformNumberText(ClassHolder cls, ClassHolderTransformerContext context, ValueType type,
++            String printer, String parser) {
++        var string = ValueType.object("java.lang.String");
++        var boxed = ValueType.object(cls.getName());
++        var hierarchy = context.getHierarchy();
++        var method = cls.getMethod(new MethodDescriptor("toString", type, string));
++        if (method != null) {
++            var pe = ProgramEmitter.create(method, hierarchy);
++            pe.invoke(printer, "toString", string, pe.var(1, type)).returnValue();
++        }
++        method = cls.getMethod(new MethodDescriptor("toString", string));
++        if (method != null && method.getProgram() != null) {
++            var pe = ProgramEmitter.create(method, hierarchy);
++            var value = pe.var(0, boxed).invokeVirtual(type == ValueType.DOUBLE ? "doubleValue" : "floatValue", type);
++            pe.invoke(printer, "toString", string, value).returnValue();
+         }
++        var parse = type == ValueType.DOUBLE ? "parseDouble" : "parseFloat";
++        method = cls.getMethod(new MethodDescriptor(parse, string, type));
++        if (method != null) {
++            var pe = ProgramEmitter.create(method, hierarchy);
++            pe.invoke("org.ajar.javac.jdkmath.FloatingDecimal", parser, type, pe.var(1, string)).returnValue();
++        }
++        method = cls.getMethod(new MethodDescriptor("valueOf", string, boxed));
++        if (method != null) {
++            var pe = ProgramEmitter.create(method, hierarchy);
++            var value = pe.invoke("org.ajar.javac.jdkmath.FloatingDecimal", parser, type, pe.var(1, string));
++            pe.invoke(cls.getName(), "valueOf", boxed, value).returnValue();
++        }
++    }
++
++    /*
++     * Constant folding's integer division and remainder, floating point
++     * remainder and negation, done as the JVM does them (ajar): see
++     * org.ajar.javac.Exact for what TeaVM's Wasm does instead.
++     */
++    private void transformConstFold(ClassHolder cls) {
++        for (var method : cls.getMethods()) {
++            var program = method.getProgram();
++            if (program == null) {
++                continue;
++            }
++            var found = new ArrayList<Instruction>();
++            for (BasicBlock block : program.getBasicBlocks()) {
++                for (var instruction : block) {
++                    found.add(instruction);
++                }
++            }
++            for (var instruction : found) {
++                if (instruction instanceof BinaryInstruction binary) {
++                    var name = exactName(binary.getOperation(), binary.getOperandType());
++                    if (name != null) {
++                        var type = valueType(binary.getOperandType());
++                        replace(binary, name, type, binary.getReceiver(), binary.getFirstOperand(),
++                                binary.getSecondOperand());
++                    }
++                } else if (instruction instanceof NegateInstruction negate) {
++                    var operand = negate.getOperandType();
++                    if (operand == NumericOperandType.FLOAT || operand == NumericOperandType.DOUBLE) {
++                        replace(negate, operand == NumericOperandType.FLOAT ? "fneg" : "dneg", valueType(operand),
++                                negate.getReceiver(), negate.getOperand());
++                    }
++                }
++            }
++        }
++    }
++
++    private static String exactName(BinaryOperation operation, NumericOperandType type) {
++        if (operation == BinaryOperation.DIVIDE) {
++            return switch (type) {
++                case INT -> "idiv";
++                case LONG -> "ldiv";
++                default -> null;
++            };
++        }
++        if (operation == BinaryOperation.MODULO) {
++            return switch (type) {
++                case INT -> "irem";
++                case LONG -> "lrem";
++                case FLOAT -> "frem";
++                case DOUBLE -> "drem";
++            };
++        }
++        return null;
++    }
++
++    private static ValueType valueType(NumericOperandType type) {
++        return switch (type) {
++            case INT -> ValueType.INTEGER;
++            case LONG -> ValueType.LONG;
++            case FLOAT -> ValueType.FLOAT;
++            case DOUBLE -> ValueType.DOUBLE;
++        };
++    }
++
++    private static void replace(Instruction instruction, String name, ValueType type,
++            org.teavm.model.Variable receiver, org.teavm.model.Variable... operands) {
++        var signature = new ValueType[operands.length + 1];
++        java.util.Arrays.fill(signature, type);
++        var invoke = new InvokeInstruction();
++        invoke.setType(InvocationType.SPECIAL);
++        invoke.setMethod(new MethodReference("org.ajar.javac.Exact", name, signature));
++        invoke.setArguments(operands);
++        invoke.setReceiver(receiver);
++        invoke.setLocation(instruction.getLocation());
++        instruction.replace(invoke);
+     }
+ 
+     private void transformAnnotationProxyMaker(ClassHolder cls, ClassHolderTransformerContext context) {
+diff --git a/gradle.properties b/gradle.properties
+index bb8dd6e..628a528 100644
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -14,4 +14,10 @@
+ #  limitations under the License.
+ #
+ 
+-jdk.revision=6c48f4ed707bf0b15f9b6098de30db8aae6fa40f
+\ No newline at end of file
++# The javac source (ajar): Corretto 25.0.4.10.1, the JDK whose class library
++# the pad's Java runs, rather than OpenJDK's jdk-25+36.
++jdk.repo=corretto/corretto-25
++jdk.revision=c63f7d4b8e3a9f39c58e625f65f2435d7039416d
++# What `javac -version` and `--full-version` say, from that JDK's release file.
++javac.version.release=25.0.4.1
++javac.version.full=25.0.4.1+10-LTS
+\ No newline at end of file
+diff --git a/javac/build.gradle b/javac/build.gradle
+index 3cbe476..ae72f1e 100644
+--- a/javac/build.gradle
++++ b/javac/build.gradle
+@@ -4,10 +4,12 @@ plugins {
+ }
+ 
+ def revision = providers.gradleProperty("jdk.revision").get()
++def repo = providers.gradleProperty("jdk.repo").getOrElse("openjdk/jdk25u")
++def repoName = repo.substring(repo.lastIndexOf('/') + 1)
+ 
+ def downloadJDK = tasks.register("downloadJDK", Download) {
+-    src "https://github.com/openjdk/jdk25u/archive/${revision}.zip"
+-    dest layout.buildDirectory.file("jdk-${revision}.zip")
++    src "https://github.com/${repo}/archive/${revision}.zip"
++    dest layout.buildDirectory.file("${repoName}-${revision}.zip")
+     overwrite false
+ }
+ 
+@@ -18,7 +20,7 @@ def unpackJDK = tasks.register("unpackJDK", Sync) {
+     exclude "**/module-info.java"
+ }
+ 
+-def baseJDKDir = layout.buildDirectory.dir("jdk/jdk25u-${revision}").get()
++def baseJDKDir = layout.buildDirectory.dir("jdk/${repoName}-${revision}").get()
+ 
+ def compileTools = tasks.register("compileTools", JavaCompile) {
+     dependsOn unpackJDK

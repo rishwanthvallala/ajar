@@ -12,6 +12,8 @@
 //!
 //! `--inspect` prints a container's manifest and volume names — what a package
 //! of ours should look like is easiest to read off one of Wasmer's.
+//! `--extract <file.webc> <dir>` writes its atoms and volumes out as files, so
+//! java-fidelity.mjs tests the bytes that ship.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,7 +26,7 @@ use webc::{
         write::{DirEntry, Directory, FileEntry, Writer},
         ChecksumAlgorithm, SignatureAlgorithm, Timestamps,
     },
-    Container, PathSegment,
+    Container, Metadata, PathSegment, Volume,
 };
 
 /// 2026-01-01T00:00:00Z.
@@ -89,8 +91,58 @@ fn inspect(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copy one volume directory out to `dir`, recursively.
+fn extract_dir(volume: &Volume, path: &[PathSegment], dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (name, _, meta) in volume.read_dir(path).unwrap_or_default() {
+        let mut child = path.to_vec();
+        child.push(name.clone());
+        let target = dir.join(name.as_str());
+        match meta {
+            Metadata::Dir { .. } => extract_dir(volume, &child, &target)?,
+            Metadata::File { .. } => {
+                let (bytes, _) = volume
+                    .read_file(child.as_slice())
+                    .with_context(|| format!("reading {}", target.display()))?;
+                std::fs::write(&target, &bytes[..])?;
+            }
+            Metadata::Symlink { .. } => {
+                bail!("{} is a link; webc-pack writes none", target.display())
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The atoms and volumes of a container, as files: `<dir>/atoms/<name>` and
+/// `<dir>/volumes/<name>/...`, a volume's leading slash dropped.
+fn extract(path: &str, dir: &str) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
+    let container =
+        Container::from_bytes_and_version(bytes.clone().into(), webc::detect(&bytes[..])?)?;
+    let dir = Path::new(dir);
+    std::fs::create_dir_all(dir.join("atoms"))?;
+    for (name, data) in container.atoms() {
+        std::fs::write(dir.join("atoms").join(&name), &data[..])?;
+    }
+    for (name, volume) in container.volumes() {
+        extract_dir(
+            &volume,
+            &[],
+            &dir.join("volumes").join(name.trim_start_matches('/')),
+        )?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--extract") {
+        let (Some(file), Some(dir)) = (args.get(1), args.get(2)) else {
+            bail!("usage: webc-pack --extract <file.webc> <dir>");
+        };
+        return extract(file, dir);
+    }
     if args.first().map(String::as_str) == Some("--inspect") {
         return inspect(args.get(1).context("--inspect needs a file")?);
     }

@@ -250,7 +250,7 @@ anywhere else.
 **C, Go, Java, JavaScript and PHP come the first time you use them.** Type
 `clang`, `go`, `java`, `node` or `php` — or press Run on a `.c`, `.go`, `.java`,
 `.js` or `.php` file — and the terminal says it is fetching that language, how
-big it is, and then runs your line: about 106 MB for C, 273 MB for Go, 61 for
+big it is, and then runs your line: about 106 MB for C, 273 MB for Go, 66 for
 Java, 75 for Node and 82 for PHP before compression, the first time a tab uses
 it — so nobody who only writes Python pays for them. The terminal
 starts a fresh shell when one arrives; you stay in the same folder, with what
@@ -265,11 +265,11 @@ compiles, but not `#include <iostream>` — it never finishes; use `<cstdio>` an
 
 Java is Java 25 — the real class library, run by a JVM built for this sandbox.
 `javac Main.java` then `java Main` works, and so does `java Main.java` on its
-own, which is what Run does. Compiling is slow — several seconds, about six on
-a fast laptop — because the compiler is interpreted here; running a compiled
-class takes under one. Programs
-read input with `Scanner` as usual. There is no `jshell`, and nothing that opens
-a window.
+own, which is what Run does. Compiling takes a tenth of a second or so, and
+running a compiled class under one. In a browser too old for the fast compiler
+(before Chrome 137, Firefox 131 or Safari 18.4) the terminal says so, and
+compiling takes several seconds instead. Programs read input with `Scanner` as
+usual. There is no `jshell`, and nothing that opens a window.
 
 **No `gcc`, no Ruby, no `git` or `make`.** There is no `gcc` for this kind of
 sandbox at all; C is clang. Ruby and Zig exist but do not work well enough yet.

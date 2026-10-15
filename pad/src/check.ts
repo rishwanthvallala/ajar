@@ -14,6 +14,7 @@ import { RuntimeNotices, Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
+import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./javac/protocol";
 import { seedFiles } from "./seed";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
@@ -764,6 +765,13 @@ async function main() {
     is(runnerFor("notes.txt"), null, "and nothing runs what no language does");
     is(neededBy("javac Main.java && java Main", none).map((t) => t.name).join(","), "Java", "javac and java are one language, fetched once");
     is(runnerFor("src/Main.java")?.line, "java 'src/Main.java'", "and Run runs a .java file as a source file");
+    // The fast javac's files: what the sandbox sends and gets back, intact.
+    const bytes = Uint8Array.of(0xca, 0xfe, 0, 255);
+    const request = decodeRequest(encodeRequest({ cwd: "/workspace/é", args: ["-d", "out dir", "A.java"], classPath: null, files: [{ path: "/workspace/A.java", modified: 1760000000123, data: bytes }] }));
+    is(JSON.stringify([request.cwd, request.args, request.classPath, request.files[0]?.path, request.files[0]?.modified, [...(request.files[0]?.data ?? [])]]), JSON.stringify(["/workspace/é", ["-d", "out dir", "A.java"], null, "/workspace/A.java", 1760000000123, [0xca, 0xfe, 0, 255]]), "a javac request reads back as it was written");
+    const answer = decodeAnswer(encodeAnswer({ exit: 1, stdout: "", stderr: "A.java:1: error: ';' expected\n", written: [{ path: "/workspace/out/A.class", data: bytes }] }));
+    is(JSON.stringify([answer.exit, answer.stderr, answer.written.map((w) => [w.path, [...w.data]])]), JSON.stringify([1, "A.java:1: error: ';' expected\n", [["/workspace/out/A.class", [0xca, 0xfe, 0, 255]]]]), "and so does its answer");
+    is(decodeAnswer(encodeAnswer({ exit: -1, stdout: "", stderr: "", written: [] })).exit, -1, "including the one that says to compile it in the sandbox");
   }
 
   // ---- the runtime's word when a pipe's reader leaves ----

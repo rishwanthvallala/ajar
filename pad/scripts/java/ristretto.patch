@@ -473,11 +473,458 @@ index 2b6b294..bad99d8 100644
 +) -> Result<Option<Value>> {
 +    Err(throw_unix_exception(&thread, 38 /* ENOSYS */).await)
 +}
+diff --git a/ristretto_java/src/bridge.rs b/ristretto_java/src/bridge.rs
+new file mode 100644
+index 0000000..01ff2d6
+--- /dev/null
++++ b/ristretto_java/src/bridge.rs
+@@ -0,0 +1,432 @@
++//! Asking the pad's page to compile (ajar).
++//!
++//! In the pad, the page has javac compiled ahead of time to WebAssembly, which compiles in tens of
++//! milliseconds where this program's interpreted javac takes seconds. When the page has written
++//! `ready` in `/workspace/.ajar/javac`, `javac` and `java Main.java` hand it the compile: this
++//! writes everything javac would read into one request file, the page writes a claim beside it,
++//! and answers with what javac printed, its exit status and the files it wrote. If the page does not
++//! claim the request quickly, or answers that it could not compile, the caller compiles here as
++//! before. The format is in the pad's `src/javac/protocol.ts`.
++
++use std::collections::BTreeSet;
++use std::env;
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++const DIR: &str = "/workspace/.ajar/javac";
++/// How long the page has to claim a request before this compiles it itself.
++const CLAIM: Duration = Duration::from_secs(2);
++/// How long a claimed request may take before this gives up on the page.
++const ANSWER: Duration = Duration::from_secs(600);
++/// What one request may carry; a bigger compile happens here.
++const MAX_FILES: usize = 5000;
++const MAX_BYTES: u64 = 64 << 20;
++
++/// javac's options that take the next argument as their value.
++const VALUED: &[&str] = &[
++    "-d",
++    "-s",
++    "-h",
++    "-cp",
++    "-classpath",
++    "--class-path",
++    "-sourcepath",
++    "--source-path",
++    "-encoding",
++    "--release",
++    "-source",
++    "--source",
++    "-target",
++    "--target",
++    "-processorpath",
++    "--processor-path",
++    "--processor-module-path",
++    "-processor",
++    "--module-path",
++    "-p",
++    "--module-source-path",
++    "--upgrade-module-path",
++    "--system",
++    "-bootclasspath",
++    "--boot-class-path",
++    "-extdirs",
++    "-endorseddirs",
++    "--add-modules",
++    "--limit-modules",
++    "--add-exports",
++    "--add-reads",
++    "--patch-module",
++    "--module",
++    "-m",
++    "--default-module-for-created-files",
++    "-Xmaxerrs",
++    "-Xmaxwarns",
++    "-Xstdout",
++    "--module-version",
++];
++
++/// What the page's javac said and wrote.
++#[derive(Debug)]
++pub struct Answer {
++    pub exit: i32,
++    pub stdout: Vec<u8>,
++    pub stderr: Vec<u8>,
++    pub written: Vec<(String, Vec<u8>)>,
++}
++
++/// Compile with the page's javac. `None` means compile here: there is no page, it did not claim
++/// the request, the request would be too big, or the page asked for it.
++pub fn compile(args: &[String]) -> Option<Answer> {
++    let dir = Path::new(DIR);
++    if !dir.join("ready").exists() {
++        return None;
++    }
++    let cwd = env::current_dir().ok()?.to_string_lossy().into_owned();
++    // An argument file that cannot be read is javac's to report.
++    let args = expand(args)?;
++    let request = request(&cwd, &args)?;
++
++    let nanos = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |d| d.as_nanos());
++    let id = format!("{nanos:x}");
++    let part = dir.join(format!("{id}.part"));
++    let req = dir.join(format!("{id}.req"));
++    fs::write(&part, &request).ok()?;
++    fs::rename(&part, &req).ok()?;
++
++    // The page claims a request by writing `<id>.claim` beside it. It never
++    // renames or removes this program's files: a rename made from the page
++    // left the old name listed here, unreadable.
++    let claim = dir.join(format!("{id}.claim"));
++    let began = Instant::now();
++    while !claim.exists() {
++        if began.elapsed() > CLAIM {
++            let _ = fs::remove_file(&req);
++            // Claimed just now: the page answers, with the compile or with -1
++            // when the request was gone by the time it read it.
++            if !claim.exists() {
++                return None;
++            }
++            break;
++        }
++        std::thread::sleep(Duration::from_millis(5));
++    }
++
++    let ans = dir.join(format!("{id}.ans"));
++    let began = Instant::now();
++    let bytes = loop {
++        if let Ok(bytes) = fs::read(&ans) {
++            break bytes;
++        }
++        if began.elapsed() > ANSWER {
++            return None;
++        }
++        std::thread::sleep(Duration::from_millis(5));
++    };
++    for done in [&ans, &claim, &req] {
++        let _ = fs::remove_file(done);
++    }
++    let answer = parse(&bytes)?;
++    // -1: the page could not compile it after all.
++    if answer.exit < 0 {
++        return None;
++    }
++    Some(answer)
++}
++
++/// Write what javac wrote, and print what it printed. Returns its exit status.
++pub fn deliver(answer: &Answer) -> i32 {
++    use std::io::Write;
++    for (path, data) in &answer.written {
++        let path = Path::new(path);
++        if let Some(parent) = path.parent() {
++            let _ = fs::create_dir_all(parent);
++        }
++        if let Err(error) = fs::write(path, data) {
++            eprintln!("error: could not write {}: {error}", path.display());
++        }
++    }
++    let _ = std::io::stdout().write_all(&answer.stdout);
++    let _ = std::io::stderr().write_all(&answer.stderr);
++    answer.exit
++}
++
++/// Arguments with `@file` replaced by the file's, as javac's CommandLine does it: tokens split on
++/// white space, quoted with ' or ", `#` starting a comment between tokens; `@@x` is `@x`.
++fn expand(args: &[String]) -> Option<Vec<String>> {
++    let mut out = Vec::new();
++    for arg in args {
++        match arg.strip_prefix('@') {
++            Some(rest) if !rest.is_empty() => {
++                if let Some(literal) = rest.strip_prefix('@') {
++                    out.push(format!("@{literal}"));
++                } else {
++                    out.extend(tokens(&fs::read_to_string(rest).ok()?));
++                }
++            }
++            _ => out.push(arg.clone()),
++        }
++    }
++    Some(out)
++}
++
++fn tokens(text: &str) -> Vec<String> {
++    let chars: Vec<char> = text.chars().collect();
++    let mut out = Vec::new();
++    let mut i = 0;
++    loop {
++        // Between tokens: white space and comments.
++        while i < chars.len() {
++            match chars[i] {
++                ' ' | '\t' | '\n' | '\r' | '\u{c}' => i += 1,
++                '#' => {
++                    while i < chars.len() && chars[i] != '\n' && chars[i] != '\r' {
++                        i += 1;
++                    }
++                }
++                _ => break,
++            }
++        }
++        if i >= chars.len() {
++            return out;
++        }
++        let mut token = String::new();
++        let mut quote = None;
++        while i < chars.len() {
++            let c = chars[i];
++            match c {
++                ' ' | '\t' | '\u{c}' if quote.is_none() => break,
++                '\n' | '\r' => break,
++                '\'' | '"' => match quote {
++                    None => quote = Some(c),
++                    Some(q) if q == c => quote = None,
++                    Some(_) => token.push(c),
++                },
++                '\\' if quote.is_some() => {
++                    i += 1;
++                    match chars.get(i) {
++                        Some('\n' | '\r') => {
++                            while matches!(chars.get(i), Some(' ' | '\n' | '\r' | '\t' | '\u{c}')) {
++                                i += 1;
++                            }
++                            continue;
++                        }
++                        Some('n') => token.push('\n'),
++                        Some('r') => token.push('\r'),
++                        Some('t') => token.push('\t'),
++                        Some('f') => token.push('\u{c}'),
++                        Some(&other) => token.push(other),
++                        None => {}
++                    }
++                }
++                _ => token.push(c),
++            }
++            i += 1;
++        }
++        out.push(token);
++    }
++}
++
++/// A path as given, against the folder this runs in.
++fn resolve(cwd: &str, path: &str) -> PathBuf {
++    let path = if path.is_empty() { "." } else { path };
++    if path.starts_with('/') {
++        PathBuf::from(path)
++    } else {
++        Path::new(cwd).join(path)
++    }
++}
++
++/// The request: the folder, the arguments, $CLASSPATH, and every file javac might read.
++fn request(cwd: &str, args: &[String]) -> Option<Vec<u8>> {
++    let mut sources = Vec::new();
++    let mut class_path = None;
++    let mut source_path = None;
++    let mut i = 0;
++    while i < args.len() {
++        let arg = &args[i];
++        let (option, value) = match arg.split_once('=') {
++            Some((option, value)) if arg.starts_with("--") => (option, Some(value.to_string())),
++            _ => (arg.as_str(), None),
++        };
++        if VALUED.contains(&option) {
++            let value = match value {
++                Some(value) => Some(value),
++                None => {
++                    i += 1;
++                    args.get(i).cloned()
++                }
++            };
++            match option {
++                "-cp" | "-classpath" | "--class-path" => class_path = value,
++                "-sourcepath" | "--source-path" => source_path = value,
++                _ => {}
++            }
++        } else if !arg.starts_with('-') && arg.ends_with(".java") {
++            sources.push(resolve(cwd, arg));
++        }
++        i += 1;
++    }
++    let env_class_path = env::var("CLASSPATH").ok();
++
++    let mut files = BTreeSet::new();
++    files.extend(sources);
++    let class_path = class_path
++        .or_else(|| env_class_path.clone())
++        .unwrap_or_else(|| ".".to_string());
++    for entry in class_path.split(':') {
++        collect(&resolve(cwd, entry), &["class", "java", "jar", "zip"], &mut files)?;
++    }
++    if let Some(source_path) = source_path {
++        for entry in source_path.split(':') {
++            collect(&resolve(cwd, entry), &["java"], &mut files)?;
++        }
++    }
++
++    let mut out = Writer::new(b"AJR1");
++    out.tag(b'C').string(cwd);
++    for arg in args {
++        out.tag(b'A').string(arg);
++    }
++    if let Some(value) = &env_class_path {
++        out.tag(b'E').string(value);
++    }
++    let mut total = 0u64;
++    for path in files {
++        let Ok(data) = fs::read(&path) else {
++            continue;
++        };
++        total += data.len() as u64;
++        if total > MAX_BYTES {
++            return None;
++        }
++        let modified = fs::metadata(&path)
++            .and_then(|m| m.modified())
++            .ok()
++            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
++            .map_or(0.0, |d| d.as_millis() as f64);
++        out.tag(b'F')
++            .string(&path.to_string_lossy())
++            .number(modified)
++            .bytes(&data);
++    }
++    Some(out.done())
++}
++
++/// Files under a class or source path entry, or the entry itself when it is a jar. Folders whose
++/// names start with a dot cannot be packages, so they are not looked in. `None` when there would
++/// be too many to send.
++fn collect(entry: &Path, extensions: &[&str], files: &mut BTreeSet<PathBuf>) -> Option<()> {
++    let Ok(meta) = fs::metadata(entry) else {
++        return Some(());
++    };
++    if meta.is_file() {
++        files.insert(entry.to_path_buf());
++        return Some(());
++    }
++    let mut pending = vec![entry.to_path_buf()];
++    while let Some(dir) = pending.pop() {
++        let Ok(read) = fs::read_dir(&dir) else {
++            continue;
++        };
++        for item in read.flatten() {
++            let path = item.path();
++            let name = item.file_name();
++            let Ok(kind) = item.file_type() else {
++                continue;
++            };
++            if kind.is_dir() {
++                if !name.to_string_lossy().starts_with('.') {
++                    pending.push(path);
++                }
++            } else if path
++                .extension()
++                .is_some_and(|e| extensions.iter().any(|x| e == *x))
++            {
++                files.insert(path);
++                if files.len() > MAX_FILES {
++                    return None;
++                }
++            }
++        }
++    }
++    Some(())
++}
++
++struct Writer {
++    data: Vec<u8>,
++}
++
++impl Writer {
++    fn new(magic: &[u8]) -> Self {
++        Self {
++            data: magic.to_vec(),
++        }
++    }
++
++    fn tag(&mut self, tag: u8) -> &mut Self {
++        self.data.push(tag);
++        self
++    }
++
++    fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
++        let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
++        self.data.extend_from_slice(&length.to_le_bytes());
++        self.data.extend_from_slice(bytes);
++        self
++    }
++
++    fn string(&mut self, s: &str) -> &mut Self {
++        self.bytes(s.as_bytes())
++    }
++
++    fn number(&mut self, value: f64) -> &mut Self {
++        self.data.extend_from_slice(&value.to_le_bytes());
++        self
++    }
++
++    fn done(&mut self) -> Vec<u8> {
++        std::mem::take(&mut self.data)
++    }
++}
++
++fn parse(data: &[u8]) -> Option<Answer> {
++    let mut answer = Answer {
++        exit: 4,
++        stdout: Vec::new(),
++        stderr: Vec::new(),
++        written: Vec::new(),
++    };
++    if data.get(..4)? != b"AJS1" {
++        return None;
++    }
++    let mut at = 4;
++    let bytes = |at: &mut usize| -> Option<Vec<u8>> {
++        let length = u32::from_le_bytes(data.get(*at..*at + 4)?.try_into().ok()?) as usize;
++        let value = data.get(*at + 4..*at + 4 + length)?.to_vec();
++        *at += 4 + length;
++        Some(value)
++    };
++    while at < data.len() {
++        let tag = data[at];
++        at += 1;
++        match tag {
++            b'X' => {
++                let value = f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?);
++                at += 8;
++                answer.exit = value as i32;
++            }
++            b'O' => answer.stdout = bytes(&mut at)?,
++            b'R' => answer.stderr = bytes(&mut at)?,
++            b'W' => {
++                let path = String::from_utf8(bytes(&mut at)?).ok()?;
++                let data = bytes(&mut at)?;
++                answer.written.push((path, data));
++            }
++            _ => return None,
++        }
++    }
++    Some(answer)
++}
 diff --git a/ristretto_java/src/main.rs b/ristretto_java/src/main.rs
-index 6f8903e..53e1147 100644
+index 6f8903e..8e21fb4 100644
 --- a/ristretto_java/src/main.rs
 +++ b/ristretto_java/src/main.rs
-@@ -19,11 +19,12 @@ use clap::CommandFactory;
+@@ -10,6 +10,8 @@
+ )]
+ 
+ mod argument;
++#[cfg(target_os = "wasi")]
++mod bridge;
+ mod logging;
+ mod module;
+ mod version;
+@@ -19,11 +21,12 @@ use clap::CommandFactory;
  use ristretto_gc::{ConfigurationBuilder as GcConfigurationBuilder, GarbageCollector};
  use ristretto_vm::Error::{InternalError, Throwable};
  use ristretto_vm::{
@@ -492,7 +939,7 @@ index 6f8903e..53e1147 100644
  use tracing::debug;
  
  const VERSION: &str = env!("CARGO_PKG_VERSION");
-@@ -37,6 +38,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
+@@ -37,6 +40,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
  ))]
  #[tokio::main(flavor = "current_thread")]
  async fn main() -> Result<()> {
@@ -505,14 +952,16 @@ index 6f8903e..53e1147 100644
      startup_trace!("[cli] entry point");
      let cli = Arguments::parse();
      logging::initialize()?;
-@@ -86,10 +93,22 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+@@ -86,10 +95,24 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
      }
  
      debug!("ristretto/{VERSION}/{OS}/{ARCH}");
 +    // `java Main.java` runs a source file, as the JDK's source launcher does: compiled in memory,
 +    // ahead of anything named by --class-path.
 +    let source = match cli.mainclass.as_deref() {
-+        Some(name) if name.ends_with(".java") => Some(compile_source_file(Path::new(name)).await?),
++        Some(name) if name.ends_with(".java") => Some(
++            compile_source_file(Path::new(name), cli.classpath.as_deref()).await?,
++        ),
 +        _ => None,
 +    };
 +
@@ -531,7 +980,7 @@ index 6f8903e..53e1147 100644
          configuration_builder = configuration_builder.class_path(class_path);
      }
  
-@@ -97,7 +116,9 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+@@ -97,7 +120,9 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
          configuration_builder = configuration_builder.java_version(java_version);
      }
  
@@ -542,7 +991,7 @@ index 6f8903e..53e1147 100644
          configuration_builder = configuration_builder.main_class(main_class);
      } else if let Some(ref jar) = cli.jar {
          configuration_builder = configuration_builder.jar(PathBuf::from(jar));
-@@ -151,7 +172,7 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+@@ -151,7 +176,7 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
      let parameters = cli.parameters.unwrap_or_default();
      let result = match vm.invoke_main(&parameters).await {
          Ok(_) => Ok(()),
@@ -551,7 +1000,7 @@ index 6f8903e..53e1147 100644
      };
  
      // Wait for all non-daemon threads to complete before exiting
-@@ -163,6 +184,86 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
+@@ -163,6 +188,165 @@ async fn common_main(mut cli: Arguments) -> Result<()> {
      result
  }
  
@@ -573,13 +1022,22 @@ index 6f8903e..53e1147 100644
 +///
 +/// The class to run is the one named after the file, which is also what javac names the class of
 +/// a compact source file; otherwise it is the file's only top-level class.
-+async fn compile_source_file(path: &Path) -> Result<(String, Memory)> {
++async fn compile_source_file(
++    path: &Path,
++    class_path: Option<&std::ffi::OsStr>,
++) -> Result<(String, Memory)> {
 +    let source = std::fs::read_to_string(path)
 +        .map_err(|error| InternalError(format!("error: can't read {}: {error}", path.display())))?;
 +    let stem = path
 +        .file_stem()
 +        .map(|stem| stem.to_string_lossy().into_owned())
 +        .unwrap_or_default();
++    #[cfg(target_os = "wasi")]
++    if let Some(compiled) = compile_with_page(path, class_path, &stem).await? {
++        return Ok(compiled);
++    }
++    #[cfg(not(target_os = "wasi"))]
++    let _ = class_path;
 +    let compiler = Compiler::new(ConfigurationBuilder::new().build()?)
 +        .await
 +        .map_err(|error| InternalError(error.to_string()))?;
@@ -611,6 +1069,76 @@ index 6f8903e..53e1147 100644
 +        .await
 +        .map_err(|error| InternalError(error.to_string()))?;
 +    Ok((main_class, memory))
++}
++
++/// `java Main.java` with the pad page's javac (ajar), given the options the JDK's source launcher
++/// gives it — except `-implicit:none`, so classes the program uses from other source files are
++/// compiled too, as the launcher compiles them when they are first used. `None` when the page did
++/// not take it, to compile here.
++#[cfg(target_os = "wasi")]
++async fn compile_with_page(
++    path: &Path,
++    class_path: Option<&std::ffi::OsStr>,
++    stem: &str,
++) -> Result<Option<(String, Memory)>> {
++    const OUT: &str = "/tmp/.ajar-source";
++    let mut arguments: Vec<String> = [
++        "-proc:none",
++        "-Xprefer:source",
++        "-Xdiags:verbose",
++        "-Xlint:deprecation",
++        "-Xlint:unchecked",
++        "-Xlint:-options",
++        "-XDsourceLauncher",
++    ]
++    .iter()
++    .map(ToString::to_string)
++    .collect();
++    if let Some(class_path) = class_path {
++        arguments.push("-cp".to_string());
++        arguments.push(class_path.to_string_lossy().into_owned());
++    }
++    arguments.extend(["-d".to_string(), OUT.to_string(), path.to_string_lossy().into_owned()]);
++    let Some(answer) = bridge::compile(&arguments) else {
++        return Ok(None);
++    };
++    {
++        use std::io::Write;
++        let _ = std::io::stdout().write_all(&answer.stdout);
++        let _ = std::io::stderr().write_all(&answer.stderr);
++    }
++    if answer.exit != 0 {
++        eprintln!("error: compilation failed");
++        std::process::exit(1);
++    }
++    let memory = Memory::new("source");
++    let mut names = Vec::new();
++    for (written, bytes) in &answer.written {
++        memory
++            .add_class(bytes)
++            .await
++            .map_err(|error| InternalError(error.to_string()))?;
++        if let Some(name) = written
++            .strip_prefix(&format!("{OUT}/"))
++            .and_then(|name| name.strip_suffix(".class"))
++        {
++            names.push(name.replace('/', "."));
++        }
++    }
++    let simple = |name: &String| name.rsplit('.').next().unwrap_or(name).to_string();
++    let main_class = if let Some(name) = names.iter().find(|name| simple(name) == stem) {
++        name.clone()
++    } else {
++        let mut top_level = names.iter().filter(|name| !name.contains('$'));
++        match (top_level.next(), top_level.next()) {
++            (Some(name), None) => name.clone(),
++            _ => {
++                eprintln!("error: no class named {stem} declared in {}", path.display());
++                std::process::exit(1);
++            }
++        }
++    };
++    Ok(Some((main_class, memory)))
 +}
 +
 +/// Report an exception that escaped `main` as the JDK launcher does: the thread's name, then the
@@ -673,10 +1201,20 @@ index dc10a4b..7679155 100644
  }
  
 diff --git a/ristretto_javac/src/main.rs b/ristretto_javac/src/main.rs
-index 63fb375..aa0b11e 100644
+index 63fb375..977efe3 100644
 --- a/ristretto_javac/src/main.rs
 +++ b/ristretto_javac/src/main.rs
-@@ -17,6 +17,12 @@ use std::process::ExitCode;
+@@ -3,6 +3,9 @@
+ #![forbid(unsafe_code)]
+ 
+ mod logging;
++#[cfg(target_os = "wasi")]
++#[path = "../../ristretto_java/src/bridge.rs"]
++mod bridge;
+ 
+ use ristretto_vm::{Compiler, CompilerError, ConfigurationBuilder};
+ use std::env;
+@@ -17,6 +20,20 @@ use std::process::ExitCode;
  ))]
  #[tokio::main(flavor = "current_thread")]
  async fn main() -> ExitCode {
@@ -685,6 +1223,14 @@ index 63fb375..aa0b11e 100644
 +    #[cfg(target_os = "wasi")]
 +    if let Some(directory) = env::var_os("PWD") {
 +        let _ = env::set_current_dir(directory);
++    }
++    // In the pad, the page's javac compiles in a fraction of the time (ajar).
++    #[cfg(target_os = "wasi")]
++    {
++        let arguments: Vec<String> = env::args().skip(1).collect();
++        if let Some(answer) = bridge::compile(&arguments) {
++            return u8::try_from(bridge::deliver(&answer)).map_or(ExitCode::from(4), ExitCode::from);
++        }
 +    }
      common_main().await
  }
