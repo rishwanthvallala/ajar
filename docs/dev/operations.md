@@ -121,6 +121,16 @@ Confirm the relay the same way: a WebSocket to `/ws` that never says hello is
 closed after ten seconds by any relay from v0.0.6 on, and the live asset hashes
 say whether the clients went out.
 
+**The pad's 1.1 GB went up whole on every deploy until 16 October**, and on 15
+October it outlasted the tunnel twice: `Bad packet length`, then `Timeout,
+server … not responding`, each about 37 minutes into the upload. Nothing was
+swapped in either time — the files are staged in `/tmp` and moved into `/srv`
+only once all of them are there — so the site kept serving the deploy before.
+The staging folders are kept between deploys now and compared by content
+(`rsync --checksum`), so a deploy sends what changed, and one whose tunnel
+drops takes up where it stopped. A box that was rebooted has empty ones, and
+its first deploy is a whole one again.
+
 **The Caddy build checked its plugin by running a Linux binary.** It compared
 only the architecture, so on an Apple-silicon Mac it tried, failed, and
 reported the plugin missing. It reads the build info now.
