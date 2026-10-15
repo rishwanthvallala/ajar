@@ -97,7 +97,7 @@ const server = createServer(async (req, res) => {
   // The deployed policy, so nothing here works only because it is looser.
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-${IMPORTMAP_SHA}'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss: https://registry.wasmer.io https://cdn.wasmer.io https://packages.ajar.invalid; frame-ancestors 'none'; base-uri 'none'`,
+    `default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-${IMPORTMAP_SHA}'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss: https:; frame-ancestors 'none'; base-uri 'none'`,
   );
   const urlPath = new URL(req.url, "http://x").pathname;
   // What Caddy sends to the relay: the store, and signing in.

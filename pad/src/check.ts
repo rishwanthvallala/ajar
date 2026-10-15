@@ -19,6 +19,7 @@ import { seedFiles } from "./seed";
 import { nameProblem, pathFor } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { starterFor } from "./starters";
+import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, vet } from "./fetch-bridge";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 
@@ -819,6 +820,36 @@ async function main() {
     is(await formatText("a.ts", "const a:number=1", 4), "const a: number = 1;\n", "TypeScript");
     const bad = await formatText("bad.py", "x = 1\ndef f(:\n", 4).then(() => "", (e) => problemOf(e, "x = 1\ndef f(:\n"));
     is(/on line 2$/.test(bad), true, `a file that will not parse says where, by line (${bad})`);
+  }
+
+  // ---- http through the browser ----
+  {
+    const https = new URL("https://code.example/pad");
+    const ours = ["https://preview.example"];
+    const refusal = (raw: string, page = https) => { const v = vet(raw, page, ours); return "error" in v ? v.code : 0; };
+    is(refusal("https://api.example/x?y=1"), 0, "an https site is fetched from an https page");
+    is(refusal("http://api.example/x"), 1, "plain http is not, which the browser would refuse as mixed content");
+    is(refusal("http://127.0.0.1:5299/x", new URL("http://127.0.0.1:5199/")), 0, "but it is from a page that is itself http, as the checks are");
+    is(refusal("https://code.example/api/pads"), 7, "the pad's own site is never fetched from inside a pad");
+    is(refusal("https://preview.example/"), 7, "nor the preview's");
+    is(refusal("ftp://files.example/a"), 1, "nor anything that is not http");
+    is(refusal("not a url"), 3, "and a URL that is not one says so");
+    const vetted = vet("https://ada:s3cret@api.example/x", https, ours);
+    is("url" in vetted && vetted.url.href === "https://api.example/x" && vetted.authorization === `Basic ${btoa("ada:s3cret")}`, true, "user:pass in a URL goes as a header, which fetch takes where it refuses the URL");
+    const { headers, dropped } = headersFor([["Accept", "*/*"], ["X-Token", "t"], ["Host", "elsewhere"], ["Cookie", "a=b"], ["User-Agent", "curl"], ["Sec-Fetch-Mode", "x"]]);
+    is(headers.get("x-token") === "t" && headers.get("accept") === "*/*" && !headers.has("host"), true, "a page's own headers go");
+    is(JSON.stringify(dropped), JSON.stringify(["Host", "Cookie", "User-Agent", "Sec-Fetch-Mode"]), "and the browser's are named rather than dropped without a word");
+    const asked = new TextEncoder().encode(`${JSON.stringify({ url: "https://api.example/", method: "POST", headers: [["A", "b"]], body: true, timeout: 5 })}\n\u0000\n{"x":1}`);
+    const request = decodeFetch(asked);
+    is(JSON.stringify([request.url, request.method, request.headers, [...(request.body ?? [])], request.timeout]), JSON.stringify(["https://api.example/", "POST", [["A", "b"]], [0, 10, 123, 34, 120, 34, 58, 49, 125], 5]), "a request reads back with its body's bytes as they were, newlines and all");
+    is(decodeFetch(new TextEncoder().encode(`${JSON.stringify({ url: "https://a.example/", body: false })}\n`)).body, null, "and one with no body has none, not an empty one");
+    const told = encodeFetched({ ok: true, status: 200, statusText: "", url: "https://a.example/", redirected: false, headers: [], dropped: [] }, new Uint8Array([1, 2, 10, 3]));
+    const cut = told.indexOf(10);
+    is(JSON.parse(new TextDecoder().decode(told.subarray(0, cut))).status === 200 && [...told.subarray(cut + 1)].join() === "1,2,10,3", true, "an answer is a line of JSON and the body's bytes after it");
+    const refused = new TextDecoder().decode(await answer({ url: `${location.origin}/api/pad/x`, method: "GET", headers: [], body: null, timeout: null }, new URL(location.href), []));
+    is(JSON.parse(refused.split("\n")[0]!).code, 7, "a request for the page's own site is answered with a refusal, and never made");
+    const withBody = new TextDecoder().decode(await answer({ url: "https://api.example/", method: "GET", headers: [], body: new Uint8Array([1]), timeout: null }, https, []));
+    is(/no body with GET/.test(withBody), true, "and a GET with a body says what to do instead");
   }
 
   // ---- the runtime's word when a pipe's reader leaves ----

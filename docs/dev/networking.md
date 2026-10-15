@@ -4,8 +4,11 @@
 September 2026; the measurements that led there are kept because they are what
 the next change to it has to start from.*
 
-The pad's sandbox reaches exactly one place on the internet: PyPI, through an
-endpoint we run. Everything else is refused.
+The pad's sandbox reaches exactly one place on the internet with a socket:
+PyPI, through an endpoint we run. Everything else is refused. Since 15
+October an HTTP request can also go the other way round — handed to the page,
+which makes it with the browser's fetch — and that reaches any site that lets
+a web page read it; see [HTTP through the page](#http-through-the-page).
 
 That it reaches anywhere at all is worth stating plainly, because the usual
 explanation for why it could not — "a browser cannot open a TCP socket" — is
@@ -171,15 +174,27 @@ was in a place nobody looked: the service worker answers a failure with
 `new Response(error.message, { status: 502 })`, so **the body is the error**.
 Reporting the status and stopping cost a session.
 
-**`python3 -m http.server` does not serve.** When this was measured, a request
-arriving at it faulted the worker with `RuntimeError: table index is out of
-bounds`, and the route timed out after five minutes. The cause was found later:
-it handles each request on a thread, and a thread cannot start in this runtime
-(see [pad.md](pad.md)) — since 28 September `Thread.start()` raises instead of
-trapping. A hand-rolled accept-and-reply loop in the same sandbox serves fine.
-This matters because `http.server` is the first thing anyone reaches for, and
-the failure looks like the route being broken rather than the server being
-unusable.
+**`python3 -m http.server` did not serve, until 15 October.** When this was
+measured, a request arriving at it faulted the worker with `RuntimeError: table
+index is out of bounds`, and the route timed out after five minutes. The cause
+was found later: it handles each request on a thread, and a thread cannot start
+in this runtime (see [pad.md](pad.md)) — since 28 September `Thread.start()`
+raises instead of trapping. A hand-rolled accept-and-reply loop in the same
+sandbox served fine. Now `sitecustomize.py` gives socketserver's
+`ThreadingMixIn` the plain server's `process_request`, once socketserver is
+imported, so every server built on it — `http.server` and its
+`ThreadingHTTPServer` among them — answers its requests one after another on
+the thread that accepted them. `preview-check.mjs` serves a
+page with a stylesheet and a script through it, typed as `python3 -m
+http.server` and nothing more.
+
+It binds `::1` by default here — `getaddrinfo` with `AI_PASSIVE` answers with
+the IPv6 loopback — and the preview reaches it there. What does not come back
+is a port: a server written with `socket` and without `SO_REUSEADDR` leaves its
+port taken after Ctrl-C ("Address in use") until the sandbox goes. And the
+preview's route is one per port: `App.togglePreview` used to keep the first
+for good, so a server restarted on another port previewed the one that had
+gone.
 
 **A malformed response is refused, correctly.** The second error,
 `guest HTTP request failed: invalid internal data`, was a `Content-Length: 11`
@@ -274,7 +289,7 @@ file.
    for the running server. `pad/scripts/preview-check.mjs` drives it end to end.
    The origin is compiled in as `VITE_PREVIEW_ORIGIN`; an empty value disables
    previews and is what a deploy without that subdomain should do. Whatever
-   people run must not be `python3 -m http.server`.
+   people run can be `python3 -m http.server`, since 15 October.
 2. ~~**The import map for WISP.**~~ **Built**, and it needed the browser compat
    substitution alongside it — two specifiers, not one.
 3. ~~**An endpoint to point it at.**~~ **Built and live**, as an allowlist
@@ -338,12 +353,65 @@ appears and expose fails.
 
 ### Two things this found that were not the subject
 
-**`python3 -m http.server` does not serve** (threads, above), so the one
-server everybody reaches for first is the one that does not work. A plain
-accept loop is fine.
+**`python3 -m http.server` did not serve** (threads, above), so the one server
+everybody reaches for first was the one that did not work. It does now.
 
 **A pad's stored files were empty in the sandbox until touched** — `ls` showed
 the name, `head` showed nothing — so opening a shared link and running a file
 you had not edited silently did nothing. Fixed on 15 September by seeding the
 sandbox from the store; see
 [pad.md](pad.md#seeding-the-sandbox-is-a-separate-problem-with-the-same-shape).
+
+## HTTP through the page
+
+A page cannot open a socket; that is the browser's rule for code from any site
+and no flag changes it. Chrome's Direct Sockets API exists only for installed,
+signed Isolated Web Apps, not for a page at an address. What every page *can*
+do is fetch — any https site that lets web pages read it (CORS) — so since 15
+October an HTTP request in the sandbox is handed to the page and made there.
+Nothing of ours carries it: it leaves from the visitor's own browser, so it
+reaches what their browser reaches, and an abuse report about it would be
+about their address, not this server's.
+
+The handing over is the fast javac's (`javac/bridge.ts`), over files in
+`.ajar/fetch`: the sandbox writes `<id>.req` — a line of JSON, then the body's
+bytes — and renames it into place; the page, which looks every 40 ms while a
+command runs, writes `<id>.claim`, fetches, and renames `<id>.ans` into place.
+`src/fetch-bridge.ts` is the page's half, `src/tools/_padfetch.py` the
+sandbox's. Three things use it:
+
+- **`curl` and `wget`**, `src/tools/curl.py` behind an alias. Most of curl's
+  everyday options; anything else is refused by name. Exit codes are curl's
+  (7 refused, 22 for `-f`, 28 timeout).
+- **`urllib.request`**: its http and https handlers, replaced once it is
+  imported (`sitecustomize.py`).
+- **`requests`**, once pip has installed it: `HTTPAdapter.send`, the same way.
+  pip has its own vendored copy, which keeps the sandbox's sockets, so `pip
+  install` still goes through the allowlisted endpoint above.
+
+Either falls back to the sandbox's sockets when no page picks the request up
+in three seconds — a python started some way other than a command.
+
+What the browser does not allow, this cannot do, and each limit is said rather
+than met as a hang:
+
+| | |
+|---|---|
+| A site with no CORS headers | refused; "Failed to fetch" is all a page is told, so the message names both that and a site that cannot be reached |
+| `http://` from an https page | mixed content — refused, with the https address to try |
+| `Host`, `Cookie`, `Referer`, `User-Agent`, `Sec-*`, `Proxy-*`… | the browser's own; left out, and named by `curl -v` |
+| Response headers | only the ones the site exposes to pages |
+| Redirects | always followed: `redirect: "manual"` gives a page an opaque nothing |
+| A body over 100 MB | refused, as a pad would not hold it |
+
+It is sent **without credentials**, without a referrer and uncached, and
+**never to this site or the preview's** — a program in a pad somebody shared
+has no business asking our API anything in the name of whoever ran it. See
+[security.md](security.md#http-through-the-browser). The page's CSP had to
+allow it: `connect-src` is now `https:`.
+
+Not through it: `http.client` used directly, `httpx`, `aiohttp`, node's `fetch`,
+`git`, anything that opens its own socket. Those still reach PyPI alone. And a
+response comes whole, not as a stream: a download is held in the page until it
+is complete, then written.
+

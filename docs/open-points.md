@@ -276,8 +276,14 @@ for a URL anyone can open. Decided deliberately —
 "for agent it'll be encrypted, but for the personal type, we can let it be
 clear and its fine."
 
-**The network reaches PyPI and nowhere else.** `pip install` works as of 15
-September; everything else is refused by the endpoint's allowlist. The pinned
+**A socket reaches PyPI and nowhere else.** `pip install` works as of 15
+September; everything else is refused by the endpoint's allowlist. HTTP goes
+further since 15 October — `curl`, `wget`, `urllib` and `requests` are made
+by the page's fetch, to sites that let web pages read them. Still open: other
+HTTP clients (`httpx`, `aiohttp`, node's `fetch`) keep the socket, a response
+is held whole rather than streamed, and full network for one person — a
+helper on their own machine that the page reaches at `localhost` — is not
+built. The pinned
 binary set is still what keeps the network off the critical path — nothing in
 the pad needs it to work.
 

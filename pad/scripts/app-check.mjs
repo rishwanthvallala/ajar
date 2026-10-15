@@ -77,7 +77,8 @@ const server = createServer(async (req, res) => {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "font-src 'self' data:",
-      "connect-src 'self' ws: wss: https://registry.wasmer.io https://cdn.wasmer.io https://packages.ajar.invalid",
+      // Any https site, as the deploy has it, for curl through the page.
+      "connect-src 'self' ws: wss: https:",
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join("; "),

@@ -13,8 +13,8 @@ end-to-end with a key the relay never sees.
 **[code.rishwanth.dev](https://code.rishwanth.dev)** shares *a folder*. No
 agent, no machine lent: the compute runs in each visitor's own tab as
 WebAssembly, and the server holds the files. Open a URL, paste, press Run,
-send the link. A real bash with about 140 commands, an editor, and
-`pip install` — which reaches PyPI and nothing else. Sign in with Google or
+send the link. A real bash with about 140 commands, an editor, `pip install`,
+and `curl` to any site that lets a web page read it. Sign in with Google or
 GitHub to keep pads of your own, and decide who can view them and who can
 edit; download any pad as a zip, or start one from a zip.
 

@@ -241,6 +241,11 @@ python exactly as published, with the mirror bypassed, so it is not the trim.
 `src/tools/sitecustomize.py` makes `start()` raise instead. pip's progress bar
 starts a thread, which is why `pip install requests` used to freeze the page:
 `PIP_PROGRESS_BAR=off` is set in the shell, and it installs in about 6 s.
+socketserver's threading servers — `python -m http.server` — serve their
+requests in turn instead, since 15 October ([networking.md](networking.md)).
+sitecustomize changes a module only once it is imported, through a finder
+first on `sys.meta_path`, so the aliased tools that start a python for every
+`sort` pay nothing for it.
 
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,
@@ -1207,14 +1212,15 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
   through its view and edit links; see [accounts.md](accounts.md). **Neither
   kind is encrypted:** the server can read every pad. See
   [security.md](security.md#what-the-pad-does-not-have).
-- **The network reaches PyPI and nowhere else.** `pip install` works, through
+- **A socket reaches PyPI and nowhere else.** `pip install` works, through
   an endpoint we run that allows those two hostnames on 443 and refuses the
-  rest. No `git clone`, no `curl`, no reaching your own machines. See
-  [networking.md](networking.md).
+  rest. `curl`, `wget`, `urllib` and `requests` go through the page's fetch
+  instead, to sites that let a web page read them. No `git clone`, no `ssh`,
+  no reaching your own machines. See [networking.md](networking.md).
 - **A process that never exits never syncs.** The folder is published at
   command exit, which is a real transaction boundary — it either ran or it did
   not, and a half-written file is never shared. Fine for paste-run-look; wrong
   for a dev server.
-- **No `make`, `ssh`, `vim`, `less` or `curl`.** The network ones are
-  impossible rather than unbuilt. `make` is possible now that spawning works
+- **No `make`, `ssh`, `vim` or `less`.** `ssh` is impossible rather than
+  unbuilt. `curl` is the page's (above), not curl's. `make` is possible now that spawning works
   and is simply not written. `nano` exists; `vim` does not.

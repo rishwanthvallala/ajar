@@ -98,7 +98,7 @@ ls cat cp mv rm mkdir touch head tail wc sort uniq cut tr tee seq echo printf
 grep sed awk find diff patch cmp xargs tree stat du split which rev
 tar gzip gunzip zip unzip bzip2 xz         archives
 sha256sum md5sum sha1sum hexdump xxd       checksums and bytes
-python3 pip qjs jq                         scripting and data
+python3 pip qjs jq curl wget              scripting, data and fetching
 nano                                       an editor in the terminal
 ```
 
@@ -149,16 +149,50 @@ Press it and the editor is replaced by whatever your server is serving; press
 it again to go back.
 
 ```sh
-python3 serve.py          # anything that listens on a port
+python3 -m http.server    # the folder, as a website
+python3 serve.py          # or anything else that listens on a port
 ```
 
 Only you can see it. The address is not a public link — it works in your
 browser and nowhere else, so it is for looking at what you just started, not
 for showing somebody.
 
-One thing that will bite: **`python3 -m http.server` does not work here.** It
-crashes the runtime when a request arrives. Write a small server with `socket`
-instead, or use anything that is not that module.
+A server answers one request at a time here, since nothing can start a thread;
+`http.server` does that by itself in the pad. One that you write with `socket`
+should set `SO_REUSEADDR`, or its port stays taken after Ctrl-C until the page
+is reloaded — "Address in use" — and the next one needs another port.
+
+### Fetching from the internet
+
+`curl` and `wget` work, and so do python's `urllib.request` and `requests`
+(after `pip install requests`). Your browser makes the request, the way any
+web page asks a site for something, so the answer comes back from wherever you
+asked:
+
+```sh
+curl -s https://pypi.org/pypi/requests/json | jq .info.version
+curl -s -X POST -H 'Content-Type: application/json' -d '{"a": 1}' https://httpbin.org/anything
+curl -s -o data.csv https://raw.githubusercontent.com/<user>/<repo>/main/data.csv
+python3 -c "import requests; print(requests.get('https://api.ipify.org').text)"
+```
+
+Because it is your browser asking, the browser's rules apply:
+
+- **Only sites that let web pages read them.** Most APIs do, and so do
+  raw.githubusercontent.com, PyPI and npm's registry. Ordinary websites
+  mostly do not — `curl https://example.com` is refused with a message
+  saying so (CORS), not a hang.
+- **https only.** An `http://` address is refused; try its `https://` one.
+- **Some headers are the browser's own** — `Host`, `Cookie`, `Referer`,
+  `User-Agent` — and you cannot set them; `curl -v` names the ones it left
+  out. A response shows only the headers the site lets a page see.
+- **No cookies or sign-ins of yours** go with a request, and nothing is sent
+  to this site itself.
+- **Redirects are always followed**, as with `curl -L`.
+
+Other ways of reaching the network — `git clone`, `ssh`, a database, `httpx`
+or `aiohttp`, node's `fetch` — still use the sandbox's own connection, which
+reaches PyPI alone.
 
 ### Editing in the terminal
 
@@ -262,10 +296,13 @@ A private pad you have no link for says so, and nothing more.
 the first time — about 19 MB — and runs everything locally. That means it is
 private, and it means there is no machine to reach.
 
-**`pip install` works. Nothing else reaches the internet.** Packages come from
-PyPI and that is the only place a pad can reach — no `git clone`, no `curl`, no
-connecting to your own servers. Installs land in a `.deps` folder beside your
-files, so they stay after a reload and whoever opens the link has them too.
+**`pip install` works, and `curl` reaches sites that let web pages read them.**
+Packages come from PyPI. `curl`, `wget`, `urllib` and `requests` go through
+your browser — see [Fetching from the internet](#fetching-from-the-internet) —
+and anything else that opens a connection reaches PyPI alone: no `git clone`,
+no `ssh`, no connecting to your own servers. Installs land in a `.deps` folder
+beside your files, so they stay after a reload and whoever opens the link has
+them too.
 
 Pure-python packages are what this is for: `pip install requests` takes a few
 seconds, dependencies and all. Anything that needs compiling, like `numpy`, is
@@ -273,7 +310,8 @@ not available.
 
 **No threads.** Starting one says so with an error rather than freezing the
 program, which is what the runtime underneath does. `asyncio` and `subprocess`
-both work.
+both work, and a server built on Python's `socketserver` — `http.server`
+among them — serves its requests one after another instead.
 
 A server you start can be previewed by you, but it is not reachable from
 anywhere else.

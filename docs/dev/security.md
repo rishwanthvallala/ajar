@@ -620,6 +620,41 @@ Caddyfile that ships, and CI runs it on every push.
   is an address and a path, and the plugin only groups a key that is a bare
   address. It has no IPv6 today, so this is a note for the day it does.
 
+## HTTP through the browser
+
+Since 15 October a program in a pad can make HTTP requests from the browser
+it runs in: `curl`, `wget`, `urllib` and `requests` hand them to the page,
+which makes them with fetch ([networking.md](networking.md#http-through-the-page)).
+That is new reach, and it lands on whoever runs the program — so on whoever
+opens a link somebody else shared and presses Run.
+
+What it can do is what any web page they visit can already do with its own
+script, and no more:
+
+- **No credentials.** `credentials: "omit"`, so no cookie, no HTTP auth the
+  browser remembers, no client certificate goes with a request. A program can
+  send a token it was given; it cannot spend one the visitor holds.
+- **Never this site, or the preview's.** Without the cookie a request to our
+  API would be anonymous anyway, but there is no reason to let a shared
+  program ask it anything from inside somebody's tab. Refused before fetch is
+  called (`vet` in `fetch-bridge.ts`), and checked in `check.ts`.
+- **CORS stands.** A site that does not let web pages read it is not read, so
+  nothing behind somebody's login, and nothing on their network that does not
+  answer pages, comes back. No referrer is sent.
+- **https only** from the deployed page; plain http, including `localhost`,
+  is mixed content there and refused.
+
+The cost is in the CSP. `connect-src` named the hosts the page itself talks
+to; now it is `https:`, because the hosts are whatever a program asks for. A
+script injected into the page could therefore send what it found to any https
+host, where before it could not reach anywhere unlisted. Nothing renders
+untrusted HTML into the pad's origin — what a folder serves is on the preview's
+origin for exactly that reason — so this widens what an injection would do, not
+whether one is possible.
+
+And it costs this server nothing: the requests leave from each visitor's own
+address, so they are not a proxy run by us, and need no allowlist of ours.
+
 ## The egress endpoint is the one thing that acts on the internet for a stranger
 
 `wss://code.rishwanth.dev/wisp` takes a request from an anonymous browser and

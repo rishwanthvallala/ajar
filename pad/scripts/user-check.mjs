@@ -60,6 +60,31 @@ const server = createServer(async (req, res) => {
 if (!LIVE) await new Promise((r) => server.listen(PORT, r));
 const ORIGIN = LIVE ?? `http://127.0.0.1:${PORT}`;
 
+// A site for curl through the page to ask. Locally, a small httpbin that lets
+// web pages read it, and a path that does not; against a deployment, the
+// real httpbin.org and example.com, which sends no CORS headers.
+const BIN_PORT = 5209;
+const bin = createServer((req, res) => {
+  const url = new URL(req.url, `http://127.0.0.1:${BIN_PORT}`);
+  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "*" };
+  if (url.pathname === "/closed") return res.writeHead(200, { "Content-Type": "text/plain" }).end("no cors here\n");
+  if (req.method === "OPTIONS") return res.writeHead(204, cors).end();
+  if (url.pathname.startsWith("/status/")) return res.writeHead(Number(url.pathname.slice(8)), cors).end();
+  if (url.pathname === "/redirect/1") return res.writeHead(302, { ...cors, Location: "/get" }).end();
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => {
+    const data = Buffer.concat(chunks).toString("utf8");
+    let json = null;
+    try { json = JSON.parse(data); } catch { /* not JSON */ }
+    res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+    res.end(`${JSON.stringify({ args: Object.fromEntries(url.searchParams), data, headers: req.headers, json, method: req.method, url: url.href }, null, 2)}\n`);
+  });
+});
+if (!LIVE) await new Promise((r) => bin.listen(BIN_PORT, r));
+const BIN = LIVE ? "https://httpbin.org" : `http://127.0.0.1:${BIN_PORT}`;
+const CLOSED = LIVE ? "https://example.com/" : `http://127.0.0.1:${BIN_PORT}/closed`;
+
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-")));
 const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1280, height: 800 } });
 const page = context.pages()[0] ?? (await context.newPage());
@@ -814,6 +839,36 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await wait(200);
   expect("ctrl-s is not the browser's Save page dialog", (await page.evaluate(() => window.__saved)) === true, `status "${await status()}"`);
 
+  // ---- http through the browser ----
+  // The sandbox's own sockets reach PyPI alone. curl, wget and python's
+  // urllib hand their requests to the page, which makes them with fetch.
+  section = "http through the browser";
+  await clear();
+  await typed(`curl -s "${BIN}/anything?x=1" | grep '"x"'`, 30_000);
+  expect("curl fetches a site that lets web pages read it", await shows(/"x": "1"/), await tail(6));
+  await clear();
+  await typed(`curl -s -X POST -H "Content-Type: application/json" -d '{"a":1}' ${BIN}/anything | grep -E '"(method|a)"'`, 30_000);
+  expect("and posts JSON to it, with its own headers", (await shows(/"method": "POST"/)) && (await shows(/"a": 1/)), await tail(4));
+  await clear();
+  await typed(`curl -s -o got.json ${BIN}/anything && grep -c method got.json`, 30_000);
+  const gotInTree = await page.waitForSelector('#files .row.file[data-path="got.json"]', { timeout: 10_000 }).then(() => true, () => false);
+  expect("-o writes what it fetched into the folder, where the tree shows it", gotInTree && (await shows(/(^|\n)1\s*(\n|$)/)), await tail(3));
+  await clear();
+  await typed(`curl -s -o /dev/null -w '%{http_code}\\n' ${BIN}/status/404; curl -sf ${BIN}/status/404; echo "exit $?"`, 30_000);
+  expect("-w says the status, and -f exits 22 for one over 400", (await shows(/(^|\n)404\s*(\n|$)/)) && (await shows(/exit 22/)), await tail(3));
+  await clear();
+  await typed(`curl -sS ${CLOSED}; echo "exit $?"`, 30_000);
+  expect("a site that does not let web pages read it is refused in words, not a hang", (await shows(/CORS/)) && (await shows(/exit 7/)), await tail(4));
+  await clear();
+  await typed(`curl -s ${BIN}/redirect/1 | grep '"url"'`, 30_000);
+  expect("a redirect is followed", await shows(/\/get/), await tail(3));
+  await clear();
+  await typed(`python -c "import urllib.request, json; print('args', json.load(urllib.request.urlopen('${BIN}/anything?via=urllib'))['args'])"`, 30_000);
+  expect("python's urllib goes through the page too", await shows(/args \{'via': 'urllib'\}/), await tail(3));
+  await clear();
+  await typed(`wget -q -O w.json "${BIN}/anything?w=1" && grep -c '"w"' w.json`, 30_000);
+  expect("and so does wget", await shows(/(^|\n)1\s*(\n|$)/), await tail(3));
+
   // ---- the network (a deployment only) ----
   section = "the network (a deployment only)";
   if (LIVE) {
@@ -827,6 +882,11 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     const ms = Date.now() - t1;
     await typed(`python -c "import requests; print('requests', requests.__version__)"`);
     expect("pip install requests finishes, and it imports", installed && (await shows(/requests \d+\.\d+/)), `${ms} ms: ${await tail(3)}`);
+    // pip keeps the sandbox's sockets — it has its own copy of requests — and
+    // the requests a program imports goes through the page.
+    await clear();
+    await typed(`python -c "import requests; r = requests.get('${BIN}/anything?via=requests'); print('via', r.status_code, r.json()['args'])"`, 60_000);
+    expect("and requests goes through the page", await shows(/via 200 \{'via': 'requests'\}/), await tail(3));
   }
 
   // What the page itself threw, as opposed to what the programs printed.
@@ -837,6 +897,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await context.close();
   if (!process.env.PROFILE) await rm(profile, { recursive: true, force: true });
   server.close();
+  bin.close();
 }
 
 console.log(failures ? `\n  ${failures} failed` : "\n  the pad does what a person expects");

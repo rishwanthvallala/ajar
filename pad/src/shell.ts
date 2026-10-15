@@ -32,6 +32,8 @@ import TAIL_PY from "./tools/tail.py?raw";
 import BOX_PY from "./tools/box.py?raw";
 import EDIT_PY from "./tools/edit.py?raw";
 import SITE_PY from "./tools/sitecustomize.py?raw";
+import PADFETCH_PY from "./tools/_padfetch.py?raw";
+import CURL_PY from "./tools/curl.py?raw";
 import GO_PY from "./tools/go.py?raw";
 import { CLANG_ALIASES } from "./toolchains";
 import type { Runtime } from "./runtime";
@@ -112,6 +114,15 @@ export const EDIT = ".ajar/edit.py";
  * so none of the tools beside it can be imported by accident.
  */
 export const SITE = ".ajar/site/sitecustomize.py";
+
+/**
+ * HTTP through the browser (fetch-bridge.ts): the sandbox's half, beside
+ * sitecustomize so that it and the tools can import it, and `curl` — `wget`
+ * too — made with it. No curl is published for this runtime, and the
+ * sandbox's own sockets reach PyPI alone.
+ */
+export const PADFETCH = ".ajar/site/_padfetch.py";
+export const CURL = ".ajar/curl.py";
 
 /** Where pip installs, inside the folder rather than the interpreter. */
 export const DEPS = ".deps";
@@ -284,6 +295,8 @@ export class Shell {
     await rt.write(BOX, BOX_PY);
     await rt.write(EDIT, EDIT_PY);
     await rt.write(SITE, SITE_PY);
+    await rt.write(PADFETCH, PADFETCH_PY);
+    await rt.write(CURL, CURL_PY);
     await rt.write(GO, GO_PY);
 
     // One `run` for every alias rather than one each: each is a round trip
@@ -295,6 +308,8 @@ export class Shell {
       ),
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
+      `alias curl='python /workspace/${CURL}'`,
+      `alias wget='python /workspace/${CURL} --as-wget'`,
       ...["go", "gofmt"].map((name) => `alias ${name}='python /workspace/${GO} ${name}'`),
       ...CLANG_ALIASES.map(([name, to]) => `alias ${name}='${to}'`),
       // No `clear` ships in any package here, and it is the first thing

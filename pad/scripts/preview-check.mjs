@@ -128,9 +128,9 @@ const SERVER = [
   "import socket",
   "s = socket.socket()",
   "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)",
-  "s.bind(('127.0.0.1', 8000))",
+  "s.bind(('127.0.0.1', 8080))",
   "s.listen(8)",
-  "print('serving on 8000', flush=True)",
+  "print('serving on 8080', flush=True)",
   "while True:",
   "    c, _ = s.accept()",
   "    c.recv(65536)",
@@ -211,6 +211,39 @@ await page.waitForTimeout(1500);
 (await page.locator("#editor").isVisible())
   ? ok("pressing it again returns to the editor")
   : fail("the editor did not come back");
+
+// `python3 -m http.server`, as everybody types it. It serves each request on
+// a thread of its own, which cannot start here, so until 15 October it
+// answered nothing; sitecustomize.py has it serve them in turn. A page with a
+// stylesheet and a script is three requests, one after another.
+await page.locator(".xterm").first().click();
+await page.keyboard.press("Control+C");
+await page.waitForTimeout(1500);
+const SITE = {
+  "index.html": "<!doctype html><link rel=stylesheet href=style.css><h1>hello from http.server</h1><p id=js></p><script src=app.js></script>",
+  "style.css": "h1 { color: rgb(1, 2, 3); }",
+  "app.js": "document.getElementById('js').textContent = 'and its script ran';",
+};
+for (const [file, text] of Object.entries(SITE)) {
+  await page.keyboard.type(`echo ${Buffer.from(text, "utf8").toString("base64")} | base64 -d > ${file}\n`);
+  await page.waitForTimeout(1500);
+}
+// On its own port, 8000: the preview has to follow it there from 8080.
+await page.keyboard.type("python3 -m http.server\n");
+await page.waitForFunction(() => /Serving HTTP on/.test(document.querySelector(".xterm-screen")?.innerText ?? ""), null, { timeout: 60_000 }).catch(() => {});
+await page.waitForTimeout(1500);
+await page.click("#preview");
+await page.waitForTimeout(10_000);
+let site = { text: "", colour: "" };
+for (const f of page.frames().filter((f) => f !== page.mainFrame() && !f.url().includes("/.wasmer/"))) {
+  const seen = await f.evaluate(() => ({ text: document.body?.innerText ?? "", colour: document.querySelector("h1") ? getComputedStyle(document.querySelector("h1")).color : "" })).catch(() => null);
+  if (seen?.text) site = seen;
+}
+site.text.includes("hello from http.server") && site.text.includes("and its script ran") && site.colour === "rgb(1, 2, 3)"
+  ? ok("`python3 -m http.server` serves a page, its stylesheet and its script into the preview")
+  : fail(`\`python3 -m http.server\` showed ${JSON.stringify(site)} — terminal: ${JSON.stringify((await page.evaluate(() => document.querySelector(".xterm-screen")?.innerText ?? "")).split("\n").filter((l) => l.trim()).slice(-6))}`);
+await page.click("#preview");
+await page.waitForTimeout(1000);
 
 await browser.close(); pad.close(); host.close(); relay?.kill();
 await rm(padDir, { recursive: true, force: true });

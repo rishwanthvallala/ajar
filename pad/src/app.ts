@@ -18,6 +18,7 @@ import { FileTree } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { JavacBridge } from "./javac/bridge";
+import { FetchBridge } from "./fetch-bridge";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { Shell, type Finished } from "./shell";
@@ -141,6 +142,8 @@ export class App {
   /** The port something in the folder is listening on, if any. */
   private listening: number | null = null;
   private served: BrowserServer | null = null;
+  /** The port `served` is the route to. */
+  private servedPort: number | null = null;
   private cols = 80;
   private rows = 24;
   private known: Known = new Map();
@@ -154,6 +157,11 @@ export class App {
   private prefetched = false;
   /** The runtime has started, not merely been asked for. */
   private runtimeReady = false;
+  /** Makes the sandbox's http requests with the browser's fetch: fetch-bridge.ts. */
+  private readonly fetcher = new FetchBridge(
+    async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
+    PREVIEW_ORIGIN ? [new URL(PREVIEW_ORIGIN).origin] : [],
+  );
   /** Answers the sandbox's `javac` with the fast one, once Java is here: javac/bridge.ts. */
   private readonly javac = new JavacBridge(
     async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
@@ -1583,9 +1591,16 @@ export class App {
     if (port === null) return;
     try {
       const rt = await this.ensureRuntime();
+      // One route per port: kept from an earlier server on another port, the
+      // preview showed that one, gone, rather than the one now listening.
+      if (this.served && this.servedPort !== port) {
+        await this.served.close().catch(() => {});
+        this.served = null;
+      }
       this.served ??= await rt
         .sandbox()
         .ports.expose(port, { serviceWorker: PREVIEW_ORIGIN, timeoutMs: 30_000 });
+      this.servedPort = port;
       const frame = this.served.createIframe();
       this.el.previewPane.replaceChildren(frame);
       this.el.previewPane.hidden = false;
@@ -1654,6 +1669,7 @@ export class App {
         if (busy) this.commandOut = true;
         this.paintRun();
         this.javac.busy(busy);
+        this.fetcher.busy(busy);
       },
       fullScreen: () => term.buffer.active.type === "alternate",
       prepare: (command) => this.prepare(command),
