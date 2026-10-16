@@ -175,10 +175,6 @@ node scripts/smoke-abuse.mjs                # refusing abuse — also runs in ch
 VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build
 node pad/scripts/preview-check.mjs          # the preview, a small browser, end to end — in the gate
 
-node pad/scripts/fetch-lab.mjs              # the completion lab's runtime, once
-pad/lab/build-models.sh                     # and its CodeT5-small builds, in a container
-node pad/scripts/lab-check.mjs              # from pad/, after a build: sizes, answers, timings
-
 node deploy/wisp-server.mjs &               # or point at the deployed one
 node pad/scripts/wisp-check.mjs             # egress, and the limits on it
 WISP_URL=wss://code.rishwanth.dev/wisp/ node pad/scripts/wisp-check.mjs

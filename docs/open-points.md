@@ -586,8 +586,9 @@ it at all.
   Context from other files makes it much better, and costs time on every ask.
 - **Phones:** on or not.
 
-*Measured on 16 October, in the completion lab* (`pad/lab.html`; `pad/lab/`
-says how to build it). The ask was a model of 30 MB or less. All runs were on
+*Measured on 16 October, in a completion lab built for it and then
+abandoned* — the page, the CodeT5-small conversion and its check are in
+52113b2, taken out the same day. The ask was a model of 30 MB or less. All runs were on
 the CPU, in WebAssembly with 4 threads, on this Mac. Each model answered 24
 cursors in mid-line, in Python, JavaScript, Java and C:
 
@@ -607,8 +608,8 @@ What that says:
   (the encoder, the decoder, and the decoder's output).
 - **CodeT5's raw output is spaced oddly.** It writes `load ( f)` and
   `"name" ]`, and so does the original model in PyTorch, unconverted. A
-  small tidying pass (`tidy` in `pad/lab/cases.ts`) turned 3 right answers
-  into 8.
+  small tidying pass (`tidy` in the lab's `cases.ts`) turned 3 right
+  answers into 8.
 - **8-bit beats 4-bit.** It is faster in WebAssembly and slightly better, for
   6 MB more.
 - **The yardstick buys little.** It is three times the size and fourteen

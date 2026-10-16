@@ -118,10 +118,6 @@ export default defineConfig({
         probe: fileURLToPath(new URL("./probe.html", import.meta.url)),
         net: fileURLToPath(new URL("./net.html", import.meta.url)),
         wisp: fileURLToPath(new URL("./wisp.html", import.meta.url)),
-        // Small completion models compared, for deciding whether the editor
-        // gets one (lab/). Its runtime and models are in public/vendor/lab/,
-        // fetched and built by hand, and nothing of it is in the pad's bundle.
-        lab: fileURLToPath(new URL("./lab.html", import.meta.url)),
       },
     },
   },
