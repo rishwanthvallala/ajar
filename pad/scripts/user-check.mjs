@@ -573,6 +573,9 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   // An empty folder, so the round trip below has one to bring back.
   await page.locator('#files button[aria-label="New folder"]').click();
   await nameInTree("/kept-in-zip");
+  // Stored, not only drawn: the zip is the stored pad, and against a
+  // deployment the store takes a moment longer than the tree does.
+  await page.waitForFunction(() => /made kept-in-zip/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 10_000 }).catch(() => {});
   await page.waitForSelector('#files .row.dir[data-path="kept-in-zip"]', { timeout: 5000 });
   const whole = await got(() => page.locator('#files button[aria-label="Download as zip"]').click());
   const all = unzip(whole.to);
@@ -838,6 +841,18 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await page.keyboard.press("Control+s");
   await wait(200);
   expect("ctrl-s is not the browser's Save page dialog", (await page.evaluate(() => window.__saved)) === true, `status "${await status()}"`);
+
+  // ---- a pad of many files ----
+  // A model per file, and Monaco called more than 200 of them a leak, thrown
+  // as a page error — `pip install flask` makes 187. The page errors check at
+  // the end is what catches it.
+  section = "many files";
+  await clear();
+  await typed("mkdir -p many && for i in $(seq 1 260); do echo \"x = $i\" > many/f$i.py; done; echo made", 60_000);
+  const manyShown = await page.waitForSelector('#files .row.dir[data-path="many"]', { timeout: 15_000 }).then(() => true, () => false);
+  await wait(1500);
+  await typed("rm -rf many", 30_000);
+  expect("a pad of 260 more files comes in", manyShown);
 
   // ---- http through the browser ----
   // The sandbox's own sockets reach PyPI alone. curl, wget and python's

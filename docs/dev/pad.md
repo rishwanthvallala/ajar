@@ -250,6 +250,16 @@ sitecustomize changes a module only once it is imported, through a finder
 first on `sys.meta_path`, so the aliased tools that start a python for every
 `sort` pay nothing for it.
 
+**A pad of more than 200 text files was a page error.** Every file has a
+Monaco model, every model listens to Monaco's language service, and that
+emitter calls more than 200 listeners a leak — `[001] potential listener LEAK
+detected` — thrown on a timer as an unexpected error. `pip install flask`
+alone puts 187 files in `.deps`. It is not a leak here, and a pad holds 500,
+so since 16 October `App.openEditor` drops that one report from Monaco's
+`errorHandler` and passes every other error on; Monaco's console warning
+stays. A model only for the files that are open would not need it, and
+would touch everything that reads a file's text.
+
 **There is no home directory.** `~` is not expanded, so a tool that keeps
 something under it — pip's cache, for one — makes a directory called `~` in
 the folder. pip's went into every pad that installed anything,

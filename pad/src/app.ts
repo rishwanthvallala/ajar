@@ -753,8 +753,9 @@ export class App {
   // ---------------------------------------------------------------- editor
 
   private async openEditor(): Promise<void> {
-    const [monaco] = await Promise.all([
+    const [monaco, { errorHandler }] = await Promise.all([
       import("monaco-editor/esm/vs/editor/editor.api"),
+      import("monaco-editor/esm/vs/base/common/errors.js"),
       // Colours, and the editor features that come with them — see
       // monaco-languages.ts.
       import("./monaco-languages"),
@@ -769,6 +770,15 @@ export class App {
       },
     };
     this.monaco = monaco;
+    // A model per file, each listening to the language service, and Monaco
+    // reports more than 200 listeners on that as a leak — thrown, on a timer,
+    // for any pad of over 200 text files, which one `pip install flask`
+    // makes. It is not a leak here: the models are the pad's files, and a
+    // pad holds 500. Only that report goes; Monaco still warns in the console.
+    const report = errorHandler.unexpectedErrorHandler;
+    errorHandler.unexpectedErrorHandler = (e) => {
+      if ((e as Error | undefined)?.name !== "ListenerLeakError") report(e);
+    };
     // Monaco cancels its own work when a file is switched or closed, and one
     // of the standard editor features lets that rejection go unhandled — an
     // uncaught "Canceled" with a stack inside Monaco's dispose. Monaco treats
