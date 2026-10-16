@@ -15,6 +15,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 
 import { Console } from "./console";
+import { IMAGE_OSC } from "./images";
 import type { Runtime } from "./runtime";
 import { Shell } from "./shell";
 
@@ -26,6 +27,8 @@ export interface SessionHooks {
   onFinished: (session: TerminalSession) => void;
   /** How many languages the sandbox has had installed: a shell opened before one does not see it. */
   installs: () => number;
+  /** A program asked for an image to be shown (`images.ts`): the escape's text. */
+  onImage?: (data: string) => void;
   /** Whether the runtime has started. */
   ready: () => boolean;
 }
@@ -49,6 +52,12 @@ export class TerminalSession {
   ) {
     this.cols = term.cols;
     this.rows = term.rows;
+    // plt.show(), and anything else that prints the pad's image escape: shown
+    // over the editor, and taken off the screen rather than printed as junk.
+    term.parser.registerOscHandler(IMAGE_OSC, (data) => {
+      hooks.onImage?.(data);
+      return true;
+    });
     // The console owns the prompt, the echo and the line editing — bash
     // provides none of them. It asks for a shell only when a line is entered,
     // and completes against one only if it is already open.

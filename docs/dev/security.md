@@ -670,7 +670,11 @@ ever talks to the tab, but this reaches outward on somebody else's say-so, and
 whatever it does is attributed to our IP.
 
 **It is an allowlist, not a proxy.** `pypi.org` and `files.pythonhosted.org`,
-port 443, TCP only. That is the whole reachable internet from a pad. The
+and since 16 October `python-registry.wasmer.app` — Wasmer's index of numpy,
+pandas, matplotlib and the like, built for this runtime — port 443, TCP only.
+That is the whole reachable internet from a pad. The third is a package index
+like the first two: it serves wheels to pip, and holds nothing a program could
+use to reach anywhere else. The
 alternative — an open WISP endpoint — is an open TCP proxy, and the first thing
 anyone would know about it is an abuse report or a terminated instance.
 

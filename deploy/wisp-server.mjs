@@ -48,6 +48,7 @@ const HOST = process.env.WISP_HOST ?? "127.0.0.1";
 const ALLOWED = [
   /^pypi\.org$/,
   /^files\.pythonhosted\.org$/,
+  /^python-registry\.wasmer\.app$/,
 ];
 
 Object.assign(wisp.options, {

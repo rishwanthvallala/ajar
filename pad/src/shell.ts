@@ -126,6 +126,11 @@ export const CURL = ".ajar/curl.py";
 
 /** Where pip installs, inside the folder rather than the interpreter. */
 export const DEPS = ".deps";
+/**
+ * Wasmer's index of packages built for this runtime — numpy, pandas,
+ * matplotlib, pillow — which PyPI has no wheels of. Asked beside PyPI.
+ */
+export const WHEELS = "https://python-registry.wasmer.app/simple/";
 
 /**
  * go and gofmt, through a shim that hands them absolute paths: the Go the pad
@@ -348,6 +353,21 @@ export class Shell {
       // And no cache: with no home directory pip kept it in the folder, as
       // `~/.cache/pip` — see the `~` rule in sync.ts.
       "export PIP_PROGRESS_BAR=off PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1",
+      // numpy, pandas, matplotlib and the rest that are not pure python:
+      // Wasmer builds them for this runtime and keeps them in an index of its
+      // own, beside PyPI, which pip asks too. The egress endpoint lets it
+      // through (deploy/wisp-server.mjs). See docs/dev/pad.md, "numpy".
+      //
+      // Those wheels are tagged wasix_wasm32 and this python calls itself
+      // wasi_0_0_0_wasm32, so pip is told the platform, and pip then takes
+      // wheels only. Without it, `pip install numpy` passed over the wheel and
+      // spent two minutes failing to compile the source (16 October). The
+      // cost: a package published only as source does not install, which is
+      // rare, and most of those would not build here anyway.
+      `export PIP_EXTRA_INDEX_URL=${WHEELS} PIP_PLATFORM=wasix_wasm32 PIP_ONLY_BINARY=:all:`,
+      // matplotlib draws without a window, and keeps its font cache with the
+      // pad rather than building it again for every program.
+      `export MPLBACKEND=Agg MPLCONFIGDIR=/workspace/${DEPS}/.matplotlib`,
       // Python 3.13's new prompt needs a terminfo database this runtime does
       // not find, so `python` on its own opened with "warning: can't use
       // pyrepl: setupterm: could not find terminfo database" and then used

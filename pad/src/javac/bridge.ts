@@ -27,7 +27,7 @@ import type { Sandbox } from "@wasmer/sdk";
 import { encodeAnswer } from "./protocol";
 import type { FromWorker, JavacAssets, ToWorker } from "./worker";
 
-const DIR = "/.ajar/javac";
+const DIR = "/workspace/.ajar/javac";
 /** How often the folder is looked at while a command runs. */
 const POLL_MS = 40;
 

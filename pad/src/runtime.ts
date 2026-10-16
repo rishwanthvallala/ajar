@@ -19,8 +19,14 @@
  * which is how the first version of this file spent an afternoon watching
  * Python report `[Errno 44]` for a file `readDir` could plainly see.
  *
- * The convention, therefore: **every path in this application is root-relative
- * in the JS view, and every command is given a bare relative path.**
+ * The convention, therefore: **every path in this application is relative to
+ * the folder, and every command is given a bare relative path.**
+ *
+ * That was SDK 0.11. From 0.19 the JS view takes the process's own absolute
+ * paths, and only ones inside `/workspace` — anything else is refused with
+ * "sandbox filesystem paths must be inside `/workspace`". So the convention
+ * stands and `at()` turns a folder path into the guest's: every call into
+ * `box.fs` goes through it.
  *
  * ## Why the SDK is vendored
  *
@@ -38,6 +44,14 @@
 import type { CommandRef, Sandbox, SandboxOptions, Wasmer as WasmerClass } from "@wasmer/sdk";
 
 declare const __SDK_URL__: string;
+
+/** The folder, as a process in the sandbox sees it. */
+export const ROOT = "/workspace";
+
+/** A path in the folder — `src/app.py`, or "" for the folder itself — as the sandbox's filesystem takes it. */
+export function at(path: string): string {
+  return path ? `${ROOT}/${path}` : ROOT;
+}
 
 /**
  * The binary set, pinned.
@@ -287,7 +301,7 @@ export class Runtime {
       // Omitted by default, which the SDK reads as `disabled` — that is why a
       // socket in the sandbox answers ENOTSUP. See docs/dev/networking.md.
       ...(install?.network ? { network: install.network } : {}),
-      files: Object.fromEntries(Object.entries(files).map(([p, c]) => [`/${p}`, c])),
+      files: Object.fromEntries(Object.entries(files).map(([p, c]) => [at(p), c])),
     });
     const runtime = new Runtime(box, bash);
     // What it starts with is written by the page too.
@@ -312,12 +326,12 @@ export class Runtime {
   }
 
   read(path: string): Promise<string> {
-    return this.box.fs.readText(`/${path}`);
+    return this.box.fs.readText(at(path));
   }
 
   /** A file as it is, for the files that are not text. */
   readBytes(path: string): Promise<Uint8Array> {
-    return this.box.fs.readFile(`/${path}`);
+    return this.box.fs.readFile(at(path));
   }
 
   writeBytes(path: string, bytes: Uint8Array): Promise<void> {
@@ -325,9 +339,9 @@ export class Runtime {
     return this.track((async () => {
       const slash = path.lastIndexOf("/");
       if (slash > 0) {
-        await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
+        await this.box.fs.mkdir(at(path.slice(0, slash)), { recursive: true });
       }
-      await this.box.fs.writeFile(`/${path}`, bytes);
+      await this.box.fs.writeFile(at(path), bytes);
     })());
   }
 
@@ -346,21 +360,21 @@ export class Runtime {
     return this.track((async () => {
       const slash = path.lastIndexOf("/");
       if (slash > 0) {
-        await this.box.fs.mkdir(`/${path.slice(0, slash)}`, { recursive: true });
+        await this.box.fs.mkdir(at(path.slice(0, slash)), { recursive: true });
       }
-      await this.box.fs.writeText(`/${path}`, contents);
+      await this.box.fs.writeText(at(path), contents);
     })());
   }
 
   remove(path: string): Promise<void> {
     this.written.delete(path);
-    return this.track(this.box.fs.remove(`/${path}`));
+    return this.track(this.box.fs.remove(at(path)));
   }
 
   /** A directory and everything in it. */
   removeTree(path: string): Promise<void> {
     for (const p of [...this.written.keys()]) if (p.startsWith(`${path}/`)) this.written.delete(p);
-    return this.track(this.box.fs.remove(`/${path}`, { recursive: true }));
+    return this.track(this.box.fs.remove(at(path), { recursive: true }));
   }
 
   /**
@@ -372,9 +386,9 @@ export class Runtime {
   async removeAndPrune(path: string): Promise<void> {
     await this.remove(path).catch(() => {});
     for (let dir = path.slice(0, Math.max(0, path.lastIndexOf("/"))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
-      const inside = await this.box.fs.readDir(`/${dir}`).catch(() => null);
+      const inside = await this.box.fs.readDir(at(dir)).catch(() => null);
       if (!inside || inside.length > 0) return;
-      await this.box.fs.remove(`/${dir}`).catch(() => {});
+      await this.box.fs.remove(at(dir)).catch(() => {});
     }
   }
 
@@ -388,7 +402,7 @@ export class Runtime {
    */
   async list(dir = "", emptyDirs = false): Promise<Entry[]> {
     const out: Entry[] = [];
-    for (const entry of await this.box.fs.readDir(`/${dir}`)) {
+    for (const entry of await this.box.fs.readDir(at(dir))) {
       const path = dir ? `${dir}/${entry.name}` : entry.name;
       if (entry.kind === "directory") {
         const inner = await this.list(path, emptyDirs);

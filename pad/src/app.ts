@@ -19,7 +19,7 @@ import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from 
 import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
 import { PreviewBrowser } from "./preview";
-import { interpreterFor, prefetch, Runtime } from "./runtime";
+import { interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
 import { TerminalSession } from "./terminals";
@@ -30,7 +30,8 @@ import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, re
 import { type Change, mintName, Store, StoreError, storedHash, type Pad } from "./store";
 import { seedFiles } from "./seed";
 import { starterFor } from "./starters";
-import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf } from "./sync";
+import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
+import { imageFromOsc, imageType } from "./images";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -178,6 +179,8 @@ export class App {
   private tree: FileTree | null = null;
   /** What the folder's servers show, made when the runtime starts. */
   private preview: PreviewBrowser | null = null;
+  /** The image shown in place of the editor, if one is. */
+  private imageShown: string | null = null;
   /** `requirements.txt` as it was when pip last installed it in this sandbox. */
   private requirementsInstalled: string | null = null;
   private requirementsSeen = false;
@@ -320,6 +323,7 @@ export class App {
       format: HTMLButtonElement;
       indent: HTMLButtonElement;
       previewPane: HTMLElement;
+      imagePane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
       title: HTMLElement;
@@ -925,6 +929,7 @@ export class App {
   private show(path: string): void {
     const model = this.models.get(path);
     if (!model || !this.editor || !this.monaco) return;
+    if (this.imageShown !== null) this.closeImage();
     // Where this file was left — scrolled to, the cursor, what was folded —
     // so coming back to it is coming back to there, not to its first line.
     const leaving = this.active;
@@ -1209,6 +1214,7 @@ export class App {
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => {
+        if (this.binaries.has(path) && !this.models.has(path) && imageType(path)) return void this.showImage(path);
         if (this.binaries.has(path) && !this.models.has(path)) {
           const kb = Math.max(1, Math.round((this.binaries.get(path)!.length * 3) / 4 / 1024));
           return this.say("", `${path} is not text (${kb} KB) — download it with the arrow beside it`);
@@ -1647,6 +1653,56 @@ export class App {
     });
   }
 
+  /**
+   * An image in place of the editor: a plot `plt.show()` saved, or an image
+   * file opened from the tree. Read from the sandbox when there is one, as a
+   * figure just saved is there before the pad's copy is; from the pad's own
+   * copy otherwise. A `data:` URL, because the pad's CSP allows no others
+   * for images. Shown again when shown again: a figure redrawn by the next
+   * run is the same file with new bytes.
+   */
+  private async showImage(path: string): Promise<void> {
+    const type = imageType(path);
+    if (!type) return;
+    let base64 = this.binaries.get(path) ?? null;
+    if (this.runtimeReady && this.runtime) {
+      const bytes = await (await this.runtime).readBytes(path).catch(() => null);
+      if (bytes) base64 = toBase64(bytes);
+    }
+    if (!base64) return this.say("error", `${path} could not be read`);
+    if (this.preview?.isOpen) await this.togglePreview();
+    const img = document.createElement("img");
+    img.alt = path;
+    img.src = `data:${type};base64,${base64}`;
+    const caption = document.createElement("p");
+    caption.className = "image-caption";
+    caption.textContent = `${path} · ${Math.max(1, Math.round((base64.length * 3) / 4 / 1024))} KB`;
+    img.onload = () => {
+      caption.textContent = `${path} · ${img.naturalWidth} × ${img.naturalHeight} · ${Math.max(1, Math.round((base64!.length * 3) / 4 / 1024))} KB`;
+    };
+    // Named like an image and not one the browser can read: said, and the
+    // editor left as it was rather than a broken picture in its place.
+    img.onerror = () => {
+      if (this.imageShown !== path) return;
+      this.closeImage();
+      this.say("", `${path} is not an image the browser can show — download it with the arrow beside it`);
+    };
+    this.el.imagePane.replaceChildren(img, caption);
+    this.el.imagePane.hidden = false;
+    this.el.editor.hidden = true;
+    this.imageShown = path;
+    this.ui?.setImage(path);
+  }
+
+  private closeImage(): void {
+    this.el.imagePane.hidden = true;
+    this.el.imagePane.replaceChildren();
+    this.el.editor.hidden = false;
+    this.imageShown = null;
+    this.ui?.setImage(null);
+    this.editor?.layout();
+  }
+
   /** Swap the editor for the running servers, and back. */
   private async togglePreview(): Promise<void> {
     const preview = this.preview;
@@ -1733,6 +1789,10 @@ export class App {
       onFinished: () => void this.afterCommand(),
       installs: () => this.installs,
       ready: () => this.runtimeReady,
+      onImage: (data) => {
+        const path = imageFromOsc(data, ROOT);
+        if (path) void this.showImage(path);
+      },
     });
     this.sessions.push(session);
     this.session = session;
@@ -1944,7 +2004,7 @@ export class App {
     }, { signal: this.events.signal });
     addEventListener("pagehide", () => this.flushSaves(), { signal: this.events.signal });
     this.el.preview.onclick = () => void this.togglePreview();
-    this.el.backToEditor.onclick = () => void this.togglePreview();
+    this.el.backToEditor.onclick = () => (this.imageShown !== null ? this.closeImage() : void this.togglePreview());
     this.el.format.onclick = () => void this.formatActive();
     this.el.indent.onclick = () => this.setIndent(this.indent === 4 ? 2 : 4);
     this.paintTools();

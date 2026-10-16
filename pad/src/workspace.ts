@@ -24,6 +24,7 @@ export interface PadElements {
   /** The indent, 4 spaces or 2. */
   indent: HTMLButtonElement;
   previewPane: HTMLElement;
+  imagePane: HTMLElement;
   status: HTMLElement;
   presence: HTMLElement;
   title: HTMLElement;
@@ -111,7 +112,12 @@ export class PadWorkspace {
     previewPane.id = "preview-pane";
     previewPane.className = "preview";
     previewPane.hidden = true;
-    viewer.replaceChildren(editor, previewPane);
+    // An image the pad shows in place of the editor: a plot, a picture.
+    const imagePane = document.createElement("div");
+    imagePane.id = "image-pane";
+    imagePane.className = "image-view";
+    imagePane.hidden = true;
+    viewer.replaceChildren(editor, previewPane, imagePane);
 
     const terms = this.shell.el("terms");
     this.shell.el("empty").remove();
@@ -137,6 +143,7 @@ export class PadWorkspace {
       format,
       indent,
       previewPane,
+      imagePane,
       status: this.shell.el("status"),
       presence,
       title: titleText,
@@ -180,6 +187,16 @@ export class PadWorkspace {
     this.shell.el("highlight-toggle").hidden = open;
     this.tools.hidden = open;
     this.shell.el("viewer-title").textContent = open ? "Server preview" : this.elements.editor.dataset.active ?? "No file selected";
+    this.shell.requestLayout();
+  }
+
+  /** An image in place of the editor, or the editor back: `null`. */
+  setImage(path: string | null) {
+    this.elements.backToEditor.hidden = path === null;
+    this.shell.el("viewer-pane").setAttribute("aria-label", path === null ? "Editor" : "Image");
+    this.shell.el("highlight-toggle").hidden = path !== null;
+    this.tools.hidden = path !== null;
+    this.shell.el("viewer-title").textContent = path ?? this.elements.editor.dataset.active ?? "No file selected";
     this.shell.requestLayout();
   }
 

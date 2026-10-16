@@ -139,6 +139,35 @@ def _no_tracker(resource_tracker):
     resource_tracker.unregister = nothing
 
 
+@_when_imported("matplotlib.pyplot")
+def _figures_shown_in_the_pad(pyplot):
+    """plt.show(), with no window to show it in: each figure saved as a PNG
+    beside the program, and the pad told to show it.
+
+    MPLBACKEND=Agg (shell.ts) means drawing never reaches for a window
+    system. What a person expects of show() is to see the plot, so it is
+    saved as figure-<n>.png in the folder the program ran in, where the file
+    tree shows it, and an escape the pad's terminal knows names the file so
+    it opens over the editor. Then the figures are closed, as show() closes
+    them once their windows are, so the next show() draws afresh.
+    """
+    import os
+    import sys
+
+    def show(*args, **kwargs):
+        numbers = pyplot.get_fignums()
+        for number in numbers:
+            path = os.path.abspath(f"figure-{number}.png")
+            pyplot.figure(number).savefig(path)
+            if sys.stdout.isatty():
+                sys.stdout.write(f"\x1b]7777;pad-image={path}\x07")
+            print(f"(figure {number} saved as {os.path.relpath(path)})", flush=True)
+        if numbers:
+            pyplot.close("all")
+
+    pyplot.show = show
+
+
 @_when_imported("urllib.request")
 def _urllib_through_the_page(request):
     import _padfetch

@@ -17,6 +17,7 @@
  * turns a row into its name, selected to type over. A prompt asked for a whole
  * path instead, and said nothing about where that was until it was made.
  */
+import { imageType } from "./images";
 
 export interface TreeEvents {
   onOpen: (path: string) => void;
@@ -569,7 +570,7 @@ export class FileTree {
         const mine = this.local.has(child.path);
         const binary = this.binary.has(child.path);
         row.className = `row file${child.path === active ? " on" : ""}${mine ? " local" : ""}${binary ? " binary" : ""}`;
-        if (binary) row.title = "Not text — download it to open it";
+        if (binary) row.title = imageType(child.path) ? "An image — opens to view" : "Not text — download it to open it";
         row.innerHTML = `<span class="chev"></span><span class="ico">${ICONS.file}</span>`;
         row.append(child.name);
         if (mine) {

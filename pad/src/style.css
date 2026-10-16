@@ -111,6 +111,13 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }
 .pad-shell .preview { display: flex; flex-direction: column; background: var(--surface); }
 .pad-shell .preview[hidden] { display: none; }
+/* An image in place of the editor: a plot, a picture. On a checkerboard, so
+   a transparent one shows where it is transparent. */
+.pad-shell .image-view { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; padding: 1rem; overflow: auto;
+  background-color: var(--surface); background-image: linear-gradient(45deg, var(--surface-2) 25%, transparent 25%, transparent 75%, var(--surface-2) 75%), linear-gradient(45deg, var(--surface-2) 25%, transparent 25%, transparent 75%, var(--surface-2) 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+.pad-shell .image-view[hidden] { display: none; }
+.pad-shell .image-view img { max-width: 100%; max-height: calc(100% - 2rem); object-fit: contain; box-shadow: 0 1px 4px rgb(0 0 0 / 0.15); background: #fff; }
+.pad-shell .image-caption { margin: 0; font-size: 0.75rem; color: var(--muted); background: var(--surface); padding: 0.1rem 0.5rem; border-radius: 4px; }
 /* The preview is a small browser: its bar, the page, and under it the
    requests or the console when asked for. */
 .pad-shell .preview-browser-bar { display: flex; align-items: center; gap: 0.25rem; flex: none; min-width: 0; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--rule); background: var(--surface); }

@@ -1074,6 +1074,69 @@ The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
 at 100 MB; base64 makes a binary file a third larger against that cap.
 
+## numpy, pandas and matplotlib
+
+From 16 October they install with pip, from Wasmer's own builds. The pad's
+Python, `python/python@=3.13.20`, loads native modules: it is built as a
+dynamically linked main module, and dlopens a `.cpython-313-wasm32-wasi.so`.
+PyPI has no wheels for it. Wasmer keeps an index of them at
+`python-registry.wasmer.app`, with numpy, pandas, matplotlib, pillow,
+contourpy and kiwisolver among them, tagged `cp313-cp313-wasix_wasm32`.
+Three things make `pip install numpy` reach it:
+
+- **The index, beside PyPI:** `PIP_EXTRA_INDEX_URL` in the shell
+  (`WHEELS` in shell.ts). The egress endpoint allows its host
+  (deploy/wisp-server.mjs).
+- **The platform, named:** this interpreter calls itself
+  `wasi_0_0_0_wasm32`, so pip passed over the wheels and spent two minutes
+  failing to compile numpy's source. `PIP_PLATFORM=wasix_wasm32` fixes that.
+  pip then insists on `PIP_ONLY_BINARY=:all:`, so a package published only as
+  source no longer installs. Teaching pip's tag list the extra platform was
+  tried first, and pip still took the source.
+- **An SDK that can load them:** see below.
+
+Measured in the browser, with the CPU free:
+
+| | Install | Import |
+|---|---|---|
+| numpy, a 5.4 MB wheel | 6.5 s | 0.4 s |
+| pandas | 10 s | 1.5 s |
+| matplotlib, and what it pulls in | 20–40 s | — |
+
+A plot saved with matplotlib takes about a second.
+
+**Why the SDK is 0.18.0.** Each version had something the pad could not ship:
+- **0.11.0** loaded numpy and pandas, but not two of matplotlib's C++ modules
+  in one process: `table index is out of bounds`, from importing
+  `matplotlib._path` and `matplotlib.ft2font` together, and the SDK's worker
+  died.
+- **0.19.0 and 0.19.1** load all of matplotlib, but Ctrl-C no longer stops a
+  loop that makes no system calls: `while True: pass` ran on until the pad
+  ended the shell, cwd and variables lost.
+- **0.16.0 and 0.18.0** stop that loop in 5 ms, and 0.18.0 draws and saves a
+  plot.
+
+So it is 0.18.0, until a later version has both. The same upgrade changed
+`box.fs`: it takes the process's own paths now, only inside `/workspace`.
+`at()` in runtime.ts makes them, and the fetch and javac bridges name
+`/workspace/.ajar/…`.
+
+**Plots.** `MPLBACKEND=Agg`, so drawing never looks for a window, and
+`MPLCONFIGDIR` in `.deps`, so the font cache is built once and travels with
+the pad. `plt.show()` is replaced (tools/sitecustomize.py): each figure is
+saved as `figure-<n>.png` where the program ran, and the program prints
+`ESC ] 7777 ; pad-image=<path> BEL`, a number no terminal standard uses. The
+terminal takes that escape off the screen (`registerOscHandler`, terminals.ts)
+and the app shows the image in place of the editor, read from the sandbox
+because the pad's own copy arrives only after the command. Any image file
+opened from the tree shows the same way (`images.ts`). They go in as `data:`
+URLs, since the CSP allows no other source for images.
+
+**requirements.txt** is installed before the first thing that runs Python,
+and again when it changes: `App.installRequirements`. What it was installed
+for is kept beside the packages, in `.deps/.installed-requirements.txt`, so
+it travels with the pad and the next person to open it fetches nothing.
+
 ## Where a file was left
 
 `show` keeps each file's view state — `saveViewState` on the way out,

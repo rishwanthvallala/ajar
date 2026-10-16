@@ -225,7 +225,8 @@ Because it is your browser asking, the browser's rules apply:
   out. A response shows only the headers the site lets a page see.
 - **No cookies or sign-ins of yours** go with a request, and nothing is sent
   to this site itself.
-- **Redirects are always followed**, as with `curl -L`.
+- **Redirects are always followed**, as with `curl -L`. From `localhost` — your
+  own servers — `curl` follows them only with `-L`, as curl does.
 
 Other ways of reaching the network — `git clone`, `ssh`, a database, `httpx`
 or `aiohttp`, node's `fetch` — still use the sandbox's own connection, which
@@ -348,9 +349,17 @@ What it was installed for is kept in `.deps` with the rest, so the next person
 to open the pad fetches nothing. A package that will not install is said, the
 program runs anyway, and it is tried again when the file changes.
 
-Pure-python packages are what this is for: `pip install requests` takes a few
-seconds, dependencies and all. Anything that needs compiling, like `numpy`, is
-not available.
+`pip install requests` takes a few seconds, dependencies and all. **numpy,
+pandas and matplotlib** install too, from Wasmer's own builds for this
+runtime: `pip install numpy pandas matplotlib`, about a minute the first time
+and kept in `.deps` after. Pillow and the rest of what those need come with
+them. A package that only exists as source code to compile, which is rare, does
+not install.
+
+**Plots show over the editor.** `plt.show()` saves each figure as
+`figure-1.png`, `figure-2.png`… beside your program and opens it in place of the
+editor; **Back to editor** returns. Any image file in the tree opens the same
+way. `plt.savefig()` works as anywhere.
 
 **No threads.** Starting one says so with an error rather than freezing the
 program, which is what the runtime underneath does. `asyncio` and `subprocess`

@@ -717,7 +717,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   const pngHex = sentPng?.encoding === "base64" ? Buffer.from(sentPng.content, "base64").toString("hex") : JSON.stringify(sentPng);
   expect("a binary file a command makes is in the tree as one, and sent as its bytes", binaryRows && pngHex === "89504e470d0a1a0a0000fffe", pngHex);
   await page.locator('#files .row.file[data-path="b.png"]').click();
-  expect("clicking it says it is not text, rather than opening garbage", /b\.png is not text/.test(await status()), `"${await status()}"`);
+  // An image by name, and not by its bytes: the viewer says so and leaves
+  // the editor, rather than putting a broken picture or garbage on screen.
+  const notShown = await page.waitForFunction(() => /b\.png is not (text|an image)/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 5000 }).then(() => true, () => false);
+  expect("clicking it says it cannot be shown, rather than opening garbage", notShown && (await page.locator("#editor").isVisible()), `"${await status()}"`);
   await page.hover('#files .file-row:has(.row.file[data-path="b.png"])');
   const gotPng = await got(() => page.locator('#files button[aria-label="Download b.png"]').click());
   expect("and downloads byte for byte", (await readFile(gotPng.to)).toString("hex") === "89504e470d0a1a0a0000fffe", (await readFile(gotPng.to)).toString("hex"));
@@ -987,6 +990,41 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await typed("rm requirements.txt");
   await clear();
 
+  // ---- images, shown in place of the editor ----
+  // A plot is a PNG `plt.show()` saves and names with an escape the
+  // terminal takes (tools/sitecustomize.py); this makes the PNG by hand and
+  // prints the same escape, then opens it from the tree as a person would.
+  section = "images";
+  const MAKE_PNG = [
+    "import struct, zlib",
+    "def chunk(kind, data):",
+    "    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)",
+    "rows = b''.join(b'\\x00' + b'\\xff\\x00\\x00' * 4 for _ in range(3))",
+    "png = b'\\x89PNG\\r\\n\\x1a\\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 4, 3, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')",
+    "open('dot.png', 'wb').write(png)",
+    "print('png written')",
+  ].join("\n");
+  await clear();
+  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py`);
+  await typed("printf '\\033]7777;pad-image=/workspace/dot.png\\007'; echo asked");
+  const shownByEscape = await page.waitForFunction(() => {
+    const img = document.querySelector("#image-pane:not([hidden]) img");
+    return img && img.naturalWidth === 4 && document.querySelector("#editor")?.hidden;
+  }, null, { timeout: 15_000 }).then(() => true, () => false);
+  // Not on screen apart from the command that printed it.
+  const escapeHidden = (await rows()).filter((l) => !l.startsWith("$")).every((l) => !/7777|pad-image/.test(l));
+  await page.click("#back-to-editor");
+  const editorBack = await page.locator("#editor").isVisible() && await page.locator("#image-pane").isHidden();
+  expect("an image a program names with the pad's escape shows in place of the editor, the escape itself unprinted, and Back to editor returns", shownByEscape && escapeHidden && editorBack, `escape ${shownByEscape}, unprinted ${escapeHidden}, back ${editorBack}`);
+  await page.waitForSelector('#files .row.file[data-path="dot.png"]', { timeout: 20_000 }).catch(() => {});
+  await page.click('#files .row.file[data-path="dot.png"]');
+  const shownByTree = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 4, null, { timeout: 10_000 }).then(() => true, () => false);
+  await open("main.py");
+  const leftForText = await page.locator("#image-pane").isHidden() && await page.locator("#editor").isVisible();
+  expect("and an image file opened from the tree shows too, until a text file is opened", shownByTree && leftForText, `tree ${shownByTree}, text again ${leftForText}`);
+  await typed("rm dot.png");
+  await clear();
+
   // ---- the network (a deployment only) ----
   section = "the network (a deployment only)";
   if (LIVE) {
@@ -1031,6 +1069,19 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     await typed("ls -a | grep -c '^~$'; echo listed");
     const noHome = (await shows(/(^|\n)0\s*(\n|$)/)) && !(await page.$('#files .row.dir[data-path="~"]'));
     expect("and pip leaves no `~` folder in the pad", noHome, await tail(3));
+
+    // numpy, pandas and matplotlib, from Wasmer's index of packages built for
+    // this runtime, and a plot shown over the editor by plt.show().
+    await clear();
+    const t2 = Date.now();
+    const scienceIn = await typed("pip install numpy pandas matplotlib", 300_000);
+    const scienceMs = Date.now() - t2;
+    await clear();
+    await run("import numpy as np\nimport pandas as pd\nimport matplotlib.pyplot as plt\nframe = pd.DataFrame({'x': np.arange(5), 'y': np.arange(5) ** 2})\nprint('sum', int(frame.y.sum()))\nplt.plot(frame.x, frame.y)\nplt.show()\n", { ms: 180_000 });
+    const plotted = await page.waitForFunction(() => (document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth ?? 0) > 100, null, { timeout: 30_000 }).then(() => true, () => false);
+    expect("pip install numpy pandas matplotlib, and plt.show() puts the plot over the editor", scienceIn && (await shows(/sum 30/)) && plotted, `${scienceMs} ms: ${await tail(4)}`);
+    await page.click("#back-to-editor").catch(() => {});
+    await typed("rm -f figure-1.png");
   }
 
   // What the page itself threw, as opposed to what the programs printed.

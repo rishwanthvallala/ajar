@@ -89,7 +89,9 @@ TCP proxy with our IP as the exit: anybody with a pad link could reach any host
 on the internet from this address, and the first we would know is an abuse
 report or a terminated instance. The thing being bought is `pip install`, so
 the list is `pypi.org` and `files.pythonhosted.org` on port 443 and nothing
-else. The patterns are anchored, because an unanchored `pypi\.org` also matches
+else — and, from 16 October, `python-registry.wasmer.app`, Wasmer's index of
+packages built for this runtime: numpy, pandas, matplotlib, pillow. PyPI has
+no wheels of those for it, and they cannot be compiled here. The patterns are anchored, because an unanchored `pypi\.org` also matches
 `pypi.org.example.com`, which is a host somebody else controls.
 
 Four restrictions matter as much as the hostname list:
