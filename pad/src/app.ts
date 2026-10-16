@@ -116,6 +116,21 @@ function readIndent(): 2 | 4 {
   }
 }
 
+/** Of the texts a command may have read, the one its result differs from least — the latest of equals. */
+function closest(candidates: readonly string[], result: string): string | undefined {
+  let best: string | undefined;
+  let size = Infinity;
+  for (const text of candidates) {
+    const edit = carryOver(text, result, text);
+    const n = edit ? edit.remove + edit.insert.length : 0;
+    if (n <= size) {
+      size = n;
+      best = text;
+    }
+  }
+  return best;
+}
+
 export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
@@ -1676,7 +1691,10 @@ export class App {
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
       onBusy: (busy) => {
-        if (busy) this.commandOut = true;
+        if (busy) {
+          this.commandOut = true;
+          if (this.runtimeReady) void this.runtime?.then((rt) => rt.recordVersions());
+        }
         this.paintRun();
         this.javac.busy(busy);
         this.fetcher.busy(busy);
@@ -1959,6 +1977,11 @@ export class App {
       // Read back: what a command changed is in `found` now, and a document
       // may be written into the sandbox again whatever it holds.
       if (!this.console?.busy) this.commandOut = false;
+      // What the page wrote to each file while the command ran, one of which
+      // it read (`Runtime.recordVersions`). A command starting now keeps its
+      // own from here.
+      const versions = rt.takeVersions();
+      if (this.console?.busy) rt.recordVersions();
       const { next, nextBinaries } = found;
       // A file with a live document is the document's. What the sandbox
       // holds of it is the page's own copy, written in as the document moved
@@ -2002,9 +2025,13 @@ export class App {
         // Changed by the command: that change, on top of the document as it
         // is now, and the result stored.
         const live = doc.contents();
-        // With no record of what the page wrote, the difference from the
-        // document itself, which is what taking it back used to do.
-        const made = carryOver(wrote ?? live, change.content, live);
+        // Measured from the version the command read: of those the page
+        // wrote while it ran, the one its result differs from least. From the
+        // last write alone, typing that came after the command read the file
+        // looked like the command taking it out. With no record of what the
+        // page wrote, the difference from the document itself, which is what
+        // taking it back used to do.
+        const made = carryOver(closest(versions.get(change.path) ?? [], change.content) ?? wrote ?? live, change.content, live);
         if (made) this.applyEdit(change.path, doc, made);
         changes.push({ ...change, content: doc.contents() });
         next.set(change.path, doc.contents());

@@ -792,6 +792,18 @@ the diff, which puts the command's change on the document; the document then
 goes back into the sandbox. `pair-check.mjs` makes the window certain with a
 command that sleeps after its change.
 
+And the change was measured from the wrong text, until 16 October. A
+collaborator's keystrokes still go into the sandbox while a command runs, as
+long as the command has not changed the file, so the file a command reads is
+not always the one the page wrote last: `sed -i` read `abcdef`, the page wrote
+`abcdefg`, and sed wrote its change to `abcdef`. Measured from `abcdefg`, the
+command had also deleted the `g` — one character lost on CI, and all of the
+typing for a command that reads, waits, then writes. `Runtime` now keeps every
+version it writes to each file while a command runs (`recordVersions`), and the
+change is measured from the one the command's result differs from least: the
+version it read. `pair-check.mjs` has a command that copies the file, sleeps
+while the other place types, and writes its change to the copy.
+
 **Two histories of one file are told apart, not merged,** since 9 October.
 Seeding from the stored copy is safe only when nobody holds a live document,
 and "nobody answered" is not the same thing: a place whose connection dropped

@@ -102,6 +102,9 @@ export function interpreterFor(path: string): string | null {
   return INTERPRETERS[ext] ?? null;
 }
 
+/** Versions of a file kept while a command runs (`Runtime.recordVersions`). */
+const VERSIONS_KEPT = 64;
+
 let loading: Promise<{ Wasmer: typeof WasmerClass }> | null = null;
 
 export function sdk() {
@@ -206,6 +209,28 @@ export class Runtime {
     this.written.set(path, contents);
   }
 
+  /**
+   * Every version the page wrote to each file while a command ran, from the
+   * one it held when the command started. Somebody typing elsewhere is
+   * written in as they type, so a command that read a file and then wrote it
+   * read one of these, and which is not known: `sed -i` read `abcdef`, the
+   * page wrote `abcdefg`, sed wrote its change to `abcdef`, and measured
+   * from the last write that change took the `g` out. See `App.publish`.
+   */
+  private versions: Map<string, string[]> | null = null;
+
+  /** A command is starting: keep what is written to each file until it is read back. */
+  recordVersions(): void {
+    this.versions = new Map([...this.written].map(([path, text]) => [path, [text]]));
+  }
+
+  /** What was kept since `recordVersions`, and keep nothing more. */
+  takeVersions(): Map<string, string[]> {
+    const kept = this.versions ?? new Map([...this.written].map(([path, text]) => [path, [text]]));
+    this.versions = null;
+    return kept;
+  }
+
   /** Once every write already asked for has landed. */
   async settled(): Promise<void> {
     while (this.inFlight.size) await Promise.allSettled([...this.inFlight]);
@@ -304,6 +329,14 @@ export class Runtime {
     // Recorded as it is asked for, in order: the last asked for is the one
     // the file ends up holding.
     this.written.set(path, contents);
+    if (this.versions) {
+      const kept = this.versions.get(path) ?? [];
+      kept.push(contents);
+      // The first, and a keystroke's worth of the latest: a long command in a
+      // file being typed in is a version a keystroke.
+      if (kept.length > VERSIONS_KEPT) kept.splice(1, kept.length - VERSIONS_KEPT);
+      this.versions.set(path, kept);
+    }
     return this.track((async () => {
       const slash = path.lastIndexOf("/");
       if (slash > 0) {

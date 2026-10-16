@@ -356,6 +356,21 @@ try {
     if (sandboxHas) ok("and the sandbox there has both, for the next command");
     else fail(`and the sandbox there has both, for the next command — ${JSON.stringify((await b.evaluate(() => document.querySelector("#terminal .xterm-rows")?.innerText ?? "")).slice(-200))}`);
 
+    // And a command that read the file before the typing came, and writes
+    // its change to what it read: its work is that change, not the typing's
+    // removal. Measured from the page's last write it was both, and the
+    // typing went — a character of it on CI on 16 October, where the read and
+    // the write were a moment apart, all of it here.
+    await setAll(a, "x = 1\ny = 2\n");
+    await wait(a, 1200);
+    await caretAt(a, 2, 6);
+    await Promise.all([
+      (async () => { await wait(a, 1500); await a.keyboard.type("zyxw", { delay: 80 }); })(),
+      (async () => { await term("cp main.py /tmp/read && sleep 3 && sed 's/x = 1/x = 5/' /tmp/read > main.py"); await wait(b, 150); await idle(); })(),
+    ]);
+    await wait(a, 2500);
+    await agree(a, b, "x = 5\ny = 2zyxw\n", "a command that read the file before the typing came keeps its change and the typing both");
+
     // Typing not yet saved, then a command in the same place that changes
     // another line of that file. Before reading back what the command did,
     // the page wrote its unsaved files into the sandbox — over the command's
