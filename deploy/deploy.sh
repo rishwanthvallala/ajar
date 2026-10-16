@@ -281,11 +281,11 @@ scp -q "$BIN" "$HOST:/tmp/ajar-relay.new"
 # Staged through a directory the deploy user owns, then moved into place.
 #
 # Kept from one deploy to the next, and compared by content: the pad is 1.1 GB,
-# nearly all of it packages that did not change, and sent whole each time it
-# outlasted the SSM tunnel twice on 15 October — dropped at about 37 minutes,
-# with nothing swapped in. Now only what changed travels, and a deploy whose
-# tunnel drops takes up where it stopped. --delete still takes out whatever
-# the build no longer has.
+# nearly all of it packages that did not change, and it went whole every time.
+# A deploy cut off half way — on 15 October three were, the Mac they ran from
+# asleep with its lid shut — started all of it again; now only what changed
+# travels, and the next one takes up where that stopped. --delete still takes
+# out whatever the build no longer has.
 ssh "$HOST" "mkdir -p /tmp/ajar-web /tmp/ajar-pad"
 rsync -a --delete --checksum -e ssh web/dist/ "$HOST:/tmp/ajar-web/"
 rsync -a --delete --checksum -e ssh pad/dist/ "$HOST:/tmp/ajar-pad/"
