@@ -351,6 +351,24 @@ nothing to attribute a download to beyond its address.
 production, which is the ingress that matters, but that syscall has not been
 run under this policy — the networking table says so rather than guessing.
 
+**The preview, a small browser since 16 October, does not carry three
+things** ([networking.md](dev/networking.md#a-small-browser)):
+- **WebSockets**, which a service worker never sees, so a dev server's live
+  reload never connects.
+- **Streamed responses**, Server-Sent Events among them, because the SDK hands
+  over each response whole.
+- **CORS preflights**, which are not sent: the actual response's headers are
+  checked instead.
+
+The first two need the SDK to carry them. The third is a day's work if a
+server that answers its preflight differently from its request ever turns up.
+
+**A server killed at Ctrl-C holds its port for about 17 seconds.** That
+happens when the interrupt lands mid-`accept()` and the process dies without
+closing its socket. The SDK goes on listing the port, and starting the server
+again in that time is "Address in use". Servers that poll, Flask and
+`http.server` among them, close cleanly. Measured once, on 16 October.
+
 Measured in full in [dev/networking.md](dev/networking.md), including the
 undocumented COEP header the preview origin needs and the three wrong answers
 it took to get there.
@@ -465,6 +483,99 @@ one Monaco theme per palette, and the terminal's colours per palette as well.
 About two days with the checks: a screenshot of each look in the browser
 checks, and a contrast assertion on the tokens. No new dependencies, no change
 to the store.
+
+**Code completion by a small model in the browser — for later, not built.**
+Asked for on 16 October: grey text ahead of the cursor, as Copilot does,
+from a model that runs in the visitor's browser. The code never leaves the
+browser, and nothing runs on our server. Written up here to decide the shape
+before any of it is built.
+
+*How it would work.*
+- **The editor's half.** Monaco has the hook already:
+  `languages.registerInlineCompletionsProvider` shows a suggestion as ghost
+  text, Tab takes it and Esc drops it, and it passes a cancellation token
+  each time the text changes.
+- **The ask.** The provider waits for typing to pause, about 300 ms. It then
+  sends the text before the cursor and the text after it, a few KB of each,
+  and the file's name and language. It cancels the ask if the visitor keeps
+  typing.
+- **The model's half.** A worker of its own, so the editor never waits on
+  it, runs a *fill-in-the-middle* model: one trained to write what goes
+  between a prefix and a suffix, not only to continue text. It stops at the
+  end of the line, or at the end of a block for a multi-line suggestion.
+- **Fit with the pad.** The pad is cross-origin isolated already, which is
+  what threaded WebAssembly needs (SharedArrayBuffer), so the runtimes below
+  can use every core.
+
+*The model.* Small enough to download once and run on a laptop, and trained
+for fill-in-the-middle:
+- **Qwen2.5-Coder-0.5B** is the most likely floor for useful quality. It is
+  trained with FIM tokens (`<|fim_prefix|>`, `<|fim_suffix|>`,
+  `<|fim_middle|>`) and knows the languages the pad runs. Quantized to 4 bits
+  it is roughly 300–500 MB, depending on the format.
+- **Something smaller,** in the 100–200M range, such as
+  `bigcode/tiny_starcoder_py` for Python alone. It would be a tenth of the
+  download and noticeably worse.
+- **General small models** like SmolLM2 were not trained for FIM, and would
+  only continue the text.
+
+The first task is to measure two or three of these on real pads, before
+choosing.
+
+*The runtime.* Three that run in a page:
+- **transformers.js** (ONNX Runtime Web): WebAssembly with threads, or
+  WebGPU where the browser has it. It loads ONNX models.
+- **wllama:** llama.cpp compiled to WebAssembly, loading GGUF files, threaded
+  with cross-origin isolation.
+- **WebLLM** (MLC): WebGPU only, and fastest there, but nothing without it.
+
+The proposal is transformers.js or wllama, using WebGPU when it is there and
+WebAssembly when it is not, so every browser that runs the pad gets
+completions, if slower.
+
+*What a person would feel.* Not measured yet, and the numbers to measure
+first:
+- **Reading the context** costs most on the CPU: a second or more for a few
+  hundred tokens before the first one comes, on a laptop.
+- **Generating** costs little for one line: a few tenths of a second at tens
+  of tokens a second.
+- **WebGPU** should cut both by several times.
+
+So one line at a time, shown after a pause, is the realistic first version.
+Whole functions as you type are not.
+
+*Download, and where from.*
+- **Opt-in.** Nobody gets a 400 MB download for opening a pad. A setting
+  says how big it is, fetches it with progress, and keeps it in the browser's
+  cache storage, so the second visit costs nothing. A way to remove it is
+  part of the same setting.
+- **Hugging Face's CDN, or ours.** Fetched from Hugging Face's CDN, it costs
+  this server nothing. The pad's CSP already allows `https:` for fetches, and
+  the CDN sends CORS headers, which require-corp needs. Hugging Face then
+  sees each visitor's address downloading it, but no code. Served by us, it
+  would need the `pad_files` rate limit extended to it, and it is about
+  0.4 GB of egress for each visitor who turns it on. The account runs on
+  credits.
+
+*What it costs.* About a week for a first version:
+- the worker and the runtime
+- the Monaco provider, with debounce and cancellation
+- the setting and the download with progress
+- caching
+- a check that a pause yields a suggestion and Tab takes it, run with a tiny
+  model so it is quick
+
+Then measuring on a slow laptop and a phone, and deciding whether phones get
+it at all.
+
+*Decisions it needs.*
+- **Which model:** measured, as above.
+- **Where the weights come from:** Hugging Face's CDN or ours.
+- **On or off by default:** proposed off, with the setting saying what it
+  costs.
+- **What it may read:** the open file alone, or other open files too.
+  Context from other files makes it much better, and costs time on every ask.
+- **Phones:** on or not.
 
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,

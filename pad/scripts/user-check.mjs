@@ -62,7 +62,10 @@ const ORIGIN = LIVE ?? `http://127.0.0.1:${PORT}`;
 
 // A site for curl through the page to ask. Locally, a small httpbin that lets
 // web pages read it, and a path that does not; against a deployment, the
-// real httpbin.org and example.com, which sends no CORS headers.
+// real httpbin.org and example.com, which sends no CORS headers. Locally it
+// is `bin.test`, which the browser is told is 127.0.0.1: since 16 October
+// localhost in a pad is the folder's own servers, so 127.0.0.1 would have
+// asked the sandbox instead.
 const BIN_PORT = 5209;
 const bin = createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${BIN_PORT}`);
@@ -82,11 +85,15 @@ const bin = createServer((req, res) => {
   });
 });
 if (!LIVE) await new Promise((r) => bin.listen(BIN_PORT, r));
-const BIN = LIVE ? "https://httpbin.org" : `http://127.0.0.1:${BIN_PORT}`;
-const CLOSED = LIVE ? "https://example.com/" : `http://127.0.0.1:${BIN_PORT}/closed`;
+const BIN = LIVE ? "https://httpbin.org" : `http://bin.test:${BIN_PORT}`;
+const CLOSED = LIVE ? "https://example.com/" : `http://bin.test:${BIN_PORT}/closed`;
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-")));
-const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1280, height: 800 } });
+const context = await chromium.launchPersistentContext(profile, {
+  headless: true,
+  viewport: { width: 1280, height: 800 },
+  args: ["--host-resolver-rules=MAP bin.test 127.0.0.1"],
+});
 const page = context.pages()[0] ?? (await context.newPage());
 const pageErrors = [];
 // Which part of the run a page error came from, and where in the page, so
@@ -118,8 +125,14 @@ const expect = (m, pass, detail) => (pass ? ok(m) : fail(m, detail));
 const rows = async () => (await page.evaluate(() => document.querySelector("#terminal .xterm-rows")?.innerText ?? ""))
   .split("\n").map((l) => l.replace(/\u00a0/g, " ").replace(/\s+$/, ""));
 const tail = async (n = 4) => (await rows()).filter(Boolean).slice(-n).join(" | ");
+// Also across the terminal's wrapping: a word that lands on the last column
+// is split over two rows, and a check that passed at one width failed at
+// another — "C" on one row and "ORS" on the next.
 const shows = async (re, ms = 3000) => page
-  .waitForFunction((src) => new RegExp(src).test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), re.source, { timeout: ms })
+  .waitForFunction((src) => {
+    const text = document.querySelector("#terminal .xterm-rows")?.innerText ?? "";
+    return new RegExp(src).test(text) || new RegExp(src).test(text.replace(/\n/g, ""));
+  }, re.source, { timeout: ms })
   .then(() => true, () => false);
 const idle = (ms = 60_000) => page
   .waitForFunction(() => window.__pad?.shellBusy() === false && !document.querySelector("#run")?.disabled, null, { timeout: ms })

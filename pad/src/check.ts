@@ -19,7 +19,7 @@ import { seedFiles } from "./seed";
 import { nameProblem, pathFor } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { starterFor } from "./starters";
-import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, vet } from "./fetch-bridge";
+import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, type LocalFetch, vet } from "./fetch-bridge";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 
@@ -869,10 +869,22 @@ async function main() {
     const told = encodeFetched({ ok: true, status: 200, statusText: "", url: "https://a.example/", redirected: false, headers: [], dropped: [] }, new Uint8Array([1, 2, 10, 3]));
     const cut = told.indexOf(10);
     is(JSON.parse(new TextDecoder().decode(told.subarray(0, cut))).status === 200 && [...told.subarray(cut + 1)].join() === "1,2,10,3", true, "an answer is a line of JSON and the body's bytes after it");
-    const refused = new TextDecoder().decode(await answer({ url: `${location.origin}/api/pad/x`, method: "GET", headers: [], body: null, timeout: null }, new URL(location.href), []));
+    const refused = new TextDecoder().decode(await answer({ url: `${location.origin}/api/pad/x`, method: "GET", headers: [], body: null, timeout: null, follow: true }, new URL(location.href), []));
     is(JSON.parse(refused.split("\n")[0]!).code, 7, "a request for the page's own site is answered with a refusal, and never made");
-    const withBody = new TextDecoder().decode(await answer({ url: "https://api.example/", method: "GET", headers: [], body: new Uint8Array([1]), timeout: null }, https, []));
+    const withBody = new TextDecoder().decode(await answer({ url: "https://api.example/", method: "GET", headers: [], body: new Uint8Array([1]), timeout: null, follow: true }, https, []));
     is(/no body with GET/.test(withBody), true, "and a GET with a body says what to do instead");
+    const asks: string[] = [];
+    const local: LocalFetch = async (request, url) => {
+      asks.push(`${request.method} ${url.host}${url.pathname}`);
+      return { answer: { ok: true, status: 201, statusText: "Created", url: url.href, redirected: false, headers: [["set-cookie", "sid=1"]], dropped: [] }, body: new TextEncoder().encode("made") };
+    };
+    const toLocal = new TextDecoder().decode(await answer({ url: "http://localhost:5000/api", method: "POST", headers: [], body: new Uint8Array([1]), timeout: null, follow: true }, https, ours, local));
+    const toLocalHead = JSON.parse(toLocal.split("\n")[0]!);
+    is(JSON.stringify(asks) === JSON.stringify(["POST localhost:5000/api"]) && toLocalHead.status === 201 && toLocalHead.headers[0][1] === "sid=1" && toLocal.endsWith("\nmade"), true, "localhost is the folder's own servers: plain http from an https page, to the port asked, every header back");
+    const noPreview = new TextDecoder().decode(await answer({ url: "http://127.0.0.1:5000/", method: "GET", headers: [], body: null, timeout: null, follow: true }, https, ours, null));
+    is(JSON.parse(noPreview.split("\n")[0]!).code, 7, "and with no preview to reach them through, it says so rather than asking this computer");
+    const ownLocal = new TextDecoder().decode(await answer({ url: "http://127.0.0.1:5199/api/pad/x", method: "GET", headers: [], body: null, timeout: null, follow: true }, new URL("http://127.0.0.1:5199/"), [], local));
+    is(JSON.parse(ownLocal.split("\n")[0]!).code === 7 && asks.length === 1, true, "but a page served from localhost, as the checks are, still never asks its own address");
   }
 
   // ---- the runtime's word when a pipe's reader leaves ----

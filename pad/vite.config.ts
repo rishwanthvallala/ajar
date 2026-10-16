@@ -75,6 +75,10 @@ const vendorSdk: Plugin = {
     // the same names onto the standard APIs. Without this the module resolves
     // and the sandbox then dies on `Failed to resolve module specifier "ws"`.
     await cp(new URL("compat_browser.mjs", wispTo), new URL("compat.mjs", wispTo));
+    // The preview origin's service worker and control-page script. They are
+    // served only by preview.rishwanth.dev, from here — see the Caddyfile —
+    // and under vendor/ because that name is already one no pad can take.
+    await cp(new URL("./preview/", import.meta.url), new URL("./public/vendor/preview/", import.meta.url), { recursive: true });
   },
 };
 

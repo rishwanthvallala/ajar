@@ -84,8 +84,14 @@ def _clear_stale():
             pass
 
 
-def fetch(url, method="GET", headers=(), body=None, timeout=None):
-    """The answer to one request, made by the browser. Raises Unanswered or Failed."""
+def fetch(url, method="GET", headers=(), body=None, timeout=None, follow=True):
+    """The answer to one request, made by the browser. Raises Unanswered or Failed.
+
+    `follow`: whether a redirect is followed. The browser follows every one
+    from a web site whatever this says; a request to the folder's own servers,
+    at localhost, follows only if asked, so urllib and requests can follow
+    them themselves, as they would, and curl shows a 303 and its Set-Cookie.
+    """
     os.makedirs(DIR, exist_ok=True)
     _clear_stale()
     rid = f"{os.getpid()}-{time.time_ns()}-{os.urandom(3).hex()}"
@@ -96,6 +102,7 @@ def fetch(url, method="GET", headers=(), body=None, timeout=None):
         "headers": [[str(k), str(v)] for k, v in headers],
         "body": body is not None,
         "timeout": timeout,
+        "follow": bool(follow),
     }
     with open(f"{req}.part", "wb") as f:
         f.write(json.dumps(head).encode("utf-8") + b"\n")
@@ -155,7 +162,7 @@ def urllib_response(req):
     import urllib.response
 
     try:
-        answer = fetch(req.full_url, req.get_method(), req.header_items(), _bytes(req.data), _seconds(req.timeout))
+        answer = fetch(req.full_url, req.get_method(), req.header_items(), _bytes(req.data), _seconds(req.timeout), follow=False)
     except Failed as e:
         raise urllib.error.URLError(str(e)) from None
     headers = http.client.HTTPMessage()
@@ -176,7 +183,7 @@ def requests_response(adapter, request, timeout):
     from requests.utils import get_encoding_from_headers
 
     try:
-        answer = fetch(request.url, request.method, request.headers.items(), _bytes(request.body), _seconds(timeout))
+        answer = fetch(request.url, request.method, request.headers.items(), _bytes(request.body), _seconds(timeout), follow=False)
     except Failed as e:
         kind = exceptions.Timeout if e.code == 28 else exceptions.ConnectionError
         raise kind(str(e), request=request) from None

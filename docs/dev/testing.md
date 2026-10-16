@@ -162,8 +162,9 @@ real bytes, and the gate is already the slowest thing in the repository. Of
 `user-check.mjs` are in the gate; `app-check.mjs` is not. `browser-check.mjs`
 joined on 9 October, when the line-ending checks in `check.ts` turned out to
 have run nowhere but on the machine they were written on. `accounts-check.mjs`
-and `pair-check.mjs`, which `npm run check` does not run, are in the gate too.
-Of the rest below, only `smoke-abuse.mjs` is.
+and `pair-check.mjs`, which `npm run check` does not run, are in the gate too,
+and since 16 October `preview-check.mjs`, last, with a build of its own. Of the
+rest below, only `smoke-abuse.mjs` is.
 
 ```sh
 npm run check --workspace=ajar-pad          # the pieces, then the product
@@ -172,7 +173,7 @@ node pad/scripts/ingress-check.mjs          # a process in the sandbox serving H
 node scripts/smoke-abuse.mjs                # refusing abuse — also runs in check.sh
 
 VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build
-node pad/scripts/preview-check.mjs          # the Preview button, end to end
+node pad/scripts/preview-check.mjs          # the preview, a small browser, end to end — in the gate
 
 node deploy/wisp-server.mjs &               # or point at the deployed one
 node pad/scripts/wisp-check.mjs             # egress, and the limits on it
@@ -182,8 +183,21 @@ WISP_URL=wss://code.rishwanth.dev/wisp/ node pad/scripts/wisp-check.mjs
 `preview-check.mjs` is the one worth reading if you touch the preview: it
 writes a server, runs it, waits for the button, presses it, reads the iframe
 and presses it again. Three of its steps only exist because earlier versions
-lied — see below. It takes `PAD_ORIGIN` to drive the deployed site, which it
-silently ignored until 15 September.
+lied — see below. Since 16 October it goes on to two servers in two terminals,
+an app on 8080 and an API on 8081, both in the standard library because pip
+cannot be reached locally, and uses the preview as a person would:
+- the page calls the API by its localhost address, once with CORS and once
+  without
+- a sign-in sets a cookie through a redirect, and survives a reload
+- links, Back and Forward, a path and another server's address typed into the
+  bar, and a link to the other server
+- the request log and one request opened up, and the console
+- the page in a tab of its own
+- Ctrl-C and a rerun bring the page back by itself
+
+It takes `PAD_ORIGIN` to drive the deployed site, which it silently ignored
+until 15 September. It runs from `pad/`, because it starts the relay at
+`../target/debug/`.
 
 `wisp-check.mjs` asserts two things that are only worth anything together:
 `pip install` reaches PyPI, **and** everything that is not PyPI is refused. The

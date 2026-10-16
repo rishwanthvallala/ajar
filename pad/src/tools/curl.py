@@ -7,7 +7,12 @@ it — most APIs do — and the browser's rules are its rules:
 
 - https only, from an https page; a site that does not allow web pages
   (CORS) is refused, which is said in words, not as a hang
-- redirects are always followed, as with -L
+- except localhost, which is the folder's own servers — a Flask app running in
+  another terminal — reached through the preview, as a program and not a page:
+  plain http, no CORS, every header the server sends, and a redirect followed
+  only with -L, as curl does. With no scheme given, a localhost address is
+  http://, as curl assumes, and anything else https://
+- redirects are always followed, as with -L, except from localhost (below)
 - the browser sets some headers itself (Host, Cookie, Referer, User-Agent...)
   and drops ones given for them; -v says which
 - a response shows only the headers the site lets a page see
@@ -47,8 +52,10 @@ USAGE = """Usage: curl [options] <url>...
  -w, --write-out FORMAT   %{http_code} %{url_effective} %{content_type}
                           %{size_download} %{time_total} and \\n
  -m, --max-time SECONDS   give up after this long
- -L, -k, --compressed     accepted: redirects are always followed, the
-                          browser checks certificates, and decompresses
+ -L, --location           follow redirects: from localhost only when asked,
+                          from a site always, since the browser does
+ -k, --compressed         accepted: the browser checks certificates, and
+                          decompresses
 Made by the browser: https only, and only sites that let a web page read
 them (CORS). See `curl --manual` for why."""
 
@@ -122,7 +129,7 @@ FLAGS = {
     "-S": "show-error", "--show-error": "show-error",
     "-v": "verbose", "--verbose": "verbose",
     "-G": "get", "--get": "get",
-    "-L": "ignored", "--location": "ignored",
+    "-L": "location", "--location": "location",
     "-k": "ignored", "--insecure": "ignored",
     "--compressed": "ignored", "-#": "ignored", "--progress-bar": "ignored", "--no-progress-meter": "ignored",
     "--create-dirs": "create-dirs",
@@ -233,10 +240,14 @@ def write_out(fmt, answer, url, size, seconds):
     return out
 
 
+LOCAL = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
 def one(url, opts):
     quiet, show = opts.get("silent", False), opts.get("show-error", False)
     if "://" not in url:
-        url = "https://" + url
+        local = urllib.parse.urlsplit("//" + url).hostname in LOCAL
+        url = ("http://" if local else "https://") + url
     scheme = url.split("://", 1)[0].lower()
     if scheme not in ("http", "https"):
         return fail(1, f'Protocol "{scheme}" not supported here: the browser makes http and https requests', quiet, show)
@@ -269,7 +280,10 @@ def one(url, opts):
     verbose = opts.get("verbose", False)
     if verbose:
         parsed = urllib.parse.urlsplit(url)
-        print(f"* Made by the browser, with fetch: it connects, and checks the certificate", file=sys.stderr)
+        if parsed.hostname in LOCAL:
+            print(f"* Through the preview, to the folder's server on port {parsed.port or 80}", file=sys.stderr)
+        else:
+            print(f"* Made by the browser, with fetch: it connects, and checks the certificate", file=sys.stderr)
         print(f"> {method} {parsed.path or '/'}{'?' + parsed.query if parsed.query else ''}", file=sys.stderr)
         print(f"> Host: {parsed.netloc}", file=sys.stderr)
         for k, v in headers:
@@ -278,7 +292,7 @@ def one(url, opts):
 
     started = time.monotonic()
     try:
-        answer = _padfetch.fetch(url, method, headers, body, timeout)
+        answer = _padfetch.fetch(url, method, headers, body, timeout, follow=opts.get("location", False))
     except _padfetch.Unanswered:
         return fail(7, "the page did not pick the request up: curl works from the pad's terminal and Run", quiet, show)
     except _padfetch.Failed as e:
@@ -383,7 +397,7 @@ def wget(argv):
     code = 0
     for url in urls:
         name = out or os.path.basename(urllib.parse.urlsplit(url if "://" in url else "https://" + url).path) or "index.html"
-        opts = {"header": [], "data": [], "form": [], "urls": [url], "output": name, "fail": True, "silent": quiet, "show-error": True}
+        opts = {"header": [], "data": [], "form": [], "urls": [url], "output": name, "fail": True, "silent": quiet, "show-error": True, "location": True}
         result = one(url, opts)
         if result == 0 and not quiet and name != "-":
             print(f"saved {name}", file=sys.stderr)

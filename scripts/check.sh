@@ -145,6 +145,11 @@ part_pad() {
     node pad/scripts/accounts-check.mjs
     echo "── ui: two places in one pad ─────────────────────────"
     node pad/scripts/pair-check.mjs
+    # Last, because it needs a build of its own: the preview origin is
+    # compiled in, and this one is the check's local host. The dist it leaves
+    # is that build; deploy.sh makes its own.
+    echo "── ui: the preview, a small browser ──────────────────"
+    (cd pad && VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build --logLevel warn && node scripts/preview-check.mjs)
   fi
 }
 

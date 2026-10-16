@@ -7,7 +7,7 @@
  */
 import type * as Monaco from "monaco-editor";
 
-import type { BrowserServer, SandboxOptions } from "@wasmer/sdk";
+import type { SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
@@ -18,6 +18,7 @@ import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from "./peers";
 import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
+import { PreviewBrowser } from "./preview";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
@@ -168,11 +169,8 @@ export class App {
   private installs = 0;
   private xterm: Promise<{ Terminal: typeof import("@xterm/xterm").Terminal; FitAddon: typeof import("@xterm/addon-fit").FitAddon }> | null = null;
   private tree: FileTree | null = null;
-  /** The port something in the folder is listening on, if any. */
-  private listening: number | null = null;
-  private served: BrowserServer | null = null;
-  /** The port `served` is the route to. */
-  private servedPort: number | null = null;
+  /** What the folder's servers show, made when the runtime starts. */
+  private preview: PreviewBrowser | null = null;
   private known: Known = new Map();
   /**
    * The pad's binary files, as the store keeps them. Never in the editor;
@@ -188,6 +186,7 @@ export class App {
   private readonly fetcher = new FetchBridge(
     async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
     PREVIEW_ORIGIN ? [new URL(PREVIEW_ORIGIN).origin] : [],
+    () => (this.preview ? (request, url) => this.preview!.fetchLocal(request, url) : null),
   );
   /** Answers the sandbox's `javac` with the fast one, once Java is here: javac/bridge.ts. */
   private readonly javac = new JavacBridge(
@@ -337,6 +336,7 @@ export class App {
       room: () => this.peers?.seen,
       shellBusy: () => this.anyBusy,
       terminals: () => this.sessions.map((t) => ({ number: t.number, busy: t.busy, front: t === this.session })),
+      preview: () => this.preview?.state(),
       role: () => this.access.role,
       local: () => [...this.local].sort(),
       // For fetch-packages.mjs, which records each by using it once.
@@ -1603,24 +1603,46 @@ export class App {
   }
 
   /**
-   * Offer a preview when something in the folder starts listening.
+   * Offer a preview when something in the folder starts listening, on
+   * whatever port: each one is a server the preview can show.
    *
    * The button appears rather than the preview opening itself: a server
    * starting is not a request to be shown it, and a page that rearranges
    * itself under someone mid-command is worse than one that waits to be asked.
    */
   private watchForServers(rt: Runtime): void {
+    const preview = new PreviewBrowser(
+      this.el.previewPane,
+      PREVIEW_ORIGIN,
+      async () => (await this.ensureRuntime()).sandbox(),
+      (message) => this.previewFailed(message),
+      this.events.signal,
+    );
+    this.preview = preview;
+    const paint = () => {
+      const ports = preview.listening;
+      if (ports.length) this.el.preview.hidden = false;
+      this.el.preview.title = ports.length
+        ? `Show ${ports.map((p) => `localhost:${p}`).join(", ")}`
+        : "Nothing in the folder is listening now";
+    };
     rt.sandbox().ports.onListen((port) => {
-      this.listening = port;
-      this.el.preview.hidden = false;
-      this.el.preview.title = `Open the server on port ${port}`;
+      preview.listen(port);
+      paint();
+    }, {
+      onClose: (port) => {
+        preview.unlisten(port);
+        paint();
+      },
     });
   }
 
-  /** Swap the editor for the running server, and back. */
+  /** Swap the editor for the running servers, and back. */
   private async togglePreview(): Promise<void> {
-    if (!this.el.previewPane.hidden) {
-      this.el.previewPane.hidden = true;
+    const preview = this.preview;
+    if (!preview) return;
+    if (preview.isOpen) {
+      preview.close();
       this.el.editor.hidden = false;
       this.ui?.setPreview(false);
       if (!this.ui) this.el.preview.classList.remove("on");
@@ -1628,33 +1650,20 @@ export class App {
       this.editor?.focus();
       return;
     }
-    const port = this.listening;
-    if (port === null) return;
-    try {
-      const rt = await this.ensureRuntime();
-      // One route per port: kept from an earlier server on another port, the
-      // preview showed that one, gone, rather than the one now listening.
-      if (this.served && this.servedPort !== port) {
-        await this.served.close().catch(() => {});
-        this.served = null;
-      }
-      this.served ??= await rt
-        .sandbox()
-        .ports.expose(port, { serviceWorker: PREVIEW_ORIGIN, timeoutMs: 30_000 });
-      this.servedPort = port;
-      const frame = this.served.createIframe();
-      this.el.previewPane.replaceChildren(frame);
-      this.el.previewPane.hidden = false;
-      this.el.editor.hidden = true;
-      this.ui?.setPreview(true);
-      if (!this.ui) this.el.preview.classList.add("on");
-    } catch (e) {
-      // The terminal is where everything else says what went wrong, and a
-      // preview that fails silently is indistinguishable from one that is
-      // slow.
-      this.session?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
-      this.say("error", `preview: ${(e as Error).message}`);
-    }
+    if (!preview.listening.length) return;
+    this.el.editor.hidden = true;
+    this.ui?.setPreview(true);
+    if (!this.ui) this.el.preview.classList.add("on");
+    await preview.open();
+  }
+
+  /**
+   * The terminal is where everything else says what went wrong, and a
+   * preview that fails silently is indistinguishable from one that is slow.
+   */
+  private previewFailed(message: string): void {
+    this.session?.write(`\r\n\x1b[31mpreview: ${message}\x1b[0m\r\n`);
+    this.say("error", `preview: ${message}`);
   }
 
   /**

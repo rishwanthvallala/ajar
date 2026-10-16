@@ -191,21 +191,29 @@ http.server` and nothing more.
 It binds `::1` by default here — `getaddrinfo` with `AI_PASSIVE` answers with
 the IPv6 loopback — and the preview reaches it there. What does not come back
 is a port: a server written with `socket` and without `SO_REUSEADDR` leaves its
-port taken after Ctrl-C ("Address in use") until the sandbox goes. And the
-preview's route is one per port: `App.togglePreview` used to keep the first
-for good, so a server restarted on another port previewed the one that had
-gone.
+port taken after Ctrl-C ("Address in use") until the sandbox goes. With
+`SO_REUSEADDR`, killed at Ctrl-C while blocked in `accept()`, it was listed and
+taken for 17 seconds, then free (measured on 16 October). A server that polls,
+as `serve_forever` does, gets the interrupt as `KeyboardInterrupt`, closes its
+socket and frees the port at once. And the preview's route is one per port:
+`App.togglePreview` used to keep the first for good, so a server restarted on
+another port previewed the one that had gone. Since 16 October every port has
+a route of its own — see [the preview as a small browser](#a-small-browser).
 
 **A malformed response is refused, correctly.** The second error,
 `guest HTTP request failed: invalid internal data`, was a `Content-Length: 11`
 on a ten-byte body — mine, not the SDK's. Worth knowing that the check exists
 and what it says when it fires.
 
-**The route only lives while something holds it.** `activeRoute` is module
-state in the service worker, and an idle worker is killed. Opening the URL in a
-separate tab finds no route and falls through to the origin server, which looks
-like a 404 from the wrong place. The iframe is the intended consumer for
-exactly this reason, which is why the API hands you `createIframe()`.
+**The route only lives while something holds it.** The SDK's worker keeps
+its route in module state, and the browser stops an idle worker. Opening the
+URL in a separate tab found no route and fell through to the origin server,
+which looks like a 404 from the wrong place. The iframe was the intended
+consumer for exactly this reason, which is why the API hands you
+`createIframe()`. The pad's own worker, since 16 October, holds the same
+in-memory state but is kept awake, and it says when it has lost the routes
+anyway. A tab of its own works for as long as the pad is open: see
+[below](#a-small-browser).
 
 ### The second origin, and the header nobody documents
 
@@ -341,15 +349,113 @@ code**. Served from the pad's origin they could script it, read its storage and
 reach its service worker. On their own origin they can do none of that, and the
 SDK refuses to route anywhere else.
 
-The Caddy block serves two files from the vendored SDK the pad already ships,
-so they can never be a different version from the client talking to them, plus
-the one-line control page that loads them, written inline. Nothing is stored
-and nothing is proxied: with no pad open, that origin answers 404.
+The Caddy block serves the SDK's control-page script from the vendored SDK the
+pad already ships, so it is never a different version from the client talking
+to it. It also serves the pad's own worker and relay (`pad/preview/`, copied
+under `vendor/preview/` by the build) and the one-line control page that loads
+both, written inline. Until 16 October the worker was the SDK's too. Nothing is
+stored and nothing is proxied: with no pad open, that origin answers 404.
 
 `preview.rishwanth.dev` is an A record to `13.207.222.42`, added by hand on
 NS1, which holds the zone rather than Route 53. On a new domain, deploy with
 `AJAR_PREVIEW_ORIGIN=` empty until the record exists: otherwise the button
 appears and expose fails.
+
+### A small browser
+
+From 16 October the preview is a small browser:
+- **The bar:** back, forward, reload, which server (every port something
+  listens on), the address in it, and the page in a tab of its own.
+- **Under the page, when asked for:** every request the page made, with what
+  went to the server and what came back, and the page's console.
+
+The server's side of the same requests is in the terminal running it. The
+SDK's own worker could not do this: it holds one route, at the root, and
+nothing else. `pad/preview/sw.js` replaces it. It answers the SDK's messages
+the same way, so `ports.expose()` is unchanged, and it adds the rest:
+
+- **A route per port, and one in front.** The pad loads every page through
+  `/.wasmer/go/<session>/<port>/<path>`. The worker puts that port in front
+  for that session and redirects to the path, so the page sits at the
+  origin's root as it would at `localhost:<port>`. Each document's later
+  requests go back to the server it came from, keyed by client id.
+- **One session per pad tab.** Each tab has its own routes, front server and
+  cookies. A navigation inside a frame does not say which tab it is in, so it
+  goes to the session that last loaded a page or came back into view. Every
+  load the pad makes names its session, so this matters only for a link
+  clicked in a background tab's preview while another tab's preview is in
+  front.
+- **`http://localhost:PORT` is the sandbox's PORT.** Requests the page makes
+  there are answered by the folder's server on that port, never by this
+  computer's. The browser's CORS rule is applied to them as at localhost:
+  without a matching `Access-Control-Allow-Origin` the page cannot read the
+  response, and the request log says why. Preflights are not sent; what the
+  actual response allows is checked.
+- **Cookies.** A response a worker builds cannot set a cookie, so before this
+  a Flask session or a sign-in lasted one request. The worker keeps each
+  session's jar from `Set-Cookie` (path, `Max-Age`, `Expires`) and sends it
+  back as `Cookie`. It follows the browser's rules for when: same-origin, or
+  `credentials: "include"`. The jar is shared across ports, as cookies on
+  localhost are. Scripts do not see these cookies in `document.cookie`.
+- **The headers a server checks.** A worker never sees the `Origin` the
+  browser would add, or the `Referer`. Both are added here, naming
+  `http://localhost:<port>` rather than this origin, so Django's CSRF check
+  sees what it would see in development. `Host` names the port too: the
+  SDK's own is `localhost`, and Flask's `url_for(_external=True)` built
+  addresses on port 80 from it.
+- **Redirects.** A `Location` naming the server's own localhost address
+  becomes a path, so the frame stays in the preview. One naming another
+  server's address goes through `/.wasmer/go/`.
+- **A small script in each HTML page** (`agent` in `sw.js`), first in its
+  `<head>`. It runs only in the pad's frame and posts to the pad's origin,
+  and it reports what only the page knows:
+  - its console and uncaught errors
+  - `history.pushState`, which loads nothing the worker would see
+  - a click on a link to another server's localhost address, which it sends
+    to that server rather than to this computer's
+
+  It is not added to a compressed response, and a page whose CSP allows
+  scripts only by nonce refuses it. Either way the page still works; its
+  console just does not reach the log.
+- **`frame-ancestors 'self'` and the pad's origin** on every page. Another
+  site cannot frame a preview and read what its script posts.
+
+The worker's state is only in memory. A browser stops an idle worker after
+about thirty seconds, so the control page (`pad/preview/relay.js`) sends it
+a message every twenty. That is not always enough: a background tab's timers
+are throttled to once a minute. When the worker was stopped anyway:
+- **A navigation that finds no session** gets a page from the worker that
+  tells the pad, and the pad sets every route up again and reloads.
+- **A request that finds the session but no route** to a port, because a
+  later message started the session again, makes the worker tell the pad
+  `pad-preview:unrouted`. If the pad knows something listens there, it makes
+  that route again and reloads the page, or retries a terminal's request
+  once.
+
+A page reloads for this at most once in ten seconds, per port for the
+second case, and a terminal's request is retried only once, so a worker that
+keeps failing cannot set either spinning. `preview-check.mjs` stops the worker through the
+DevTools protocol and expects both a `curl` and the page to come back. With
+the recovery taken out, that check fails. Each route is
+confirmed (`pad-preview:routed`) before anything loads through it, because the
+pad's message and the frame's first request reach the worker by different
+paths. Without the confirmation, the first load found no route (seen on
+16 October).
+
+A server stopped while on screen keeps its route: the SDK's is to a port, and
+works again once something listens there. The page says the server stopped,
+and reloads when it is back. A server started while the preview was closed
+is what it opens on: the same page again if it is that server restarted,
+otherwise the new server's front page.
+
+What it does not do:
+- **WebSockets.** A service worker never sees one, so `new WebSocket(...)`
+  goes to this computer's localhost, and a dev server's hot reload never
+  connects.
+- **Streamed responses.** The SDK hands over each response whole, so
+  Server-Sent Events show nothing until the stream ends.
+- **Links to localhost that open a new window** (`target=_blank`) go to this
+  computer's localhost, as the script only takes plain clicks.
 
 ### Two things this found that were not the subject
 
@@ -414,4 +520,35 @@ Not through it: `http.client` used directly, `httpx`, `aiohttp`, node's `fetch`,
 `git`, anything that opens its own socket. Those still reach PyPI alone. And a
 response comes whole, not as a stream: a download is held in the page until it
 is complete, then written.
+
+### localhost is the folder's servers
+
+From 16 October, a request to `localhost`, `127.0.0.1`, `0.0.0.0` or `[::1]`
+goes to the folder's own server on that port, never to the visitor's
+computer. That is `curl localhost:5000` in one terminal at the Flask app
+running in another, or a test calling the API with `requests`. The sandbox
+cannot do this by itself: in `http` mode a loopback `connect` fails with
+`[Errno 58] Not supported`. And the browser's own localhost is the wrong
+machine. So `fetch-bridge.ts` hands these requests to the preview
+(`PreviewBrowser.fetchLocal`), whose worker sends them down the same route a
+page's requests take, and the full answer comes back.
+
+They are a program's requests, not a page's, so the table above does not
+apply:
+- plain http, from the https page
+- no CORS, and every header the server sent, Set-Cookie among them
+- no cookies but the ones the command sends, and no `Origin`
+- redirects followed only when asked: `curl -L` follows them, and urllib and
+  `requests` follow them themselves, as they would anywhere. Without `-L`,
+  `curl -i` shows a sign-in's 303 and its cookie.
+- with no scheme, `curl localhost:5000` is `http://`, as curl assumes
+
+The pad's own address is still refused first. A pad served from `127.0.0.1`,
+as the checks are, never asks itself.
+
+Only a port something in the folder listens on is reached. Any other is
+`curl: (7) … nothing in the folder is listening there`. `user-check.mjs`'s
+stand-in for httpbin is `bin.test` for this reason. The browser is told it
+is 127.0.0.1 (`--host-resolver-rules`), since 127.0.0.1 itself now means the
+sandbox.
 

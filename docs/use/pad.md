@@ -154,8 +154,26 @@ less, top. `python3` on its own gives you its prompt, and `nano` is below.
 ### Running a server
 
 Start something that listens and a **Preview** button appears in the header.
-Press it and the editor is replaced by whatever your server is serving; press
-it again to go back.
+Press it and the editor is replaced by a small browser showing your server;
+press it again to go back. Above the page:
+- back, forward and reload
+- which server, if more than one is running: each port something listens on
+- the address: type a path, `/about`, or another server's,
+  `localhost:5000/api`
+- ↗, the page in a tab of its own, for as long as the pad is open
+
+**Requests**, under the page, lists every request it made: method, path,
+status and time. Click one for what was sent and what came back. **Console**
+shows what the page logged, and its errors. Your server's side of the same
+requests is in the terminal running it.
+
+It behaves as a browser at localhost would:
+- a sign-in's cookie lasts
+- a page on one port can call an API on another by its address
+  (`fetch("http://localhost:5000/api")`), with the same CORS rules as at
+  localhost
+- a server you stop says so over its page; start it again and the page
+  reloads
 
 ```sh
 python3 -m http.server    # the folder, as a website
@@ -167,9 +185,14 @@ run`. Debug mode works too, with its debugger, but without the reloader that
 restarts the server when a file changes — it needs a thread, so after a change,
 press Ctrl-C and run it again. The server says so when it starts.
 
+From another terminal, `curl localhost:5000`, or Python's `urllib` or
+`requests` at `http://localhost:5000`, reaches the same server. localhost in a
+pad is the folder's servers, not your computer.
+
 Only you can see it. The address is not a public link — it works in your
 browser and nowhere else, so it is for looking at what you just started, not
-for showing somebody.
+for showing somebody. WebSockets do not reach it, so a dev server's live
+reload does not either: reload by hand.
 
 A server answers one request at a time here, since nothing can start a thread;
 `http.server` does that by itself in the pad. One that you write with `socket`

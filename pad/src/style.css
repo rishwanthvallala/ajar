@@ -109,9 +109,57 @@ body { background: var(--bg); color: var(--ink); }
 
 .pad-shell #viewer { position: relative; display: block; overflow: hidden; }
 .pad-shell .editor, .pad-shell .preview { position: absolute; inset: 0; min-width: 0; min-height: 0; }
-.pad-shell .preview { display: flex; background: var(--surface); }
+.pad-shell .preview { display: flex; flex-direction: column; background: var(--surface); }
 .pad-shell .preview[hidden] { display: none; }
-.pad-shell .preview iframe { flex: 1; border: 0; width: 100%; height: 100%; }
+/* The preview is a small browser: its bar, the page, and under it the
+   requests or the console when asked for. */
+.pad-shell .preview-browser-bar { display: flex; align-items: center; gap: 0.25rem; flex: none; min-width: 0; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--rule); background: var(--surface); }
+.pad-shell .preview-nav { flex: none; width: 1.75rem; height: 1.75rem; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--ink-2); font: 0.95rem/1 system-ui, sans-serif; cursor: pointer; }
+.pad-shell .preview-nav:hover:not(:disabled) { border-color: var(--rule); color: var(--ink); background: var(--surface-2); }
+.pad-shell .preview-nav:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
+.pad-shell .preview-port { flex: none; max-width: 15rem; height: 1.75rem; font: 0.75rem var(--mono); padding: 0 0.35rem; border: 1px solid var(--rule); border-radius: 5px 0 0 5px; background: var(--surface-2); color: var(--ink); }
+.pad-shell .preview-url { flex: 1; min-width: 3rem; height: 1.75rem; margin-left: -0.25rem; font: 0.75rem var(--mono); padding: 0 0.55rem; border: 1px solid var(--rule); border-left: 0; border-radius: 0 5px 5px 0; background: var(--surface-2); color: var(--ink); outline: 0; }
+.pad-shell .preview-url:focus { border-color: var(--accent); border-left: 1px solid var(--accent); background: var(--surface); }
+.pad-shell .preview-panel-toggle { flex: none; height: 1.75rem; font: inherit; font-size: 0.75rem; padding: 0 0.55rem; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.pad-shell .preview-panel-toggle:hover, .pad-shell .preview-panel-toggle[aria-pressed="true"] { border-color: var(--rule); color: var(--ink); background: var(--surface-2); }
+.pad-shell .preview-panel-toggle b { font-weight: 600; color: var(--hard); }
+.pad-shell .preview-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+.pad-shell .preview-stage iframe { flex: 1; min-height: 0; border: 0; width: 100%; height: auto; }
+.pad-shell .preview-notice { flex: none; order: -1; padding: 0.5rem 0.75rem; font-size: 0.8rem; color: var(--ink); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, var(--rule)); }
+.pad-shell .preview-notice[hidden] { display: none; }
+.pad-shell .preview-log { flex: none; height: 38%; min-height: 7rem; display: flex; flex-direction: column; border-top: 1px solid var(--rule); background: var(--surface); }
+.pad-shell .preview-log[hidden] { display: none; }
+.pad-shell .preview-log-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem 0.25rem 0.75rem; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); border-bottom: 1px solid var(--rule); }
+.pad-shell .preview-log-title { flex: 1; }
+.pad-shell .preview-log-clear, .pad-shell .preview-log-close { font: inherit; font-weight: 400; font-size: 0.75rem; padding: 0.1rem 0.4rem; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.pad-shell .preview-log-close { font-size: 1rem; line-height: 1; }
+.pad-shell .preview-log-clear:hover, .pad-shell .preview-log-close:hover { color: var(--ink); background: var(--surface-2); }
+.pad-shell .preview-log-rows { flex: 1; overflow: auto; font: 0.72rem/1.65 var(--mono); }
+.pad-shell .preview-log-empty { margin: 0; padding: 0.75rem; font: 0.8rem/1.5 system-ui, sans-serif; color: var(--muted); }
+.pad-shell .preview-log-row { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr) 3rem 4.2rem 4.2rem 4.6rem; gap: 0.6rem; width: 100%; padding: 0 0.75rem; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent); background: transparent; color: var(--ink-2); font: inherit; text-align: left; cursor: pointer; }
+.pad-shell .preview-log-row:hover, .pad-shell .preview-log-row.open { background: var(--surface-2); }
+.pad-shell .preview-log-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pad-shell .preview-log-row .s { font-weight: 600; }
+.pad-shell .preview-log-row.ok .s { color: var(--ok); }
+.pad-shell .preview-log-row.move .s { color: var(--muted); }
+.pad-shell .preview-log-row.warn .s { color: var(--warn); }
+.pad-shell .preview-log-row.bad .s, .pad-shell .preview-log-row.bad .p { color: var(--hard); }
+.pad-shell .preview-log-row .k, .pad-shell .preview-log-row .t, .pad-shell .preview-log-row .z { color: var(--muted); text-align: right; }
+.pad-shell .preview-log-detail { padding: 0.25rem 0.75rem 0.6rem 1.5rem; border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); }
+.pad-shell .preview-log-detail h4 { margin: 0.5rem 0 0.15rem; font: 600 0.7rem/1.4 system-ui, sans-serif; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.pad-shell .preview-log-detail pre { margin: 0; max-height: 16rem; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink); font: inherit; }
+.pad-shell .preview-console-line { padding: 0 0.75rem; white-space: pre-wrap; word-break: break-word; color: var(--ink); border-bottom: 1px solid color-mix(in srgb, var(--rule) 40%, transparent); }
+.pad-shell .preview-console-line.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.pad-shell .preview-console-line.error { color: var(--hard); background: color-mix(in srgb, var(--hard) 7%, transparent); }
+.pad-shell .preview-console-line.debug { color: var(--muted); }
+.pad-shell .preview-console-line.page { color: var(--muted); font-size: 0.68rem; padding-top: 0.2rem; border-bottom: 0; }
+@media (max-width: 40rem) {
+  .pad-shell .preview-browser-bar { flex-wrap: wrap; }
+  .pad-shell .preview-port { max-width: 8.5rem; }
+  .pad-shell .preview-url { flex-basis: 6rem; }
+  .pad-shell .preview-log-row { grid-template-columns: 2.8rem minmax(0, 1fr) 2.8rem 3.8rem; }
+  .pad-shell .preview-log-row .k, .pad-shell .preview-log-row .z { display: none; }
+}
 /* Terminals: the one in front, and with Split the next beside it — below it
    on a phone. The rest keep their screens, hidden. */
 .pad-shell .terms { position: relative; overflow: hidden; display: flex; }

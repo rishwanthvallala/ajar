@@ -641,8 +641,14 @@ script, and no more:
 - **CORS stands.** A site that does not let web pages read it is not read, so
   nothing behind somebody's login, and nothing on their network that does not
   answer pages, comes back. No referrer is sent.
-- **https only** from the deployed page; plain http, including `localhost`,
-  is mixed content there and refused.
+- **https only** from the deployed page; plain http is mixed content there
+  and refused.
+- **localhost is the sandbox.** Since 16 October `localhost`, `127.0.0.1`,
+  `0.0.0.0` and `[::1]` are never fetched at all. They go through the preview's
+  worker to the folder's own servers, in the same visitor's sandbox
+  ([networking.md](networking.md#localhost-is-the-folders-servers)). So a
+  program cannot reach the visitor's machine through its loopback, which on a
+  page served over plain http, as in development, it could have.
 
 The cost is in the CSP. `connect-src` named the hosts the page itself talks
 to; now it is `https:`, because the hosts are whatever a program asks for. A

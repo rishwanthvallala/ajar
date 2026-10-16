@@ -323,19 +323,32 @@ preview.rishwanth.dev {
 		Content-Security-Policy "default-src 'self'; frame-ancestors https://code.rishwanth.dev; base-uri 'none'"
 	}
 
-	# The control document. Inline rather than a file, because it is one line
-	# and a file would be a third thing to keep in step with the SDK.
+	# The control document: the SDK's script, which connects the pad to the
+	# worker, and the pad's, which carries what the preview reports. Inline
+	# rather than a file, because it is one line.
 	handle /.wasmer/host.html {
 		header Content-Type "text/html; charset=utf-8"
-		respond `<!doctype html><meta charset="utf-8"><script type="module" src="/wasmer-host.js"></script>` 200
+		header Cache-Control "no-cache"
+		respond `<!doctype html><meta charset="utf-8"><script type="module" src="/wasmer-host.js"></script><script type="module" src="/pad-preview.js"></script>` 200
 	}
 
-	# Both taken from the vendored SDK the pad already ships, so they can
-	# never be a different version from the client talking to them.
+	# The SDK's half, from the vendored SDK the pad already ships, so it is
+	# never a different version from the client talking to it.
 	handle /wasmer-host.js {
 		header Content-Type "text/javascript; charset=utf-8"
+		header Cache-Control "no-cache"
 		root * /srv/ajar/pad/vendor/wasmer/dist
 		rewrite * /service-worker-host.js
+		file_server
+	}
+	# The pad's own: pad/preview/ in the repository, copied by the build.
+	# The worker replaces the SDK's, which routes one server and keeps no
+	# cookies; it answers the SDK's messages the same way.
+	handle /pad-preview.js {
+		header Content-Type "text/javascript; charset=utf-8"
+		header Cache-Control "no-cache"
+		root * /srv/ajar/pad/vendor/preview
+		rewrite * /relay.js
 		file_server
 	}
 	handle /wasmer-service-worker.js {
@@ -343,8 +356,9 @@ preview.rishwanth.dev {
 		# Without this the worker may only control its own directory, and
 		# it needs the root to answer for whatever the guest serves.
 		header Service-Worker-Allowed "/"
-		root * /srv/ajar/pad/vendor/wasmer/dist
-		rewrite * /service-worker.js
+		header Cache-Control "no-cache"
+		root * /srv/ajar/pad/vendor/preview
+		rewrite * /sw.js
 		file_server
 	}
 

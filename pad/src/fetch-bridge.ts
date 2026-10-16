@@ -13,6 +13,13 @@
  * an https page. Never to this site itself, or the preview's: those are ours,
  * and a program somebody shared has no business asking them anything in the
  * name of whoever ran it.
+ *
+ * Except localhost, which here is the folder's own servers: `curl
+ * localhost:5000` in one terminal, at the Flask app running in another. The
+ * browser's own localhost is the visitor's computer, which a pad never
+ * reaches. Those go through the preview's worker into the sandbox (`LocalFetch`,
+ * preview.ts), as a program's request rather than a page's: no CORS, no
+ * cookies but its own.
  */
 import type { Sandbox } from "@wasmer/sdk";
 
@@ -31,6 +38,11 @@ export interface FetchRequest {
   body: Uint8Array | null;
   /** Seconds, or none. */
   timeout: number | null;
+  /**
+   * Whether a redirect is followed. The browser follows every one from a web
+   * site regardless; to localhost, only if this says so.
+   */
+  follow: boolean;
 }
 
 /** What it is told: the first line of `<id>.ans`, the body after it. */
@@ -41,11 +53,17 @@ export type FetchAnswer =
 
 const NEWLINE = 10;
 
+/** Names that mean this machine, which in a pad is the sandbox. */
+export const LOCAL_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
+
+/** A request to one of the folder's servers, and its answer: preview.ts. */
+export type LocalFetch = (request: FetchRequest, url: URL) => Promise<{ answer: FetchAnswer; body?: Uint8Array }>;
+
 export function decodeRequest(bytes: Uint8Array): FetchRequest {
   const cut = bytes.indexOf(NEWLINE);
   if (cut < 0) throw new Error("a request with no header line");
   const head = JSON.parse(new TextDecoder().decode(bytes.subarray(0, cut))) as {
-    url: string; method?: string; headers?: [string, string][]; body?: boolean; timeout?: number | null;
+    url: string; method?: string; headers?: [string, string][]; body?: boolean; timeout?: number | null; follow?: boolean;
   };
   return {
     url: head.url,
@@ -53,6 +71,7 @@ export function decodeRequest(bytes: Uint8Array): FetchRequest {
     headers: head.headers ?? [],
     body: head.body ? bytes.slice(cut + 1) : null,
     timeout: typeof head.timeout === "number" && head.timeout > 0 ? head.timeout : null,
+    follow: head.follow !== false,
   };
 }
 
@@ -126,7 +145,19 @@ export function vet(raw: string, page: URL, ours: readonly string[]): { url: URL
 }
 
 /** A request made with fetch, the answer as the sandbox reads it. */
-export async function answer(request: FetchRequest, page: URL, ours: readonly string[]): Promise<Uint8Array> {
+export async function answer(request: FetchRequest, page: URL, ours: readonly string[], local?: LocalFetch | null): Promise<Uint8Array> {
+  let url: URL | null = null;
+  try {
+    url = new URL(request.url);
+  } catch {
+    // `vet` says so.
+  }
+  // The page's own address can be a localhost one, as in the checks: refused as ours, below.
+  if (url && LOCAL_HOSTS.has(url.hostname) && url.origin !== page.origin && !ours.includes(url.origin)) {
+    if (!local) return encodeAnswer({ ok: false, code: 7, error: `Failed to connect to ${url.host}: localhost is the folder's own servers, and this build of the pad has no preview to reach them through` });
+    const { answer: answered, body } = await local(request, url);
+    return encodeAnswer(answered, body);
+  }
   const vetted = vet(request.url, page, ours);
   if ("error" in vetted) return encodeAnswer({ ok: false, code: vetted.code, error: vetted.error });
   const method = request.method.toUpperCase();
@@ -209,10 +240,14 @@ export class FetchBridge {
   private looking = false;
   private serving = new Set<string>();
 
-  /** `ours`: origins besides this page's that a pad does not fetch — the preview's. */
+  /**
+   * `ours`: origins besides this page's that a pad does not fetch — the
+   * preview's. `local`: the way to the folder's own servers, once there is one.
+   */
   constructor(
     private readonly box: () => Promise<Sandbox | null>,
     private readonly ours: readonly string[] = [],
+    private readonly local: () => LocalFetch | null = () => null,
   ) {}
 
   /** A command started or finished: look for requests only while one runs. */
@@ -257,7 +292,7 @@ export class FetchBridge {
   private async serve(box: Sandbox, id: string): Promise<void> {
     let reply: Uint8Array;
     try {
-      reply = await answer(decodeRequest(await box.fs.readFile(`${DIR}/${id}.req`)), new URL(location.href), this.ours);
+      reply = await answer(decodeRequest(await box.fs.readFile(`${DIR}/${id}.req`)), new URL(location.href), this.ours, this.local());
     } catch (e) {
       reply = encodeAnswer({ ok: false, code: 26, error: `the request could not be read: ${(e as Error).message}` });
     }

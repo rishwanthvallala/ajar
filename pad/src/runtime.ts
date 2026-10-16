@@ -219,9 +219,15 @@ export class Runtime {
    */
   private versions: Map<string, string[]> | null = null;
 
-  /** A command is starting: keep what is written to each file until it is read back. */
+  /**
+   * A command is starting: keep what is written to each file until it is read back.
+   *
+   * Kept going if already under way. With two terminals, a command started in
+   * one while the other's runs would otherwise throw away the versions the
+   * first may have read, and its change would be measured from the wrong one.
+   */
   recordVersions(): void {
-    this.versions = new Map([...this.written].map(([path, text]) => [path, [text]]));
+    this.versions ??= new Map([...this.written].map(([path, text]) => [path, [text]]));
   }
 
   /** What was kept since `recordVersions`, and keep nothing more. */
