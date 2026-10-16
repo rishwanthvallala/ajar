@@ -106,6 +106,14 @@ From the 22-finding review merged as PR #3 — the findings are in
 [code-review-2026-09-16.md](code-review-2026-09-16.md) and what was done about
 each in [code-review-fixes-2026-09-16.md](code-review-fixes-2026-09-16.md).
 
+**`browser-check.mjs` hangs on a pipe now and then, unexplained.** It hung
+on `cat poem.txt | grep two` inside the sandbox, so the page never finished.
+That happened twice on CI on 16 October, the second time on 52113b2, which
+changed nothing the check runs; reruns passed. Locally it has not happened.
+Nobody has caught it on screen in the pad, but a pipe that never ends is what
+a person would meet. Its next run should keep the stuck processes' state,
+which the check does not record yet.
+
 **The guest-counting limits test lost its shell four times, unexplained.**
 `a_guests_own_processes_do_not_raise_their_ceiling`, on 25 September, in WSL:
 the stand-in guest's shell was missing from `/proc` for the whole five seconds
