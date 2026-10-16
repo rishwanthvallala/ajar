@@ -1,7 +1,8 @@
 # The gate, and how checks lie
 
 ```sh
-./scripts/check.sh      # everything, in order
+./scripts/check.sh              # everything, in order
+./scripts/check.sh rust         # or a part: rust, web, ajar, pad — `ajar` and `pad` after `web`
 ```
 
 `AJAR_SKIP_UI=1` skips the browser suite. It is the only skip, it is opt-in,
@@ -10,14 +11,26 @@ check ran. A missing browser is otherwise **fatal everywhere** — a gate that
 quietly downgrades itself on the machine where someone is about to commit is
 worse than no gate, because it still reports success.
 
-CI runs the same script on every push to `main` and every pull request, on
-`ubuntu-latest` and `macos-latest` (`.github/workflows/ci.yml`). It installs
-Playwright's Chromium first, so the UI suites cannot skip there, and gives the
-Mac runner a `~/.viminfo`, as a real Mac has — without one, vim failing to
-quit inside the sandbox stayed hidden. On a failure the end of the log becomes
-an annotation, which anyone can read through the API where the log needs a
-sign-in. Ubuntu then runs `scripts/linux-sandbox.sh`, and builds Caddy for
-both architectures and checks its rate limits (`deploy/caddy/check.sh`).
+CI runs the same script on every push to `main` and every pull request that
+touches more than `docs/` and Markdown (`.github/workflows/ci.yml`), in parts
+side by side since 16 October, so a run is as long as its longest part rather
+than all of them end to end — about half the thirteen minutes it was:
+
+| Job | Runs | On |
+|---|---|---|
+| `rust` | `check.sh rust` | Ubuntu and macOS |
+| `ajar` | `check.sh web ajar`, then on Ubuntu `scripts/linux-sandbox.sh` and Caddy's rate limits | Ubuntu and macOS |
+| `pad` | `check.sh web pad` | Ubuntu |
+| `first-run` | below | Ubuntu and macOS |
+| `deploy` | after all of them, on `main` — see [operations.md](operations.md#deploying-from-ci) | arm64 Ubuntu |
+
+The pad's checks run on Linux alone: the pad runs in a browser and its server
+on Linux, and on the Mac they were a third of that job. Each job installs
+Playwright's Chromium first, cached, so the UI suites cannot skip there, and
+the Mac gets a `~/.viminfo`, as a real Mac has — without one, vim failing to
+quit inside the sandbox stayed hidden. On a failure the end of the output
+becomes an annotation (`scripts/ci-annotate.sh`), which anyone can read on the
+run's page or through the API, where the log needs a sign-in.
 
 A second job, `first-run`, is someone else's first install, on both
 runners: the agent built as it is released, then `scripts/check-first-run.sh`

@@ -303,6 +303,11 @@ chown -R ajar:ajar /srv/ajar
 chmod -R a+rX /srv/ajar/pad
 systemctl restart ajar-relay
 SWAP
+# Which commit is running, for a deploy from CI to measure itself against
+# (deploy/from-ci.sh). -dirty when the tree had changes git does not have.
+commit=$(git rev-parse HEAD)
+[ -z "$(git status --porcelain --untracked-files=no)" ] || commit="$commit-dirty"
+ssh "$HOST" "echo $commit | $SUDO tee /srv/ajar/deployed >/dev/null"
 
 # --------------------------------------------------------------- web config
 #

@@ -21,7 +21,42 @@ waiting to run. Nothing in the script checks either: an uncommitted edit ships
 as if it had been tested.
 
 Cross-compiles the relay for `aarch64-unknown-linux-gnu`, builds both browser
-clients, ships everything, and restarts the service. Idempotent.
+clients, ships everything, and restarts the service. Idempotent. It ends by
+writing the commit it shipped to `/srv/ajar/deployed` — `-dirty` from a tree
+with changes git does not have — which a deploy from CI measures itself
+against.
+
+### Deploying from CI
+
+Since 16 October a run of `.github/workflows/ci.yml` that passes on `main`
+deploys, with `deploy.sh`, from a GitHub runner: the same script as from a
+laptop, so nothing differs in what ships, and nothing stops it when a lid
+shuts. `deploy/from-ci.sh` is what the job runs. GitHub keeps no secret: the
+job trades its own token for a role that can open SSH to the relay over SSM
+and read the CI key from Parameter Store, and nothing more, and it checks the
+relay's host key against `deploy/known_hosts`.
+
+The pad's runtime packages are the one thing a runner cannot make — 1 GB, not
+in git, and partly the Java build's (`pad/scripts/build-java.mjs`, which takes
+containers and most of an hour). So the job takes them from the relay, which
+serves exactly the ones deployed, cached between runs. That is right only while
+nothing has changed what they would be, so it deploys only when:
+
+- the relay names the commit it runs, a clean one this commit descends from;
+- nothing that makes the packages has changed since — the Java build, the
+  trim, `fetch-packages.mjs`, the service worker's pin;
+- and every package the code pins, at its version, is among them.
+
+Otherwise it deploys nothing and says why, as a warning on a green run:
+deploy that one from a machine that builds the packages, with `deploy.sh`.
+
+Set up once, by hand, with `deploy/ci-aws-setup.sh`, which says what it makes:
+the GitHub identity provider and the role in AWS, a key for CI alone in
+Parameter Store and in the relay's `authorized_keys`, and the two files to
+commit, `deploy/ci-deploy.pub` and `deploy/known_hosts`. Until they are on
+`main`, each run says CI deploys are not set up. Then one deploy from a laptop,
+which records the commit the relay runs. `--rotate` makes a new key; the
+script's header says how to undo all of it.
 
 `deploy/` holds a Caddyfile (TLS, routing, the headers the pad needs and the
 per-address rate limits), two hardened systemd units — `ajar-relay.service` and

@@ -1,12 +1,29 @@
 name: ci
 
+# Everything check.sh does, in parts side by side rather than one after
+# another: a run is as long as its longest part, about half what the whole of
+# check.sh took on one machine. And a run that passes on main deploys
+# (`deploy`, at the end).
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**.md"]
+  # Run again by hand — a flaky check, or a deploy to retry — from the
+  # Actions tab.
+  workflow_dispatch:
+
+# A pull request's older runs are superseded; main's are not, since each one
+# may end in a deploy.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  # fmt, clippy -D warnings, cargo test. The agent's sandbox differs by OS, so
+  # both.
+  rust:
     strategy:
       fail-fast: false
       matrix:
@@ -18,6 +35,20 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - run: scripts/ci-annotate.sh "rust on ${{ matrix.os }}" ./scripts/check.sh rust
+
+  # The agent, the relay and the guest's page: every smoke suite and their UI
+  # checks, on both, since the agent is what runs on people's machines.
+  ajar:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -26,6 +57,10 @@ jobs:
       - run: npm ci --no-audit --no-fund
       # The UI suite drives a real browser. Without this it would skip, and
       # a check that skips in the one place it has to run is not a check.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'macOS' && '~/Library/Caches/ms-playwright' || '~/.cache/ms-playwright' }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install --with-deps chromium
         working-directory: web
       # A real Mac has a vim history; a fresh runner does not, and that is the
@@ -38,28 +73,7 @@ jobs:
       - name: Give the runner a vim history, as a real Mac has
         if: matrix.os == 'macos-latest'
         run: printf '# seeded by CI\n' > ~/.viminfo
-
-      # fmt, clippy -D warnings, cargo test, tsc, the UI suite, every smoke suite.
-      #
-      # On failure the end of the output also becomes an annotation. A job's
-      # log can only be read signed in, and its annotations can be read by
-      # anyone through the API — which is the difference between a macOS-only
-      # failure being diagnosable from a terminal or not.
-      - name: Run ./scripts/check.sh
-        run: |
-          set -o pipefail
-          ./scripts/check.sh 2>&1 | tee check.log || {
-            status=$?
-            # An annotation keeps about its first 4 KB, so this is the *end*
-            # of the output — colour codes and the build's size tables out,
-            # the last 3.5 KB of what is left in.
-            sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' check.log \
-              | grep -v -E '^dist/|│ gzip|chunks are larger|dynamic import|manualChunks|chunkSizeWarningLimit|codeSplitting|^\s*$' \
-              | tail -c 3500 | sed 's/%/%25/g' \
-              | awk 'BEGIN { ORS = "%0A" } { gsub(/\r/, "%0D"); print }' > tail.txt
-            echo "::error title=check.sh failed on ${{ matrix.os }}::$(cat tail.txt)"
-            exit $status
-          }
+      - run: scripts/ci-annotate.sh "ajar on ${{ matrix.os }}" ./scripts/check.sh web ajar
 
       # Landlock is a kernel feature, so this is the one check that genuinely
       # needs a Linux runner rather than a borrowed kernel.
@@ -81,6 +95,28 @@ jobs:
           deploy/caddy/build.sh
           GOARCH=amd64 deploy/caddy/build.sh
           deploy/caddy/check.sh
+
+  # The pad's browser checks. The pad runs in a browser and its server on
+  # Linux, so Linux alone: on a Mac they took a third of that job's time.
+  pad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: scripts/ci-annotate.sh "pad" ./scripts/check.sh web pad
 
   # Someone else's first install. The release's Linux binary once ran on three
   # of fifteen distributions, and the installer's PATH advice worked in no new
@@ -107,3 +143,76 @@ jobs:
         run: ./scripts/check-first-run.sh dist
       - name: install.sh on this machine, its PATH advice followed
         run: ./scripts/check-first-run.sh --here dist
+
+  # Whether this repository can deploy yet: deploy/ci-aws-setup.sh, run once
+  # by hand, writes the two files it needs. Until then every run says so,
+  # rather than failing.
+  deploy-ready:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.files.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: files
+        run: |
+          if [ -s deploy/ci-deploy.pub ] && [ -s deploy/known_hosts ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=not deployed::deploying from CI is not set up: run ./deploy/ci-aws-setup.sh, commit the two files it writes, and deploy once with ./deploy/deploy.sh ajar-relay"
+          fi
+
+  # Main, green everywhere: to code.rishwanth.dev, with deploy.sh, as from a
+  # laptop — but from here, so it does not stop when a laptop lid shuts. One
+  # at a time, never cancelled half way through a swap. See deploy/from-ci.sh
+  # and docs/dev/operations.md, "Deploying from CI".
+  deploy:
+    needs: [rust, ajar, pad, first-run, deploy-ready]
+    if: needs.deploy-ready.outputs.ok == '1'
+    # The relay is aarch64: built natively here, not cross-compiled.
+    runs-on: ubuntu-24.04-arm
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # What changed since the commit the relay runs.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: deploy/caddy/go.mod
+          cache-dependency-path: deploy/caddy/go.sum
+      # No AWS keys in GitHub: the job's own token, exchanged for a role that
+      # can do nothing but open ssh to the relay and read the deploy key.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::224399155801:role/ajar-deploy-github
+          aws-region: ap-south-1
+      - name: The AWS CLI and the Session Manager plugin, which ssh rides on
+        run: |
+          aws --version || {
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip -o "$RUNNER_TEMP/awscli.zip"
+            unzip -q "$RUNNER_TEMP/awscli.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install"
+          }
+          curl -fsSL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb -o "$RUNNER_TEMP/ssm.deb"
+          sudo dpkg -i "$RUNNER_TEMP/ssm.deb" >/dev/null
+      # The pad's 1 GB of packages, kept between runs and topped up from the
+      # relay (from-ci.sh), rather than fetched whole every time.
+      - uses: actions/cache@v4
+        with:
+          path: pad/public/packages
+          key: pad-packages-${{ hashFiles('pad/src/runtime.ts', 'pad/src/toolchains.ts', 'pad/public/sw.js', 'pad/scripts/fetch-packages.mjs', 'pad/scripts/build-java.mjs') }}
+          restore-keys: pad-packages-
+      - run: scripts/ci-annotate.sh "deploy" deploy/from-ci.sh
