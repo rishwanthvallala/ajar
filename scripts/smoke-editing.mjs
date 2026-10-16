@@ -181,6 +181,10 @@ async function main() {
     "the terminal's write to reach the editors",
     10_000,
   );
+  // Each editor on its own time: compared the moment the first had it, the
+  // second was a few milliseconds behind on a loaded macOS runner and this
+  // failed with the product working (16 October).
+  await gb.waitUntil(() => b.text === a.text, "the terminal's write to reach the second editor too", 5000).catch(() => {});
   if (b.text !== a.text) {
     fail(`only one editor saw the external change:\n    ana: ${JSON.stringify(a.text)}\n    bo:  ${JSON.stringify(b.text)}`);
   } else {
