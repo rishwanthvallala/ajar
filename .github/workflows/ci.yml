@@ -11,7 +11,8 @@ on:
   pull_request:
     paths-ignore: ["docs/**", "**.md"]
   # Run again by hand — a flaky check, or a deploy to retry — from the
-  # Actions tab.
+  # Actions tab. Not with an empty commit: with paths-ignore, a push that
+  # changes no file starts no run at all (c24d315, 16 October).
   workflow_dispatch:
 
 # A pull request's older runs are superseded; main's are not, since each one
