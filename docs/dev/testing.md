@@ -20,7 +20,8 @@ than all of them end to end — about half the thirteen minutes it was:
 |---|---|---|
 | `rust` | `check.sh rust` | Ubuntu and macOS |
 | `ajar` | `check.sh web ajar`, then on Ubuntu `scripts/linux-sandbox.sh` and Caddy's rate limits | Ubuntu and macOS |
-| `pad` | `check.sh web pad` | Ubuntu |
+| `pad` | `check.sh web pad`: browser, terminal and user checks | Ubuntu |
+| `pad-more` | a build, then `check.sh pad-more`: accounts, two places, the preview — apart from `pad` since 16 October, when one job of them in a row was the longest | Ubuntu |
 | `first-run` | below | Ubuntu and macOS |
 | `deploy` | after all of them, on `main` — see [operations.md](operations.md#deploying-from-ci) | arm64 Ubuntu |
 

@@ -119,6 +119,31 @@ jobs:
         working-directory: web
       - run: scripts/ci-annotate.sh "pad" ./scripts/check.sh web pad
 
+  # The pad's other browser checks — accounts, two places in one pad, the
+  # preview — beside the ones above rather than after them: one job had grown
+  # to nine minutes of them in a row. The frontend is built here, as `web`
+  # builds it, without the rest of `web`'s checks, which the job above runs.
+  pad-more:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run build
+      - run: scripts/ci-annotate.sh "pad-more" ./scripts/check.sh pad-more
+
   # Someone else's first install. The release's Linux binary once ran on three
   # of fifteen distributions, and the installer's PATH advice worked in no new
   # terminal on a Mac; every other check here runs on the machine that built
@@ -168,7 +193,7 @@ jobs:
   # at a time, never cancelled half way through a swap. See deploy/from-ci.sh
   # and docs/dev/operations.md, "Deploying from CI".
   deploy:
-    needs: [rust, ajar, pad, first-run, deploy-ready]
+    needs: [rust, ajar, pad, pad-more, first-run, deploy-ready]
     if: needs.deploy-ready.outputs.ok == '1'
     # The relay is aarch64: built natively here, not cross-compiled.
     runs-on: ubuntu-24.04-arm

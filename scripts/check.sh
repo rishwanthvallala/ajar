@@ -141,6 +141,19 @@ part_pad() {
     node pad/scripts/browser-check.mjs
     node pad/scripts/terminal-check.mjs
     node pad/scripts/user-check.mjs
+  fi
+}
+
+# The rest of the pad's browser checks, apart so CI can run them beside the
+# ones above: together they were the longest job by far. Needs a built pad,
+# as `web` leaves it, and builds the relay itself.
+part_pad-more() {
+  echo "── build for the pad's checks: the relay ─────────────"
+  cargo build --quiet -p ajar-relay
+  if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+    echo "── ui: accounts, two places, the preview ─── skipped (AJAR_SKIP_UI=1) ──"
+    skipped="the UI suite"
+  else
     echo "── ui: accounts — owner, editor and viewer ───────────"
     node pad/scripts/accounts-check.mjs
     echo "── ui: two places in one pad ─────────────────────────"
@@ -153,11 +166,11 @@ part_pad() {
   fi
 }
 
-[ $# -gt 0 ] || set -- rust web ajar pad
+[ $# -gt 0 ] || set -- rust web ajar pad pad-more
 for part in "$@"; do
   case "$part" in
-    rust | web | ajar | pad) "part_$part" ;;
-    *) echo "check.sh: no part called $part — rust, web, ajar or pad" >&2; exit 2 ;;
+    rust | web | ajar | pad | pad-more) "part_$part" ;;
+    *) echo "check.sh: no part called $part — rust, web, ajar, pad or pad-more" >&2; exit 2 ;;
   esac
 done
 
