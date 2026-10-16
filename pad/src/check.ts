@@ -625,6 +625,20 @@ async function main() {
     else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
   }
 
+  // Werkzeug's reloader watches on a thread, which cannot start: Flask's
+  // debug mode runs without it, and says so. A stand-in for werkzeug.serving,
+  // where the real one comes from pip.
+  await rt.write("fake/werkzeug/__init__.py", "");
+  await rt.write("fake/werkzeug/serving.py", "def run_simple(hostname, port, application, use_reloader=False, **kw):\n    print('RELOADER', use_reloader, kw.get('use_debugger'))\n");
+  printed = "";
+  await sh.run(`PYTHONPATH=fake:$PYTHONPATH python -c "from werkzeug.serving import run_simple; run_simple('127.0.0.1', 5000, None, use_reloader=True, use_debugger=True); run_simple('127.0.0.1', 5000, None, True)"`);
+  is((printed.match(/RELOADER False True/g) ?? []).length === 1 && /RELOADER False None/.test(printed), true, "Flask's debug mode runs without the reloader, given as a keyword or in its place");
+  is(/Reloader: off in the pad/.test(printed), true, "and says why, once a run");
+  printed = "";
+  await sh.run("alias flask; echo NOCACHE=$PIP_NO_CACHE_DIR");
+  is(/python -m flask/.test(printed) && /NOCACHE=1/.test(printed), true, "`flask` is python -m flask, which works, and pip keeps no cache");
+  await sh.run("rm -rf fake");
+
   // find is ours now. The shipped binary did the work and then exited 1,
   // unable to restore its working directory under WASIX, and `-exec` produced
   // nothing at all because it cannot spawn — both invisible until something is
@@ -749,6 +763,15 @@ async function main() {
   const noise = await diff(rt, known, bins);
   is(noise.changes.length, 0, "generated files are not published");
   is(ignored("a/__pycache__/m.pyc"), true, "the ignore rule matches nested paths");
+  // A `~` that was never expanded: pip kept its cache there, in the folder.
+  await rt.write("~/.cache/pip/http-v2/a/b.body", "cached download");
+  const home = await diff(rt, known, bins);
+  is(home.changes.length, 0, "what a tool keeps in a home directory, written as `~/`, is not published");
+  is(ignored("notes/~draft.txt") || ignored("a/~/b"), false, "only a `~` folder at the top is, not a name with a ~ in it");
+  const stored = new Map(known);
+  stored.set("~/.cache/pip/http-v2/old.body", "stored before the rule");
+  const cleared = await diff(rt, stored, bins);
+  is(cleared.changes.some((c) => c.path === "~/.cache/pip/http-v2/old.body" && c.content === null), true, "and what a pad stored there before is taken out at the next command");
 
   // ---- languages on first use ----
   // What a line runs decides what is fetched before it does.

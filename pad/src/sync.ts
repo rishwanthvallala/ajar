@@ -110,6 +110,12 @@ const IGNORED = [
   // Our own shims. They live in the sandbox so the shell can reach them, and
   // they are emphatically not part of anybody's folder.
   /^\.ajar\//,
+  // A home directory, which the sandbox does not have: `~` is not expanded,
+  // so what a tool keeps under it lands in the folder as a directory called
+  // `~`. pip kept its whole download cache there — fifty files for one
+  // `pip install flask` — until 16 October, saved in the pad for everyone.
+  // Already stored, it is deleted at the next command, as any ignored file is.
+  /^~\//,
 ];
 
 export function ignored(path: string): boolean {

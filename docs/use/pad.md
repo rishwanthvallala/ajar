@@ -153,6 +153,11 @@ python3 -m http.server    # the folder, as a website
 python3 serve.py          # or anything else that listens on a port
 ```
 
+Flask works: `pip install flask`, then `python app.py` or `flask --app app
+run`. Debug mode works too, with its debugger, but without the reloader that
+restarts the server when a file changes — it needs a thread, so after a change,
+press Ctrl-C and run it again. The server says so when it starts.
+
 Only you can see it. The address is not a public link — it works in your
 browser and nowhere else, so it is for looking at what you just started, not
 for showing somebody.

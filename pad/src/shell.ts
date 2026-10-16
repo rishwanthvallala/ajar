@@ -309,6 +309,9 @@ export class Shell {
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
       `alias curl='python /workspace/${CURL}'`,
+      // pip installs a `flask` script under .deps/bin, which the shell does
+      // not look in, and a script on PATH hangs this bash anyway (above).
+      "alias flask='python -m flask'",
       `alias wget='python /workspace/${CURL} --as-wget'`,
       ...["go", "gofmt"].map((name) => `alias ${name}='python /workspace/${GO} ${name}'`),
       ...CLANG_ALIASES.map(([name, to]) => `alias ${name}='${to}'`),
@@ -334,7 +337,10 @@ export class Shell {
       // And no warning about running as root, or check for a newer pip: the
       // first is true of every install here and says nothing, the second is a
       // network request and a notice on every one.
-      "export PIP_PROGRESS_BAR=off PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1",
+      //
+      // And no cache: with no home directory pip kept it in the folder, as
+      // `~/.cache/pip` — see the `~` rule in sync.ts.
+      "export PIP_PROGRESS_BAR=off PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1",
       // Python 3.13's new prompt needs a terminfo database this runtime does
       // not find, so `python` on its own opened with "warning: can't use
       // pyrepl: setupterm: could not find terminfo database" and then used

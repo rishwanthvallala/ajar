@@ -18,6 +18,9 @@ never uses them pays nothing for them:
   took it. It started a thread per request, refused above, so
   the server answered nothing — until 15 October `python -m http.server` was
   the one server everybody reaches for and the one that did not work.
+- Werkzeug's development server — Flask's `app.run(debug=True)` and `flask
+  run --debug` — runs without its reloader, which watches for changes on a
+  thread. It said so with this file's traceback instead of serving.
 - urllib.request, and `requests` once pip has installed it, make their http
   and https requests through the browser, with its fetch (_padfetch.py). The
   sandbox's own sockets reach PyPI and nothing else; the browser reaches any
@@ -95,6 +98,29 @@ sys.meta_path.insert(0, _Finder)
 def _serve_in_line(socketserver):
     # BaseServer's own: finish the request, then close it, right here.
     socketserver.ThreadingMixIn.process_request = socketserver.BaseServer.process_request
+
+
+@_when_imported("werkzeug.serving")
+def _no_reloader(serving):
+    run_simple = serving.run_simple
+
+    def run(*args, **kwargs):
+        # run_simple(hostname, port, application, use_reloader, ...): asked
+        # for in its place, or by name.
+        if (len(args) > 3 and args[3]) or kwargs.get("use_reloader"):
+            if len(args) > 3:
+                args = (*args[:3], False, *args[4:])
+            else:
+                kwargs["use_reloader"] = False
+            print(
+                " * Reloader: off in the pad, which cannot start the thread it needs."
+                " After a change, Ctrl-C and run it again.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return run_simple(*args, **kwargs)
+
+    serving.run_simple = run
 
 
 @_when_imported("urllib.request")

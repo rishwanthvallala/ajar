@@ -242,10 +242,20 @@ python exactly as published, with the mirror bypassed, so it is not the trim.
 starts a thread, which is why `pip install requests` used to freeze the page:
 `PIP_PROGRESS_BAR=off` is set in the shell, and it installs in about 6 s.
 socketserver's threading servers — `python -m http.server` — serve their
-requests in turn instead, since 15 October ([networking.md](networking.md)).
+requests in turn instead, since 15 October ([networking.md](networking.md)),
+and so does Werkzeug's, under Flask. Flask's debug mode asks for the
+reloader, which watches files on a thread; since 16 October `run_simple` is
+given `use_reloader=False` and says so, where it was this file's traceback.
 sitecustomize changes a module only once it is imported, through a finder
 first on `sys.meta_path`, so the aliased tools that start a python for every
 `sort` pay nothing for it.
+
+**There is no home directory.** `~` is not expanded, so a tool that keeps
+something under it — pip's cache, for one — makes a directory called `~` in
+the folder. pip's went into every pad that installed anything,
+fifty files for Flask, saved for everyone, until 16 October: the shell sets
+`PIP_NO_CACHE_DIR=1`, and `~/` is ignored by the sync like `__pycache__`, which
+also deletes what a pad had stored there at its next command.
 
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,

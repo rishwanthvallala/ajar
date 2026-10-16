@@ -887,6 +887,32 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     await clear();
     await typed(`python -c "import requests; r = requests.get('${BIN}/anything?via=requests'); print('via', r.status_code, r.json()['args'])"`, 60_000);
     expect("and requests goes through the page", await shows(/via 200 \{'via': 'requests'\}/), await tail(3));
+
+    // Flask, as people write it: debug mode, whose reloader wants a thread,
+    // and `flask run`, whose script pip puts where the shell does not look.
+    await clear();
+    const flaskIn = await typed("pip install flask", 150_000);
+    const flaskApp = "from flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef home():\n    return 'hello from flask'\nif __name__ == '__main__':\n    app.run(debug=True, port=5050)\n";
+    await typed(`echo ${Buffer.from(flaskApp).toString("base64")} | base64 -d > flaskapp.py`);
+    await clear();
+    await type("python flaskapp.py");
+    const debugServes = await shows(/Running on http:\/\/127\.0\.0\.1:5050/, 60_000);
+    const reloaderSaid = await shows(/Reloader: off in the pad/);
+    const debugTail = await tail(5);
+    await page.keyboard.press("Control+C");
+    await idle(20_000);
+    expect("pip install flask, and app.run(debug=True) serves, without the reloader and saying so", flaskIn && debugServes && reloaderSaid, debugTail);
+    await clear();
+    await type("flask --app flaskapp run --port 5051");
+    const cliServes = await shows(/Running on http:\/\/127\.0\.0\.1:5051/, 60_000);
+    const cliTail = await tail(4);
+    await page.keyboard.press("Control+C");
+    await idle(20_000);
+    expect("and `flask run` works as typed", cliServes, cliTail);
+    await clear();
+    await typed("ls -a | grep -c '^~$'; echo listed");
+    const noHome = (await shows(/(^|\n)0\s*(\n|$)/)) && !(await page.$('#files .row.dir[data-path="~"]'));
+    expect("and pip leaves no `~` folder in the pad", noHome, await tail(3));
   }
 
   // What the page itself threw, as opposed to what the programs printed.
