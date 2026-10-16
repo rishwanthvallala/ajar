@@ -134,6 +134,32 @@ in, an anonymous open pad if not. They send that link to whoever they like.
 Suggestions and edit requests are later — see
 [open points](../open-points.md#designed-not-started).
 
+## Link previews
+
+A chat app that unfurls a link reads the page's tags and runs none of its
+script, so the pad's page told it nothing but "pad". Since 16 October, Caddy
+sends those fetchers to the relay instead (`@unfurl` in the Caddyfile, picked
+by user agent: Slackbot, WhatsApp, Twitterbot, facebookexternalhit, which is
+also iMessage's, Discordbot, TelegramBot and others). The relay answers with
+Open Graph tags (`unfurl` in main.rs). People get the page as before.
+
+What the card says is decided as if by nobody. No cookie and no link code go
+into the access check, so it shows what anyone with the bare link may see,
+whoever fetches it:
+
+- **An open pad:** its name, its file count, the first six paths, and the
+  first lines of its main file. That is `main.py`, `app.py`, `index.html`
+  and so on, or the first small text file, read only if it is 64 KB or less
+  (`Store::summary`). Previewing does not touch the pad, so a bot looking at
+  a link does not keep it alive.
+- **A pad only links may view, or only its owner:** "A private pad", and
+  nothing of it. The code that would open it is after the `#`, which a
+  browser never sends, so the server could not use it if it wanted to.
+- **A deleted pad says so. A free name** is "An empty pad".
+
+The image is a static card, `pad/public/og.png`. Any other fetcher still gets
+generic tags from `index.html` itself.
+
 ## Signing in
 
 **Decided:** Google and GitHub. No passwords stored, no email sent.

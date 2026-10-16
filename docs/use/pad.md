@@ -246,7 +246,12 @@ it, and anything it had not saved.
 
 ## Working together
 
-Send the link and you are both in the same folder. The top right shows a dot
+Send the link and you are both in the same folder. Pasted into Slack,
+WhatsApp, iMessage, Discord and the like, it unfurls into a card with the
+pad's name, its files and the first lines of its main file. A pad only people
+with a link code may view shows only that it is private.
+
+The top right shows a dot
 for each person here, yours ringed, with a count beside them — nothing shows
 while you are the only one there — and each person's cursor in the editor is
 the colour of their dot.

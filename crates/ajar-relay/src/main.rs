@@ -319,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
                 .put(write_pad)
                 .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
         )
+        .route("/api/unfurl/{name}", get(unfurl))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
         .layer(CorsLayer::permissive())
@@ -478,6 +479,146 @@ async fn read_pad(
         .into_response(),
         Err(e) => refuse(e).into_response(),
     }
+}
+
+/// What a chat app shows for a pad link: a page of Open Graph tags.
+///
+/// Caddy sends link-preview bots here instead of to the page, which they
+/// cannot run (deploy/Caddyfile, `@unfurl`). Asked as nobody: no cookie and
+/// no link code go into the access check, so a preview says what anyone
+/// with the bare link may see, whoever fetches it. A pad only some people
+/// may view gets a card saying it is private and nothing of its contents —
+/// the code that would open it is after the `#`, which never reaches a
+/// server.
+async fn unfurl(
+    Path(name): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    let Ok(_slot) = state
+        .quota
+        .claim(caller, std::time::Instant::now(), quota::Kind::Read)
+    else {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response();
+    };
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .filter(|h| {
+            h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-.:".contains(&b))
+        })
+        .unwrap_or("code.rishwanth.dev")
+        .to_string();
+    let name = name.to_ascii_lowercase();
+    if pad::check_name(&name).is_err() {
+        return card(
+            &host,
+            "",
+            "code.rishwanth.dev",
+            "A pad: files you can edit together and run in the browser, nothing to install.",
+        );
+    }
+    let access = http_accounts::access(&state, &axum::http::HeaderMap::new(), &name).await;
+    if access.deleted {
+        return card(&host, &name, &name, "This pad was deleted by its owner.");
+    }
+    if access.role == accounts::Role::None {
+        return card(
+            &host,
+            &name,
+            &name,
+            "A private pad. Open the link to see it, if it was shared with you.",
+        );
+    }
+    let pads = state.pads.clone();
+    let lookup = name.clone();
+    let summary = tokio::task::spawn_blocking(move || pads.summary(&lookup)).await;
+    let description = match summary {
+        Ok(Ok(Some(summary))) => describe(&summary),
+        Ok(Ok(None)) => "An empty pad. Open it and start typing: files you can edit together and run in the browser.".to_string(),
+        _ => "A pad: files you can edit together and run in the browser.".to_string(),
+    };
+    card(&host, &name, &name, &description)
+}
+
+/// A pad in a sentence or two: its files, and the first lines of the one a
+/// reader would open first.
+fn describe(summary: &pad::Summary) -> String {
+    let files = match summary.files {
+        1 => "1 file".to_string(),
+        n => format!("{n} files"),
+    };
+    let mut names = summary.paths.join(", ");
+    if summary.files > summary.paths.len() {
+        names.push_str(", …");
+    }
+    let mut out = format!("{files}: {names}");
+    if let Some((path, text)) = &summary.lead {
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .take(4)
+            .collect();
+        if !lines.is_empty() {
+            out.push_str(&format!(" — {path}: {}", lines.join(" · ")));
+        }
+    }
+    shorten(&out, 280)
+}
+
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// The page a bot reads: title, description, image, and where the pad is.
+/// Not to be indexed — a pad is not a page for search engines — and short-
+/// lived in caches, as the pad changes.
+fn card(host: &str, name: &str, title: &str, description: &str) -> axum::response::Response {
+    let url = format!("https://{host}/{name}");
+    let (title, description, url) = (escape(title), escape(description), escape(&url));
+    let image = escape(&format!("https://{host}/og.png"));
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{title}</title>
+<meta name="description" content="{description}">
+<meta name="robots" content="noindex">
+<meta property="og:site_name" content="code.rishwanth.dev">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta property="og:url" content="{url}">
+<meta property="og:image" content="{image}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{title}">
+<meta name="twitter:description" content="{description}">
+<link rel="canonical" href="{url}">
+</head><body><h1>{title}</h1><p>{description}</p><p><a href="{url}">Open it</a></p></body></html>"#
+    );
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        html,
+    )
+        .into_response()
 }
 
 /// The stored document, sent from its file with `exists` put in front.
@@ -790,6 +931,34 @@ async fn upgrade(
 #[cfg(test)]
 mod tests {
     use super::caller_ip;
+
+    #[test]
+    fn a_link_preview_quotes_the_pad_and_escapes_it() {
+        let summary = crate::pad::Summary {
+            files: 8,
+            paths: ["a.py", "b.py", "c.py", "d.py", "e.py", "main.py"]
+                .map(String::from)
+                .to_vec(),
+            lead: Some((
+                "main.py".to_string(),
+                "\nimport flask\n\napp = Flask(__name__)\n".to_string(),
+            )),
+        };
+        let said = super::describe(&summary);
+        assert!(
+            said.starts_with("8 files: a.py, b.py, c.py, d.py, e.py, main.py, …"),
+            "{said}"
+        );
+        assert!(
+            said.ends_with("main.py: import flask · app = Flask(__name__)"),
+            "{said}"
+        );
+        assert_eq!(
+            super::escape(r#"<script>"a" & 'b'</script>"#),
+            "&lt;script&gt;&quot;a&quot; &amp; &#39;b&#39;&lt;/script&gt;"
+        );
+        assert_eq!(super::shorten(&"x".repeat(300), 280).chars().count(), 280);
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

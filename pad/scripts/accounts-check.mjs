@@ -610,6 +610,17 @@ try {
   await owner.getByRole("dialog").getByLabel("Who can view").selectOption("code");
   await watcher.waitForSelector("text=This pad is private", { timeout: 15_000 });
   ok("closing viewing to links turns someone on the bare name away, there and then");
+  // What a chat app shows for a link: the page has nothing to say to a
+  // fetcher that runs no script, so the relay does (`unfurl` in main.rs). An
+  // open pad by its files and its main file's first lines…
+  const openName = `unfurl-${Date.now()}`;
+  await fetch(`${ORIGIN}/api/pad/${openName}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: "import flask\n\napp = flask.Flask(__name__)\n" }, { path: "templates/index.html", content: "<h1>hi</h1>" }] }) });
+  const openCard = await (await fetch(`${ORIGIN}/api/unfurl/${openName}`)).text();
+  is(openCard.includes(`<meta property="og:title" content="${openName}">`) && openCard.includes("2 files: main.py, templates/index.html — main.py: import flask · app = flask.Flask(__name__)"), true, "a link preview of an open pad names its files and quotes main.py");
+  // …and one only links may view, asked as nobody, so even with the owner's
+  // own cookie it says only that the pad is private.
+  const privateCard = await (await fetch(`${ORIGIN}/api/unfurl/${name}`, { headers: { cookie: ownerCookie } })).text();
+  is(/A private pad/.test(privateCard) && !privateCard.includes("main.py"), true, "and a link preview of it says it is private, and nothing of it, even fetched with the owner's cookie");
   // …unless they have work here that exists nowhere else.
   await until(keeper, () => document.querySelector("#away .viewing-pill")?.textContent === "No access", undefined, 15_000);
   is((await text(keeper, "main.py")).includes("the-keepers-own"), true, "someone turned away with local work keeps the page and the work");

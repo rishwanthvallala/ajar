@@ -4,6 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pad</title>
+    <!--
+      For a link preview from an app the server does not recognise as one: the
+      ones it does get the pad's own name and files (`@unfurl` in the
+      Caddyfile). Tags only, so the inline script below keeps its CSP hash.
+    -->
+    <meta name="description" content="Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install." />
+    <meta property="og:site_name" content="code.rishwanth.dev" />
+    <meta property="og:title" content="A pad on code.rishwanth.dev" />
+    <meta property="og:description" content="Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install." />
+    <meta property="og:image" content="https://code.rishwanth.dev/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
       <!--
       The SDK's WISP transport imports its client by bare specifier, which
       assumes a bundler; we vendor the SDK unbundled because bundling it breaks

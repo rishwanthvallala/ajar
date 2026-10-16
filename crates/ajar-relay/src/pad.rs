@@ -409,6 +409,50 @@ struct Row {
     stored: u64,
 }
 
+/// A pad as a link preview describes it: [`Store::summary`].
+#[derive(Debug, Clone)]
+pub struct Summary {
+    pub files: usize,
+    /// The first [`SUMMARY_PATHS`] paths, in order.
+    pub paths: Vec<String>,
+    /// The file that says most about the pad, and its text.
+    pub lead: Option<(String, String)>,
+}
+
+/// How many paths a preview names.
+pub const SUMMARY_PATHS: usize = 6;
+/// The largest file a preview reads, to quote its first lines.
+pub const SUMMARY_LEAD_MAX: u64 = 64 * 1024;
+
+/// The file a preview quotes: the one a reader would open first, if it is
+/// text and small enough to read for a preview.
+fn lead_file(rows: &BTreeMap<String, Row>) -> Option<(String, Row)> {
+    const FIRST: [&str; 8] = [
+        "main.py",
+        "app.py",
+        "index.html",
+        "README.md",
+        "main.js",
+        "index.js",
+        "Main.java",
+        "main.c",
+    ];
+    let quotable =
+        |r: &Row| r.encoding == Encoding::Utf8 && r.size > 0 && r.size <= SUMMARY_LEAD_MAX;
+    FIRST
+        .iter()
+        .find_map(|name| {
+            rows.get(*name)
+                .filter(|r| quotable(r))
+                .map(|r| (name.to_string(), r.clone()))
+        })
+        .or_else(|| {
+            rows.iter()
+                .find(|(p, r)| !p.ends_with("/.keep") && quotable(r))
+                .map(|(p, r)| (p.clone(), r.clone()))
+        })
+}
+
 /// A stored pad opened for streaming: its document after the opening brace,
 /// as pieces, and how many bytes they come to.
 ///
@@ -985,6 +1029,38 @@ impl Store {
             created_ms: head.created_ms,
             updated_ms: head.updated_ms,
             files,
+        }))
+    }
+
+    /// What a link preview shows of a pad: how many files, which, and the first
+    /// lines of the one that says most about it. `Ok(None)` means the name is
+    /// free. Light on purpose: the paths and one file of at most
+    /// [`SUMMARY_LEAD_MAX`] bytes, never the pad, since a preview is fetched
+    /// by every chat app the link is pasted into. Not a touch, either: a bot
+    /// looking at a link does not keep the pad alive.
+    pub fn summary(&self, name: &str) -> Result<Option<Summary>, Error> {
+        check_name(name)?;
+        let (rows, lead, _reading) = {
+            let db = self.db.lock();
+            let Some(head) = Self::head(&db, name)? else {
+                return Ok(None);
+            };
+            if self.lapsed(name, head.touched_ms) {
+                return Ok(None);
+            }
+            let rows = Self::rows(&db, name)?;
+            let lead = lead_file(&rows);
+            let reading = self.hold(&db, lead.iter().map(|(_, r)| r.blob.clone()).collect());
+            (rows, lead, reading)
+        };
+        let lead = match lead {
+            Some((path, row)) => Some((path, self.blob_text(&row.blob)?)),
+            None => None,
+        };
+        Ok(Some(Summary {
+            files: rows.len(),
+            paths: rows.keys().take(SUMMARY_PATHS).cloned().collect(),
+            lead,
         }))
     }
 
@@ -2527,6 +2603,50 @@ mod tests {
             "a temporary file was left"
         );
         assert!(!s.get("p").unwrap().unwrap().files.contains_key("big.txt"));
+    }
+
+    #[test]
+    fn a_summary_names_the_files_and_quotes_the_one_to_open_first() {
+        let (s, _d) = store();
+        assert!(
+            s.summary("nobody-here").unwrap().is_none(),
+            "a free name has nothing to describe"
+        );
+        let many: Vec<Write> = (0..9)
+            .map(|i| put(&format!("notes/{i}.txt"), "n"))
+            .collect();
+        s.write("p", &many).unwrap();
+        s.write(
+            "p",
+            &[
+                put("main.py", "\n\nprint('hello')\nx = 1\n"),
+                put("big.txt", &"y".repeat((SUMMARY_LEAD_MAX + 1) as usize)),
+            ],
+        )
+        .unwrap();
+        let summary = s.summary("p").unwrap().unwrap();
+        assert_eq!(summary.files, 11);
+        assert_eq!(
+            summary.paths.len(),
+            SUMMARY_PATHS,
+            "only the first few are named"
+        );
+        let (path, text) = summary.lead.expect("main.py is quoted");
+        assert_eq!(path, "main.py");
+        assert!(text.contains("print('hello')"));
+        // With no main file, the first small text file; never one too big to read for a preview.
+        s.write(
+            "q",
+            &[
+                put("big.txt", &"y".repeat((SUMMARY_LEAD_MAX + 1) as usize)),
+                put("z.txt", "zed"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            s.summary("q").unwrap().unwrap().lead.map(|(p, _)| p),
+            Some("z.txt".to_string())
+        );
     }
 
     #[test]
