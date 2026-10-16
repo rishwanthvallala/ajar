@@ -156,6 +156,25 @@ Confirm the relay the same way: a WebSocket to `/ws` that never says hello is
 closed after ten seconds by any relay from v0.0.6 on, and the live asset hashes
 say whether the clients went out.
 
+**On 16 October a reload loaded the new config and never returned.** The
+journal showed:
+1. `/load` received, the new servers running, and the grace period started.
+2. The old admin endpoint failing to stop within its own 10 s timeout.
+3. From then on, systemd timing out the reload and "Killing reload process"
+   every 90 s.
+
+The deploy waited in `systemctl reload-or-restart caddy` for ten minutes,
+until its ssh was ended by hand. It then stopped short of its own check,
+saying what it was running before was still serving. It was not: from
+outside, the preview origin served the new control page and worker. So a
+stuck reload is not proof that the old config is live. Check from outside,
+as above. A restart clears the stuck job, at the cost of every open
+connection:
+
+```sh
+AJAR_CADDY_RESTART=1 ./deploy/deploy.sh ajar-relay --config-only
+```
+
 **The pad's 1.1 GB went up whole on every deploy until 16 October.** On 15
 October three deploys in a row died on the way: `Bad packet length`, `Timeout,
 server … not responding`, `scp: Connection closed`. Each was read as the
