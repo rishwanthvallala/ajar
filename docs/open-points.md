@@ -108,8 +108,9 @@ each in [code-review-fixes-2026-09-16.md](code-review-fixes-2026-09-16.md).
 
 **`browser-check.mjs` hangs on a pipe now and then, unexplained.** It hung
 on `cat poem.txt | grep two` inside the sandbox, so the page never finished.
-That happened twice on CI on 16 October, the second time on 52113b2, which
-changed nothing the check runs; reruns passed. Locally it has not happened.
+That happened twice on CI on 16 October. The first time, a rerun passed. The
+second was on 52113b2, which changed nothing the check runs. Locally it has
+not happened.
 Nobody has caught it on screen in the pad, but a pipe that never ends is what
 a person would meet. Its next run should keep the stuck processes' state,
 which the check does not record yet.
