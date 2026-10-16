@@ -260,6 +260,16 @@ so since 16 October `App.openEditor` drops that one report from Monaco's
 stays. A model only for the files that are open would not need it, and
 would touch everything that reads a file's text.
 
+**More than one terminal, since 16 October** (`terminals.ts`). Each is a
+`TerminalSession` — its xterm, its console, its bash — in the one sandbox, so
+they share the files, and a port one listens on is reachable from another. Run
+and Stop are the front one's; what needs nothing to be running (a move, an
+import) waits for all of them, and the javac and fetch bridges look for
+requests while any runs. A language installed by one terminal's line is seen
+only by shells opened after it (toolchains.ts), so a terminal whose shell is
+older gets a fresh one, where it was, at its next line (`stale`). The first
+terminal is the workspace's `#terminal`; the rest are made beside it.
+
 **Ctrl-C reaches a program's child, not the program.** A program that started
 another process still running — `subprocess.Popen(["sleep", "100"])` — takes no
 notice of Ctrl-C here, and neither does the child it reaches; after a second and

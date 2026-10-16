@@ -120,6 +120,15 @@ else with the link. A file that is not text — an image, a chart a script
 saved, a `.zip` — is listed in *italics*: it is in everyone's terminal folder
 and you can download, move or delete it, but the editor does not open it.
 
+### More than one terminal
+
+**New terminal**, above the terminal, opens another: its own shell, in the
+same folder, so a server can run in one while you type in the other — `curl`
+at it, run the tests, edit with `nano`. Once there are two, each has a tab,
+with a dot on any that has something running; **Split** puts two side by side.
+Run and Stop are for the terminal in front. Closing one stops what runs in it
+first. They are yours: the others on the pad have their own.
+
 ### The keys
 
 The terminal's keys are bash's:

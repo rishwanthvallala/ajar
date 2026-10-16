@@ -112,8 +112,23 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .preview { display: flex; background: var(--surface); }
 .pad-shell .preview[hidden] { display: none; }
 .pad-shell .preview iframe { flex: 1; border: 0; width: 100%; height: 100%; }
-.pad-shell .terms { position: relative; overflow: hidden; }
-.pad-shell .terminal { position: absolute; inset: 0; min-width: 0; min-height: 0; padding: 0.35rem 0.5rem; overflow: hidden; background: var(--surface); }
+/* Terminals: the one in front, and with Split the next beside it — below it
+   on a phone. The rest keep their screens, hidden. */
+.pad-shell .terms { position: relative; overflow: hidden; display: flex; }
+.pad-shell .terms > .terminal { position: relative; display: none; flex: 1 1 0; min-width: 0; min-height: 0; padding: 0.35rem 0.5rem; overflow: hidden; background: var(--surface); }
+.pad-shell .terms > .terminal.shown { display: block; }
+.pad-shell .terms.split > .terminal.shown + .terminal.shown { border-left: 1px solid var(--rule); }
+.pad-shell.narrow .terms.split > .terminal.shown + .terminal.shown { border-left: 0; border-top: 1px solid var(--rule); }
+/* A tab a terminal, from the second on; its close beside it, as a file's delete is. */
+.pad-shell .tab-wrap { position: relative; display: inline-flex; align-items: center; flex: none; }
+.pad-shell .tab { display: inline-flex; align-items: center; gap: 0.35rem; padding-right: 1.6rem; font-family: inherit; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--ink-2); cursor: pointer; }
+.pad-shell .tab:hover { color: var(--ink); background: var(--surface-2); }
+/* Something running in it — a server, most likely — said by a dot. */
+.pad-shell .tab.running::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--ok); flex: none; }
+.pad-shell .tab-close { position: absolute; right: 0.25rem; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 0.9rem; line-height: 1; padding: 0.1rem 0.25rem; border-radius: 3px; cursor: pointer; opacity: 0; }
+.pad-shell .tab-wrap:hover .tab-close, .pad-shell .tab-close:focus-visible { opacity: 1; }
+.pad-shell .tab-close:hover { color: var(--hard); background: var(--surface-2); }
+@media (hover: none) { .pad-shell .tab-close { opacity: 0.7; } }
 .pad-shell .fixture-code, .pad-shell .fixture-terminal { margin: 0; min-height: 100%; padding: 1rem; overflow: auto; color: var(--ink-2); background: var(--surface); font: 0.8125rem/1.55 var(--mono); white-space: pre-wrap; }
 .pad-shell .fixture-terminal { padding: 0.65rem 0.75rem; }
 .pad-shell .fixture-icon { min-width: 2rem; font: 0.6875rem var(--mono); line-height: 1.2; }

@@ -12,7 +12,6 @@ import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDe
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
 import { carryOver, type Edit, putBack } from "./carry";
-import { Console } from "./console";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
@@ -21,7 +20,8 @@ import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
 import { interpreterFor, prefetch, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
-import { Shell, type Finished } from "./shell";
+import { type Finished, type Shell } from "./shell";
+import { TerminalSession } from "./terminals";
 import { ICONS } from "./icons";
 import { openShare } from "./share";
 import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
@@ -116,6 +116,15 @@ function readIndent(): 2 | 4 {
   }
 }
 
+/** The terminal's colours, from the page's own. */
+function terminalTheme(): { background: string; foreground: string } {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    background: style.getPropertyValue("--surface").trim(),
+    foreground: style.getPropertyValue("--ink-2").trim(),
+  };
+}
+
 /** Of the texts a command may have read, the one its result differs from least — the latest of equals. */
 function closest(candidates: readonly string[], result: string): string | undefined {
   let best: string | undefined;
@@ -150,17 +159,20 @@ export class App {
   /** An empty file's offer of what it could start as, and for which file. */
   private starterHint: { widget: Monaco.editor.IContentWidget; key: string } | null = null;
   private runtime: Promise<Runtime> | null = null;
-  private shell: Shell | null = null;
-  private console: Console | null = null;
+  /** Every terminal open here, and the one in front: Run and Stop are its. See terminals.ts. */
+  private sessions: TerminalSession[] = [];
+  private session: TerminalSession | null = null;
+  /** Two terminals side by side: the one in front and the next. */
+  private split = false;
+  /** Languages installed into the sandbox so far; a shell older than the latest cannot see it. */
+  private installs = 0;
+  private xterm: Promise<{ Terminal: typeof import("@xterm/xterm").Terminal; FitAddon: typeof import("@xterm/addon-fit").FitAddon }> | null = null;
   private tree: FileTree | null = null;
-  private term: { write: (s: string) => void; fit: () => void; dispose: () => void } | null = null;
   /** The port something in the folder is listening on, if any. */
   private listening: number | null = null;
   private served: BrowserServer | null = null;
   /** The port `served` is the route to. */
   private servedPort: number | null = null;
-  private cols = 80;
-  private rows = 24;
   private known: Known = new Map();
   /**
    * The pad's binary files, as the store keeps them. Never in the editor;
@@ -180,9 +192,8 @@ export class App {
   /** Answers the sandbox's `javac` with the fast one, once Java is here: javac/bridge.ts. */
   private readonly javac = new JavacBridge(
     async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
-    (line) => this.term?.write(`\x1b[2mnote: ${line}\x1b[0m\r\n`),
+    (line) => this.session?.write(`\x1b[2mnote: ${line}\x1b[0m\r\n`),
   );
-  private shellOpening: Promise<Shell> | null = null;
   private peers: Peers | null = null;
   private busy = false;
   /** When Run was last pressed, so a double-click is not also a Stop. */
@@ -289,6 +300,10 @@ export class App {
       files: HTMLElement;
       editor: HTMLElement;
       terminal: HTMLElement;
+      terms: HTMLElement;
+      tabs: HTMLElement;
+      newTerminal: HTMLButtonElement;
+      split: HTMLButtonElement;
       run: HTMLButtonElement;
       share: HTMLButtonElement;
       preview: HTMLButtonElement;
@@ -305,7 +320,7 @@ export class App {
   ) {
     this.ui?.onLayout(() => {
       this.editor?.layout();
-      this.term?.fit();
+      this.fitTerminals();
     });
     this.ui?.onHighlightChange(() => this.relanguage());
   }
@@ -320,7 +335,8 @@ export class App {
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
       room: () => this.peers?.seen,
-      shellBusy: () => this.console?.busy ?? false,
+      shellBusy: () => this.anyBusy,
+      terminals: () => this.sessions.map((t) => ({ number: t.number, busy: t.busy, front: t === this.session })),
       role: () => this.access.role,
       local: () => [...this.local].sort(),
       // For fetch-packages.mjs, which records each by using it once.
@@ -942,7 +958,7 @@ export class App {
    * pressing it answered "a command is already running".
    */
   private paintRun(): void {
-    const running = this.console?.busy ?? false;
+    const running = this.session?.busy ?? false;
     const runnable = interpreterFor(this.active) !== null || runnerFor(this.active) !== null;
     this.el.run.querySelector("span")!.textContent = running ? "Stop" : "Run";
     this.el.run.querySelector("path")?.setAttribute("d", running ? "M4.5 4.5h7v7h-7z" : "M5 3.5l7 4.5-7 4.5V3.5Z");
@@ -1226,7 +1242,7 @@ export class App {
       this.say("error", "a folder keeps at least one file");
       return;
     }
-    if (this.busy || this.console?.busy) {
+    if (this.busy || this.anyBusy) {
       this.say("error", "wait for what is running to finish");
       return;
     }
@@ -1258,7 +1274,7 @@ export class App {
    */
   private async deleteFolder(path: string): Promise<void> {
     if (this.viewer) return this.say("error", "only people who can edit can delete folders");
-    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish");
+    if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish");
     const under = (p: string) => p.startsWith(`${path}/`);
     const text = [...this.models.keys()].filter(under);
     const binary = [...this.binaries.keys()].filter((p) => under(p) && !this.models.has(p));
@@ -1310,7 +1326,7 @@ export class App {
   /** A binary file, the same way: gone from the sandbox, and the diff after publishes it. */
   private async deleteBinary(path: string): Promise<void> {
     if (this.viewer) return this.say("error", "only people who can edit can delete the pad's files that are not text");
-    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish");
+    if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish");
     if (!confirm(`Delete ${path}? It goes for everyone with the link.`)) return;
     try {
       const rt = await this.ensureRuntime();
@@ -1517,7 +1533,7 @@ export class App {
     // Run. A failure here is left for the Run or command that needs the shell
     // to report, where somebody is looking.
     void this.ensureRuntime()
-      .then(() => this.ensureShell())
+      .then(() => this.session?.ensureShell())
       .catch(() => {});
   }
 
@@ -1636,7 +1652,7 @@ export class App {
       // The terminal is where everything else says what went wrong, and a
       // preview that fails silently is indistinguishable from one that is
       // slow.
-      this.term?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
+      this.session?.write(`\r\n\x1b[31mpreview: ${(e as Error).message}\x1b[0m\r\n`);
       this.say("error", `preview: ${(e as Error).message}`);
     }
   }
@@ -1653,70 +1669,159 @@ export class App {
    * and says so.
    */
   private async openTerminal(): Promise<void> {
-    if (this.term) return;
-    const { Terminal } = await import("@xterm/xterm");
-    const { FitAddon } = await import("@xterm/addon-fit");
-    await import("@xterm/xterm/css/xterm.css");
-    const terminalTheme = () => {
-      const style = getComputedStyle(document.documentElement);
-      return {
-        background: style.getPropertyValue("--surface").trim(),
-        foreground: style.getPropertyValue("--ink-2").trim(),
-      };
-    };
-    const term = new Terminal({
-      fontSize: Math.max(11, this.codeFontPx() - 1),
-      convertEol: true,
-      theme: terminalTheme(),
-    });
+    if (this.sessions.length) return;
+    await this.addTerminal(this.el.terminal);
+    this.el.newTerminal.title = "Another terminal, in the same folder (its own bash)";
+    this.el.newTerminal.onclick = () => void this.addTerminal();
+    this.el.split.title = "Two terminals side by side";
+    this.el.split.onclick = () => void this.toggleSplit();
+    onThemeChange(() => {
+      for (const t of this.sessions) {
+        t.term.options.theme = terminalTheme();
+        t.term.options.fontSize = Math.max(11, this.codeFontPx() - 1);
+      }
+      this.fitTerminals();
+    }, this.events.signal);
+  }
+
+  /**
+   * Another terminal, in front: its own bash in the same sandbox, so the same
+   * files, and a server one runs is one the other can reach. `element` is the
+   * first's, which the workspace made; the rest are made here.
+   */
+  private async addTerminal(element?: HTMLElement): Promise<TerminalSession> {
+    const { Terminal, FitAddon } = await (this.xterm ??= (async () => {
+      const [{ Terminal }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
+      await import("@xterm/xterm/css/xterm.css");
+      return { Terminal, FitAddon };
+    })());
+    const number = (this.sessions.at(-1)?.number ?? 0) + 1;
+    const host = element ?? Object.assign(document.createElement("div"), { className: "terminal", id: `terminal-${number}` });
+    if (!element) this.el.terms.append(host);
+    // On screen before it is opened, or it measures nothing and fits to it.
+    this.session = null;
+    this.layoutTerminals();
+    host.classList.add("shown");
+    const term = new Terminal({ fontSize: Math.max(11, this.codeFontPx() - 1), convertEol: true, theme: terminalTheme() });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(this.el.terminal);
+    term.open(host);
     fit.fit();
-    onThemeChange(() => {
-      term.options.theme = terminalTheme();
-      term.options.fontSize = Math.max(11, this.codeFontPx() - 1);
-      fit.fit();
-    }, this.events.signal);
-    this.term = { write: (s) => term.write(s), fit: () => fit.fit(), dispose: () => term.dispose() };
-    this.cols = term.cols;
-    this.rows = term.rows;
-
-    // The console owns the prompt, the echo and the line editing — bash
-    // provides none of them. It asks for a shell only when a line is entered,
-    // and completes against one only if it is already open.
-    this.console = new Console({ write: (d) => term.write(d) }, {
-      shellFor: () => this.ensureShell(),
+    const session = new TerminalSession(number, host, term, fit, {
+      runtime: () => this.ensureRuntime(),
+      prepare: (t, command) => this.prepare(t, command),
+      onBusy: (t, busy) => this.onBusy(t, busy),
       onFinished: () => void this.afterCommand(),
-      openShell: () => (this.shell?.alive ? this.shell : null),
-      columns: () => this.cols,
-      onBusy: (busy) => {
-        if (busy) {
-          this.commandOut = true;
-          if (this.runtimeReady) void this.runtime?.then((rt) => rt.recordVersions());
-        }
-        this.paintRun();
-        this.javac.busy(busy);
-        this.fetcher.busy(busy);
-      },
-      fullScreen: () => term.buffer.active.type === "alternate",
-      prepare: (command) => this.prepare(command),
+      installs: () => this.installs,
+      ready: () => this.runtimeReady,
     });
-    term.onData((data) => this.console?.handle(data));
-    term.onResize(({ cols, rows }) => {
-      this.cols = cols;
-      this.rows = rows;
-      void this.shell?.resize(cols, rows);
+    this.sessions.push(session);
+    this.session = session;
+    session.start();
+    this.layoutTerminals();
+    if (!element) {
+      term.focus();
+      // Its bash now, so the first line typed in it does not wait for one.
+      if (this.runtimeReady) void session.ensureShell().catch(() => {});
+    }
+    return session;
+  }
+
+  /** Which terminals are on screen — the one in front, and the next beside it when split — and their tabs. */
+  private layoutTerminals(): void {
+    const at = this.session ? this.sessions.indexOf(this.session) : -1;
+    const beside = this.split && this.sessions.length > 1 && at >= 0 ? this.sessions[(at + 1) % this.sessions.length] : null;
+    for (const t of this.sessions) t.element.classList.toggle("shown", t === this.session || t === beside);
+    this.el.terms.classList.toggle("split", beside !== null);
+    this.el.split.setAttribute("aria-pressed", String(this.split));
+    this.renderTabs();
+    this.paintRun();
+    this.fitTerminals();
+  }
+
+  private fitTerminals(): void {
+    requestAnimationFrame(() => {
+      for (const t of this.sessions) if (t.element.classList.contains("shown")) t.fit.fit();
     });
-    this.console.start();
+  }
+
+  /** A tab a terminal, once there are two: which one is in front, which have something running, and a way to close each. */
+  private renderTabs(): void {
+    if (this.sessions.length < 2) return this.el.tabs.replaceChildren();
+    this.el.tabs.replaceChildren(...this.sessions.map((t) => {
+      const wrap = document.createElement("span");
+      wrap.className = "tab-wrap";
+      const tab = document.createElement("button");
+      tab.className = `tab${t === this.session ? " active" : ""}${t.busy ? " running" : ""}`;
+      tab.textContent = `Terminal ${t.number}`;
+      tab.title = t.busy ? `Terminal ${t.number} — something is running in it` : `Terminal ${t.number}`;
+      tab.setAttribute("aria-pressed", String(t === this.session));
+      tab.onclick = () => this.showTerminal(t);
+      const close = document.createElement("button");
+      close.className = "tab-close";
+      close.textContent = "×";
+      close.title = t.busy ? `Stop what runs in terminal ${t.number}, and close it` : `Close terminal ${t.number}`;
+      close.setAttribute("aria-label", `Close terminal ${t.number}`);
+      close.onclick = () => void this.closeTerminal(t);
+      wrap.append(tab, close);
+      return wrap;
+    }));
+  }
+
+  private showTerminal(t: TerminalSession): void {
+    this.session = t;
+    this.layoutTerminals();
+    t.term.focus();
+  }
+
+  private async closeTerminal(t: TerminalSession): Promise<void> {
+    if (this.sessions.length < 2) return;
+    const at = this.sessions.indexOf(t);
+    this.sessions.splice(at, 1);
+    if (this.session === t) this.session = this.sessions[Math.min(at, this.sessions.length - 1)] ?? null;
+    this.layoutTerminals();
+    await t.close();
+    this.onBusy(t, false);
+    this.session?.term.focus();
+  }
+
+  private async toggleSplit(): Promise<void> {
+    this.split = !this.split;
+    if (this.split && this.sessions.length < 2) {
+      const first = this.session;
+      await this.addTerminal();
+      // The new one beside the one that was in front, rather than in its place.
+      if (first) this.session = first;
+    }
+    this.layoutTerminals();
+  }
+
+  /** Whether anything is running in any terminal. */
+  private get anyBusy(): boolean {
+    return this.sessions.some((t) => t.busy);
+  }
+
+  /** A command started or finished in one of the terminals. */
+  private onBusy(_t: TerminalSession, busy: boolean): void {
+    if (busy) {
+      this.commandOut = true;
+      if (this.runtimeReady) void this.runtime?.then((rt) => rt.recordVersions());
+    }
+    const any = this.anyBusy;
+    this.javac.busy(any);
+    this.fetcher.busy(any);
+    this.paintRun();
+    this.renderTabs();
   }
 
   /**
    * Fetch any language a line needs that this pad does not have yet, and hand
    * back the fresh shell that has to run it — or null when nothing changed.
-   * See toolchains.ts for why a fresh one.
+   * See toolchains.ts for why a fresh one. A terminal whose shell opened
+   * before a language arrived in another gets a fresh one too, at its next
+   * line.
    */
-  private async prepare(command: string): Promise<Shell | null> {
+  private async prepare(session: TerminalSession, command: string): Promise<Shell | null> {
     const rt = await this.ensureRuntime();
     // What the editor holds, in the sandbox before the line reads it, as Run
     // does: a file edited a moment ago is otherwise still being saved, and a
@@ -1724,82 +1829,37 @@ export class App {
     // milliseconds — compiles the copy from before the edit.
     await this.queueWrite(() => this.flushModels(rt));
     const needed = neededBy(command, rt.installed);
-    if (!needed.length) return null;
+    if (!needed.length) return session.stale ? session.replaceShell() : null;
     for (const t of needed) {
-      this.term?.write(`\x1b[2mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
+      session.write(`\x1b[2mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
       const began = performance.now();
       // Java's fast javac loads alongside the package, so the line about to
       // run finds it ready rather than compiling the slow way.
       const javac = t.commands.includes("javac") ? this.javac.load() : null;
       try {
         await rt.install(t.pkg);
+        this.installs++;
       } catch (e) {
-        this.term?.write(`\x1b[31m${t.name} could not be fetched: ${(e as Error).message}\x1b[0m\r\n`);
+        session.write(`\x1b[31m${t.name} could not be fetched: ${(e as Error).message}\x1b[0m\r\n`);
         return null;
       }
       const fast = javac ? await this.javac.whenReady(20_000) : false;
-      this.term?.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
+      session.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
       // The note says compiling is slow; with the fast javac it is not.
-      if (t.note && !fast) this.term?.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
+      if (t.note && !fast) session.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
     }
-    return this.replaceShell();
-  }
-
-  /**
-   * A fresh shell where the old one was, with what it had exported. Shell
-   * variables that were not exported, functions and aliases of the person's
-   * own go with the old one.
-   */
-  private async replaceShell(): Promise<Shell> {
-    const old = this.shell?.alive ? this.shell : null;
-    const where = old ? (await old.query("pwd")).trim() : "";
-    const exported = old ? await old.query("export -p") : "";
-    this.shell = null;
-    await old?.close().catch(() => {});
-    const sh = await this.ensureShell();
-    // `export -p` writes `declare -x` lines bash reads back as they are —
-    // only whole ones: a value with a line break in it spans lines, and half
-    // of one would leave the shell waiting for a closing quote.
-    const back = exported
-      .split(/\r?\n/)
-      .filter((l) => /^declare -x [A-Za-z_][A-Za-z0-9_]*(="(?:[^"\\]|\\.)*")?$/.test(l))
-      .filter((l) => !/^declare -x (PWD|OLDPWD|SHLVL|_)[=]?/.test(l));
-    if (back.length) await sh.query(back.join("; "));
-    if (where && where !== "/workspace") await sh.query(`cd '${where.replace(/'/g, "'\\''")}'`);
-    return sh;
-  }
-
-  private async ensureShell(): Promise<Shell> {
-    // A shell that has exited cannot be reused. ctrl-d ends it, as does a
-    // ctrl-c that a signal could not answer, so this is an ordinary path, not
-    // an error case.
-    if (this.shell && !this.shell.alive) this.shell = null;
-    if (this.shell) return this.shell;
-    // One opening at a time. The shell is now opened at load, so a Run pressed
-    // while that is still in flight would otherwise start a second bash and
-    // leave one of them orphaned.
-    this.shellOpening ??= (async () => {
-      try {
-        const rt = await this.ensureRuntime();
-        this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) =>
-          this.term?.write(t),
-        );
-        return this.shell;
-      } finally {
-        this.shellOpening = null;
-      }
-    })();
-    return this.shellOpening;
+    return session.replaceShell();
   }
 
   // ------------------------------------------------------------------- run
 
   private wire(): void {
     this.el.run.onclick = () => {
-      if (!this.console?.busy) return void this.run();
+      const front = this.session;
+      if (!front?.busy) return void this.run();
       // Run becomes Stop as soon as the program starts, so the second click
       // of a double-click would stop what the first one started.
-      if (performance.now() - this.runPressed > 500) this.console.stop();
+      if (performance.now() - this.runPressed > 500) front.console.stop();
     };
     this.el.share.onclick = () => void this.share();
     // A viewer's changes exist nowhere but this tab. Browsers write their own
@@ -1841,7 +1901,9 @@ export class App {
     const runner = program ? null : runnerFor(this.active);
     // Not over a command already running, typed or not: the button is Stop
     // then, and ⌘⏎ is ignored rather than answered with an error.
-    if ((!program && !runner) || this.busy || this.console?.busy) return;
+    // In the terminal in front, as typing it there would.
+    const session = this.session;
+    if ((!program && !runner) || this.busy || !session || session.busy) return;
 
     this.busy = true;
     this.runPressed = performance.now();
@@ -1851,8 +1913,9 @@ export class App {
       // it is ready — only a Run pressed within the first seconds waits here.
       this.say("loading", this.runtimeReady ? "" : "getting python ready…");
       const rt = await this.ensureRuntime();
-      let sh = await this.ensureShell();
-      this.console?.attach(sh);
+      let sh = await session.ensureShell();
+      if (session.stale) sh = await session.replaceShell();
+      session.console.attach(sh);
 
       // Flush every model before running. The editor holds the text; the
       // sandbox holds the file. They are not the same thing, and running
@@ -1868,22 +1931,22 @@ export class App {
       // one a person would type. /workspace is the folder — see runtime.ts.
       const plain = runner ? runner.line : `${program} ${JSON.stringify(this.active)}`;
       if (runner) {
-        const fresh = await this.prepare(plain);
+        const fresh = await this.prepare(session, plain);
         if (fresh) {
           sh = fresh;
-          this.console?.attach(fresh);
+          session.console.attach(fresh);
         }
       }
       const here = (await sh.query("pwd")).trim();
       const command = !here || here === "/workspace" ? plain : `(cd /workspace && ${plain})`;
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
-      this.console?.announce(command);
+      session.console.announce(command);
       let finished: Finished | null = null;
       try {
         finished = await sh.run(command);
       } finally {
-        this.console?.resume(finished);
+        session.console.resume(finished);
       }
 
       this.say("saving", "saving…");
@@ -1976,12 +2039,12 @@ export class App {
       const found = await diff(rt, this.known, this.binaries);
       // Read back: what a command changed is in `found` now, and a document
       // may be written into the sandbox again whatever it holds.
-      if (!this.console?.busy) this.commandOut = false;
+      if (!this.anyBusy) this.commandOut = false;
       // What the page wrote to each file while the command ran, one of which
       // it read (`Runtime.recordVersions`). A command starting now keeps its
       // own from here.
       const versions = rt.takeVersions();
-      if (this.console?.busy) rt.recordVersions();
+      if (this.anyBusy) rt.recordVersions();
       const { next, nextBinaries } = found;
       // A file with a live document is the document's. What the sandbox
       // holds of it is the page's own copy, written in as the document moved
@@ -2354,7 +2417,7 @@ export class App {
     if (this.viewer || this.importing) return;
     const zip = given ?? (await pickZip());
     if (!zip) return;
-    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then import");
+    if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish, then import");
     this.importing = true;
     try {
       this.say("loading", `reading ${zip.name}…`);
@@ -2476,7 +2539,7 @@ export class App {
     const paths = [...this.models.keys(), ...[...this.binaries.keys()].filter(isBinary), ...markers];
     if (!folder && paths.some((p) => p.startsWith(`${to}/`))) return this.say("error", `there is already a folder called ${to}`);
     if (folder && exists(to)) return this.say("error", `there is already a file called ${to}`);
-    if (this.busy || this.console?.busy) return this.say("error", "wait for what is running to finish, then move it");
+    if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish, then move it");
 
     const pairs = paths.filter((p) => (folder ? p.startsWith(`${from}/`) : p === from)).map((p) => [p, to + p.slice(from.length)] as const);
     // A folder made in this tab with nothing in it yet exists only here.
@@ -3008,7 +3071,6 @@ export class App {
     for (const model of this.models.values()) model.dispose();
     this.models.clear();
     this.editor?.dispose();
-    this.term?.dispose();
-    void this.shell?.close().catch(() => {});
+    for (const session of this.sessions) session.dispose();
   }
 }

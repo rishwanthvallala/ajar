@@ -10,6 +10,11 @@ export interface PadElements {
   files: HTMLElement;
   editor: HTMLElement;
   terminal: HTMLElement;
+  /** Where the terminals are, and their tabs once there is more than one. */
+  terms: HTMLElement;
+  tabs: HTMLElement;
+  newTerminal: HTMLButtonElement;
+  split: HTMLButtonElement;
   run: HTMLButtonElement;
   share: HTMLButtonElement;
   preview: HTMLButtonElement;
@@ -44,7 +49,7 @@ export class PadWorkspace {
       title,
       storage,
       preferencePrefix: "pad",
-      terminalActions: false,
+      terminalActions: true,
     });
     this.shell.shell.classList.add("pad-shell");
 
@@ -112,7 +117,7 @@ export class PadWorkspace {
     this.shell.el("empty").remove();
     const terminal = document.createElement("div");
     terminal.id = "terminal";
-    terminal.className = "terminal";
+    terminal.className = "terminal shown";
     terms.append(terminal);
 
     this.shell.el("status").textContent = "opening…";
@@ -121,6 +126,10 @@ export class PadWorkspace {
       files,
       editor,
       terminal,
+      terms,
+      tabs: this.shell.el("tabs"),
+      newTerminal: this.shell.el<HTMLButtonElement>("new-terminal"),
+      split: this.shell.el<HTMLButtonElement>("split"),
       run,
       share,
       preview,

@@ -46,6 +46,8 @@ export interface ConsoleHooks {
    * runs it — or nothing, when the shell it has will do.
    */
   prepare?: (command: string) => Promise<Shell | null>;
+  /** Whether the runtime is up already — a second terminal's first line has nothing to wait for. */
+  ready?: () => boolean;
 }
 
 interface Search {
@@ -572,7 +574,7 @@ export class Console {
       if (!this.shell) {
         if (!this.started) {
           this.started = true;
-          this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
+          if (!this.hooks.ready?.()) this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
         }
         this.shell = await this.hooks.shellFor();
       }

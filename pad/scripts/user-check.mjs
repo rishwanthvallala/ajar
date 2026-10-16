@@ -310,6 +310,51 @@ try {
   expect("ctrl-c and ctrl-d are only keys in nano, and Stop gets out of it", survived && leftEditor, `editing=${editing} survived=${survived} left=${leftEditor}: ${await tail(2)}`);
 
   // ---- the screen ----
+  // ---- more than one terminal ----
+  // A server in one, and the rest of the pad still usable in another: until
+  // 16 October there was one terminal, and a server running in it was the end
+  // of typing anything else.
+  section = "terminals";
+  await clear();
+  const tmTerminals = () => page.evaluate(() => window.__pad.terminals());
+  const tmRowsIn = (id) => page.evaluate((i) => document.querySelector(`#${i} .xterm-rows`)?.innerText ?? "", id);
+  await run("import time\nfor i in range(60):\n    print('busy', i, flush=True)\n    time.sleep(0.5)\n", { wait: false });
+  await shows(/busy 1/, 20_000);
+  await page.click("#new-terminal");
+  await page.locator("#terminal-2 .xterm-helper-textarea").focus();
+  await page.keyboard.type("echo second-terminal; pwd");
+  await page.keyboard.press("Enter");
+  const tmAnswered = await page.waitForFunction(() => /second-terminal\n\/workspace/.test(document.querySelector("#terminal-2 .xterm-rows")?.innerText ?? ""), null, { timeout: 20_000 }).then(() => true, () => false);
+  const tmBoth = await tmTerminals();
+  expect("a second terminal answers while the first runs something, in the same folder",
+    tmAnswered && tmBoth.length === 2 && tmBoth[0].busy && !tmBoth[1].busy && !/starting the runtime/.test(await tmRowsIn("terminal-2")), JSON.stringify(tmBoth));
+  const tmTabs = await page.locator("#tabs .tab").count();
+  const tmDots = await page.locator("#tabs .tab.running").count();
+  const tmLabel2 = await runLabel();
+  await page.locator("#tabs .tab", { hasText: "Terminal 1" }).click();
+  const tmLabel1 = await runLabel();
+  expect("each has a tab, the busy one marked, and Run is Stop for the one in front only", tmTabs === 2 && tmDots === 1 && tmLabel2 === "Run" && tmLabel1 === "Stop", `${tmTabs} tabs, ${tmDots} running, Run says "${tmLabel2}" then "${tmLabel1}"`);
+  await page.click("#split");
+  await wait(400);
+  const tmShown = await page.evaluate(() => [...document.querySelectorAll(".terms > .terminal.shown")].map((e) => e.id));
+  expect("Split shows two side by side", JSON.stringify(tmShown) === JSON.stringify(["terminal", "terminal-2"]), JSON.stringify(tmShown));
+  await page.click("#split");
+  // Closing the busy one stops what runs in it first.
+  await page.locator("#tabs .tab-wrap", { hasText: "Terminal 1" }).hover();
+  await page.locator('#tabs button[aria-label="Close terminal 1"]').click();
+  const tmClosed = await page.waitForFunction(() => window.__pad.terminals().length === 1, null, { timeout: 10_000 }).then(() => true, () => false);
+  const tmAfter = await tmTerminals();
+  expect("closing a terminal stops what runs in it, and the other stays", tmClosed && tmAfter.length === 1 && tmAfter[0].number === 2 && !tmAfter[0].busy && (await page.locator("#tabs .tab").count()) === 0, JSON.stringify(tmAfter));
+  // The rest of this check types into #terminal, the first: one like it again.
+  await page.click("#new-terminal");
+  await page.locator("#tabs .tab-wrap", { hasText: "Terminal 2" }).hover();
+  await page.locator('#tabs button[aria-label="Close terminal 2"]').click();
+  await page.waitForFunction(() => window.__pad.terminals().length === 1, null, { timeout: 10_000 }).catch(() => {});
+  await page.evaluate(() => {
+    const host = document.querySelector(".terms > .terminal");
+    if (host) host.id = "terminal";
+  });
+
   section = "the screen";
   await clear();
   await run("print('no newline here', end='')\n");
