@@ -29,6 +29,23 @@ and 9,000 numbers. Minted server-side, checked against every account pad ever
 made — deleted ones included, since their names stay retired — and against
 every pad in the store now, and immutable once minted.
 
+**Or a name of the owner's own, for three pads** (16 October). New pad,
+Start from a zip, Copy a pad and Make a copy ask for one first, and blank is
+three words as before. A chosen name:
+
+- follows the pad name rules
+- has at least three characters, and a letter
+- is free in the account store, deleted pads included, so a name once used
+  stays retired
+- is free in the pad store, so an open pad's name is never taken from it
+
+`pads.chosen` marks them, and `Limits::named`, 3, caps the live ones per
+account. Deleting one frees a place, not its name. `GET /api/my/names/<name>`
+answers whether a name could be had, with the same rules and the same words,
+so the dialog says so as it is typed (`nameDialog` in ui.ts). Few, because a
+short memorable name is worth more to everyone than to the first account to
+think of it.
+
 **A name is an address, not a secret.** 39 bits is enough that nobody stumbles
 onto a pad, and not enough to keep a pad private against someone guessing at
 scale. Privacy comes from codes, below, and the interface says which a link

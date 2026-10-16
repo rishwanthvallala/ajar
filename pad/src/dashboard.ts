@@ -10,7 +10,7 @@ import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, type 
 import type { IconName } from "./icons";
 import { openShare } from "./share";
 import { type Change, type Pad, Store, StoreError } from "./store";
-import { brand, button, clearBusy, confirmDialog, el, icon, isBusy, modal, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
+import { brand, button, clearBusy, confirmDialog, el, icon, isBusy, modal, nameDialog, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
 import { leftOut, PAD_LIMITS, pickZip, prepareImport, readZip, ZipError } from "./zip";
 
 /** Reasons a provider sends someone back with, that are not failures. */
@@ -273,7 +273,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     const used = pads.reduce((n, p) => n + p.bytes, 0);
     list.removeAttribute("aria-busy");
     usage.textContent = limits
-      ? `${pads.length} of ${limits.pads} pads · ${size(used)} of ${size(limits.bytes)}${full() ? " — delete one to make another" : ""}`
+      ? `${pads.length} of ${limits.pads} pads${limits.named ? ` · ${pads.filter((p) => p.chosen).length} of ${limits.named} named` : ""} · ${size(used)} of ${size(limits.bytes)}${full() ? " — delete one to make another" : ""}`
       : `${pads.length} pads · ${size(used)}`;
     usage.classList.toggle("full", full());
     const fill = limits ? Math.min(1, Math.max(pads.length / limits.pads, used / limits.bytes)) : 0;
@@ -407,12 +407,24 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     if (e instanceof AccountError && e.status === 401) setTimeout(() => location.assign("/dashboard"), 1500);
   };
 
+  /**
+   * A name of their own for the pad about to be made, or "" for three words;
+   * null when they would rather not make it after all.
+   */
+  const askName = (title: string, body: string, confirm: string): Promise<string | null> => {
+    const limit = limits?.named ?? 0;
+    if (!limit) return Promise.resolve("");
+    return nameDialog({ title, body, confirm, limit, left: limit - pads.filter((p) => p.chosen).length, check: (name) => account.nameFree(name) });
+  };
+
   const makePad = async (from: HTMLElement) => {
     if (isBusy(from)) return;
     if (full()) {
       toast(`An account holds ${limits!.pads} pads — delete one to make another`, "error");
       return;
     }
+    const chosen = await askName("New pad", "An empty pad of yours.", "Make it");
+    if (chosen === null) return;
     setBusy(from, true, "Making a pad…");
     try {
       // Two windows side by side never hide each other, so a page can be
@@ -420,7 +432,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       // made in the other account.
       const now = await account.me();
       if (now.user?.id !== me.user?.id) return location.reload();
-      const pad = await account.create();
+      const pad = await account.create(chosen || undefined);
       location.assign(`/${pad.name}`);
     } catch (e) {
       staleSession(e);
@@ -452,9 +464,11 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
         const why = leftOut(prepared);
         throw new Error(`nothing in ${zip.name} a pad can hold${why ? ` — ${why}` : ""}`);
       }
+      const chosen = await askName("Name the pad", `A new pad of yours, with the ${prepared.files.length} files from ${zip.name}.`, "Make it");
+      if (chosen === null) return setBusy(from, false);
       const now = await account.me();
       if (now.user?.id !== me.user?.id) return location.reload();
-      const pad = await account.create();
+      const pad = await account.create(chosen || undefined);
       try {
         await new Store("", codeFor).write(pad.name, prepared.files.map((f) => ({ path: f.path, content: f.content, encoding: f.encoding })));
       } catch (e) {
@@ -544,9 +558,15 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
         input.readOnly = true;
         try {
           const files = await readForCopy(link);
+          const chosen = await askName("Name your copy", `A new pad of yours, with ${link.name}'s ${files.length} files.`, "Make the copy");
+          if (chosen === null) {
+            setBusy(go, false);
+            input.readOnly = false;
+            return;
+          }
           const now = await account.me();
           if (now.user?.id !== me.user?.id) return location.reload();
-          const pad = await account.create();
+          const pad = await account.create(chosen || undefined);
           try {
             await new Store("", () => null).write(pad.name, files);
           } catch (e) {

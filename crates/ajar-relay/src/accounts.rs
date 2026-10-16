@@ -22,6 +22,16 @@ use sha2::{Digest, Sha256};
 
 /// Pads one account may own at once, unless the relay is told otherwise.
 pub const MAX_PADS_PER_ACCOUNT: usize = 20;
+
+/// Of those, how many may have a name their owner chose, rather than three
+/// words minted for them. Few, because a name is first come, first served
+/// and kept for good once used: `notes`, `demo` and `flask` are worth more
+/// to everyone than to the first account that thinks of them.
+pub const MAX_NAMED_PER_ACCOUNT: usize = 3;
+
+/// The shortest name an owner may choose. A minted one is three words; two
+/// letters is a land grab, not a name anyone needs.
+pub const MIN_CHOSEN_NAME: usize = 3;
 /// Bytes every pad of one account may hold together. Each pad keeps its own
 /// cap (`pad::MAX_BYTES`) as well; this is what stops twenty of them filling
 /// the disk. 250 MiB since pads went to 100 on 11 October — at 100 an owned pad
@@ -34,6 +44,8 @@ pub const MAX_BYTES_PER_ACCOUNT: u64 = 250 * 1024 * 1024;
 pub struct Limits {
     pub pads: usize,
     pub bytes: u64,
+    /// Pads whose name the owner chose: [`MAX_NAMED_PER_ACCOUNT`].
+    pub named: usize,
 }
 
 impl Default for Limits {
@@ -41,6 +53,7 @@ impl Default for Limits {
         Limits {
             pads: MAX_PADS_PER_ACCOUNT,
             bytes: MAX_BYTES_PER_ACCOUNT,
+            named: MAX_NAMED_PER_ACCOUNT,
         }
     }
 }
@@ -160,6 +173,8 @@ pub struct PadInfo {
     pub bytes: u64,
     pub files: u64,
     pub links: Vec<Link>,
+    /// Named by its owner rather than minted: counts against [`Limits::named`].
+    pub chosen: bool,
 }
 
 /// One caller's standing with one pad.
@@ -250,6 +265,13 @@ pub enum AccountError {
     TooManyPads(usize),
     /// At the bytes an account may hold, which it carries.
     OverQuota(u64),
+    /// At the pads with chosen names an account may hold, which it carries.
+    TooManyNamed(usize),
+    /// A chosen name that is somebody's, or was: account pads' names stay
+    /// retired once deleted, and an open pad of that name is somebody's work.
+    NameTaken(String),
+    /// A chosen name that is not one: what is wrong with it.
+    BadName(String),
     Db(String),
 }
 
@@ -264,6 +286,11 @@ impl AccountError {
                 "the account this pad belongs to is full — its pads together are at the {} an account can hold",
                 size(*bytes)
             ),
+            AccountError::TooManyNamed(n) => format!(
+                "an account can name {n} pads itself — the rest get three words; delete a named one to name another"
+            ),
+            AccountError::NameTaken(name) => format!("{name} is taken — pick another name"),
+            AccountError::BadName(why) => why.clone(),
             AccountError::Db(e) => format!("the account store failed: {e}"),
         }
     }
@@ -463,10 +490,15 @@ impl Accounts {
     /// anonymous one that happens to exist. Names are checked against every
     /// row here too, deleted pads included: an owner's old link must never
     /// open somebody else's pad.
+    /// A new pad for `owner`: under three minted words, or under `wanted`, a
+    /// name of their own, if it is one ([`check_chosen`]), nobody has it or
+    /// had it, and they have a named place left. `taken` says whether the
+    /// store holds a pad of a name, which an account pad must never take.
     pub fn create_pad(
         &self,
         owner: i64,
         taken: &dyn Fn(&str) -> bool,
+        wanted: Option<&str>,
     ) -> Result<PadInfo, AccountError> {
         let mut db = self.db.lock();
         let held: i64 = db.query_row(
@@ -476,6 +508,27 @@ impl Accounts {
         )?;
         if held as usize >= self.limits.pads {
             return Err(AccountError::TooManyPads(self.limits.pads));
+        }
+        if let Some(wanted) = wanted {
+            let named: i64 = db.query_row(
+                "SELECT COUNT(*) FROM pads WHERE owner_id = ?1 AND deleted IS NULL AND chosen = 1",
+                params![owner],
+                |r| r.get(0),
+            )?;
+            if named as usize >= self.limits.named {
+                return Err(AccountError::TooManyNamed(self.limits.named));
+            }
+            Self::free(&db, wanted, taken)?;
+            let tx = db.transaction()?;
+            tx.execute(
+                "INSERT INTO pads (name, owner_id, view, edit, created, chosen) VALUES (?1, ?2, 'link', 'code', ?3, 1)",
+                params![wanted, owner, now()],
+            )?;
+            tx.commit()?;
+            drop(db);
+            self.new_link(owner, wanted, Role::Viewer)?;
+            self.new_link(owner, wanted, Role::Editor)?;
+            return self.pad_of(owner, wanted);
         }
         let name = loop {
             let candidate = three_words();
@@ -498,6 +551,25 @@ impl Accounts {
         self.new_link(owner, &name, Role::Viewer)?;
         self.new_link(owner, &name, Role::Editor)?;
         self.pad_of(owner, &name)
+    }
+
+    /// Whether `name` could be a pad of somebody's choosing now: said as the
+    /// error creating it would give, so the page can say it while they type.
+    pub fn name_free(&self, name: &str, taken: &dyn Fn(&str) -> bool) -> Result<(), AccountError> {
+        Self::free(&self.db.lock(), name, taken)
+    }
+
+    fn free(db: &Connection, name: &str, taken: &dyn Fn(&str) -> bool) -> Result<(), AccountError> {
+        check_chosen(name)?;
+        let ever: bool = db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM pads WHERE name = ?1)",
+            params![name],
+            |r| r.get(0),
+        )?;
+        if ever || taken(name) {
+            return Err(AccountError::NameTaken(name.to_string()));
+        }
+        Ok(())
     }
 
     fn owned(&self, owner: i64, name: &str) -> Result<(), AccountError> {
@@ -528,11 +600,21 @@ impl Accounts {
     pub fn pad_of(&self, owner: i64, name: &str) -> Result<PadInfo, AccountError> {
         self.owned(owner, name)?;
         let db = self.db.lock();
-        let (created, view, edit, bytes, files): (i64, String, String, i64, i64) = db.query_row(
-            "SELECT created, view, edit, bytes, files FROM pads WHERE name = ?1",
-            params![name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )?;
+        let (created, view, edit, bytes, files, chosen): (i64, String, String, i64, i64, bool) = db
+            .query_row(
+                "SELECT created, view, edit, bytes, files, chosen FROM pads WHERE name = ?1",
+                params![name],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )?;
         let mut q = db.prepare(
             "SELECT id, role, label, code_sealed FROM links WHERE pad = ?1 AND revoked IS NULL ORDER BY id",
         )?;
@@ -563,6 +645,7 @@ impl Accounts {
             bytes: bytes.max(0) as u64,
             files: files.max(0) as u64,
             links,
+            chosen,
         })
     }
 
@@ -962,6 +1045,31 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              PRAGMA user_version = 1;",
         )?;
     }
+    // Names an owner chose, rather than three minted words (16 October 2026).
+    if version < 2 {
+        conn.execute_batch(
+            "ALTER TABLE pads ADD COLUMN chosen INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 2;",
+        )?;
+    }
+    Ok(())
+}
+
+/// A name an owner may choose: a pad's name ([`crate::pad::check_name`]),
+/// of at least [`MIN_CHOSEN_NAME`] characters, with a letter in it so it is a
+/// word rather than a number.
+pub fn check_chosen(name: &str) -> Result<(), AccountError> {
+    crate::pad::check_name(name).map_err(|e| {
+        AccountError::BadName(format!("{name} cannot be a pad's name: {}", e.message()))
+    })?;
+    if name.len() < MIN_CHOSEN_NAME {
+        return Err(AccountError::BadName(format!(
+            "a name of your own needs at least {MIN_CHOSEN_NAME} characters"
+        )));
+    }
+    if !name.bytes().any(|b| b.is_ascii_lowercase()) {
+        return Err(AccountError::BadName("a name needs a letter in it".into()));
+    }
     Ok(())
 }
 
@@ -1042,7 +1150,7 @@ mod tests {
     fn the_defaults_are_view_by_link_and_edit_by_edit_link() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad.links.iter().find(|l| l.role == Role::Editor).unwrap();
         let view = pad.links.iter().find(|l| l.role == Role::Viewer).unwrap();
 
@@ -1074,7 +1182,7 @@ mod tests {
     fn private_viewing_needs_a_link_and_an_edit_link_still_views() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad
             .links
             .iter()
@@ -1115,8 +1223,8 @@ mod tests {
         let (a, _) = store();
         let me = person(&a, "1");
         let you = person(&a, "2");
-        let pad = a.create_pad(me, &|_| false).unwrap();
-        a.create_pad(you, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
+        a.create_pad(you, &|_| false, None).unwrap();
         a.record_size(&pad.name, 5000, 2);
         a.new_session(me).unwrap();
         let s = a.stats(30, 5).unwrap();
@@ -1137,7 +1245,7 @@ mod tests {
     fn changing_one_setting_leaves_the_other_as_stored() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Link, Edit::Owner)
             .unwrap();
         // A page that last saw editing open, changing only who can view.
@@ -1151,7 +1259,7 @@ mod tests {
     fn a_link_says_what_it_grants_and_a_deleted_pad_says_so() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad
             .links
             .iter()
@@ -1181,7 +1289,7 @@ mod tests {
     fn reset_stops_every_link_of_its_kind_even_ones_it_cannot_show() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Code, Edit::Code).unwrap();
         let first = pad
             .links
@@ -1242,7 +1350,7 @@ mod tests {
     fn a_revoked_link_opens_nothing_and_a_new_one_does() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Code, Edit::Code).unwrap();
         let old = pad
             .links
@@ -1271,7 +1379,7 @@ mod tests {
     fn codes_are_kept_sealed_and_hashed_not_plain() {
         let (a, dir) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         let code = pad.links[0].code.clone();
         drop(a);
         // Neither the database nor its write-ahead log holds a code as text.
@@ -1293,7 +1401,7 @@ mod tests {
         let (a, _) = store();
         let me = person(&a, "1");
         let them = person(&a, "2");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         assert_eq!(
             a.set_access(them, &pad.name, View::Owner, Edit::Owner),
             Err(AccountError::NotFound)
@@ -1307,7 +1415,7 @@ mod tests {
     fn a_deleted_pad_opens_for_nobody_and_its_name_is_never_minted_again() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let pad = a.create_pad(me, &|_| false).unwrap();
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
         let code = pad.links[1].code.clone();
         a.delete_pad(me, &pad.name).unwrap();
         assert_eq!(a.access(&pad.name, Some(me), Some(&code)).role, Role::None);
@@ -1322,10 +1430,10 @@ mod tests {
         let me = person(&a, "1");
         let them = person(&a, "2");
         let token = a.new_session(me).unwrap();
-        let kept = a.create_pad(me, &|_| false).unwrap();
-        let gone_before = a.create_pad(me, &|_| false).unwrap();
+        let kept = a.create_pad(me, &|_| false, None).unwrap();
+        let gone_before = a.create_pad(me, &|_| false, None).unwrap();
         a.delete_pad(me, &gone_before.name).unwrap();
-        let theirs = a.create_pad(them, &|_| false).unwrap();
+        let theirs = a.create_pad(them, &|_| false, None).unwrap();
         let code = kept.links[1].code.clone();
 
         let live = a.delete_account(me).unwrap();
@@ -1376,10 +1484,10 @@ mod tests {
         let (a, _) = store();
         let me = person(&a, "1");
         for _ in 0..MAX_PADS_PER_ACCOUNT {
-            a.create_pad(me, &|_| false).unwrap();
+            a.create_pad(me, &|_| false, None).unwrap();
         }
         assert_eq!(
-            a.create_pad(me, &|_| false).err(),
+            a.create_pad(me, &|_| false, None).err(),
             Some(AccountError::TooManyPads(MAX_PADS_PER_ACCOUNT))
         );
     }
@@ -1391,14 +1499,67 @@ mod tests {
         let refused = std::cell::RefCell::new(0);
         // The first two candidates are "taken"; the third is used.
         let pad = a
-            .create_pad(me, &|_| {
-                let mut n = refused.borrow_mut();
-                *n += 1;
-                *n <= 2
-            })
+            .create_pad(
+                me,
+                &|_| {
+                    let mut n = refused.borrow_mut();
+                    *n += 1;
+                    *n <= 2
+                },
+                None,
+            )
             .unwrap();
         assert_eq!(*refused.borrow(), 3);
         assert_eq!(pad.name.split('-').count(), 3);
+    }
+
+    #[test]
+    fn an_owner_names_three_pads_and_a_name_is_kept_for_good() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let taken = |n: &str| n == "an-open-pad";
+        let named = a.create_pad(me, &taken, Some("notes")).unwrap();
+        assert_eq!((named.name.as_str(), named.chosen), ("notes", true));
+        assert!(
+            !a.create_pad(me, &taken, None).unwrap().chosen,
+            "a minted one is not chosen"
+        );
+        assert_eq!(
+            a.create_pad(me, &taken, Some("notes")).err(),
+            Some(AccountError::NameTaken("notes".into()))
+        );
+        assert_eq!(
+            a.create_pad(me, &taken, Some("an-open-pad")).err(),
+            Some(AccountError::NameTaken("an-open-pad".into())),
+            "an open pad is somebody's"
+        );
+        for bad in ["ab", "1234", "Notes!", "-x-y", "api", ""] {
+            assert!(
+                matches!(
+                    a.create_pad(me, &taken, Some(bad)).err(),
+                    Some(AccountError::BadName(_))
+                ),
+                "{bad:?} is not a name"
+            );
+        }
+        a.create_pad(me, &taken, Some("demo")).unwrap();
+        a.create_pad(me, &taken, Some("flask-app")).unwrap();
+        assert_eq!(
+            a.create_pad(me, &taken, Some("fourth")).err(),
+            Some(AccountError::TooManyNamed(MAX_NAMED_PER_ACCOUNT))
+        );
+        // Deleting one frees a place, but not the name.
+        a.delete_pad(me, "demo").unwrap();
+        assert_eq!(
+            a.create_pad(me, &taken, Some("demo")).err(),
+            Some(AccountError::NameTaken("demo".into()))
+        );
+        assert_eq!(
+            a.name_free("demo", &taken).err(),
+            Some(AccountError::NameTaken("demo".into()))
+        );
+        assert_eq!(a.name_free("fourth", &taken), Ok(()));
+        assert!(a.create_pad(me, &taken, Some("fourth")).unwrap().chosen);
     }
 
     #[test]
@@ -1416,8 +1577,8 @@ mod tests {
     fn room_counts_every_other_pad_of_the_owner() {
         let (a, _) = store();
         let me = person(&a, "1");
-        let one = a.create_pad(me, &|_| false).unwrap();
-        let two = a.create_pad(me, &|_| false).unwrap();
+        let one = a.create_pad(me, &|_| false, None).unwrap();
+        let two = a.create_pad(me, &|_| false, None).unwrap();
         a.record_size(&one.name, 60 * 1024 * 1024, 3);
         assert_eq!(
             a.room_for(me, &two.name),

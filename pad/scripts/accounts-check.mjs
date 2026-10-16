@@ -170,6 +170,20 @@ async function typeAtEnd(page, path, words) {
   await page.keyboard.type(words);
 }
 let ownerCookie = "";
+/**
+ * The dialog a pad of one's own is made through since 16 October: a name of
+ * one's own, or blank for three words.
+ */
+async function named(page, name = "") {
+  const dialog = page.locator("dialog.name-dialog");
+  await dialog.waitFor({ timeout: 15_000 });
+  if (name) {
+    await dialog.locator("input").fill(name);
+    await dialog.locator(".name-dialog-said.free").waitFor({ timeout: 10_000 });
+  }
+  await dialog.locator(".btn-primary").click();
+}
+
 async function stored(name) {
   const res = await fetch(`${ORIGIN}/api/pad/${name}`, { headers: { cookie: ownerCookie } });
   return res.ok ? (await res.json()).files : null;
@@ -206,6 +220,7 @@ try {
   // An empty dashboard has one way to make a pad: the empty state's own.
   is(await owner.locator("#new-pad").isVisible(), false, "an empty dashboard does not show two New pad buttons");
   await owner.getByRole("button", { name: "Make your first pad" }).click();
+  await named(owner);
   await owner.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+$/, { timeout: 15_000 });
   const name = new URL(owner.url()).pathname.slice(1);
   ok(`New pad opens a three-word pad (${name})`);
@@ -407,6 +422,7 @@ try {
   await tab.waitForSelector(".pad-card", { timeout: 15_000 });
   const padsBefore = await tab.locator(".pad-card").count();
   await tab.locator("#new-pad").click();
+  await named(tab);
   await tab.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+$/, { timeout: 15_000 });
   const madeHere = new URL(tab.url()).pathname.slice(1);
   await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
@@ -421,6 +437,7 @@ try {
   await tab.getByRole("button", { name: "Copy a pad" }).click();
   await tab.locator("dialog.copy-dialog").getByLabel("Link to a pad").fill(`${ORIGIN}/${name}`);
   await tab.locator("dialog.copy-dialog").getByRole("button", { name: "Make a copy" }).click();
+  await named(tab);
   await tab.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname) && u.pathname !== `/${name}`, { timeout: 15_000 });
   const copiedHere = new URL(tab.url()).pathname.slice(1);
   await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
@@ -751,6 +768,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   const chooser = owner.waitForEvent("filechooser");
   await owner.getByRole("button", { name: "Start from a zip" }).click();
   await (await chooser).setFiles(zipPath);
+  await named(owner);
   await owner.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+(\?.*)?$/, { timeout: 15_000 });
   const zipped = new URL(owner.url()).pathname.slice(1);
   await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
@@ -790,7 +808,13 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   const tryLink = async (text) => {
     await copyDialog().getByLabel("Link to a pad").fill(text);
     await copyDialog().getByRole("button", { name: "Make a copy" }).click();
-    return copyDialog().locator(".field-problem").waitFor({ state: "visible", timeout: 10_000 }).then(() => copyDialog().locator(".field-problem").textContent(), () => null);
+    // A link that cannot be read is refused before a name is asked for; one
+    // whose write is refused, after.
+    const problem = copyDialog().locator(".field-problem");
+    const asked = owner.locator("dialog.name-dialog");
+    await problem.or(asked).first().waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+    if (await asked.isVisible()) await named(owner);
+    return problem.waitFor({ state: "visible", timeout: 10_000 }).then(() => problem.textContent(), () => null);
   };
   await owner.getByRole("button", { name: "Copy a pad" }).click();
   await copyDialog().waitFor();
@@ -814,6 +838,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   owner.on("request", (r) => { if (r.url().endsWith(`/api/pad/${coded.name}`) && r.method() === "GET") sentCode.push(r.headers()["x-pad-code"] ?? null); });
   await copyDialog().getByLabel("Link to a pad").fill(`${ORIGIN}/${coded.name}#${codedEdit}`);
   await copyDialog().getByRole("button", { name: "Make a copy" }).click();
+  await named(owner);
   await owner.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname) && u.pathname !== `/${coded.name}`, { timeout: 15_000 });
   const fromCoded = new URL(owner.url()).pathname.slice(1);
   is(sentCode.includes(codedEdit), true, "a pasted link's code goes with the read");
@@ -825,6 +850,7 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   await owner.getByRole("button", { name: "Copy a pad" }).click();
   await copyDialog().getByLabel("Link to a pad").fill(`${ORIGIN}/open-source-pad`);
   await copyDialog().getByRole("button", { name: "Make a copy" }).click();
+  await named(owner);
   await owner.waitForURL((u) => /^\/[a-z]+-[a-z]+-[a-z]+$/.test(u.pathname), { timeout: 15_000 });
   const copyName = new URL(owner.url()).pathname.slice(1);
   await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
@@ -837,6 +863,52 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
   const original = await (await fetch(`${ORIGIN}/api/pad/open-source-pad`)).json();
   is(original.access?.role === "editor" && Object.keys(original.files).length === 2, true, "and the original is untouched — still open, still its own files");
   for (const n of [copyName, fromCoded, coded.name]) await api(`/api/my/pads/${n}`, { method: "DELETE" });
+
+  // ---- names of one's own: three pads an account names itself ----
+  const stamp = Date.now().toString(36);
+  const mine = `notes-${stamp}`;
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.waitForSelector("text=No pads yet");
+  await owner.getByRole("button", { name: "Make your first pad" }).click();
+  const asking = owner.locator("dialog.name-dialog");
+  await asking.waitFor();
+  is((await asking.locator(".name-dialog-places").textContent()).startsWith("3 of 3 names of your own left"), true, "a new pad offers a name of one's own, and says how many are left");
+  await asking.locator("input").fill("open-source-pad");
+  await asking.locator(".name-dialog-said.taken").waitFor({ timeout: 10_000 });
+  is(/open-source-pad is taken/.test(await asking.locator(".name-dialog-said").textContent()) && (await asking.locator(".btn-primary").isDisabled()), true, "a name an open pad has is taken, and cannot be made");
+  await asking.locator("input").fill("ab");
+  await asking.locator(".name-dialog-said.taken").waitFor({ timeout: 10_000 });
+  is(/at least 3 characters/.test(await asking.locator(".name-dialog-said").textContent()), true, "and a name too short to be one says so");
+  await asking.locator("input").fill(`Notes ${stamp}`);
+  is(await asking.locator("input").inputValue(), mine, "typed as a name can be: small letters, dashes for spaces");
+  await asking.locator(".name-dialog-said.free").waitFor({ timeout: 10_000 });
+  await asking.locator(".btn-primary").click();
+  await owner.waitForURL(new RegExp(`/${mine}$`), { timeout: 15_000 });
+  await owner.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  is(await role(owner), "owner", `a pad of one's own, under its own name (${mine})`);
+  // A copy from the pad itself, under a name too.
+  await typeAtEnd(owner, "main.py", "# in the named pad");
+  await storedHas(mine, "main.py", "in the named pad");
+  await owner.click("#share");
+  await owner.locator("dialog.share-dialog").getByRole("button", { name: "Make a copy" }).click();
+  await named(owner, `copy-${stamp}`);
+  await owner.waitForURL(new RegExp(`/copy-${stamp}$`), { timeout: 15_000 });
+  is((await stored(`copy-${stamp}`))?.["main.py"]?.content.includes("in the named pad"), true, "Make a copy, from any pad's Share, makes one with its files under a name of one's own");
+  const mineNow = (await (await api("/api/my/pads")).json()).filter((p) => p.chosen).map((p) => p.name).sort();
+  is(JSON.stringify(mineNow), JSON.stringify([`copy-${stamp}`, mine].sort()), "both are counted as named");
+  // The third and last.
+  is((await api("/api/my/pads", { method: "POST", body: JSON.stringify({ name: `third-${stamp}` }) })).status, 201, "a third name is had");
+  const fourth = await api("/api/my/pads", { method: "POST", body: JSON.stringify({ name: `fourth-${stamp}` }) });
+  is(fourth.status === 403 && /can name 3 pads itself/.test(await fourth.text()), true, "and a fourth is refused, saying why");
+  await owner.goto(`${ORIGIN}/dashboard`);
+  await owner.waitForSelector(".pad-card");
+  is((await owner.locator(".page-usage").textContent()).includes("3 of 3 named"), true, "the dashboard counts named pads against the three");
+  await owner.locator("#new-pad").click();
+  await asking.waitFor();
+  is((await asking.locator("input").isDisabled()) && /as many as an account can/.test(await asking.locator(".name-dialog-places").textContent()), true, "with none left, the name field is off and says why");
+  await owner.keyboard.press("Escape");
+  for (const n of [mine, `copy-${stamp}`, `third-${stamp}`]) await api(`/api/my/pads/${n}`, { method: "DELETE" });
+  is((await (await api(`/api/my/names/${mine}`)).json()).free, false, "a deleted pad's name is not given out again");
   await owner.goto(`${ORIGIN}/dashboard`);
   await owner.waitForSelector("text=No pads yet");
 

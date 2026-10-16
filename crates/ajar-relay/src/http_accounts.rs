@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/api/me", get(me).delete(delete_me))
         .route("/api/my/pads", get(my_pads).post(create_pad))
+        .route("/api/my/names/{name}", get(name_free))
         .route(
             "/api/my/pads/{name}",
             get(one_pad).delete(delete_pad).patch(set_access),
@@ -123,6 +124,9 @@ fn refuse(e: AccountError) -> Refusal {
         AccountError::TooManyPads(_) | AccountError::OverQuota(_) => {
             StatusCode::INSUFFICIENT_STORAGE
         }
+        AccountError::TooManyNamed(_) => StatusCode::FORBIDDEN,
+        AccountError::NameTaken(_) => StatusCode::CONFLICT,
+        AccountError::BadName(_) => StatusCode::BAD_REQUEST,
         AccountError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, e.message())
@@ -382,22 +386,79 @@ async fn one_pad(
         .map_err(refuse)
 }
 
+/// What a new pad may be asked for with: a name of the owner's choosing.
+/// None, or no body at all, is three minted words, as before.
+#[derive(Deserialize, Default)]
+struct NewPad {
+    name: Option<String>,
+}
+
 async fn create_pad(
     State(state): State<AppState>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<(StatusCode, Json<PadInfo>), Refusal> {
     intended(&headers)?;
     let me = require_user(&state, &headers).await?;
+    let asked: NewPad = if body.is_empty() {
+        NewPad::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "a new pad is asked for with {\"name\": …} or nothing".to_string(),
+            )
+        })?
+    };
+    let wanted = asked
+        .name
+        .map(|n| n.trim().to_ascii_lowercase())
+        .filter(|n| !n.is_empty());
     let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
     let pad = blocking(move || {
         let taken = |name: &str| pads.exists(name).unwrap_or(false);
-        let pad = accounts.create_pad(me.id, &taken)?;
+        let pad = accounts.create_pad(me.id, &taken, wanted.as_deref())?;
         pads.pin(&pad.name);
         Ok(pad)
     })
     .await
     .map_err(refuse)?;
     Ok((StatusCode::CREATED, Json(pad)))
+}
+
+#[derive(Serialize)]
+struct NameAnswer {
+    free: bool,
+    /// Why not, in words, when it is not.
+    why: Option<String>,
+}
+
+/// Whether a name could be one of this person's pads, asked while they type
+/// it: the same rules as making it, answered without making anything.
+async fn name_free(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<NameAnswer>, Refusal> {
+    require_user(&state, &headers).await?;
+    let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
+    let name = name.trim().to_ascii_lowercase();
+    let answer = blocking(move || {
+        let taken = |n: &str| pads.exists(n).unwrap_or(false);
+        Ok(accounts.name_free(&name, &taken))
+    })
+    .await
+    .map_err(refuse)?;
+    Ok(Json(match answer {
+        Ok(()) => NameAnswer {
+            free: true,
+            why: None,
+        },
+        Err(e) => NameAnswer {
+            free: false,
+            why: Some(e.message()),
+        },
+    }))
 }
 
 #[derive(Deserialize)]

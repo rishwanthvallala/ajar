@@ -234,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
             .with_limits(accounts::Limits {
                 pads: args.account_max_pads,
                 bytes: args.account_max_bytes,
+                named: accounts::MAX_NAMED_PER_ACCOUNT,
             }),
     );
     // An owned pad lasts as long as its account: none of them lapses.

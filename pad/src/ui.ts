@@ -227,6 +227,98 @@ export function modal(title: string, subtitle?: string, className = ""): { dialo
  * may hold a node — a pad's name, set in mono. With `typed`, yes stays off
  * until that word is typed: for the few things one click is too few for.
  */
+/**
+ * Asked before a pad of one's own is made: three words made up for it, or a
+ * name of one's own while the account has named places left. The field says
+ * as it is typed whether the name can be had. Resolves to the name, "" for
+ * three words, or null when nothing is to be made after all.
+ */
+export function nameDialog(opts: {
+  title: string;
+  body: string;
+  confirm: string;
+  /** Named places left, and of how many. */
+  left: number;
+  limit: number;
+  check: (name: string) => Promise<{ free: boolean; why: string | null }>;
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    const dialog = el("dialog", { className: "modal modal-confirm name-dialog" });
+    const titleId = uid("name-title");
+    dialog.setAttribute("aria-labelledby", titleId);
+    let answer: string | null = null;
+    const inputId = uid("name-input");
+    const input = el("input", { id: inputId, className: "confirm-typed name-dialog-input", type: "text" }) as HTMLInputElement;
+    input.placeholder = "three words, made up for it";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.maxLength = 64;
+    input.setAttribute("autocapitalize", "off");
+    const label = el("label", { className: "confirm-typed-label" }, "Name it yourself, or leave it blank");
+    label.htmlFor = inputId;
+    const said = el("p", { className: "name-dialog-said" });
+    said.setAttribute("aria-live", "polite");
+    const places = el("p", { className: "name-dialog-places" }, opts.left > 0
+      ? `${opts.left} of ${opts.limit} names of your own left. Lowercase letters, digits and dashes; a name is yours for as long as the pad is, and not given out again after.`
+      : `You have named ${opts.limit} pads yourself, as many as an account can, so this one gets three words.`);
+    if (opts.left <= 0) input.disabled = true;
+    const yes = button(opts.confirm, { className: "btn-primary", onClick: () => { answer = input.value.trim(); dialog.close(); } });
+    const no = button("Cancel", { onClick: () => dialog.close() });
+    // What the server says of what is in the field now; an older answer, for
+    // what was there a keystroke ago, is ignored.
+    let asked = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const judge = () => {
+      // As typed, as a name can be: spaces become dashes, capitals small.
+      const tidy = input.value.toLowerCase().replace(/\s+/g, "-");
+      if (tidy !== input.value) input.value = tidy;
+      const name = input.value.trim();
+      clearTimeout(timer);
+      if (!name) {
+        said.textContent = "";
+        said.className = "name-dialog-said";
+        yes.disabled = false;
+        return;
+      }
+      yes.disabled = true;
+      said.textContent = "checking…";
+      said.className = "name-dialog-said";
+      const mine = ++asked;
+      timer = setTimeout(() => {
+        void opts.check(name).then(
+          (r) => {
+            if (mine !== asked) return;
+            said.textContent = r.free ? `${name} is free` : (r.why ?? `${name} cannot be had`);
+            said.className = `name-dialog-said ${r.free ? "free" : "taken"}`;
+            yes.disabled = !r.free;
+          },
+          (e: Error) => {
+            if (mine !== asked) return;
+            said.textContent = e.message;
+            said.className = "name-dialog-said taken";
+          },
+        );
+      }, 300);
+    };
+    input.addEventListener("input", judge);
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (!yes.disabled) yes.click();
+    });
+    const body = el("div", { className: "confirm-body" }, el("h2", { id: titleId }, opts.title), el("p", {}, opts.body), label, input, said, places);
+    dialog.append(body, el("div", { className: "confirm-actions" }, no, yes));
+    dialog.addEventListener("close", () => {
+      clearTimeout(timer);
+      dialog.remove();
+      resolve(answer);
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    (opts.left > 0 ? input : yes).focus();
+  });
+}
+
 export function confirmDialog(opts: { title: string | (string | Node)[]; body: string; confirm: string; danger?: boolean; typed?: string }): Promise<boolean> {
   return new Promise((resolve) => {
     const dialog = el("dialog", { className: "modal modal-confirm" });

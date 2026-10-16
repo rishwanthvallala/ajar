@@ -26,6 +26,35 @@ export interface ShareContext {
   fromDashboard?: boolean;
   /** The pad turned out not to exist any more — deleted in another tab. */
   onGone?: () => void;
+  /** Make a new pad with this one's files: offered when there is one to make. */
+  onCopy?: () => void;
+}
+
+/** A new pad from this one's files, for anyone who can open it. */
+function copySection(ctx: ShareContext, close: () => void): HTMLElement[] {
+  if (!ctx.onCopy) return [];
+  const copy = button("Make a copy", {
+    icon: "copy",
+    className: "share-copy",
+    onClick: () => {
+      close();
+      ctx.onCopy!();
+    },
+  });
+  return [el("section", { className: "share-section share-copy-section" }, el("h3", {}, "Copy"), el("p", { className: "share-about" }, "A new pad with these files, yours to change. The name can be one of your own."), copy)];
+}
+
+/**
+ * An open pad has nothing to decide, so its dialog is the link — already on
+ * the clipboard when this opens — and a copy.
+ */
+export function openOpenShare(ctx: ShareContext): void {
+  const { dialog, body } = modal("Share", ctx.name, "share-dialog");
+  dialog.querySelector(".modal-sub")?.classList.add("mono");
+  const links = el("section", { className: "share-section" }, el("h3", {}, "Link"));
+  links.append(linkRow({ label: "Link", key: "viewer", icon: "pencil", about: "Anyone with it can edit this pad with you. It is copied already.", url: linkTo(ctx.name), off: "" }));
+  body.append(links, ...copySection(ctx, () => dialog.close()));
+  dialog.showModal();
 }
 
 interface Choice<T extends string> {
@@ -331,7 +360,7 @@ export async function openShare(ctx: ShareContext): Promise<void> {
   dialog.querySelector(".modal-sub")?.classList.add("mono");
 
   if (ctx.access.role !== "owner") {
-    body.append(...guestBody(ctx));
+    body.append(...guestBody(ctx), ...copySection(ctx, () => dialog.close()));
     dialog.showModal();
     return;
   }
@@ -353,14 +382,14 @@ export async function openShare(ctx: ShareContext): Promise<void> {
   // the same name, or to `focus`, rather than falling onto the page.
   const redraw = (pad: PadInfo, focus?: string) => {
     const was = (dialog.contains(document.activeElement) && (document.activeElement as HTMLElement).dataset.focus) || undefined;
-    body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard, gone));
+    body.replaceChildren(...ownerBody(pad, redraw, !!ctx.fromDashboard, gone), ...copySection(ctx, () => dialog.close()));
     const target = focus ?? was;
     if (target) body.querySelector<HTMLElement>(`[data-focus="${target}"]`)?.focus();
     ctx.pad = pad;
     ctx.onChange?.(pad);
   };
   if (ctx.pad) {
-    body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard, gone));
+    body.replaceChildren(...ownerBody(ctx.pad, redraw, !!ctx.fromDashboard, gone), ...copySection(ctx, () => dialog.close()));
     // Not to be copied until the server has confirmed them.
     for (const section of body.querySelectorAll(".share-section")) section.setAttribute("aria-busy", "true");
     dialog.showModal();

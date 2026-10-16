@@ -41,7 +41,8 @@ export interface User {
 export interface Me {
   user: User | null;
   providers: string[];
-  limits?: { pads: number; bytes: number };
+  /** `named`: how many pads an account may name itself, rather than three minted words. */
+  limits?: { pads: number; bytes: number; named?: number };
   /** Whether this person may open /admin. */
   admin?: boolean;
 }
@@ -61,6 +62,8 @@ export interface PadInfo {
   bytes: number;
   files: number;
   links: Link[];
+  /** Named by its owner rather than minted: counts against `limits.named`. */
+  chosen?: boolean;
 }
 
 const KEY = (name: string) => `pad.code.${name}`;
@@ -278,7 +281,10 @@ export const account = {
   me: () => call<Me>("/api/me"),
   pads: () => call<PadInfo[]>("/api/my/pads"),
   pad: (name: string) => call<PadInfo>(`/api/my/pads/${encodeURIComponent(name)}`),
-  create: () => call<PadInfo>("/api/my/pads", { method: "POST" }),
+  /** Three minted words, or `name` when one of the account's own is wanted. */
+  create: (name?: string) => call<PadInfo>("/api/my/pads", name ? { method: "POST", body: JSON.stringify({ name }) } : { method: "POST" }),
+  /** Whether `name` could be one of this account's pads now, and why not. */
+  nameFree: (name: string) => call<{ free: boolean; why: string | null }>(`/api/my/names/${encodeURIComponent(name)}`),
   remove: (name: string) => call<void>(`/api/my/pads/${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** One setting or both; one alone leaves the other as the server has it. */
   settings: (name: string, change: { view?: View; edit?: Edit }) =>

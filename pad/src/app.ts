@@ -24,8 +24,8 @@ import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
 import { TerminalSession } from "./terminals";
 import { ICONS } from "./icons";
-import { openShare } from "./share";
-import { clearBusy, confirmDialog, toast, toastRegions } from "./ui";
+import { openOpenShare, openShare } from "./share";
+import { clearBusy, confirmDialog, nameDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
 import { type Change, mintName, Store, StoreError, storedHash, type Pad } from "./store";
 import { seedFiles } from "./seed";
@@ -2292,9 +2292,12 @@ export class App {
   }
 
   private async share(): Promise<void> {
-    if (this.access.account) {
-      return openShare({ name: this.name, access: this.access, code: codeFor(this.name) });
-    }
+    // A copy of any pad, for anyone who can open it: the files into a new pad
+    // of their own, named as they like while their account has names left.
+    const ctx = { name: this.name, access: this.access, code: codeFor(this.name), onCopy: () => void this.saveCopy() };
+    if (this.access.account) return openShare(ctx);
+    // An open pad's link is copied at once, as it always was, and the dialog
+    // only adds the copy beside it.
     const url = `${location.origin}/${this.name}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -2302,6 +2305,7 @@ export class App {
     } catch {
       this.say("", url);
     }
+    openOpenShare(ctx);
   }
 
   // ---------------------------------------------------------------- roles
@@ -3048,7 +3052,19 @@ export class App {
     }
     if (me.user) {
       try {
-        return { name: (await account.create()).name, account: true };
+        // A name of their own, while the account has named places left.
+        const limit = me.limits?.named ?? 0;
+        const used = limit ? (await account.pads()).filter((p) => p.chosen).length : 0;
+        const chosen = await nameDialog({
+          title: "Name your copy",
+          body: "A new pad of yours, with these files.",
+          confirm: "Make the copy",
+          left: limit - used,
+          limit,
+          check: (name) => account.nameFree(name),
+        });
+        if (chosen === null) return null;
+        return { name: (await account.create(chosen || undefined)).name, account: true };
       } catch (e) {
         if (!(e instanceof AccountError && e.status === 507)) throw e;
         const open = await confirmDialog({

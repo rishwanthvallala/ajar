@@ -289,6 +289,16 @@ code in the link is used for that one copy, not kept. Before you have any
 pads, the three are **Make your first pad**, **Start from a zip** and **Copy
 a pad**.
 
+**Names of your own.** Each of those asks for a name first. Leave it blank
+for three words, or type one of your own, like `notes` or `flask-demo`, for
+up to three of your pads. The field says as you type whether the name is
+free. A name is first come, first served, and kept for good once used:
+deleting the pad frees your place for another name, not the name itself.
+
+**Make a copy**, under **Share** in any pad you can open, does the same from
+inside it: a new pad of yours with this one's files, under a name of your
+own if you like. Not signed in, the copy is an open pad.
+
 Each pad has two settings, on its row in Your pads or under **Share** in the
 pad:
 
