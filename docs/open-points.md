@@ -577,6 +577,39 @@ it at all.
   Context from other files makes it much better, and costs time on every ask.
 - **Phones:** on or not.
 
+*Measured on 16 October, in the completion lab* (`pad/lab.html`; `pad/lab/`
+says how to build it). The ask was a model of 30 MB or less. All runs were on
+the CPU, in WebAssembly with 4 threads, on this Mac. Each model answered 24
+cursors in mid-line, in Python, JavaScript, Java and C:
+
+| | Download | Right | Right, spacing aside | Median, slowest tenth |
+|---|---|---|---|---|
+| CodeT5-small, 8-bit | 66 MB | 8 of 24 | 9 | 45 ms, 95 ms |
+| CodeT5-small, 4-bit | 60 MB | 6 of 24 | 7 | 159 ms, 320 ms |
+| tiny_starcoder_py, 4-bit (164M) | 321 MB | 8 of 24 | 9 | 636 ms, 1.4 s |
+
+Plus the runtime: 4.5 MB on the wire, once for every model.
+
+What that says:
+- **Nothing that exists fits 30 MB.** The smallest CodeT5-small files are
+  50 MB: 4-bit throughout, one scale per 128 weights. They do not load yet,
+  because ONNX Runtime's WebAssembly build has no 4-bit vocabulary lookup.
+  Even then, about 30 MB of the 50 is the same vocabulary table three times
+  (the encoder, the decoder, and the decoder's output).
+- **CodeT5's raw output is spaced oddly.** It writes `load ( f)` and
+  `"name" ]`, and so does the original model in PyTorch, unconverted. A
+  small tidying pass (`tidy` in `pad/lab/cases.ts`) turned 3 right answers
+  into 8.
+- **8-bit beats 4-bit.** It is faster in WebAssembly and slightly better, for
+  6 MB more.
+- **The yardstick buys little.** It is three times the size and fourteen
+  times slower, and no more often right. It is better at Python, worse at
+  everything else.
+
+So the existing model to use, if one, is CodeT5-small at 8 bits. Getting
+under 30 MB takes work on it: the vocabulary table kept once, or trimmed to
+the tokens code uses. Or it takes the model of our own written up above.
+
 **Preview URLs for ajar.** A guest runs `npm run dev` and cannot reach the
 thing they started. This was named the most urgent hole in the retrospective,
 and again at the end of

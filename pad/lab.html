@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Completion lab</title>
+    <meta name="description" content="Small code-completion models running in this browser, compared on download size, quality and speed." />
+  </head>
+  <body>
+    <main class="lab">
+      <header>
+        <h1>Completion lab</h1>
+        <p class="lede">
+          Small code-completion models, running in this browser and nowhere else. Load one, and it is
+          downloaded once and kept by the browser. Then the test cases ask each loaded model what goes at a
+          cursor in the middle of a line, and the playground asks as you type.
+        </p>
+        <p class="env" id="env">Checking this browser…</p>
+      </header>
+
+      <section aria-labelledby="models-title">
+        <div class="section-head">
+          <h2 id="models-title">Models</h2>
+          <div class="controls">
+            <label>Run on
+              <select id="device">
+                <option value="wasm">the CPU (WebAssembly)</option>
+                <option value="webgpu">the GPU (WebGPU)</option>
+              </select>
+            </label>
+            <button type="button" id="clear-cache" class="quiet">Forget downloaded models</button>
+          </div>
+        </div>
+        <div id="models" class="models"></div>
+        <p class="note" id="runtime-note"></p>
+      </section>
+
+      <section aria-labelledby="cases-title">
+        <div class="section-head">
+          <h2 id="cases-title">Test cases</h2>
+          <div class="controls">
+            <label><input type="checkbox" id="tidy" checked /> Tidy CodeT5's spacing</label>
+            <button type="button" id="run" disabled>Run them on every loaded model</button>
+          </div>
+        </div>
+        <p class="note">
+          Each case is a cursor in the middle of a line, and the line a person would finish it with. A suggestion
+          counts as right when its first line is that line exactly. <em>Kept</em> is how much of the line it gets
+          right from the start, which is what pressing Tab would keep. CodeT5 writes <code>load ( f)</code> for
+          <code>load(f)</code>; tidied, those spaces go, and what it wrote is shown when you point at a suggestion.
+        </p>
+        <div class="table-wrap"><table id="results"></table></div>
+      </section>
+
+      <section aria-labelledby="play-title">
+        <div class="section-head">
+          <h2 id="play-title">Playground</h2>
+          <div class="controls"><label>Tab takes <select id="take"></select></label></div>
+        </div>
+        <p class="note">Type, and stop: each loaded model suggests what comes at the cursor. Tab takes the one picked.</p>
+        <textarea id="play" spellcheck="false" aria-label="Code to complete"></textarea>
+        <div id="suggestions" class="suggestions" aria-live="polite"></div>
+      </section>
+    </main>
+    <script type="module" src="/lab/lab.ts"></script>
+  </body>
+</html>
