@@ -147,6 +147,11 @@ export interface Finished {
   exitCode: number;
   /** Ended by `interrupt()`, so its status is the signal's, not the program's. */
   interrupted?: boolean;
+  /**
+   * Not stopped by the interrupt, so ended with the shell — and what it
+   * started may still be running: see `Shell.interrupt`.
+   */
+  forced?: boolean;
 }
 
 /**
@@ -238,6 +243,8 @@ export class Shell {
   private waiting: ((f: Finished) => void) | null = null;
   /** Set by `interrupt()` until the command it interrupted is over. */
   private interrupted = false;
+  /** Set when an interrupt was not enough and the shell was ended for it. */
+  private forced = false;
   /** Set by `close()`; nothing this shell says afterwards is shown. */
   private closed = false;
   private readonly decoder = new TextDecoder();
@@ -378,7 +385,7 @@ export class Shell {
     this.alive = false;
     const waiting = this.waiting;
     this.waiting = null;
-    waiting?.({ exitCode: 130, interrupted: this.interrupted });
+    waiting?.({ exitCode: 130, interrupted: this.interrupted, forced: this.forced });
   }
 
   private absorb(text: string): void {
@@ -586,6 +593,10 @@ export class Shell {
    * and a half is ended the old way, with the shell. That is clean for bash's
    * own builtins; a program that took no notice of the signal — `nano`, which
    * has the terminal raw — outlives it, and `close()` stops listening to it.
+   * So does one with a process of its own still running: the signal goes to
+   * that one here, not to the program (measured on 16 October, with
+   * `subprocess.Popen(["sleep", "100"])`). The program goes on unseen, and a
+   * server goes on holding its port, so the console says so (`forced`).
    */
   interrupt(): void {
     const waiting = this.waiting;
@@ -593,7 +604,9 @@ export class Shell {
     this.interrupted = true;
     this.proc.stdin!.write("\x03").catch(() => {});
     setTimeout(() => {
-      if (this.waiting === waiting) this.close().catch(() => {});
+      if (this.waiting !== waiting) return;
+      this.forced = true;
+      this.close().catch(() => {});
     }, 1500);
   }
 

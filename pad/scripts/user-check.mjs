@@ -254,6 +254,29 @@ try {
   await focus(); await page.keyboard.press("Control+c");
   await idle(5000);
   expect("ctrl-c at input() leaves a shell that answers", (await typed("echo still-here", 10_000)) && (await shows(/\nstill-here/)), await tail());
+  // A program with a lock that could be shared between processes —
+  // Flask's debugger makes one. Python started a process of its own to keep
+  // track of those, and while that ran, ctrl-c went to it: the program served
+  // on, holding its port, behind a prompt that looked as if it had stopped.
+  await clear();
+  await run("import multiprocessing, time\nshared = multiprocessing.Value('B')\nprint('holding a lock', flush=True)\ntime.sleep(30)\n", { wait: false });
+  await shows(/holding a lock/, 20_000);
+  await wait(600);
+  await focus(); await page.keyboard.press("Control+c");
+  const lockStopped = await idle(1400);
+  await wait(300);
+  const sameShell = (await typed("echo kept=$KEPT")) && (await shows(/kept=yes/));
+  expect("ctrl-c stops a program holding a multiprocessing lock, in the same shell", lockStopped && sameShell, await tail(4));
+  // One whose child is still running cannot be stopped from here at all: the
+  // signal goes to the child. Ended with the shell, it is said so.
+  await clear();
+  await run("import subprocess, time\nchild = subprocess.Popen(['sleep', '60'])\nprint('with a child', flush=True)\ntime.sleep(30)\n", { wait: false });
+  await shows(/with a child/, 20_000);
+  await wait(600);
+  await focus(); await page.keyboard.press("Control+c");
+  await idle(5000);
+  expect("a program ctrl-c cannot reach is ended with the shell, and that is said, port and all", await shows(/did not stop at ctrl-c.*holding its port/), await tail(3));
+  await typed("export KEPT=yes");
   await clear();
   await run("import time\nprint('sleeping', flush=True)\ntime.sleep(30)\n", { wait: false });
   await shows(/sleeping/, 20_000);

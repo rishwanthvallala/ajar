@@ -521,6 +521,14 @@ export class Console {
     if (finished && finished.exitCode !== 0 && !finished.interrupted) {
       this.screen.write(`${this.freshRow()}\x1b[31mexit ${finished.exitCode}\x1b[0m\r\n`);
     }
+    // Said now, where it happened: what was left running is invisible, and a
+    // server's port stays taken — "Address in use" the next time, with no
+    // sign of why.
+    if (finished?.forced) {
+      this.screen.write(
+        `${this.freshRow()}\x1b[2m(it did not stop at ctrl-c, so the shell was ended — it may still be running, and holding its port, until you reload the page)\x1b[0m\r\n`,
+      );
+    }
     this.screen.write(`${this.freshRow()}${PROMPT}`);
     this.cursorRow = 0;
   }

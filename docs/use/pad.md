@@ -376,7 +376,11 @@ Ctrl-C stops it, or press **Stop**. The shell carries on where it was.
 
 If Ctrl-C was not enough — bash's own `read`, or a program that ignores it —
 the shell restarts after a moment instead, so you are back in the folder root
-and any variables you set are gone. Ctrl-D, which ends a program's input, does
+and any variables you set are gone. A program that started another program
+that is still running cannot be stopped from the terminal at all: Ctrl-C
+reaches the other one. The terminal says so, and the program goes on — a
+server keeps its port ("Address in use" next time) — until you reload the
+page. Ctrl-D, which ends a program's input, does
 the same once the program finishes.
 
 The first command is slow — that is the 19 MB arriving. After that it is

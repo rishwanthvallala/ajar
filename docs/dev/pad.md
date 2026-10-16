@@ -260,6 +260,19 @@ so since 16 October `App.openEditor` drops that one report from Monaco's
 stays. A model only for the files that are open would not need it, and
 would touch everything that reads a file's text.
 
+**Ctrl-C reaches a program's child, not the program.** A program that started
+another process still running — `subprocess.Popen(["sleep", "100"])` — takes no
+notice of Ctrl-C here, and neither does the child it reaches; after a second and
+a half `Shell.interrupt` ends bash, and the program goes on unseen. Flask's
+debug mode was the common case, without starting anything itself: its debugger
+makes a `multiprocessing.Value`, and the first lock like that starts Python's
+resource tracker, a process of its own. Flask served on, holding its port,
+behind a prompt that looked as though it had stopped, and the next run said
+"Address in use". Since 16 October `sitecustomize.py` does not start the
+tracker — what it would clean up goes with the sandbox — and when an interrupt
+has to end the shell the console says the program may still be running. A
+program with a real child is still unreachable; only a reload ends it.
+
 **There is no home directory.** `~` is not expanded, so a tool that keeps
 something under it — pip's cache, for one — makes a directory called `~` in
 the folder. pip's went into every pad that installed anything,

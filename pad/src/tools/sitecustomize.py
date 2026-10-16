@@ -21,6 +21,12 @@ never uses them pays nothing for them:
 - Werkzeug's development server — Flask's `app.run(debug=True)` and `flask
   run --debug` — runs without its reloader, which watches for changes on a
   thread. It said so with this file's traceback instead of serving.
+- multiprocessing's resource tracker is not started. It is a process of its
+  own, started by the first lock or shared value — Flask's debugger makes one
+  — and while any process a program started is still running, ctrl-c here
+  reaches that one and not the program: Flask kept serving, and its port
+  stayed taken, after a ctrl-c that seemed to stop it. What the tracker would
+  clean up goes with the sandbox anyway.
 - urllib.request, and `requests` once pip has installed it, make their http
   and https requests through the browser, with its fetch (_padfetch.py). The
   sandbox's own sockets reach PyPI and nothing else; the browser reaches any
@@ -121,6 +127,16 @@ def _no_reloader(serving):
         return run_simple(*args, **kwargs)
 
     serving.run_simple = run
+
+
+@_when_imported("multiprocessing.resource_tracker")
+def _no_tracker(resource_tracker):
+    def nothing(*args, **kwargs):
+        return None
+
+    resource_tracker.ensure_running = nothing
+    resource_tracker.register = nothing
+    resource_tracker.unregister = nothing
 
 
 @_when_imported("urllib.request")

@@ -287,6 +287,12 @@ built. The pinned
 binary set is still what keeps the network off the critical path — nothing in
 the pad needs it to work.
 
+**Ctrl-C does not reach a program whose child is still running.** The runtime
+delivers it to the child. The pad ends the shell after a second and a half
+and says so, but the program goes on, holding whatever port it had, until the
+page is reloaded: nothing on the page can end a process the shell did not
+start. Flask's debug mode was the common case, and no longer starts one.
+
 ---
 
 ## Built, with the parts that are still open
