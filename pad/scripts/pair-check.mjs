@@ -438,6 +438,42 @@ try {
     if (filled) ok("a file opened while empty, then written by a command, opens with what the command wrote");
     else fail(`a file opened while empty, then written by a command, opens with what the command wrote — it shows ${JSON.stringify((await state(b)).screen)}`);
   }
+
+  // ---- history: an earlier version, gone back to from one place -----------
+  // Restored the way a command's change is published, so the other place's
+  // open document takes it, and the store holds it, and what was there is
+  // kept as a version of its own first.
+  {
+    const name = `pair-history-${Date.now().toString(36)}`;
+    const put = (writes) => fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes }) });
+    await put([{ path: "main.py", content: "print('first')\n" }, { path: "notes.txt", content: "kept\n" }]);
+    await fetch(`${ORIGIN}/api/pad/${name}/history`, { method: "POST" });
+    await put([{ path: "extra.py", content: "x = 1\n" }]);
+    const [a, b] = await pair(name);
+    if ((await state(a)).path !== "main.py") await a.locator("#files").getByText("main.py", { exact: true }).click();
+    if ((await state(b)).path !== "main.py") await b.locator("#files").getByText("main.py", { exact: true }).click();
+    await setAll(a, "print('changed')\n");
+    await wait(a, 1500);
+    await a.click('#files button[aria-label^="History"]');
+    const dialog = a.locator("dialog.history-dialog");
+    await dialog.locator(".history-file").first().waitFor({ timeout: 15_000 });
+    const marks = await dialog.locator(".history-file").allInnerTexts();
+    const marked = marks.some((m) => /main\.py\s+changed since/.test(m)) && marks.some((m) => /extra\.py\s+added since/.test(m)) && marks.some((m) => /notes\.txt\s+the same/.test(m));
+    if (marked) ok("History shows a version against the pad as it is, file by file");
+    else fail(`History shows a version against the pad as it is — ${JSON.stringify(marks)}`);
+    await dialog.getByRole("button", { name: "Restore this version" }).click();
+    await a.locator("dialog.modal-confirm").getByRole("button", { name: "Restore it" }).click();
+    const back = await b.waitForFunction(() => window.__pad?.text("main.py") === "print('first')\n", null, { timeout: 60_000 }).then(() => true, () => false);
+    await agree(a, b, "print('first')\n", "a restore from one place reaches the other's open document");
+    const stored = (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files;
+    const storedRight = stored["main.py"]?.content === "print('first')\n" && !stored["extra.py"] && stored["notes.txt"]?.content === "kept\n";
+    const history = await (await fetch(`${ORIGIN}/api/pad/${name}/history`)).json();
+    const keptFirst = history.length === 2 && (await (await fetch(`${ORIGIN}/api/pad/${name}/history/${history[0].id}`)).json()).files["main.py"]?.content === "print('changed')\n";
+    if (back && storedRight && keptFirst) ok("and the store holds it — a file added since gone — with what it replaced kept as a version");
+    else fail(`a restore is stored, with what it replaced kept — ${JSON.stringify({ back, stored: Object.keys(stored), main: stored["main.py"]?.content, versions: history.length, keptFirst })}`);
+    await a.context().close();
+    await b.context().close();
+  }
 } catch (e) {
   fail(e.stack ?? String(e));
 } finally {

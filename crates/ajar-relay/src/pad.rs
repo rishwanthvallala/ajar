@@ -82,6 +82,21 @@ pub const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// the store full for three months.
 pub const LEASE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
+/// How long a pad goes on being edited before the way it was is kept as a
+/// version. A save after a pause at least this long keeps the pad as it was
+/// left, and a long session keeps one this often: earlier versions without
+/// one per keystroke.
+pub const VERSION_EVERY: Duration = Duration::from_secs(10 * 60);
+/// The most versions one pad keeps, newest first.
+pub const VERSIONS_KEPT: usize = 30;
+/// And the most bytes of files they may name between them. A version shares
+/// every file it has in common with the pad and with other versions, so this
+/// is what history could cost a pad whose every file changed each time, and
+/// counts against [`MAX_STORE_BYTES`] like any file.
+pub const HISTORY_BYTES: u64 = 200 * 1024 * 1024;
+/// And nothing older than this.
+pub const VERSION_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// How stale a pad's last touch must be before a read renews it.
 ///
 /// The lease is the file's modification time, so renewing is a metadata update
@@ -409,6 +424,18 @@ struct Row {
     stored: u64,
 }
 
+/// A version's files, path to blob.
+type Manifest = BTreeMap<String, String>;
+
+/// One kept version of a pad: [`Store::history`].
+#[derive(Debug, Clone, Serialize)]
+pub struct Version {
+    pub id: u64,
+    pub at_ms: u64,
+    pub files: u64,
+    pub bytes: u64,
+}
+
 /// A pad as a link preview describes it: [`Store::summary`].
 #[derive(Debug, Clone)]
 pub struct Summary {
@@ -426,6 +453,12 @@ pub const SUMMARY_LEAD_MAX: u64 = 64 * 1024;
 
 /// The file a preview quotes: the one a reader would open first, if it is
 /// text and small enough to read for a preview.
+/// A path in a hidden folder, or a hidden file: `.deps/…`, `.ajar/…`, `.keep`.
+fn hidden(path: &str) -> bool {
+    path.split('/')
+        .any(|part| part.starts_with('.') || part == "__pycache__")
+}
+
 fn lead_file(rows: &BTreeMap<String, Row>) -> Option<(String, Row)> {
     const FIRST: [&str; 8] = [
         "main.py",
@@ -448,7 +481,7 @@ fn lead_file(rows: &BTreeMap<String, Row>) -> Option<(String, Row)> {
         })
         .or_else(|| {
             rows.iter()
-                .find(|(p, r)| !p.ends_with("/.keep") && quotable(r))
+                .find(|(p, r)| !hidden(p) && quotable(r))
                 .map(|(p, r)| (p.clone(), r.clone()))
         })
 }
@@ -617,6 +650,9 @@ pub struct Store {
     pinned: parking_lot::RwLock<std::collections::HashSet<String>>,
     /// Blobs being read or edited, which a release leaves where they are.
     in_use: InUse,
+    /// Whether a save keeps the pad as it was as a version. Always, but for
+    /// the tests of how blobs are let go, which history would hold on to.
+    keeps_history: bool,
 }
 
 const SCHEMA: &str = "
@@ -645,6 +681,25 @@ const SCHEMA: &str = "
         stored INTEGER NOT NULL,
         refs INTEGER NOT NULL,
         unheld_ms INTEGER
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS versions (
+        pad TEXT NOT NULL,
+        id INTEGER NOT NULL,
+        at_ms INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        files INTEGER NOT NULL,
+        bytes INTEGER NOT NULL,
+        PRIMARY KEY (pad, id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS version_files (
+        pad TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        blob TEXT NOT NULL,
+        encoding INTEGER NOT NULL,
+        size INTEGER NOT NULL,
+        stored INTEGER NOT NULL,
+        PRIMARY KEY (pad, version, path)
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS pads_touched ON pads (touched_ms);
     CREATE INDEX IF NOT EXISTS blobs_unheld ON blobs (unheld_ms) WHERE refs = 0;
@@ -694,6 +749,7 @@ impl Store {
             used: AtomicU64::new(0),
             pinned: Default::default(),
             in_use: Default::default(),
+            keeps_history: true,
         };
         store.import_legacy()?;
         // Nothing is being read yet, so a blob held by nothing can go now.
@@ -892,26 +948,8 @@ impl Store {
         now: u64,
     ) -> Result<i64, Error> {
         let mut held: i64 = 0;
-        // A blob's holders, changed by `by`; what that does to the bytes held.
         let mut count = |hash: &str, stored: u64, by: i64| -> Result<(), Error> {
-            tx.execute(
-                "INSERT INTO blobs (hash, stored, refs, unheld_ms) VALUES (?1, ?2, 0, NULL) ON CONFLICT(hash) DO NOTHING",
-                params![hash, stored as i64],
-            )?;
-            let before: i64 =
-                tx.query_row("SELECT refs FROM blobs WHERE hash = ?1", [hash], |r| {
-                    r.get(0)
-                })?;
-            let after = before + by;
-            tx.execute(
-                "UPDATE blobs SET refs = ?2, unheld_ms = CASE WHEN ?2 > 0 THEN NULL ELSE ?3 END WHERE hash = ?1",
-                params![hash, after, now as i64],
-            )?;
-            if before == 0 && after > 0 {
-                held += stored as i64;
-            } else if before > 0 && after == 0 {
-                held -= stored as i64;
-            }
+            held += Self::count_ref(tx, hash, stored, by, now)?;
             Ok(())
         };
         for (path, row) in old {
@@ -946,6 +984,257 @@ impl Store {
         Ok(held)
     }
 
+    /// A blob's holders — files and versions — changed by `by`. Returns what
+    /// that does to the bytes held, for `used`.
+    fn count_ref(
+        tx: &rusqlite::Transaction,
+        hash: &str,
+        stored: u64,
+        by: i64,
+        now: u64,
+    ) -> Result<i64, Error> {
+        tx.execute(
+            "INSERT INTO blobs (hash, stored, refs, unheld_ms) VALUES (?1, ?2, 0, NULL) ON CONFLICT(hash) DO NOTHING",
+            params![hash, stored as i64],
+        )?;
+        let before: i64 = tx.query_row("SELECT refs FROM blobs WHERE hash = ?1", [hash], |r| {
+            r.get(0)
+        })?;
+        let after = before + by;
+        tx.execute(
+            "UPDATE blobs SET refs = ?2, unheld_ms = CASE WHEN ?2 > 0 THEN NULL ELSE ?3 END WHERE hash = ?1",
+            params![hash, after, now as i64],
+        )?;
+        Ok(if before == 0 && after > 0 {
+            stored as i64
+        } else if before > 0 && after == 0 {
+            -(stored as i64)
+        } else {
+            0
+        })
+    }
+
+    // ------------------------------------------------------------- history
+
+    /// Keep `rows` — the pad as it is before a write changes it — as its next
+    /// version, holding each blob for it, then let go of the versions past
+    /// what a pad keeps. Returns the change in bytes held.
+    fn keep_version(
+        tx: &rusqlite::Transaction,
+        name: &str,
+        rows: &BTreeMap<String, Row>,
+        seq: u64,
+        now: u64,
+    ) -> Result<i64, Error> {
+        let id: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM versions WHERE pad = ?1",
+            [name],
+            |r| r.get(0),
+        )?;
+        let bytes: u64 = rows.values().map(|r| r.size).sum();
+        tx.execute(
+            "INSERT INTO versions (pad, id, at_ms, seq, files, bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![name, id, now as i64, seq as i64, rows.len() as i64, bytes as i64],
+        )?;
+        let mut held = 0;
+        for (path, row) in rows {
+            tx.execute(
+                "INSERT INTO version_files (pad, version, path, blob, encoding, size, stored) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![name, id, path, row.blob, encoding_code(row.encoding), row.size as i64, row.stored as i64],
+            )?;
+            held += Self::count_ref(tx, &row.blob, row.stored, 1, now)?;
+        }
+        Ok(held + Self::prune_versions(tx, name, now)?)
+    }
+
+    /// Versions past [`VERSIONS_KEPT`], [`HISTORY_BYTES`] or [`VERSION_AGE`],
+    /// oldest first, let go. The newest is always kept: it is the one a
+    /// restore was most likely just made from.
+    fn prune_versions(tx: &rusqlite::Transaction, name: &str, now: u64) -> Result<i64, Error> {
+        let versions: Vec<(i64, u64, u64)> = {
+            let mut q = tx.prepare_cached(
+                "SELECT id, at_ms, bytes FROM versions WHERE pad = ?1 ORDER BY id DESC",
+            )?;
+            let rows = q.query_map([name], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, i64>(2)? as u64,
+                ))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let oldest = now.saturating_sub(VERSION_AGE.as_millis() as u64);
+        let mut total = 0u64;
+        let mut held = 0;
+        for (i, (id, at, bytes)) in versions.into_iter().enumerate() {
+            total += bytes;
+            if i == 0 || (i < VERSIONS_KEPT && total <= HISTORY_BYTES && at >= oldest) {
+                continue;
+            }
+            held += Self::drop_version(tx, name, id, now)?;
+        }
+        Ok(held)
+    }
+
+    fn drop_version(
+        tx: &rusqlite::Transaction,
+        name: &str,
+        id: i64,
+        now: u64,
+    ) -> Result<i64, Error> {
+        let files: Vec<(String, u64)> = {
+            let mut q = tx.prepare_cached(
+                "SELECT blob, stored FROM version_files WHERE pad = ?1 AND version = ?2",
+            )?;
+            let rows = q.query_map(params![name, id], |r| {
+                Ok((r.get(0)?, r.get::<_, i64>(1)? as u64))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut held = 0;
+        for (blob, stored) in files {
+            held += Self::count_ref(tx, &blob, stored, -1, now)?;
+        }
+        tx.execute(
+            "DELETE FROM version_files WHERE pad = ?1 AND version = ?2",
+            params![name, id],
+        )?;
+        tx.execute(
+            "DELETE FROM versions WHERE pad = ?1 AND id = ?2",
+            params![name, id],
+        )?;
+        Ok(held)
+    }
+
+    /// Every version a pad has, let go with it.
+    fn drop_history(tx: &rusqlite::Transaction, name: &str, now: u64) -> Result<i64, Error> {
+        let ids: Vec<i64> = {
+            let mut q = tx.prepare_cached("SELECT id FROM versions WHERE pad = ?1")?;
+            let rows = q.query_map([name], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut held = 0;
+        for id in ids {
+            held += Self::drop_version(tx, name, id, now)?;
+        }
+        Ok(held)
+    }
+
+    /// When the newest version was kept, and the blob of each file it named.
+    fn newest_version(db: &Connection, name: &str) -> Result<Option<(u64, Manifest)>, Error> {
+        let Some((id, at)): Option<(i64, i64)> = db
+            .query_row(
+                "SELECT id, at_ms FROM versions WHERE pad = ?1 ORDER BY id DESC LIMIT 1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut q = db.prepare_cached(
+            "SELECT path, blob FROM version_files WHERE pad = ?1 AND version = ?2",
+        )?;
+        let files = q
+            .query_map(params![name, id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(Some((at as u64, files)))
+    }
+
+    /// A pad's versions, newest first.
+    pub fn history(&self, name: &str) -> Result<Vec<Version>, Error> {
+        check_name(name)?;
+        let db = self.db.lock();
+        let mut q = db.prepare_cached(
+            "SELECT id, at_ms, files, bytes FROM versions WHERE pad = ?1 ORDER BY id DESC",
+        )?;
+        let rows = q.query_map([name], |r| {
+            Ok(Version {
+                id: r.get::<_, i64>(0)? as u64,
+                at_ms: r.get::<_, i64>(1)? as u64,
+                files: r.get::<_, i64>(2)? as u64,
+                bytes: r.get::<_, i64>(3)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// One version's files, as a read gives a pad's. `Ok(None)` when there is
+    /// no such version, kept or still.
+    pub fn version(&self, name: &str, id: u64) -> Result<Option<BTreeMap<String, File>>, Error> {
+        check_name(name)?;
+        let (rows, _reading) = {
+            let db = self.db.lock();
+            let exists: bool = db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM versions WHERE pad = ?1 AND id = ?2)",
+                params![name, id as i64],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Ok(None);
+            }
+            let mut q = db.prepare_cached("SELECT path, blob, encoding FROM version_files WHERE pad = ?1 AND version = ?2 ORDER BY path")?;
+            let rows: Vec<(String, String, Encoding)> = q
+                .query_map(params![name, id as i64], |r| {
+                    Ok((r.get(0)?, r.get(1)?, encoding_from(r.get(2)?)))
+                })?
+                .collect::<Result<_, _>>()?;
+            let reading = self.hold(&db, rows.iter().map(|(_, b, _)| b.clone()).collect());
+            (rows, reading)
+        };
+        let mut files = BTreeMap::new();
+        for (path, blob, encoding) in rows {
+            files.insert(
+                path,
+                File {
+                    content: self.blob_text(&blob)?,
+                    encoding,
+                    seq: 0,
+                },
+            );
+        }
+        Ok(Some(files))
+    }
+
+    /// Keep the pad as it is now as a version, unless the newest already is
+    /// it: asked for before a restore, so whatever the restore replaces can be
+    /// had back. Returns the version that is the pad now, if it has files.
+    pub fn keep_now(&self, name: &str) -> Result<Option<u64>, Error> {
+        check_name(name)?;
+        let mut db = self.db.lock();
+        let Some(head) = Self::head(&db, name)? else {
+            return Ok(None);
+        };
+        let rows = Self::rows(&db, name)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        if let Some((_, files)) = Self::newest_version(&db, name)? {
+            let same = files.len() == rows.len()
+                && rows.iter().all(|(p, r)| files.get(p) == Some(&r.blob));
+            if same {
+                let id: i64 =
+                    db.query_row("SELECT MAX(id) FROM versions WHERE pad = ?1", [name], |r| {
+                        r.get(0)
+                    })?;
+                return Ok(Some(id as u64));
+            }
+        }
+        let now = now_ms();
+        let tx = db.transaction()?;
+        let held = Self::keep_version(&tx, name, &rows, head.seq, now)?;
+        tx.commit()?;
+        self.adjust(held);
+        self.release(&db);
+        let id: i64 = db.query_row("SELECT MAX(id) FROM versions WHERE pad = ?1", [name], |r| {
+            r.get(0)
+        })?;
+        Ok(Some(id as u64))
+    }
+
     /// Delete a pad outright — its owner said so. The name is the accounts
     /// store's to retire; here it is only its files.
     pub fn remove(&self, name: &str) -> Result<(), Error> {
@@ -963,7 +1252,9 @@ impl Store {
         }
         let old = Self::rows(&db, name)?;
         let tx = db.transaction()?;
-        let held = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now_ms())?;
+        let now = now_ms();
+        let held = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now)?
+            + Self::drop_history(&tx, name, now)?;
         tx.execute("DELETE FROM pads WHERE name = ?1", [name])?;
         tx.commit()?;
         self.adjust(held);
@@ -1057,9 +1348,13 @@ impl Store {
             Some((path, row)) => Some((path, self.blob_text(&row.blob)?)),
             None => None,
         };
+        // What people made, not what pip installed: `.deps`, `.ajar` and the
+        // like are a pad's machinery. The first preview of a Flask pad named
+        // `.deps/bin/flask` and five more of them, and said 188 files.
+        let theirs: Vec<&String> = rows.keys().filter(|p| !hidden(p)).collect();
         Ok(Some(Summary {
-            files: rows.len(),
-            paths: rows.keys().take(SUMMARY_PATHS).cloned().collect(),
+            files: theirs.len(),
+            paths: theirs.into_iter().take(SUMMARY_PATHS).cloned().collect(),
             lead,
         }))
     }
@@ -1302,8 +1597,20 @@ impl Store {
             return Err(Error::OverAllowance);
         }
 
+        // The way it was, kept as a version when the newest is old enough:
+        // see [`VERSION_EVERY`].
+        let due = self.keeps_history
+            && !old.is_empty()
+            && !changed.is_empty()
+            && Self::newest_version(&db, name)?
+                .is_none_or(|(at, _)| now.saturating_sub(at) >= VERSION_EVERY.as_millis() as u64);
         let tx = db.transaction()?;
-        let held = Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
+        let mut held = 0;
+        if due {
+            let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
+            held += Self::keep_version(&tx, name, &old, was_seq, now)?;
+        }
+        held += Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
         if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
             // Rolled back with the transaction, and the blobs put in place
             // for it deleted.
@@ -1496,7 +1803,10 @@ impl Store {
         let Ok(tx) = db.transaction() else {
             return false;
         };
-        let Ok(held) = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now_ms()) else {
+        let now = now_ms();
+        let Ok(held) = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now)
+            .and_then(|h| Ok(h + Self::drop_history(&tx, name, now)?))
+        else {
             return false;
         };
         if tx
@@ -1824,7 +2134,7 @@ mod tests {
     fn the_store_counts_what_is_on_disk_and_gives_it_back() {
         // The ceiling is only as good as the arithmetic behind it. Over-counting
         // ratchets it shut on ordinary use; under-counting means it never trips.
-        let (s, _d) = store();
+        let (s, _d) = store_without_history();
         assert_eq!(s.used(), 0, "a fresh store holds nothing");
 
         megabyte(&s, "one").unwrap();
@@ -1883,10 +2193,28 @@ mod tests {
         (store, dir)
     }
 
+    /// For the tests of how blobs are let go: a version would hold the blob
+    /// they watch go.
+    fn store_without_history() -> (Store, tempdir::Dir) {
+        let (mut s, d) = store();
+        s.keeps_history = false;
+        (s, d)
+    }
+
     fn put(path: &str, content: &str) -> Write {
         Write {
             path: path.into(),
             content: Some(content.into()),
+            encoding: Encoding::Utf8,
+            base: None,
+            edits: None,
+        }
+    }
+
+    fn delete(path: &str) -> Write {
+        Write {
+            path: path.into(),
+            content: None,
             encoding: Encoding::Utf8,
             base: None,
             edits: None,
@@ -2522,7 +2850,7 @@ mod tests {
         // Every save of a file makes a new blob. The old one used to wait ten
         // minutes or more, uncounted: twenty one-character saves in a 60 MB
         // file left 1.3 GB on disk.
-        let (s, _d) = store();
+        let (s, _d) = store_without_history();
         let mut base = s
             .write_within("p", &[put("a.txt", &"x".repeat(100_000))], u64::MAX)
             .unwrap()
@@ -2549,7 +2877,7 @@ mod tests {
     fn a_blob_being_read_stays_until_the_read_is_done() {
         // A read lists its blobs and then sends them; a write in between lets
         // go of one. It has to stay for the read, and go after it.
-        let (s, _d) = store();
+        let (s, _d) = store_without_history();
         s.write("p", &[put("a.txt", "first")]).unwrap();
         let old = s.blob_path(&hash(&s, "p", "a.txt"));
         let opened = s.open_for_read("p").unwrap().unwrap();
@@ -2569,7 +2897,7 @@ mod tests {
 
     #[test]
     fn a_blob_two_reads_hold_stays_for_the_second() {
-        let (s, _d) = store();
+        let (s, _d) = store_without_history();
         s.write("p", &[put("a.txt", "first")]).unwrap();
         let old = s.blob_path(&hash(&s, "p", "a.txt"));
         let one = s.open_for_read("p").unwrap().unwrap();
@@ -2605,6 +2933,100 @@ mod tests {
         assert!(!s.get("p").unwrap().unwrap().files.contains_key("big.txt"));
     }
 
+    /// The newest version, made to look `minutes` older than it is.
+    fn age_versions(s: &Store, name: &str, minutes: u64) {
+        s.db.lock()
+            .execute(
+                "UPDATE versions SET at_ms = at_ms - ?2 WHERE pad = ?1",
+                params![name, (minutes * 60_000) as i64],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_pad_keeps_the_way_it_was_after_a_pause_and_can_be_read_back() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.py", "one")]).unwrap();
+        assert!(
+            s.history("p").unwrap().is_empty(),
+            "making a pad is not a version of it"
+        );
+        // The first change keeps what was there before it.
+        s.write("p", &[put("a.py", "two")]).unwrap();
+        let history = s.history("p").unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            s.version("p", history[0].id).unwrap().unwrap()["a.py"].content,
+            "one"
+        );
+        // Typing on, within VERSION_EVERY: no more.
+        s.write("p", &[put("a.py", "three"), put("b.py", "new")])
+            .unwrap();
+        assert_eq!(
+            s.history("p").unwrap().len(),
+            1,
+            "not a version a keystroke"
+        );
+        // After a pause, the way it was left.
+        age_versions(&s, "p", 11);
+        s.write("p", &[delete("b.py")]).unwrap();
+        let history = s.history("p").unwrap();
+        assert_eq!(history.len(), 2);
+        let then = s.version("p", history[0].id).unwrap().unwrap();
+        assert_eq!(
+            (then["a.py"].content.as_str(), then["b.py"].content.as_str()),
+            ("three", "new"),
+            "newest first, with the file since deleted"
+        );
+        assert!(s.version("p", 99).unwrap().is_none());
+    }
+
+    #[test]
+    fn keeping_now_is_once_for_the_same_files_and_history_goes_with_the_pad() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.py", "x".repeat(1000).as_str())])
+            .unwrap();
+        let first = s.keep_now("p").unwrap().unwrap();
+        assert_eq!(
+            s.keep_now("p").unwrap(),
+            Some(first),
+            "the same files are the same version"
+        );
+        let held = s.used();
+        s.write("p", &[put("a.py", "y")]).unwrap();
+        assert!(
+            s.used() >= held,
+            "the old text is still held, by the version"
+        );
+        assert_eq!(
+            s.version("p", first).unwrap().unwrap()["a.py"]
+                .content
+                .len(),
+            1000
+        );
+        s.remove("p").unwrap();
+        assert!(s.history("p").unwrap().is_empty());
+        assert_eq!(s.used(), 0, "a deleted pad's history is given back too");
+        assert_eq!(s.keep_now("nobody").unwrap(), None);
+    }
+
+    #[test]
+    fn a_pad_keeps_only_so_many_versions() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.py", "0")]).unwrap();
+        for i in 1..=(VERSIONS_KEPT + 5) {
+            s.write("p", &[put("a.py", &i.to_string())]).unwrap();
+            s.keep_now("p").unwrap();
+        }
+        let history = s.history("p").unwrap();
+        assert_eq!(history.len(), VERSIONS_KEPT);
+        assert_eq!(
+            s.version("p", history[0].id).unwrap().unwrap()["a.py"].content,
+            (VERSIONS_KEPT + 5).to_string(),
+            "the newest are the ones kept"
+        );
+    }
+
     #[test]
     fn a_summary_names_the_files_and_quotes_the_one_to_open_first() {
         let (s, _d) = store();
@@ -2634,6 +3056,18 @@ mod tests {
         let (path, text) = summary.lead.expect("main.py is quoted");
         assert_eq!(path, "main.py");
         assert!(text.contains("print('hello')"));
+        // Installed packages are not the pad's files.
+        s.write(
+            "p",
+            &[
+                put(".deps/flask/__init__.py", "x"),
+                put(".ajar/site/x.py", "y"),
+            ],
+        )
+        .unwrap();
+        let summary = s.summary("p").unwrap().unwrap();
+        assert_eq!(summary.files, 11, "hidden folders are not counted");
+        assert!(summary.paths.iter().all(|p| !p.starts_with('.')));
         // With no main file, the first small text file; never one too big to read for a preview.
         s.write(
             "q",
@@ -2750,7 +3184,7 @@ mod tests {
 
     #[test]
     fn a_file_is_edited_in_a_request_of_its_own() {
-        let (s, _d) = store();
+        let (s, _d) = store_without_history();
         let base = s
             .write_within("p", &[put("a.txt", "abc")], u64::MAX)
             .unwrap()

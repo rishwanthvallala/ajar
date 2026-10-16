@@ -148,6 +148,10 @@ The terminal's keys are bash's:
 
 Pasting several lines runs them one after another, as if typed.
 
+On a phone or a tablet, whose keyboard has none of Tab, Ctrl or the arrows,
+a row of them sits under the terminal's header: Tab, Ctrl-C, ↑ ↓ ← →, Esc and
+Ctrl-D. Pressing one leaves the keyboard up.
+
 What does not run here is anything that takes over the whole screen — vim,
 less, top. `python3` on its own gives you its prompt, and `nano` is below.
 
@@ -266,6 +270,15 @@ given one style when it is opened, the one most of its lines already have,
 and saved that way. The editor can only hold one, and editing a file with
 both put changes in the wrong place: a value pasted into one cell came out
 in everyone else's copy with part of the old value still beside it.
+
+**History**, the clock above the file list, shows the pad's earlier
+versions. One is kept when the pad is changed after a pause of ten minutes or
+more, and every ten minutes while it is being changed, up to 30 of them, for
+30 days. Pick one to see each file against the pad as it is now: changed
+since, added since, deleted since. **Restore this version** puts every file
+back the way it was, for everyone on the pad. What was there is kept as a
+version first, so a restore can be undone the same way. Anyone who can view
+the pad can look; restoring needs edit.
 
 **Not live**, in place of the dots, means an `ajar` session is using the
 pad's name, and a pad cannot share its live room with one. Your changes still

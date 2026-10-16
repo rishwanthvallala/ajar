@@ -321,6 +321,8 @@ async fn main() -> anyhow::Result<()> {
                 .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
         )
         .route("/api/unfurl/{name}", get(unfurl))
+        .route("/api/pad/{name}/history", get(history).post(keep_version))
+        .route("/api/pad/{name}/history/{id}", get(version))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
         .layer(CorsLayer::permissive())
@@ -479,6 +481,107 @@ async fn read_pad(
         })
         .into_response(),
         Err(e) => refuse(e).into_response(),
+    }
+}
+
+/// Who may look at a pad's history: whoever may read the pad. And who may
+/// keep a version of it now: whoever may write it.
+async fn history_access(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    name: &str,
+    write: bool,
+) -> Result<(), (StatusCode, &'static str)> {
+    let access = http_accounts::access(state, headers, name).await;
+    if access.deleted {
+        return Err((StatusCode::GONE, "this pad was deleted by its owner"));
+    }
+    let enough = if write {
+        access.role >= accounts::Role::Editor
+    } else {
+        access.role > accounts::Role::None
+    };
+    if !enough {
+        return Err((
+            StatusCode::FORBIDDEN,
+            if write {
+                "only someone who can edit this pad can keep a version of it"
+            } else {
+                "this pad is private"
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// A pad's kept versions, newest first: when, how many files, how big.
+async fn history(
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    if let Err(refused) = history_access(&state, &headers, &name, false).await {
+        return refused.into_response();
+    }
+    let pads = state.pads.clone();
+    match tokio::task::spawn_blocking(move || pads.history(&name)).await {
+        Ok(Ok(versions)) => Json(versions).into_response(),
+        Ok(Err(e)) => refuse(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reading the history failed",
+        )
+            .into_response(),
+    }
+}
+
+/// One version's files, as a read of the pad gives its files.
+async fn version(
+    Path((name, id)): Path<(String, u64)>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    if let Err(refused) = history_access(&state, &headers, &name, false).await {
+        return refused.into_response();
+    }
+    let pads = state.pads.clone();
+    match tokio::task::spawn_blocking(move || pads.version(&name, id)).await {
+        Ok(Ok(Some(files))) => {
+            Json(serde_json::json!({ "id": id, "files": files })).into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            "no such version of this pad, or no longer kept",
+        )
+            .into_response(),
+        Ok(Err(e)) => refuse(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reading the version failed",
+        )
+            .into_response(),
+    }
+}
+
+/// The pad as it is now kept as a version, before a restore replaces it,
+/// so the restore can be undone the same way.
+async fn keep_version(
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    if let Err(refused) = history_access(&state, &headers, &name, true).await {
+        return refused.into_response();
+    }
+    let pads = state.pads.clone();
+    match tokio::task::spawn_blocking(move || pads.keep_now(&name)).await {
+        Ok(Ok(id)) => Json(serde_json::json!({ "id": id })).into_response(),
+        Ok(Err(e)) => refuse(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "keeping the version failed",
+        )
+            .into_response(),
     }
 }
 

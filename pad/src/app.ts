@@ -10,7 +10,7 @@ import type * as Monaco from "monaco-editor";
 import type { SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
-import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode } from "./access";
+import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode, size } from "./access";
 import { carryOver, type Edit, putBack } from "./carry";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
@@ -19,15 +19,15 @@ import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from 
 import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
 import { PreviewBrowser } from "./preview";
-import { interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
+import { at, interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
 import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
 import { TerminalSession } from "./terminals";
 import { ICONS } from "./icons";
 import { openOpenShare, openShare } from "./share";
-import { clearBusy, confirmDialog, nameDialog, toast, toastRegions } from "./ui";
+import { button, clearBusy, confirmDialog, el, modal, nameDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
-import { type Change, mintName, Store, StoreError, storedHash, type Pad } from "./store";
+import { type Change, mintName, Store, StoreError, storedHash, type Pad, type Version } from "./store";
 import { seedFiles } from "./seed";
 import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
@@ -126,6 +126,17 @@ function readIndent(): 2 | 4 {
 }
 
 /** The terminal's colours, from the page's own. */
+/** A moment as a person says it: "12 minutes ago", "yesterday 14:05". */
+function when(ms: number): string {
+  const minutes = Math.round((Date.now() - ms) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  const d = new Date(ms);
+  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 function terminalTheme(): { background: string; foreground: string } {
   const style = getComputedStyle(document.documentElement);
   return {
@@ -1228,6 +1239,7 @@ export class App {
       onDeleteFolder: (path) => void this.deleteFolder(path),
       onDownload: (path, folder) => void this.download(path, folder),
       onDownloadAll: () => void this.downloadAll(),
+      onHistory: () => void this.openHistory(),
       onImport: (zip) => void this.importZip(zip),
       importable: () => !this.viewer,
       onMove: (from, folder, to) => void this.move(from, folder, to),
@@ -1703,6 +1715,139 @@ export class App {
     this.editor?.layout();
   }
 
+  // ------------------------------------------------------------- history
+
+  /**
+   * The pad's earlier versions, kept by the relay: the way it was after a
+   * pause of ten minutes or more, and every ten minutes of a long session
+   * (`VERSION_EVERY` in pad.rs). One is shown against the pad as it is, a file
+   * at a time, and can be gone back to.
+   */
+  private async openHistory(): Promise<void> {
+    const { dialog, body } = modal("History", this.name, "history-dialog");
+    body.append(el("p", { className: "history-note" }, "Looking for earlier versions…"));
+    dialog.showModal();
+    let versions: Version[];
+    try {
+      versions = await this.store.history(this.name);
+    } catch (e) {
+      body.replaceChildren(el("p", { className: "history-note" }, `The history could not be read: ${(e as Error).message}`));
+      return;
+    }
+    if (!versions.length) {
+      body.replaceChildren(el("p", { className: "history-note" }, "No earlier versions yet. One is kept when this pad is changed after a pause of ten minutes or more, and every ten minutes while it is being changed."));
+      return;
+    }
+    const list = el("div", { className: "history-list" });
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", "Earlier versions");
+    const detail = el("div", { className: "history-detail" });
+    body.replaceChildren(el("div", { className: "history-layout" }, list, detail));
+    const pick = async (v: Version, row: HTMLElement) => {
+      for (const r of list.children) r.setAttribute("aria-selected", String(r === row));
+      detail.replaceChildren(el("p", { className: "history-note" }, "Reading that version…"));
+      try {
+        const files = await this.store.version(this.name, v.id);
+        if (dialog.open) this.showVersion(detail, v, files, () => dialog.close());
+      } catch (e) {
+        detail.replaceChildren(el("p", { className: "history-note" }, `That version could not be read: ${(e as Error).message}`));
+      }
+    };
+    for (const v of versions) {
+      const row = button("", { className: "history-row", onClick: () => void pick(v, row) });
+      row.setAttribute("role", "option");
+      row.replaceChildren(el("strong", {}, when(v.at_ms)), el("span", {}, `${v.files} ${v.files === 1 ? "file" : "files"} · ${size(v.bytes)}`));
+      row.title = new Date(v.at_ms).toLocaleString();
+      list.append(row);
+    }
+    void pick(versions[0]!, list.firstElementChild as HTMLElement);
+  }
+
+  /** One version beside the pad as it is: each file marked by how it differs, one shown, and the way back. */
+  private showVersion(host: HTMLElement, v: Version, files: Pad["files"], close: () => void): void {
+    const now = new Map<string, string>();
+    for (const path of this.models.keys()) now.set(path, this.current(path) ?? "");
+    for (const [path, base64] of this.binaries) if (!this.models.has(path)) now.set(path, base64);
+    const shown = (path: string) => !path.endsWith(`/${MARKER}`) && path !== MARKER;
+    const paths = [...new Set([...Object.keys(files), ...now.keys()])].filter(shown).sort();
+    const state = (path: string) => (!(path in files) ? "added" : !now.has(path) ? "deleted" : now.get(path) === files[path]!.content ? "same" : "changed");
+    const label = { added: "added since", deleted: "deleted since", changed: "changed since", same: "the same" } as const;
+    const changed = paths.filter((p) => state(p) !== "same").length;
+    const fileList = el("div", { className: "history-files" });
+    const preview = el("pre", { className: "history-preview" });
+    const show = (path: string, row: HTMLElement) => {
+      for (const r of fileList.children) r.classList.toggle("on", r === row);
+      const f = files[path];
+      if (!f) preview.textContent = `${path} did not exist then.`;
+      else if (f.encoding === "base64") preview.textContent = `${path} is not text: ${size(Math.round((f.content.length * 3) / 4))}.`;
+      else preview.textContent = f.content.length > 200_000 ? `${f.content.slice(0, 200_000)}\n… (the rest is not shown)` : f.content || "(empty)";
+    };
+    for (const path of paths) {
+      const st = state(path);
+      const row = button("", { className: `history-file ${st}`, onClick: () => show(path, row) });
+      row.replaceChildren(el("span", { className: "history-path" }, path), el("span", { className: "history-state" }, label[st]));
+      fileList.append(row);
+    }
+    const editable = this.access.role === "owner" || this.access.role === "editor";
+    const restore = button("Restore this version", {
+      className: "btn-primary",
+      onClick: async () => {
+        const ok = await confirmDialog({
+          title: `Go back to ${when(v.at_ms)}?`,
+          body: `Every file becomes what it was then, for everyone on this pad: ${changed} ${changed === 1 ? "file differs" : "files differ"}. What is here now is kept as a version first, so this can be undone the same way.`,
+          confirm: "Restore it",
+        });
+        if (!ok) return;
+        close();
+        await this.restoreVersion(files, v.at_ms);
+      },
+    });
+    restore.disabled = !editable || changed === 0;
+    host.replaceChildren(
+      el("div", { className: "history-head" }, el("strong", {}, new Date(v.at_ms).toLocaleString()), el("span", {}, changed ? `${changed} ${changed === 1 ? "file differs" : "files differ"} from now` : "the same as now")),
+      el("div", { className: "history-body" }, fileList, preview),
+      el("div", { className: "history-actions" }, editable ? restore : el("span", { className: "history-note" }, "Only someone who can edit this pad can restore it.")),
+    );
+    const first = paths.find((p) => state(p) !== "same") ?? paths[0];
+    if (first) show(first, fileList.children[paths.indexOf(first)] as HTMLElement);
+  }
+
+  /**
+   * Every file back to what it was in a version, the way a command that
+   * copied them into the folder would: written into the sandbox behind the
+   * page's back and published as a command's changes are, so open documents,
+   * everyone else on the pad and the store all take it as they take any
+   * command's work, and typing meanwhile is kept. The pad as it was is kept as
+   * a version first.
+   */
+  private async restoreVersion(files: Pad["files"], at_ms: number): Promise<void> {
+    if (this.busy || this.anyBusy) return this.say("", "stop what is running first: a restore changes files it may be using");
+    this.say("saving", "restoring…");
+    try {
+      const rt = await this.ensureRuntime();
+      await this.store.keepVersion(this.name);
+      await this.queueWrite(() => this.flushModels(rt));
+      await rt.settled();
+      // As a command's start: what the page has written is what the change
+      // is measured from.
+      this.commandOut = true;
+      rt.recordVersions();
+      const box = rt.sandbox();
+      for (const [path, f] of Object.entries(files)) {
+        const slash = path.lastIndexOf("/");
+        if (slash > 0) await box.fs.mkdir(at(path.slice(0, slash)), { recursive: true });
+        if (f.encoding === "base64") await box.fs.writeFile(at(path), fromBase64(f.content));
+        else await box.fs.writeText(at(path), f.content);
+      }
+      const here = [...this.models.keys(), ...this.binaries.keys(), ...[...this.known.keys()].filter((p) => p.endsWith(MARKER))];
+      for (const path of new Set(here)) if (!(path in files)) await rt.removeAndPrune(path);
+      await this.publish(rt);
+      this.say("", `restored to ${when(at_ms)}`);
+    } catch (e) {
+      this.say("error", `could not restore: ${(e as Error).message}`);
+    }
+  }
+
   /** Swap the editor for the running servers, and back. */
   private async togglePreview(): Promise<void> {
     const preview = this.preview;
@@ -1750,6 +1895,7 @@ export class App {
     this.el.newTerminal.onclick = () => void this.addTerminal();
     this.el.split.title = "Two terminals side by side";
     this.el.split.onclick = () => void this.toggleSplit();
+    this.addTouchKeys();
     onThemeChange(() => {
       for (const t of this.sessions) {
         t.term.options.theme = terminalTheme();
@@ -1873,6 +2019,52 @@ export class App {
       if (first) this.session = first;
     }
     this.layoutTerminals();
+  }
+
+  /**
+   * The keys a phone's keyboard does not have and a terminal needs: Tab to
+   * complete, Ctrl-C to stop, the arrows for history and the line, Esc and
+   * Ctrl-D. A row of them under the terminal's header on a touch screen, each
+   * sent to the terminal in front as its key would be. Pressed without taking
+   * the focus, so the phone's keyboard stays up.
+   */
+  private addTouchKeys(): void {
+    if (!matchMedia("(pointer: coarse)").matches) return;
+    const head = this.el.terms.parentElement?.querySelector(".terminal-head");
+    if (!head || head.querySelector(".term-keys")) return;
+    const row = document.createElement("div");
+    row.className = "term-keys";
+    row.setAttribute("role", "toolbar");
+    row.setAttribute("aria-label", "Terminal keys");
+    const keys: Array<[string, string, string]> = [
+      ["Tab", "\t", "Tab: complete"],
+      ["Ctrl-C", "\x03", "Ctrl-C: stop"],
+      ["↑", "\x1b[A", "Up: the command before"],
+      ["↓", "\x1b[B", "Down: the command after"],
+      ["←", "\x1b[D", "Left"],
+      ["→", "\x1b[C", "Right"],
+      ["Esc", "\x1b", "Escape"],
+      ["Ctrl-D", "\x04", "Ctrl-D: end of input"],
+    ];
+    for (const [label, data, title] of keys) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "term-key";
+      b.textContent = label;
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      // Not a focus change: the keyboard would close and the terminal lose
+      // its place.
+      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("click", () => {
+        const session = this.session;
+        if (!session) return;
+        session.console.handle(data);
+        session.term.focus();
+      });
+      row.append(b);
+    }
+    head.append(row);
   }
 
   /** Whether anything is running in any terminal. */

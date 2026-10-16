@@ -194,7 +194,25 @@ body { background: var(--bg); color: var(--ink); }
   .pad-shell .workspace-actions { flex: 1 1 auto; justify-content: flex-end; }
   .pad-shell .workspace-actions .pad-action span { display: none; }
   .pad-shell .workspace-actions .pad-action { min-width: 2rem; justify-content: center; }
+  /* One row on a phone: the pad's name gives way, cut short, rather than the
+     theme button dropping to a row of its own under the rest — on a 360-pixel
+     phone it did, and the editor lost a row of its height to it. */
+  .pad-shell .workspace-head { flex-wrap: nowrap; gap: 0.45rem; padding-inline: 0.65rem; }
+  .pad-shell .workspace-head #workspace { flex: 0 1 auto; max-width: none; }
+  .pad-shell .workspace-head .connection-status { flex: 0 1 auto; min-width: 0; }
+  .pad-shell .workspace-actions { gap: 0.3rem; }
 }
+/* A phone keyboard's missing keys, under the terminal's header on a touch
+   screen (App.addTouchKeys): a row of their own, scrolled sideways when
+   narrow. */
+.pad-shell .terminal-head:has(.term-keys) { flex-wrap: wrap; row-gap: 0.35rem; }
+.pad-shell .term-keys { order: 3; flex: 1 0 100%; display: flex; gap: 0.3rem; overflow-x: auto; scrollbar-width: none; }
+.pad-shell .term-key { flex: none; min-width: 2.4rem; height: 2rem; padding: 0 0.6rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface-2); color: var(--ink); font: 600 0.75rem var(--mono); touch-action: manipulation; }
+.pad-shell .term-key:active { background: color-mix(in srgb, var(--accent) 18%, var(--surface-2)); }
+/* Monaco's own button for bringing up an iPad's or a phone's keyboard: kept,
+   since it is how a touch screen gets one, but at the size of the rest of the
+   page's controls rather than a 58-pixel block over the code. */
+.pad-shell .monaco-editor .iPadShowKeyboard { transform: scale(0.65); transform-origin: bottom right; opacity: 0.55; }
 
 @media (prefers-reduced-motion: reduce) {
   .pad-shell .row .chev svg { transition: none; }

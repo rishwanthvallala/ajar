@@ -35,7 +35,7 @@ function copySection(ctx: ShareContext, close: () => void): HTMLElement[] {
   if (!ctx.onCopy) return [];
   const copy = button("Make a copy", {
     icon: "copy",
-    className: "share-copy",
+    className: "share-make-copy",
     onClick: () => {
       close();
       ctx.onCopy!();
@@ -52,7 +52,7 @@ export function openOpenShare(ctx: ShareContext): void {
   const { dialog, body } = modal("Share", ctx.name, "share-dialog");
   dialog.querySelector(".modal-sub")?.classList.add("mono");
   const links = el("section", { className: "share-section" }, el("h3", {}, "Link"));
-  links.append(linkRow({ label: "Link", key: "viewer", icon: "pencil", about: "Anyone with it can edit this pad with you. It is copied already.", url: linkTo(ctx.name), off: "" }));
+  links.append(linkRow({ label: "The pad's address", key: "viewer", icon: "pencil", about: "Anyone with it can edit this pad with you. It is copied already.", url: linkTo(ctx.name), off: "" }));
   body.append(links, ...copySection(ctx, () => dialog.close()));
   dialog.showModal();
 }

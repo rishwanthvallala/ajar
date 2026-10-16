@@ -18,6 +18,14 @@ export interface StoredFile {
   hash?: string;
 }
 
+/** One kept version of a pad: when, how many files, how big. */
+export interface Version {
+  id: number;
+  at_ms: number;
+  files: number;
+  bytes: number;
+}
+
 export interface Pad {
   /** False when nobody has ever written to this name. Not an error. */
   exists: boolean;
@@ -294,6 +302,27 @@ export class Store {
   private headers(name: string): Record<string, string> {
     const code = this.code(name);
     return code ? { "x-pad-code": code } : {};
+  }
+
+  /** A pad's kept versions, newest first (`Store::history` in the relay). */
+  async history(name: string): Promise<Version[]> {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}/history`, { headers: this.headers(name), cache: "no-store" }, this.deadline);
+    if (!res.ok) await refuse(res);
+    return (await res.json()) as Version[];
+  }
+
+  /** One version's files, as a read gives a pad's. */
+  async version(name: string, id: number): Promise<Pad["files"]> {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}/history/${id}`, { headers: this.headers(name), cache: "no-store" }, this.deadline);
+    if (!res.ok) await refuse(res);
+    return ((await res.json()) as { files: Pad["files"] }).files;
+  }
+
+  /** The pad as it is now kept as a version, before a restore replaces it. */
+  async keepVersion(name: string): Promise<number | null> {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}/history`, { method: "POST", headers: { ...this.headers(name), "x-ajar": "1" } }, this.deadline);
+    if (!res.ok) await refuse(res);
+    return ((await res.json()) as { id: number | null }).id;
   }
 
   async read(name: string): Promise<Pad> {

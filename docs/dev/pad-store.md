@@ -210,3 +210,51 @@ each blob once.
 The caps went up after it, on 11 October, once the measurements above held: a
 pad from 60 MB to 100 MB, what an address may add in a day from 256 MiB to 512,
 and an account's room from 100 MB to 250.
+
+## History
+
+Since 16 October a pad keeps earlier versions of itself. A version is the
+pad's manifest, path to blob, at a moment:
+- `versions` holds one row each, with when it was kept, the `seq` it was at,
+  and how many files and bytes it named.
+- `version_files` holds its files.
+
+Each file holds its blob the way a current file does, by a count in `blobs`.
+So a version costs nothing for the files it shares with the pad or with
+other versions. What it does cost is counted by `used` and held to the
+ceiling like any file.
+
+**When.** In the save's own transaction, before the save changes anything,
+the pad as it stood is kept if the newest version is at least
+`VERSION_EVERY` old, ten minutes. That gives:
+- the way it was left, for the first save after a pause
+- one every ten minutes, through a long session
+
+Making a pad is not a version of it. `POST /api/pad/<name>/history` keeps
+the pad as it is now (`keep_now`), unless the newest version already names
+the same blobs. The page asks for it before a restore, so a restore can be
+undone the same way.
+
+**How many.** At most `VERSIONS_KEPT`, 30, naming at most `HISTORY_BYTES`,
+200 MB, between them, and nothing older than `VERSION_AGE`, 30 days. The
+oldest go first, and the newest always stays. Deleting a pad, or its lease
+lapsing, lets go of its history with it. The tests of how blobs are let go
+run on a store with history off, because a version would hold the very blob
+they watch go.
+
+**Reading.**
+- `GET /api/pad/<name>/history` lists the versions, for anyone who may read
+  the pad.
+- `GET …/history/<id>` gives one version's files, in the shape a read gives a
+  pad's.
+- Keeping one with `POST` needs edit.
+
+**Restoring is the page's, not the store's.** Open documents hold the live
+text, so a rewrite in the store would be saved over by the next keystroke.
+The page writes the version's files into the sandbox behind its own back, as
+a command copying them would. It then publishes them the way a command's
+changes are published: open documents, everyone else on the pad and the store
+all take them, and typing meanwhile is kept (`restoreVersion` in app.ts).
+`pair-check.mjs` restores from one place and checks that the other place's
+open document, the store and the history all agree.
+
