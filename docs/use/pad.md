@@ -341,6 +341,13 @@ no `ssh`, no connecting to your own servers. Installs land in a `.deps` folder
 beside your files, so they stay after a reload and whoever opens the link has
 them too.
 
+A `requirements.txt` at the top of the folder is installed by itself, before
+the first thing that runs Python — Run, or `python`, `flask` or `pytest` typed —
+and again when it changes, so a link to a Flask app runs for whoever opens it.
+What it was installed for is kept in `.deps` with the rest, so the next person
+to open the pad fetches nothing. A package that will not install is said, the
+program runs anyway, and it is tried again when the file changes.
+
 Pure-python packages are what this is for: `pip install requests` takes a few
 seconds, dependencies and all. Anything that needs compiling, like `numpy`, is
 not available.

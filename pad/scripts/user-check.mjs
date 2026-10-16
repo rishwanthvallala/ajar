@@ -965,6 +965,28 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await typed(`wget -q -O w.json "${BIN}/anything?w=1" && grep -c '"w"' w.json`, 30_000);
   expect("and so does wget", await shows(/(^|\n)1\s*(\n|$)/), await tail(3));
 
+  // ---- requirements.txt, installed before Python runs ----
+  // Live, a real install and an import of it. Here pip has no network, so the
+  // failure: said, the program run anyway, and not tried again until the
+  // file changes.
+  section = "requirements.txt";
+  await open("main.py");
+  await clear();
+  const wanted = LIVE ? "idna" : "no-such-package-for-the-pad";
+  await typed(`printf '# what this needs\\n${wanted}\\n' > requirements.txt`);
+  await clear();
+  await run(LIVE ? "import idna\nprint('idna', idna.encode('pad').decode())\n" : "print('ran anyway')\n", { ms: 180_000 });
+  // Offline, pip's retries can scroll the note off the screen; the line
+  // after a failed install is said only by the same code, so it is the proof.
+  const reqNoted = (await shows(/requirements\.txt is here: installing it first/)) || (!LIVE && (await shows(/pip could not install all of requirements\.txt/)));
+  const reqRan = LIVE ? await shows(/idna pad/) : (await shows(/pip could not install all of requirements\.txt/)) && (await shows(/ran anyway/));
+  expect(LIVE ? "requirements.txt is installed before Run, and the program imports what it named" : "requirements.txt is installed before Run, and one that cannot be is said, and the program runs anyway", reqNoted && reqRan, await tail(4));
+  await clear();
+  await run("print('second run')\n", { ms: 60_000 });
+  expect("and it is not installed again until it changes", (await shows(/second run/)) && !(await shows(/installing it first/, 500)), await tail(3));
+  await typed("rm requirements.txt");
+  await clear();
+
   // ---- the network (a deployment only) ----
   section = "the network (a deployment only)";
   if (LIVE) {

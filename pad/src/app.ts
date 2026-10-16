@@ -106,6 +106,13 @@ export interface AppHooks {
 const WISP_URL: string = import.meta.env.VITE_WISP_URL ?? "";
 const PREVIEW_ORIGIN = import.meta.env.VITE_PREVIEW_ORIGIN ?? "";
 
+/** Installed before Python first runs, and when it changes: `App.installRequirements`. */
+const REQUIREMENTS = "requirements.txt";
+/** The text of `REQUIREMENTS` that `.deps` was installed for, kept with the pad. */
+const INSTALLED_FOR = ".deps/.installed-requirements.txt";
+/** A line that runs Python, typed or by one of its tools. */
+const RUNS_PYTHON = /(^|[\s;&|(])(python3?|flask|pytest|uvicorn|gunicorn)(\s|$)/;
+
 /** Where the indent is kept: this browser's, like the theme. */
 const INDENT_KEY = "pad.indent";
 
@@ -171,6 +178,9 @@ export class App {
   private tree: FileTree | null = null;
   /** What the folder's servers show, made when the runtime starts. */
   private preview: PreviewBrowser | null = null;
+  /** `requirements.txt` as it was when pip last installed it in this sandbox. */
+  private requirementsInstalled: string | null = null;
+  private requirementsSeen = false;
   private known: Known = new Map();
   /**
    * The pad's binary files, as the store keeps them. Never in the editor;
@@ -1837,6 +1847,55 @@ export class App {
     // command quick enough to read it first — javac answered by the page, in
     // milliseconds — compiles the copy from before the edit.
     await this.queueWrite(() => this.flushModels(rt));
+    const fresh = await this.fetchFor(session, command, rt);
+    if (fresh === false) return null;
+    if (RUNS_PYTHON.test(command) && !/\bpip3?\b/.test(command)) {
+      await this.installRequirements(rt, session, fresh ?? (await session.ensureShell()));
+    }
+    return fresh;
+  }
+
+  /**
+   * `requirements.txt`, installed before the first thing that runs Python,
+   * and again whenever it changes: a Flask app shared as a link runs on Run,
+   * without a `pip install` its author knew to type.
+   *
+   * pip installs into `.deps`, which is saved with the pad, so what was
+   * installed for which text is kept there too (`INSTALLED_FOR`) and travels
+   * with it: the next person to open the link, or this one tomorrow, finds it
+   * installed and nothing is fetched again. Keyed on the file's text, so a
+   * package that will not install is tried once per change rather than
+   * before every command.
+   *
+   * Stopped with Ctrl-C, the line it was installing for does not run either:
+   * that was the person asking for nothing to happen.
+   */
+  private async installRequirements(rt: Runtime, session: TerminalSession, sh: Shell): Promise<void> {
+    const text = await rt.read(REQUIREMENTS).catch(() => null);
+    if (text === null || !/^\s*[^#\s]/m.test(text) || text === this.requirementsInstalled) return;
+    if ((await rt.read(INSTALLED_FOR).catch(() => null)) === text) {
+      this.requirementsInstalled = text;
+      return;
+    }
+    this.requirementsInstalled = text;
+    session.write(`\x1b[2m${REQUIREMENTS} ${this.requirementsSeen ? "changed" : "is here"}: installing it first, as pip install -r ${REQUIREMENTS}…\x1b[0m\r\n`);
+    this.requirementsSeen = true;
+    const finished = await sh.run(`(cd /workspace && python -m pip install --disable-pip-version-check -q -r ${REQUIREMENTS})`);
+    if (finished.interrupted) {
+      // Asked again next time: it never finished.
+      this.requirementsInstalled = null;
+      throw new Error(`stopped while installing ${REQUIREMENTS}, so the line did not run`);
+    }
+    // Whatever pip said: what failed is tried again when the file changes,
+    // not for everyone who opens the pad.
+    await rt.write(INSTALLED_FOR, text);
+    if (finished.exitCode !== 0) {
+      session.write(`\x1b[33mpip could not install all of ${REQUIREMENTS}; running anyway. It is tried again when the file changes.\x1b[0m\r\n`);
+    }
+  }
+
+  /** The languages a line needs and this pad has not fetched yet: a fresh shell once they are here, false when one could not be. */
+  private async fetchFor(session: TerminalSession, command: string, rt: Runtime): Promise<Shell | null | false> {
     const needed = neededBy(command, rt.installed);
     if (!needed.length) return session.stale ? session.replaceShell() : null;
     for (const t of needed) {
@@ -1850,7 +1909,7 @@ export class App {
         this.installs++;
       } catch (e) {
         session.write(`\x1b[31m${t.name} could not be fetched: ${(e as Error).message}\x1b[0m\r\n`);
-        return null;
+        return false;
       }
       const fast = javac ? await this.javac.whenReady(20_000) : false;
       session.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
@@ -1953,6 +2012,7 @@ export class App {
       session.console.announce(command);
       let finished: Finished | null = null;
       try {
+        if (program?.startsWith("python")) await this.installRequirements(rt, session, sh);
         finished = await sh.run(command);
       } finally {
         session.console.resume(finished);
