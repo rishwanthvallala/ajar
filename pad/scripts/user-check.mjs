@@ -169,6 +169,12 @@ async function newFile(name, content) {
   await page.locator('#files button[aria-label="New file"]').click();
   await nameInTree(`/${name}`);
   await wait(400);
+  // Into the new file or nowhere. A name already taken is refused, the editor
+  // stays where it was, and the content went into whatever file was open —
+  // the Markdown section's README landed in the guide it linked to, because
+  // an earlier section had made a notes.md.
+  const opened = await page.waitForFunction((n) => window.__pad?.active() === n, name, { timeout: 10_000 }).then(() => true, () => false);
+  if (!opened) throw new Error(`New file did not open ${name} (is the name taken?); ${await page.evaluate(() => window.__pad?.active())} is open`);
   await page.evaluate((c) => window.monaco.editor.getEditors()[0].setValue(c), content);
   await wait(300);
 }
@@ -1023,6 +1029,67 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   const leftForText = await page.locator("#image-pane").isHidden() && await page.locator("#editor").isVisible();
   expect("and an image file opened from the tree shows too, until a text file is opened", shownByTree && leftForText, `tree ${shownByTree}, text again ${leftForText}`);
   await typed("rm dot.png");
+  await clear();
+
+  // ---- Markdown, formatted ----
+  // Preview beside the source or over it, as it will look: GitHub's
+  // Markdown, the editor's colours in its code, the pad's own pictures — and
+  // nothing a file's HTML says that would run, submit or pose as the pad.
+  section = "markdown";
+  await clear();
+  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py`);
+  await newFile("mdguide/guide.md", `# Guide\n\n${"Filler.\n\n".repeat(40)}## Install\n\npip install it\n\n${"More.\n\n".repeat(40)}`);
+  const NOTES = [
+    "# Notes", "",
+    "Some **bold** and `code`; the [install steps](mdguide/guide.md#install).", "",
+    "- [x] done", "- [ ] not yet", "",
+    "| fruit | count |", "|---|---:|", "| apples | 3 |", "| pears | 5 |", "",
+    "```python", "def greet(name):", "    return f'hello {name}'  # hi", "```", "",
+    "![a dot](dot.png)", "",
+    "<script>window.__mdPwned = 1</script>",
+    "<img src=x onerror=\"window.__mdPwned = 2\">",
+    "<div class=\"modal-backdrop\" style=\"position:fixed;inset:0\" id=\"run\">over the pad</div>",
+    "<a href=\"javascript:window.__mdPwned = 3\">a script link</a>",
+    "<form action=\"https://example.com/\"><input name=q><button>go</button></form>", "",
+  ].join("\n");
+  await newFile("formatted.md", NOTES);
+  const previewOffered = await page.locator("#markdown-view").isVisible();
+  await page.click("#markdown-view");
+  const formatted = await page.waitForFunction(() => document.querySelector("#markdown-pane:not([hidden]) .md-body h1")?.textContent === "Notes", null, { timeout: 15_000 }).then(() => true, () => false);
+  // Its picture comes from the pad's own file; it loads, so give it a moment.
+  await page.waitForFunction(() => document.querySelector("#markdown-pane img")?.naturalWidth === 4, null, { timeout: 10_000 }).catch(() => {});
+  const md = await page.evaluate(() => {
+    const pane = document.querySelector("#markdown-pane");
+    return {
+      cells: pane.querySelectorAll("table td").length,
+      coloured: pane.querySelectorAll("pre.md-coloured span[class^='mtk']").length,
+      boxes: [...pane.querySelectorAll("input")].map((i) => `${i.type} ${i.checked} ${i.disabled}`).join(", "),
+      picture: pane.querySelector("img")?.naturalWidth ?? 0,
+      pwned: window.__mdPwned ?? null,
+      ran: pane.querySelectorAll("script, form, button, [style], [onerror]").length,
+      classes: [...pane.querySelectorAll("[class]")].map((e) => e.className).filter((c) => !/^(md-|language-|mtk)/.test(c)),
+      runButtons: document.querySelectorAll("#run").length,
+      prefixed: !!pane.querySelector("#user-content-run"),
+      scriptLinks: [...pane.querySelectorAll("a")].filter((a) => /^\s*javascript:/i.test(a.getAttribute("href") ?? "")).length,
+    };
+  });
+  expect("a Markdown file is offered Preview, and formatted: a table, ticked boxes that cannot be ticked, its code in the editor's colours, a picture from the pad", previewOffered && formatted && md.cells === 4 && md.boxes === "checkbox true true, checkbox false true" && md.coloured > 0 && md.picture === 4, `${previewOffered} ${formatted} ${JSON.stringify(md)}`);
+  expect("and its HTML runs nothing, submits nothing, and cannot pose as the pad — no style, no class of the pad's, its ids prefixed", md.pwned === null && md.ran === 0 && md.classes.length === 0 && md.runButtons === 1 && md.prefixed && md.scriptLinks === 0, JSON.stringify(md));
+  await page.evaluate((c) => window.monaco.editor.getEditors()[0].setValue(c), `${NOTES}\n## Typed later\n`);
+  const live = await page.waitForFunction(() => [...document.querySelectorAll("#markdown-pane h2")].some((h) => h.textContent === "Typed later"), null, { timeout: 5000 }).then(() => true, () => false);
+  await page.click("#markdown-pane a[href='mdguide/guide.md#install']");
+  const atHeading = await page.waitForFunction(() => {
+    const pane = document.querySelector("#markdown-pane");
+    const heading = pane?.querySelector("#md-install");
+    return window.__pad.active() === "mdguide/guide.md" && heading && Math.abs(heading.getBoundingClientRect().top - pane.getBoundingClientRect().top) < 60;
+  }, null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("it follows typing, and a link to another file's heading opens that file formatted, at the heading", live && atHeading, `live ${live}, at the heading ${atHeading} in ${await page.evaluate(() => window.__pad.active())}`);
+  await page.keyboard.press("ControlOrMeta+Shift+V");
+  const sourceAgain = await page.locator("#markdown-pane").isHidden() && await page.locator("#editor").isVisible();
+  await open("main.py");
+  const notOffered = await page.locator("#markdown-view").isHidden();
+  expect("⇧⌘V puts the text back, and a file that is not Markdown is not offered Preview", sourceAgain && notOffered, `text ${sourceAgain}, main.py ${notOffered}`);
+  await typed("rm -r formatted.md mdguide dot.png");
   await clear();
 
   // ---- the network (a deployment only) ----

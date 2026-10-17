@@ -44,6 +44,19 @@ is formatted, under a second on most connections. A file that will not parse
 is left as it is, and the status says which line. One undo takes the
 formatting back.
 
+**Markdown, as it will look.** A `.md` file has **Preview** beside Format
+(or ⇧⌘V, Ctrl-Shift-V off a Mac): the file formatted as GitHub would show it —
+headings, lists, tables, task lists, quotes, code in the editor's colours.
+Beside the text where the editor is wide enough, in place of it where it is
+not, as on a phone; it changes as anyone types. A picture named
+relative to the file (`![plot](figure-1.png)`) is the pad's own file, and a
+new one from a run shows as it is made. A link to another file opens it here,
+formatted if it is Markdown and at the heading the link names; `#a-heading`
+scrolls to it; a link to a website opens in a new tab. Pictures from other
+websites do not load here — each shows as a link to it instead. The HTML a file
+may hold is shown as far as it is a document's: anything that would run or
+submit, and any styling, is left out. Preview again goes back to the text.
+
 **4 spaces, or 2.** Spaces: 4, beside Format, is how much an indent is: what
 Tab types, what Format indents by, and what a starter is written with. Click
 it for 2, and again for 4. It is your browser's, like the theme, and what is

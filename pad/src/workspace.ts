@@ -23,8 +23,12 @@ export interface PadElements {
   format: HTMLButtonElement;
   /** The indent, 4 spaces or 2. */
   indent: HTMLButtonElement;
+  /** A Markdown file formatted, or not; hidden for other files. */
+  markdown: HTMLButtonElement;
   previewPane: HTMLElement;
   imagePane: HTMLElement;
+  /** Where a Markdown file shows formatted, beside the editor or over it. */
+  markdownPane: HTMLElement;
   status: HTMLElement;
   presence: HTMLElement;
   title: HTMLElement;
@@ -94,7 +98,10 @@ export class PadWorkspace {
     const format = tool("format-file", "Format");
     format.hidden = true;
     const indent = tool("indent", "Spaces: 4");
-    this.tools.append(format, indent);
+    const markdown = tool("markdown-view", "Preview");
+    markdown.hidden = true;
+    markdown.setAttribute("aria-pressed", "false");
+    this.tools.append(format, markdown, indent);
     this.shell.el("editor-actions").append(this.tools, backToEditor);
     this.shell.el("close-file").hidden = true;
 
@@ -117,7 +124,14 @@ export class PadWorkspace {
     imagePane.id = "image-pane";
     imagePane.className = "image-view";
     imagePane.hidden = true;
-    viewer.replaceChildren(editor, previewPane, imagePane);
+    // After the editor, which it sits beside or covers (style.css), and
+    // which it leaves with when an image or the server preview replaces it.
+    const markdownPane = document.createElement("article");
+    markdownPane.id = "markdown-pane";
+    markdownPane.className = "md-view";
+    markdownPane.tabIndex = 0;
+    markdownPane.hidden = true;
+    viewer.replaceChildren(editor, markdownPane, previewPane, imagePane);
 
     const terms = this.shell.el("terms");
     this.shell.el("empty").remove();
@@ -142,8 +156,10 @@ export class PadWorkspace {
       backToEditor,
       format,
       indent,
+      markdown,
       previewPane,
       imagePane,
+      markdownPane,
       status: this.shell.el("status"),
       presence,
       title: titleText,

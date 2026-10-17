@@ -620,6 +620,38 @@ Caddyfile that ships, and CI runs it on every push.
   is an address and a path, and the plugin only groups a key that is a bare
   address. It has no IPv6 today, so this is a note for the day it does.
 
+## Markdown, shown formatted
+
+A Markdown file's Preview (`pad/src/markdown.ts`) puts HTML that came from a
+pad's text into the pad's own page — the page that holds the viewer's session
+cookie, and for an owner, the right to delete. The text is anyone's who can
+edit the pad, and an open pad's is anyone's at all. So marked's HTML goes
+through DOMPurify (3.4.8, the pad's own dependency, not the copy inside
+Monaco) before any of it is a node in the page:
+
+- **Nothing runs.** No `<script>`, no `on*` handlers, no `javascript:` links;
+  the CSP (`script-src 'self'`) would stop the first two anyway, and this does
+  not lean on it.
+- **Nothing submits.** No forms or their controls — the CSP has no
+  `form-action`, so a form could post to anywhere. A task list's checkboxes
+  stay, disabled.
+- **Nothing poses as the pad.** No `style` attribute and no `<style>`, since
+  `style-src` allows inline styles; no `class` but a code block's
+  `language-…` and the editor's `mtk…` token colours, since the pad's own
+  classes (a dialog's backdrop, say) would let a file draw what looks like
+  the pad over it; ids and names prefixed `user-content-`, as GitHub does, so
+  none can stand in for one of the page's. No SVG or MathML.
+- **Nothing reaches out.** The CSP lets no image in from another origin — a
+  file could otherwise learn who opened it and when — so those are links, and
+  a relative image is the pad's own file as a `data:` URL. Links to other
+  sites open in a new tab with `noopener noreferrer`; links to pad files are
+  followed by the page, never the browser, which would open a pad of that
+  name.
+
+user-check's Markdown section keeps all of this: a file with a script, an
+`onerror`, a styled `.modal-backdrop` `id="run"`, a `javascript:` link and a
+form, and the page left with none of them working.
+
 ## HTTP through the browser
 
 Since 15 October a program in a pad can make HTTP requests from the browser

@@ -32,6 +32,7 @@ import { seedFiles } from "./seed";
 import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
 import { imageFromOsc, imageType } from "./images";
+import { isMarkdown, linkFor, MARKDOWN_MAX, renderMarkdown, slug } from "./markdown";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -192,6 +193,17 @@ export class App {
   private preview: PreviewBrowser | null = null;
   /** The image shown in place of the editor, if one is. */
   private imageShown: string | null = null;
+  /** Markdown files shown formatted (markdown.ts), by path, for as long as the page is open. */
+  private formatted = new Set<string>();
+  private markdownTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The newest render asked for: one finishing after a newer was asked is dropped. */
+  private markdownAsked = 0;
+  /**
+   * Where a link into another Markdown file asked to land: kept until a
+   * render has the heading, as the first may come before the file's text
+   * has all arrived.
+   */
+  private markdownAnchor: { path: string; id: string } | null = null;
   /** `requirements.txt` as it was when pip last installed it in this sandbox. */
   private requirementsInstalled: string | null = null;
   private requirementsSeen = false;
@@ -333,8 +345,10 @@ export class App {
       backToEditor: HTMLButtonElement;
       format: HTMLButtonElement;
       indent: HTMLButtonElement;
+      markdown: HTMLButtonElement;
       previewPane: HTMLElement;
       imagePane: HTMLElement;
+      markdownPane: HTMLElement;
       status: HTMLElement;
       presence: HTMLElement;
       title: HTMLElement;
@@ -346,7 +360,10 @@ export class App {
       this.editor?.layout();
       this.fitTerminals();
     });
-    this.ui?.onHighlightChange(() => this.relanguage());
+    this.ui?.onHighlightChange(() => {
+      this.relanguage();
+      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon(0);
+    });
   }
 
   /** Exposed for the browser checks, which need to see what synced. */
@@ -858,10 +875,13 @@ export class App {
     onThemeChange(() => {
       monaco.editor.setTheme(editorTheme());
       this.editor?.updateOptions({ fontSize: this.codeFontPx() });
+      // A code block's colours are numbered by the theme they were made in.
+      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon(0);
     }, this.events.signal);
     this.editor.onDidChangeModelContent(() => {
       this.warm();
       this.paintStarter();
+      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon();
     });
     // Monaco's Format Document, with its key and its place in the menu, for
     // the formatters here (format.ts) — its own are in the workers that
@@ -965,6 +985,7 @@ export class App {
       this.say("", `${path} is about ${mb} MB, too large to edit together live — read-only here; change it from the terminal`);
     }
     this.paintTools();
+    this.paintMarkdown();
     this.paintStarter();
     // Bound once the document is ready, which may mean waiting for another
     // browser to send it. The model already shows the stored copy meanwhile,
@@ -1115,6 +1136,12 @@ export class App {
     this.el.format.textContent = this.formatting ? "Formatting…" : "Format";
     if (formatter) this.el.format.title = `Format this file with ${formatter.name} (⇧⌥F)`;
     this.canFormat?.set(formatter !== null && !this.formatting);
+    const markdown = this.active !== "" && isMarkdown(this.active);
+    const formatted = markdown && this.formatted.has(this.active);
+    this.el.markdown.hidden = !markdown;
+    this.el.markdown.classList.toggle("on", formatted);
+    this.el.markdown.setAttribute("aria-pressed", String(formatted));
+    this.el.markdown.title = formatted ? "Hide the formatted view (⇧⌘V)" : "See this file formatted, as it will look (⇧⌘V)";
     const other = this.indent === 4 ? 2 : 4;
     const tabs = usesTabs(this.active);
     this.el.indent.textContent = tabs ? `Tab size: ${this.indent}` : `Spaces: ${this.indent}`;
@@ -1715,6 +1742,145 @@ export class App {
     this.editor?.layout();
   }
 
+  // ------------------------------------------------------------- markdown
+
+  /** The Markdown file in the editor formatted, or back to its text alone. */
+  private toggleMarkdown(): void {
+    const path = this.active;
+    if (!path || !isMarkdown(path)) return;
+    if (!this.formatted.delete(path)) this.formatted.add(path);
+    this.paintMarkdown();
+    this.paintTools();
+  }
+
+  /**
+   * The formatted pane, as the file in the editor and the choice for it say.
+   * Beside the editor where there is room for both, over it where there is
+   * not (style.css, by the viewer's width); gone with the editor when an
+   * image or the server preview takes its place.
+   */
+  private paintMarkdown(): void {
+    const on = this.active !== "" && this.formatted.has(this.active) && isMarkdown(this.active) && this.models.has(this.active);
+    this.el.markdownPane.hidden = !on;
+    this.el.markdownPane.parentElement?.classList.toggle("md-shown", on);
+    if (on) return this.renderMarkdownSoon(0);
+    this.markdownAsked++;
+    this.markdownAnchor = null;
+    this.el.markdownPane.replaceChildren();
+  }
+
+  /** Again once typing pauses: anyone's, a command's, a restore's. */
+  private renderMarkdownSoon(delay = 150): void {
+    if (this.markdownTimer) clearTimeout(this.markdownTimer);
+    this.markdownTimer = setTimeout(() => {
+      this.markdownTimer = null;
+      void this.renderMarkdown();
+    }, delay);
+  }
+
+  private async renderMarkdown(): Promise<void> {
+    const path = this.active;
+    const model = this.models.get(path);
+    const pane = this.el.markdownPane;
+    if (!model || pane.hidden) return;
+    const asked = ++this.markdownAsked;
+    pane.setAttribute("aria-label", `${path}, formatted`);
+    const note = (text: string) => pane.replaceChildren(Object.assign(document.createElement("p"), { className: "md-note", textContent: text }));
+    if (model.getValueLength() > MARKDOWN_MAX) return note(`${path} is more than ${MARKDOWN_MAX / 1024 / 1024} MB, too long to show formatted.`);
+    const source = model.getValue();
+    if (!source.trim()) return note("Nothing to show yet: the file is empty.");
+    let fragment: DocumentFragment;
+    try {
+      fragment = await renderMarkdown(source, path, {
+        image: (p) => this.imageUrl(p),
+        colorize: (code, language) => this.colorize(code, language),
+      });
+    } catch (e) {
+      if (asked === this.markdownAsked) note(`${path} could not be formatted: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (asked !== this.markdownAsked || this.active !== path || pane.hidden) return;
+    const body = document.createElement("div");
+    body.className = "md-body";
+    body.append(fragment);
+    pane.replaceChildren(body);
+    const anchor = this.markdownAnchor;
+    if (anchor && (anchor.path !== path || this.scrollMarkdownTo(anchor.id))) this.markdownAnchor = null;
+  }
+
+  /** A pad file as a `data:` URL for an image in a formatted file: the pad's copy, or the sandbox's when the pad has none yet. */
+  private async imageUrl(path: string): Promise<string | null> {
+    const svg = path.toLowerCase().endsWith(".svg");
+    const type = imageType(path) ?? (svg ? "image/svg+xml" : null);
+    if (!type) return null;
+    let base64 = this.binaries.get(path) ?? null;
+    // SVG is text, and an editor's model here. In an <img> it is a picture
+    // and nothing else: its scripts do not run.
+    if (!base64 && svg && this.models.has(path)) base64 = toBase64(new TextEncoder().encode(this.models.get(path)!.getValue()));
+    if (!base64 && this.runtimeReady && this.runtime) {
+      const bytes = await (await this.runtime).readBytes(path).catch(() => null);
+      if (bytes) base64 = toBase64(bytes);
+    }
+    return base64 ? `data:${type};base64,${base64}` : null;
+  }
+
+  /** A code block in a formatted file, coloured by the editor's own tokenizer for its language. */
+  private async colorize(code: string, language: string): Promise<string | null> {
+    const monaco = this.monaco;
+    if (!monaco || this.ui?.highlight === false) return null;
+    const wanted = language.toLowerCase();
+    const found = monaco.languages.getLanguages().find((l) =>
+      l.id === wanted || l.aliases?.some((a) => a.toLowerCase() === wanted) || l.extensions?.includes(`.${wanted}`));
+    if (!found) return null;
+    return monaco.editor.colorize(code.replace(/\n$/, ""), found.id, { tabSize: this.indent });
+  }
+
+  /**
+   * A link in a formatted file, followed inside the pad: another file opens
+   * here — formatted too if it is Markdown, at its heading if it names one —
+   * and `#heading` scrolls to it. Links out of the pad open in a tab of their
+   * own, as their target says; the browser does that.
+   */
+  private followMarkdownLink(e: MouseEvent): void {
+    const a = (e.target as Element | null)?.closest?.("a[href]");
+    if (!a || !this.el.markdownPane.contains(a)) return;
+    const link = linkFor(this.active, a.getAttribute("href") ?? "");
+    if (link.kind === "outside") return;
+    e.preventDefault();
+    if (e.type === "auxclick" && e.button !== 1) return;
+    if (link.kind === "here") return void this.scrollMarkdownTo(link.id);
+    if (link.kind === "none") return;
+    const { path, fragment } = link;
+    if (this.models.has(path)) {
+      if (isMarkdown(path)) {
+        this.formatted.add(path);
+        this.markdownAnchor = fragment ? { path, id: fragment } : null;
+      }
+      if (path === this.active) return void this.scrollMarkdownTo(fragment);
+      return this.show(path);
+    }
+    if (this.binaries.has(path) && imageType(path)) return void this.showImage(path);
+    const folder = [...this.models.keys(), ...this.binaries.keys()].some((p) => p.startsWith(`${path}/`));
+    this.say("", folder ? `${path} is a folder — its files are in the list` : `there is no ${path} in this pad`);
+  }
+
+  /** To the heading `id` names, if the file has it; whether it had. */
+  private scrollMarkdownTo(id: string): boolean {
+    if (!id) return false;
+    let wanted = id;
+    try {
+      wanted = decodeURIComponent(id);
+    } catch {
+      // As written.
+    }
+    const pane = this.el.markdownPane;
+    const found = [`md-${wanted}`, `user-content-${wanted}`, `md-${slug(wanted)}`]
+      .map((candidate) => pane.querySelector(`#${CSS.escape(candidate)}`))
+      .find((el) => el !== null);
+    found?.scrollIntoView({ block: "start" });
+    return !!found;
+  }
+
   // ------------------------------------------------------------- history
 
   /**
@@ -2199,6 +2365,12 @@ export class App {
     this.el.backToEditor.onclick = () => (this.imageShown !== null ? this.closeImage() : void this.togglePreview());
     this.el.format.onclick = () => void this.formatActive();
     this.el.indent.onclick = () => this.setIndent(this.indent === 4 ? 2 : 4);
+    this.el.markdown.onclick = () => this.toggleMarkdown();
+    // Middle clicks too: a link to a pad file followed by the browser would
+    // open a pad of that name.
+    for (const kind of ["click", "auxclick"] as const) {
+      this.el.markdownPane.addEventListener(kind, (e) => this.followMarkdownLink(e), { signal: this.events.signal });
+    }
     this.paintTools();
     addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -2211,6 +2383,11 @@ export class App {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         this.say("", "no need — changes save as you type");
+      }
+      // VS Code's key for a Markdown preview.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "v" && isMarkdown(this.active)) {
+        e.preventDefault();
+        this.toggleMarkdown();
       }
     }, { signal: this.events.signal });
   }
@@ -2456,6 +2633,7 @@ export class App {
       this.storeSeq = Math.max(this.storeSeq, seq);
       this.known = next;
       this.binaries = nextBinaries;
+      if (!this.el.markdownPane.hidden && changes.some((c) => c.encoding === "base64")) this.renderMarkdownSoon();
       for (const change of changes) {
         // Gone, or now binary: either way, no longer the editor's.
         if (change.content === null || change.encoding === "base64") {
@@ -2795,6 +2973,7 @@ export class App {
               }
               this.binaries.set(f.path, f.content);
               await rt?.writeBytes(f.path, fromBase64(f.content));
+              if (!this.el.markdownPane.hidden) this.renderMarkdownSoon();
               continue;
             }
             this.binaries.delete(f.path);
@@ -2938,6 +3117,7 @@ export class App {
             if (later.get(p) === text.get(p)) this.dirty.delete(t);
             else this.dirty.add(t);
           }
+          for (const [p, t] of textPairs) if (this.formatted.delete(p)) this.formatted.add(t);
           // Onto the new path before the old model goes from under the editor,
           // and where it was in the file with it.
           const followed = textPairs.find(([p]) => p === active)?.[1];
