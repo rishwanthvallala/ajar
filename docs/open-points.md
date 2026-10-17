@@ -389,10 +389,10 @@ it took to get there.
 Built on 4 October — [dev/accounts.md](dev/accounts.md#as-built). What is
 still open in it:
 
-- **The accounts database is not backed up.** It lives on the box alone.
-  Litestream to S3 is the plan, which needs a bucket and credentials on the
-  AWS account, and must leave `accounts.key` behind — the database and the key
-  together are every edit link.
+- **Nothing is backed up.** Accounts, pads and blobs live on one volume.
+  The options and the proposal — Litestream and the blobs to Backblaze B2, a
+  second nightly copy elsewhere, an alarm and a weekly restore test, the key
+  kept apart — are in [durability](dev/durability.md).
 - **Google and GitHub are two accounts** for one person until linking is built.
 - **No takedown tooling.** Taking a pad down for abuse, or banning an account,
   means editing the database by hand. `/admin` shows the biggest pads and the
