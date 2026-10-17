@@ -1103,11 +1103,13 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   expect("and the traceback's file and line is a link that opens the file there", errSpot !== null && errLanded.active === "errs/boom.py" && errLanded.line === 4, `${JSON.stringify(errSpot)} ${JSON.stringify(errLanded)}`);
   await typed("ls > /dev/null");
   const errStayed = (await errMarks()).length;
-  const errKept = lastRun;
+  // The relay's, against a deployment; this server's otherwise.
+  const errPad = new URL(page.url()).pathname;
+  const errKept = LIVE ? await fetch(`${ORIGIN}/api${errPad.replace(/^\//, "/pad/")}/run`).then((r) => r.json()).catch(() => null) : lastRun;
   expect("a command that is not a run leaves the marks, and Run's output is kept as the pad's last run", errStayed === 1 && errKept?.path === "errs/boom.py" && errKept?.exit === 1 && errKept?.output.includes("NameError") && errKept?.output.includes("before") && !/\x1b\][^\x07]*\x07/.test(errKept?.output ?? ""), `${errStayed} ${JSON.stringify(errKept)}`);
   // Whoever opens the pad next sees it before running anything.
   const errNext = await context.newPage();
-  await errNext.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+  await errNext.goto(`${ORIGIN}${errPad}`, { waitUntil: "domcontentloaded" });
   const errOpened = await errNext.waitForFunction(() => /the last run, just now: python .*boom\.py"? · exit 1/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? "") && (document.querySelector("#terminal .xterm-rows")?.textContent ?? "").includes("NameError"), null, { timeout: 60_000 }).then(() => true, () => false);
   await errNext.close();
   expect("and a page opening the pad shows that run in its terminal before anything runs", errOpened, "");
