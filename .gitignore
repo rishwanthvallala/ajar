@@ -20,5 +20,7 @@ ajar-pads/
 # The accounts database a relay run on a laptop makes beside the pads, and its
 # write-ahead files. Its key is `*.key`, above.
 ajar-accounts.db*
+# And its usage counts (crates/ajar-relay/src/usage.rs).
+ajar-usage.db*
 /openspec
 /.agents

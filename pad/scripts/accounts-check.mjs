@@ -676,7 +676,34 @@ try {
   const figures = await owner.evaluate(() => Object.fromEntries([...document.querySelectorAll(".stat")].map((s) => [s.querySelector(".stat-label").textContent, s.querySelector(".stat-value").textContent])));
   is(figures.Accounts, "1", "the operator's view counts the accounts");
   is(Number(figures["In pads"]) >= 1, true, "and who is in a pad right now");
-  is(await owner.locator(".chart-svg[role=img]").count(), 2, "with charts that say what they show");
+  is(await owner.locator(".chart-svg[role=img]").count(), 7, "with charts that say what they show");
+
+  // ---- what is counted as it happens (usage.rs) ----
+  // Runs come from the page — the Run above was one. One in a language the
+  // relay does not count, and one started some way that is not Run or
+  // typing, are dropped: those words are all the table can hold.
+  const usageNow = async () => (await (await fetch(`${ORIGIN}/api/admin/stats`, { headers: { cookie: ownerCookie } })).json()).usage;
+  const todayOf = (days) => days[days.length - 1].n;
+  const tally = (u) => ({ runs: todayOf(u.runs), ...Object.fromEntries([...u.languages, ...u.via].map((c) => [c.key, c.n])) });
+  const runsBefore = tally(await usageNow());
+  for (const body of [{ language: "python", via: "run" }, { language: "go", via: "typed" }, { language: "<b>x</b>", via: "run" }, { language: "python", via: "somewhere" }]) {
+    await owner.evaluate((b) => fetch("/api/usage/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }), body);
+  }
+  const usage = await usageNow();
+  const runsAfter = tally(usage);
+  const runsGrew = Object.fromEntries(Object.keys(runsAfter).map((k) => [k, runsAfter[k] - (runsBefore[k] ?? 0)]).filter(([, n]) => n));
+  is(todayOf(usage.opens) >= 3 && todayOf(usage.pads) >= 2 && todayOf(usage.pads) <= todayOf(usage.opens), true, `pads opened are counted, and how many different pads — ${todayOf(usage.opens)} opens of ${todayOf(usage.pads)}`);
+  is(runsBefore.python >= 1 && runsBefore.run >= 1, true, `the Run pressed earlier was counted — ${JSON.stringify(runsBefore)}`);
+  is(JSON.stringify(runsGrew), JSON.stringify({ runs: 2, python: 1, go: 1, run: 1, typed: 1 }), `runs by language and by how they started, and nothing the relay does not count — ${JSON.stringify(runsAfter)}`);
+  is(usage.online.length >= 1 && todayOf(usage.peak) >= 1, true, `and the most people online at once — ${usage.online.length} samples, today's most ${todayOf(usage.peak)}`);
+  await owner.reload();
+  await owner.waitForSelector(".mix-label", { timeout: 15_000 });
+  const ran = await owner.locator(".mix-label").allTextContents();
+  is(ran.includes("Python") && ran.includes("Go") && ran.includes("The Run button") && !ran.some((l) => l.includes("<b>")), true, "the operator's view shows them");
+  // Counts only: no pad's name is anywhere in the file, hashed today's or not.
+  const counted = Buffer.concat(await Promise.all(["usage.db", "usage.db-wal"].map((f) => readFile(join(dir, f)).catch(() => Buffer.alloc(0)))));
+  const leaked = [name, openName, kept].filter((n) => counted.includes(Buffer.from(n)));
+  is(leaked.length === 0 && counted.length > 0, true, `and the counts hold no pad's name${leaked.length ? ` — found ${leaked.join(", ")}` : ""}`);
 
   // ---- the dashboard ----
   await owner.goto(`${ORIGIN}/dashboard`);

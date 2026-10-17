@@ -15,6 +15,7 @@ use crate::accounts::AccountStats;
 use crate::http_accounts::{blocking, signed_in};
 use crate::pad::Census;
 use crate::session::RoomCensus;
+use crate::usage::UsageStats;
 use crate::AppState;
 
 /// The window the per-day figures cover.
@@ -30,6 +31,8 @@ pub fn routes() -> Router<AppState> {
 struct Stats {
     accounts: AccountStats,
     store: Census,
+    /// Counted as it happens, unlike the rest: usage.rs.
+    usage: UsageStats,
     live: RoomCensus,
     relay: Relay,
     days: i64,
@@ -81,12 +84,25 @@ async fn stats(
     headers: HeaderMap,
 ) -> Result<Json<Stats>, (StatusCode, String)> {
     require_admin(&state, &headers).await?;
-    let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
-    let (accounts, store) = blocking(move || (accounts.stats(DAYS, TOP), pads.census(TOP))).await;
+    let (accounts, pads, usage) = (
+        state.accounts.clone(),
+        state.pads.clone(),
+        state.usage.clone(),
+    );
+    let (accounts, store, usage) = blocking(move || {
+        (
+            accounts.stats(DAYS, TOP),
+            pads.census(TOP),
+            usage.stats(DAYS, crate::usage::now()),
+        )
+    })
+    .await;
     let accounts = accounts.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message()))?;
+    let usage = usage.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(Stats {
         accounts,
         store,
+        usage,
         live: state.registry.census(),
         relay: Relay {
             version: env!("CARGO_PKG_VERSION"),

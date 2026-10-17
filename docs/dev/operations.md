@@ -304,6 +304,10 @@ they are kept in the accounts database.
 
 ### What is on disk
 
+`/var/lib/ajar/usage.db` (SQLite, WAL) holds the usage counts the admin page
+shows — counts only, nobody's; losing it loses the history and nothing else.
+See [accounts](accounts.md#as-built), "Usage, counted as it happens".
+
 `/var/lib/ajar/accounts.db` (SQLite, WAL) holds users, sessions, pads and
 links, and `/var/lib/ajar/accounts.key` beside it seals link codes so the
 dashboard can show a link again. **The two together are every edit link**;

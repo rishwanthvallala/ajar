@@ -33,6 +33,7 @@ import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
 import { imageFromOsc, imageType } from "./images";
 import { isMarkdown, linkFor, MARKDOWN_MAX, renderMarkdown, slug } from "./markdown";
+import { countRun, languageOfFile, languageOfLine } from "./usage";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -394,7 +395,7 @@ export class App {
 
     let pad: Pad;
     try {
-      pad = await this.store.read(this.name);
+      pad = await this.store.read(this.name, true);
     } catch (e) {
       if (e instanceof StoreError && e.refused && e.message.includes("no longer works")) {
         // A code-shaped hash that replaced a working code: back to that one.
@@ -2096,7 +2097,10 @@ export class App {
     fit.fit();
     const session = new TerminalSession(number, host, term, fit, {
       runtime: () => this.ensureRuntime(),
-      prepare: (t, command) => this.prepare(t, command),
+      prepare: (t, command) => {
+        countRun(languageOfLine(command), "typed");
+        return this.prepare(t, command);
+      },
       onBusy: (t, busy) => this.onBusy(t, busy),
       onFinished: () => void this.afterCommand(),
       installs: () => this.installs,
@@ -2439,6 +2443,7 @@ export class App {
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
       session.console.announce(command);
+      countRun(languageOfFile(this.active), "run");
       let finished: Finished | null = null;
       try {
         if (program?.startsWith("python")) await this.installRequirements(rt, session, sh);

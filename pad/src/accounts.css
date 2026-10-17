@@ -444,6 +444,8 @@
 .acct:has(.admin) .topbar-inner, .acct:has(.admin) .page-foot { max-width: 72rem; }
 .admin-tools { display: flex; align-items: center; gap: 0.75rem; }
 .admin-updated { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+/* Said above the usage charts when counting began within their window. */
+.admin-note { margin: -0.25rem 0 0.75rem; color: var(--muted); font-size: 0.8125rem; }
 .admin-body[aria-busy="true"] { opacity: 0.7; transition: opacity 200ms; }
 .admin-section { margin-top: 1.8rem; }
 .admin-section > h2 { margin: 0 0 0.75rem; font-size: 0.75rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
@@ -471,6 +473,8 @@
 .chart-svg .bar { fill: var(--accent); }
 .chart-svg .bar:hover { fill: color-mix(in srgb, var(--accent) 75%, var(--ink)); }
 .chart-svg .bar.empty { fill: var(--surface-2); }
+/* The 24-hour chart's five-minute bars: square, so touching bars make one edge. */
+.chart-svg .bar.flat { shape-rendering: crispEdges; }
 .chart-axis { display: flex; justify-content: space-between; margin-top: 0.35rem; color: var(--muted); font-size: 0.72rem; }
 
 .mix { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.55rem; }

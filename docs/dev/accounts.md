@@ -398,10 +398,39 @@ editing.
 used, built from what the relay already keeps — accounts and sign-ups per day
 from the database, pads and when each was last opened from the store's files
 (their lease timestamps), who is in a room right now from the registry, and
-the relay's uptime and memory. Nothing is collected for it; the privacy page
-says what it shows. Only `AJAR_ADMINS` may open it (`http_admin.rs` serves
-the figures, `pad/src/admin.ts` draws them), and to anyone else it is what it
-was — not a pad address.
+the relay's uptime and memory. Only `AJAR_ADMINS` may open it
+(`http_admin.rs` serves the figures, `pad/src/admin.ts` draws them), and to
+anyone else it is what it was — not a pad address.
+
+**Usage, counted as it happens** (17 October), for the same page's Use
+section: pads opened per day and how many different pads, programs run per day
+by language and by Run or typed, and the most people in pads and sessions at
+once — per five minutes for the last day, and each day's peak. Until then
+nothing was collected for `/admin`; this is the first thing that is, so the
+privacy page changed with it (its "Usage counts"). `crates/ajar-relay/src/usage.rs`,
+in its own `usage.db` beside `accounts.db` (`--usage-db` to put it elsewhere):
+
+- **Opens** are counted by the relay, from the read a page makes when it
+  opens a pad — marked `x-pad-open` (`Store.read`'s `opening`) — once it is
+  served. Not every read: a page re-reads after saves elsewhere, reconnects
+  and access changes, and those would have been most of the count.
+- **Different pads** need to know a pad was seen already today. Today's are
+  kept as SHA-256 of the name under a random key made for the day; the
+  hashes and the key go at the turn of the hour after the day ends, leaving
+  only the count. Nothing names a pad past its day.
+- **Runs** come from the page (`pad/src/usage.ts`): `POST /api/usage/run`
+  with `{language, via}` from Run and from each typed line whose command is a
+  language's (`python`, `node`, `go`, `clang`, `java`…). The relay counts only
+  the eight languages and two ways it knows, 60 a minute per address at most,
+  and answers 204 either way. It cannot tell a real run from a posted one;
+  the limit is what keeps one address from being the chart.
+- **People online** is the registry's census every 30 seconds, kept as the
+  most in each five minutes. A five minutes the relay was down has no row,
+  and the chart leaves it out rather than drawing nobody.
+
+Kept: the daily counts about thirteen months, the five-minute figures 30
+days. The page says when counting began, so an empty chart before it reads
+as no counting, not no use.
 
 **Signing out ends what the sign-in gave, in the room too** (4 October).
 Owner is the one role a room hands out from a sign-in, and it was decided at

@@ -11,6 +11,7 @@ mod outbox;
 mod pad;
 mod quota;
 mod session;
+mod usage;
 mod ws;
 
 use std::net::SocketAddr;
@@ -152,6 +153,13 @@ struct Args {
     #[arg(long, default_value = "./ajar-accounts.db")]
     accounts_db: String,
 
+    /// Where the usage counts for the operator's view are kept (usage.rs):
+    /// counts only, nobody's. Beside the accounts database unless named —
+    /// `accounts.db` gives `usage.db`, `ajar-accounts.db` gives
+    /// `ajar-usage.db`.
+    #[arg(long)]
+    usage_db: Option<String>,
+
     /// Pads one account may own.
     #[arg(long, default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
     account_max_pads: usize,
@@ -190,6 +198,8 @@ struct AppState {
         Arc<parking_lot::Mutex<std::collections::HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
     /// When the relay started, for the operator's view.
     started: std::time::Instant,
+    /// How the pad is used, counted as it happens: counts only (usage.rs).
+    usage: Arc<usage::Usage>,
 }
 
 #[tokio::main]
@@ -247,6 +257,23 @@ async fn main() -> anyhow::Result<()> {
         args.accounts_db,
         auth.offered()
     );
+    let usage_db = args.usage_db.clone().unwrap_or_else(|| {
+        let accounts = std::path::Path::new(&args.accounts_db);
+        let file = accounts
+            .file_name()
+            .and_then(|f| f.to_str())
+            .filter(|f| f.contains("accounts"))
+            .map_or_else(
+                || "usage.db".to_string(),
+                |f| f.replace("accounts", "usage"),
+            );
+        accounts.with_file_name(file).to_string_lossy().into_owned()
+    });
+    let usage = Arc::new(
+        usage::Usage::open(std::path::Path::new(&usage_db))
+            .map_err(|e| anyhow::anyhow!("cannot open the usage database {usage_db}: {e}"))?,
+    );
+    info!("usage counted in {usage_db}");
 
     let state = AppState {
         registry: Arc::new(Registry::new()),
@@ -260,7 +287,41 @@ async fn main() -> anyhow::Result<()> {
         auth,
         account_writes: Default::default(),
         started: std::time::Instant::now(),
+        usage: usage.clone(),
     };
+
+    // How many are in pads and sessions, every 30 seconds, kept as the most in
+    // each five minutes (usage.rs) — a 30-second look misses less of a busy
+    // minute than a five-minute one would. And at the turn of each hour, what
+    // is past keeping goes: within a minute of midnight, the day's hashes of
+    // its pads and their key.
+    {
+        let registry = state.registry.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut pruned_hour = -1;
+            loop {
+                tick.tick().await;
+                let census = registry.census();
+                let usage = usage.clone();
+                let now = usage::now();
+                let prune = now / 3600 != pruned_hour;
+                pruned_hour = now / 3600;
+                let done = tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
+                    let people = (census.pad_people + census.session_people) as i64;
+                    usage.sample(people, census.pad_rooms as i64, census.sessions as i64, now)?;
+                    if prune {
+                        usage.prune(now)?;
+                    }
+                    Ok(())
+                })
+                .await;
+                if let Ok(Err(e)) = done {
+                    tracing::warn!("keeping the usage counts failed: {e}");
+                }
+            }
+        });
+    }
 
     // Pads past their lease. Hourly rather than every few seconds: a lease is
     // ninety days, and nothing goes wrong if a dead pad lingers an extra hour.
@@ -325,6 +386,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/pad/{name}/history/{id}", get(version))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
+        .merge(usage::routes())
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -464,12 +526,20 @@ async fn read_pad(
         return (StatusCode::FORBIDDEN, why).into_response();
     }
 
+    // A page opening the pad, rather than reading it again — after a save
+    // elsewhere, a reconnect, a change of access — says so, and is counted
+    // once it is served (usage.rs).
+    let counted = headers.contains_key("x-pad-open").then(|| name.clone());
+
     // Opening, checking and renewing are filesystem calls, so they go where
     // blocking belongs rather than stalling a worker carrying keystrokes.
     let pads = state.pads.clone();
     let Ok(opened) = tokio::task::spawn_blocking(move || pads.open_for_read(&name)).await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "reading the pad failed").into_response();
     };
+    if let (Some(pad), Ok(_)) = (counted, &opened) {
+        usage::count_open(&state, pad);
+    }
     let view = http_accounts::AccessView::from(&access);
     match opened {
         Ok(Some(opened)) => stream_pad(opened, &view, (slot, permit)),

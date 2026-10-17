@@ -325,9 +325,14 @@ export class Store {
     return ((await res.json()) as { id: number | null }).id;
   }
 
-  async read(name: string): Promise<Pad> {
+  /**
+   * The pad as it is. `opening` is a page opening it, rather than reading it
+   * again — after a save elsewhere, a reconnect, a change of access — which
+   * the relay counts as an open (usage.rs); nothing else about it is kept.
+   */
+  async read(name: string, opening = false): Promise<Pad> {
     const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
-      headers: this.headers(name),
+      headers: opening ? { ...this.headers(name), "x-pad-open": "1" } : this.headers(name),
       // A pad's answer depends on who asks. Never one from a cache.
       cache: "no-store",
     }, this.deadline);

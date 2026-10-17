@@ -1,7 +1,9 @@
 /**
- * The operator's view, at /admin: how the pad is being used, from what the
- * relay already keeps. Only the people named in `AJAR_ADMINS` get it; to
- * anyone else /admin is what it always was — not a pad address.
+ * The operator's view, at /admin: how the pad is being used — from what the
+ * relay keeps anyway, and from the counts it takes as it goes (usage.rs:
+ * opens, runs by language, people online; counts only). Only the people named
+ * in `AJAR_ADMINS` get it; to anyone else /admin is what it always was — not
+ * a pad address.
  *
  * Charts are drawn here as SVG: the CSP allows no library from elsewhere, and
  * a bar per day needs none.
@@ -18,6 +20,13 @@ interface Count {
 interface Day {
   day: number;
   n: number;
+}
+/** The most people at once in five minutes, from `at`. */
+interface Sample {
+  at: number;
+  people: number;
+  pads: number;
+  sessions: number;
 }
 interface AccountRow {
   name: string;
@@ -55,6 +64,16 @@ interface Stats {
     touched_30d: number;
     biggest: { name: string; bytes: number; touched: number; owned: boolean }[];
   };
+  usage: {
+    opens: Day[];
+    pads: Day[];
+    runs: Day[];
+    languages: Count[];
+    via: Count[];
+    peak: Day[];
+    online: Sample[];
+    since: number | null;
+  };
   live: { pad_rooms: number; pad_people: number; sessions: number; session_people: number };
   relay: { version: string; uptime_secs: number; memory_bytes: number | null };
   days: number;
@@ -65,6 +84,10 @@ const REFRESH_MS = 60_000;
 
 const VIEW_WORDS: Record<string, string> = { link: "Anyone with the link", code: "View link only", owner: "Only the owner" };
 const EDIT_WORDS: Record<string, string> = { code: "Anyone with an edit link", owner: "Only the owner" };
+const LANGUAGE_WORDS: Record<string, string> = { python: "Python", javascript: "JavaScript", c: "C", cpp: "C++", go: "Go", java: "Java", php: "PHP", lisp: "Common Lisp" };
+const VIA_WORDS: Record<string, string> = { run: "The Run button", typed: "Typed in the terminal" };
+/** The online samples' width, as the relay keeps them. */
+const SAMPLE_SECS = 300;
 
 async function load(): Promise<Stats> {
   const res = await fetch("/api/admin/stats", { cache: "no-store" });
@@ -107,9 +130,10 @@ function card(label: string, value: string, note: string, iconName: IconName, to
 
 /**
  * A bar per day. `role="img"` with a sentence that says what the bars do,
- * and each bar's own title for a pointer.
+ * and each bar's own title for a pointer. `most` for a day's figure that is
+ * a peak, which adds up to nothing: said as the window's most instead.
  */
-function dayChart(title: string, days: Day[], noun: string): HTMLElement {
+function dayChart(title: string, days: Day[], noun: string, most = false): HTMLElement {
   const W = 600;
   const H = 120;
   const gap = 2;
@@ -125,7 +149,9 @@ function dayChart(title: string, days: Day[], noun: string): HTMLElement {
   svg.setAttribute(
     "aria-label",
     total
-      ? `${title}: ${total} in ${days.length} days, most on ${date(peak.day)} with ${peak.n}.`
+      ? most
+        ? `${title}: at most ${peak.n}, on ${date(peak.day)}.`
+        : `${title}: ${total} in ${days.length} days, most on ${date(peak.day)} with ${peak.n}.`
       : `${title}: none in ${days.length} days.`,
   );
   days.forEach((d, i) => {
@@ -147,9 +173,59 @@ function dayChart(title: string, days: Day[], noun: string): HTMLElement {
   return el(
     "section",
     { className: "panel chart" },
-    el("div", { className: "panel-head" }, el("h3", {}, title), el("span", { className: "panel-meta" }, `${number(total)} in ${days.length} days · peak ${peak.n}`)),
+    el("div", { className: "panel-head" }, el("h3", {}, title), el("span", { className: "panel-meta" }, most ? `most ${number(peak.n)}${peak.n ? `, ${date(peak.day)}` : ""}` : `${number(total)} in ${days.length} days · peak ${peak.n}`)),
     svg as unknown as HTMLElement,
     el("div", { className: "chart-axis" }, el("span", {}, first ? date(first.day) : ""), el("span", {}, last ? "today" : "")),
+  );
+}
+
+/**
+ * People online over the last day: a bar per five minutes, the most seen in
+ * it. A five minutes the relay was not running to look is left out, not
+ * drawn as nobody.
+ */
+function onlineChart(samples: Sample[]): HTMLElement {
+  const W = 600;
+  const H = 120;
+  const slots = 86_400 / SAMPLE_SECS;
+  const now = Date.now() / 1000;
+  const start = now - (now % SAMPLE_SECS) - (slots - 1) * SAMPLE_SECS;
+  const max = Math.max(1, ...samples.map((s) => s.people));
+  const bw = W / slots;
+  const top = samples.reduce((best, s) => (s.people > best.people ? s : best), samples[0] ?? { at: 0, people: 0, pads: 0, sessions: 0 });
+  const time = (at: number) => new Date(at * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "chart-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute(
+    "aria-label",
+    samples.length ? `People online over the last day: at most ${top.people}, at ${time(top.at)}.` : "People online over the last day: nothing counted yet.",
+  );
+  for (const s of samples) {
+    const i = Math.round((s.at - start) / SAMPLE_SECS);
+    if (i < 0 || i >= slots) continue;
+    const h = s.people ? Math.max(3, (s.people / max) * (H - 4)) : 1.5;
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", String(i * bw));
+    rect.setAttribute("y", String(H - h));
+    // Touching, a little over, so a busy stretch reads as one shape rather
+    // than a comb of 288 hairlines.
+    rect.setAttribute("width", String(bw + 0.3));
+    rect.setAttribute("height", String(h));
+    rect.setAttribute("class", s.people ? "bar flat" : "bar empty flat");
+    const tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    tip.textContent = `${time(s.at)}: ${s.people} online — ${s.pads} ${s.pads === 1 ? "pad" : "pads"}, ${s.sessions} ${s.sessions === 1 ? "session" : "sessions"}`;
+    rect.append(tip);
+    svg.append(rect);
+  }
+  return el(
+    "section",
+    { className: "panel chart" },
+    el("div", { className: "panel-head" }, el("h3", {}, "Online, the last 24 hours"), el("span", { className: "panel-meta" }, samples.length ? `most ${number(top.people)}, at ${time(top.at)}` : "nothing counted yet")),
+    svg as unknown as HTMLElement,
+    el("div", { className: "chart-axis" }, el("span", {}, "24 h ago"), el("span", {}, "now")),
   );
 }
 
@@ -201,6 +277,35 @@ function render(s: Stats): HTMLElement[] {
   meter.setAttribute("aria-hidden", "true");
   storage.append(meter);
 
+  const u = s.usage;
+  const today = (days: Day[]) => days[days.length - 1]?.n ?? 0;
+  const topLanguage = u.languages[0];
+  const peakDay = u.peak.reduce((best, d) => (d.n > best.n ? d : best), u.peak[0] ?? { day: 0, n: 0 });
+  // Empty before counting began because nothing was counted, which the
+  // charts cannot say themselves.
+  const firstDay = u.opens[0]?.day ?? 0;
+  const began = u.since === null
+    ? el("p", { className: "admin-note" }, "Nothing counted yet: opens, runs and people online are counted from when this relay first ran with counting.")
+    : u.since > firstDay
+      ? el("p", { className: "admin-note" }, `Counted since ${date(u.since)}; the days before it are empty because nothing was counted then.`)
+      : null;
+  const use = el(
+    "section",
+    { className: "admin-section" },
+    el("h2", {}, "Use"),
+    began,
+    el(
+      "div",
+      { className: "stats" },
+      card("Opened today", number(today(u.opens)), `${number(today(u.pads))} different ${today(u.pads) === 1 ? "pad" : "pads"}`, "eye"),
+      card("Runs today", number(today(u.runs)), topLanguage ? `${LANGUAGE_WORDS[topLanguage.key] ?? topLanguage.key} most, this month` : "none this month", "play"),
+      card("Most at once", number(today(u.peak)), peakDay.n ? `today · ${number(peakDay.n)} on ${date(peakDay.day)}, this month's most` : "today", "pads"),
+    ),
+    el("div", { className: "panels two" }, dayChart("Pads opened per day", u.opens, "opens"), dayChart("Different pads per day", u.pads, "pads")),
+    el("div", { className: "panels two" }, dayChart("Programs run per day", u.runs, "runs"), el("div", { className: "panel-stack" }, mix("Run in", u.languages, LANGUAGE_WORDS), mix("Started from", u.via, VIA_WORDS))),
+    el("div", { className: "panels two" }, onlineChart(u.online), dayChart("Most online at once, per day", u.peak, "at once", true)),
+  );
+
   return [
     el(
       "section",
@@ -214,6 +319,7 @@ function render(s: Stats): HTMLElement[] {
         card("Relay", uptime(s.relay.uptime_secs), `up · v${s.relay.version}${s.relay.memory_bytes ? ` · ${size(s.relay.memory_bytes)} memory` : ""}`, "chart"),
       ),
     ),
+    use,
     el(
       "section",
       { className: "admin-section" },
@@ -307,7 +413,7 @@ export async function startAdmin(root: HTMLElement): Promise<void> {
       el(
         "main",
         { className: "dash admin" },
-        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Admin"), el("p", { className: "page-usage" }, "How pad is being used — from what the server already keeps.")), el("div", { className: "admin-tools" }, updated, refresh)),
+        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Admin"), el("p", { className: "page-usage" }, "How pad is being used — from what the server keeps, and the counts it takes as it goes.")), el("div", { className: "admin-tools" }, updated, refresh)),
         body,
       ),
       footer(),

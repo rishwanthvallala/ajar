@@ -52,7 +52,7 @@
       <header><a href="/"><svg class="mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect width="24" height="24" rx="6.5"/><path d="M6.5 8h8.5M9 12h8.5M9 16h5" stroke-width="2" stroke-linecap="round" fill="none"/></svg>pad</a><span class="meta">code.rishwanth.dev</span></header>
 
       <h1>Privacy</h1>
-      <p class="meta">Effective 5 October 2026</p>
+      <p class="meta">Effective 17 October 2026</p>
 
       <p>
         pad is a code scratchpad at <code>code.rishwanth.dev</code>: open it, type, run, and send the link.
@@ -66,7 +66,8 @@
           <li>You can use pad without an account. Signing in is only for pads you control.</li>
           <li>Signing in gives us your name, email address and an account id from Google or GitHub — nothing else.</li>
           <li>Files you put in a pad are stored on our server, unencrypted.</li>
-          <li>No ads, no analytics, no tracking, no selling or sharing your data, no email.</li>
+          <li>No ads, no tracking, no selling or sharing your data, no email.</li>
+          <li>The server counts how pad is used — pads opened, programs run, people online — as totals, never who or which pad.</li>
         </ul>
       </div>
 
@@ -118,6 +119,21 @@
         apply rate limits.
       </p>
 
+      <h2>Usage counts</h2>
+      <p>
+        The server counts how pad is used, to know whether it is and how to look after it. Each day: how many times
+        pads are opened, and how many different pads that was; how many programs are run, in which language
+        (Python, JavaScript, C, C++, Go, Java, PHP or Common Lisp), and whether the Run button or the terminal started
+        them. And every five minutes, the most people in pads at once. When you run a program, your browser tells
+        the server only its language and how it started — nothing of the program, its files or its output.
+      </p>
+      <p>
+        These are counts and nothing more: they are not linked to you, your account, your IP address or the pad. To
+        count a pad opened twice in a day only once, the server keeps that day's pads as one-way hashes made with a
+        key used for that day alone, and deletes the hashes and the key once the day is over. The daily counts are
+        kept for about thirteen months, the five-minute figures for 30 days.
+      </p>
+
       <h2>On your device</h2>
       <p>
         Your browser keeps your settings — theme, layout, colours — and the codes of pad links you have opened, in its
@@ -127,9 +143,10 @@
 
       <h2>What the person who runs pad sees</h2>
       <p>
-        To run the service, its operator has a page only they can open, built from what is described above —
-        nothing extra is collected for it. It shows totals: how many accounts and pads there are, how many people
-        are in a pad right now, how much is stored, and sign-ups and new pads per day. And it lists accounts, with
+        To run the service, its operator has a page only they can open, built from what is described above,
+        the usage counts among it. It shows totals: how many accounts and pads there are, how many people are in a
+        pad right now, how much is stored, sign-ups and new pads per day, and the usage counts — pads opened,
+        programs run and in which languages, and the most people online at once. And it lists accounts, with
         each one's name, email address, the service they signed in with, when they joined and last signed in, and
         how many pads and how much space they use; and the ten largest pads, by name, with their size and when each
         was last opened — for keeping the service within its limits and dealing with abuse.

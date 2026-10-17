@@ -559,6 +559,17 @@ not metered by rate: every save in a busy pad sends every other browser to
 re-read it, and a classroom behind one address does that thousands of times a
 minute.
 
+**A run counted is 60 a minute per address** (`usage.rs`, 17 October).
+`POST /api/usage/run` takes anybody's word that a program ran, which it has to:
+the run happens in the browser. What it can do is little — add one to a count
+named by one of eight languages and two ways, the only words the table can
+hold — and the limit keeps one address from drawing the chart. The addresses
+are held only for the minute they are counted in, then the whole map is
+dropped, so it is never more than the last minute's callers; the quota's
+budgets are not used because nothing sweeps them. Opens need no limit of their
+own: one is counted per pad read that a page marks as its first, behind the
+read's own slot and permit.
+
 ### At the edge
 
 The pad's runtime — 161 files, about 19 MB as a browser receives it — is served by
