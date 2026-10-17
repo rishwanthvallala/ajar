@@ -10,7 +10,8 @@
 #   - GitHub as an OpenID Connect identity provider, so GitHub keeps no AWS
 #     keys: a job trades its own short-lived token for the role below.
 #   - the role ajar-deploy-github. Only a workflow on this repository's main
-#     branch can take it, and it can do two things: open an SSH session over
+#     branch can take it — named as GitHub names it in a job's token, asked of
+#     GitHub's API — and it can do two things: open an SSH session over
 #     SSM to the relay instance, and read one parameter, the CI key.
 #   - the parameter /ajar/deploy/ci-ssh-key: an SSH key made here for CI
 #     alone, its private half encrypted in Parameter Store and nowhere else.
@@ -41,6 +42,19 @@ aws() { command aws --profile "$PROFILE" "$@"; }
 say() { printf '  %s\n' "$*"; }
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+# What a job's token names this repository as, from GitHub itself. Not
+# assumed: a repository can use GitHub's immutable subject, which carries the
+# owner's and the repository's ids — repo:owner@1/name@2 — and then a role
+# written for repo:owner/name refuses every token ("Not authorized to perform
+# sts:AssumeRoleWithWebIdentity"), as this one did on 16 October.
+SUBJECT=$(curl -fsS "https://api.github.com/repos/$REPO/actions/oidc/customization/sub" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("use_default", True):
+    sys.exit("the repository has its own subject template; write the role for it by hand")
+print(d.get("sub_claim_prefix") or "repo:" + sys.argv[1])
+' "$REPO")
 PROVIDER="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
 
 if aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$PROVIDER" >/dev/null 2>&1; then
@@ -60,7 +74,7 @@ trust=$(cat <<EOF
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": { "StringEquals": {
       "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub": "repo:$REPO:ref:refs/heads/main"
+      "token.actions.githubusercontent.com:sub": "$SUBJECT:ref:refs/heads/main"
     } }
   }]
 }
@@ -98,7 +112,7 @@ EOF
 )
 if aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   aws iam update-assume-role-policy --role-name "$ROLE" --policy-document "$trust"
-  say "the role $ROLE was there; its trust is as above"
+  say "the role $ROLE was there; it trusts $SUBJECT on main"
 else
   aws iam create-role --role-name "$ROLE" --max-session-duration 3600 \
     --description "GitHub Actions on $REPO main: deploy to the relay over SSM" \

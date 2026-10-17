@@ -58,6 +58,15 @@ commit, `deploy/ci-deploy.pub` and `deploy/known_hosts`. Until they are on
 which records the commit the relay runs. `--rotate` makes a new key; the
 script's header says how to undo all of it.
 
+The role trusts the subject GitHub's tokens actually carry for this
+repository, which the script asks GitHub for: this one uses the immutable
+form, `repo:rishwanthvallala@115866700/ajar@1345791454:ref:refs/heads/main`,
+with the owner's and the repository's ids. The first CI deploy failed at
+"Configure AWS credentials" with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity` because the role named `repo:rishwanthvallala/ajar`;
+that error, from a role that exists, is a subject or audience that does not
+match, and running the script again rewrites the trust.
+
 `deploy/` holds a Caddyfile (TLS, routing, the headers the pad needs and the
 per-address rate limits), two hardened systemd units — `ajar-relay.service` and
 `ajar-wisp.service` — the egress endpoint they run, and the script.
