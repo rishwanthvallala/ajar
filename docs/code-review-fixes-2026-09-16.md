@@ -1,8 +1,13 @@
 # Code review fix ledger — 2026-09-16
 
-This ledger records the implementation made against each finding in
-[`code-review-2026-09-16.md`](./code-review-2026-09-16.md). The deliberate product
-constraints in [`open-points.md`](./open-points.md) remain outside this work.
+This ledger preserves the implementation history of the September 16 findings.
+The [review report](./code-review-2026-09-16.md) was refreshed on September 28
+and now contains only open findings; the original report remains in Git history.
+F22 is partially resolved, as corrected below. Related newly identified gaps in
+hosted reconnect and Pad state ownership are tracked as F24–F27 in that report.
+The verification results below are historical, not results from the new review;
+in particular, the current `test:review` failure is recorded as F35.
+Deliberate constraints in [`open-points.md`](./open-points.md) remain outside this work.
 
 ## Status
 
@@ -30,7 +35,7 @@ constraints in [`open-points.md`](./open-points.md) remain outside this work.
 | F20 | Fixed | The final image creates and owns `/var/lib/ajar/pads`, declares `/var/lib/ajar` as a volume, and passes the pad directory explicitly. |
 | F21 | Fixed | Every relevant filesystem touch invalidates the offline snapshot, even when the visible tree metadata is unchanged. |
 | F23 | Fixed | The wire change in F03 is now negotiated. The host sends `protocol` in `Hello`, the relay returns it to guests as `host_protocol` in `Welcome`, and a guest facing a mismatch is told which side is behind and what to run — instead of a session that connects and silently drops every frame. |
-| F22 | Fixed | Pending document writes remain dirty until `atomic_write` succeeds; only then does `mark_written` acknowledge the exact content. Failed timer writes are retried. |
+| F22 | Partially fixed | Timer writes remain dirty until `atomic_write` succeeds and are retried. Last-reader close/disconnect still removes the document before persistence and loses pending contents on failure; see F22 in the refreshed review. |
 
 ## Implementation notes
 

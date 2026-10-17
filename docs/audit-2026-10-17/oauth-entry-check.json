@@ -1,0 +1,34 @@
+[
+  {
+    "provider": "google",
+    "status": 303,
+    "destination": "https://accounts.google.com",
+    "scope": "openid email profile",
+    "redirect_uri": "https://code.rishwanth.dev/auth/google/callback",
+    "statePresent": true,
+    "pkceMethod": "S256",
+    "cookieAttributes": [
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      "Max-Age=600",
+      "Secure"
+    ]
+  },
+  {
+    "provider": "github",
+    "status": 303,
+    "destination": "https://github.com",
+    "scope": "read:user",
+    "redirect_uri": "https://code.rishwanth.dev/auth/github/callback",
+    "statePresent": true,
+    "pkceMethod": "S256",
+    "cookieAttributes": [
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      "Max-Age=600",
+      "Secure"
+    ]
+  }
+]

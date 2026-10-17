@@ -1,0 +1,15 @@
+{
+  "harness": "scripts/perf/pad-visit.mjs",
+  "started": "2026-10-17T14:53:14.119Z",
+  "ended": "2026-10-17T14:54:06.696Z",
+  "COLD": "5000",
+  "WARM": "3000",
+  "PIP": "0",
+  "profile": "C:\\Users\\tanuj\\AppData\\Local\\Temp\\ajar-audit-20261017-pad-perf-1ed4a10837574d28b73142ec4e27099a",
+  "deadlineMs": 450000,
+  "timedOut": false,
+  "exitCode": 0,
+  "signal": null,
+  "browser": "installed Microsoft Edge via existing environment-only adapter",
+  "samples": "one cold and one warm requested; any incomplete sample must be excluded"
+}

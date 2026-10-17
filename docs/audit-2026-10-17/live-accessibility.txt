@@ -1,0 +1,132 @@
+Browser tab: 2, Title: "solar-meadow-3820 — pad", URL: "https://code.rishwanth.dev/solar-meadow-3820".
+0 AXWebArea solar-meadow-3820 — pad, URL: code.rishwanth.dev/solar-meadow-3820
+	1 container
+		2 container app
+			3 container
+				4 button (expanded) Files, ID: side-toggle, Secondary Actions: Collapse
+				5 heading solar-meadow-3820, Value: 1, ID: workspace
+					6 text solar-meadow-3820
+				7 text cash$HOME.py is formatted already
+				8 container Description: Participants, ID: people
+					9 container presence
+						10 text 2 here
+				11 container workspace-actions
+					12 button Stop, Help: Stop what is running (ctrl-c), ID: run
+					57 button Preview, Help: Show localhost:8000, ID: preview
+					13 button Share, Help: Copy the link, ID: share
+					14 link Description: Your pads, Value: code.rishwanth.dev/dashboard, ID: your-pads
+				15 button Description: Theme: System, Help: Theme: System — switch to Light, ID: theme-toggle
+			16 container
+				17 container Description: Files, ID: sidebar
+					18 text Files
+					19 text 3 files
+					20 container files
+						21 button New file
+						22 button New folder
+						23 button Upload a zip
+						24 button History: earlier versions of this pad
+						25 button Download as zip
+						26 container
+							27 button src
+							28 button Download src as a zip
+							29 button Delete src
+							30 button audit.js
+							31 button Download src/audit.js
+							32 button Delete src/audit.js
+							33 button cash$HOME.py
+							34 button Download cash$HOME.py
+							35 button Delete cash$HOME.py
+							36 button main.py
+							37 button Download main.py
+							38 button Delete main.py
+				39 splitter Description: Resize file sidebar, Value: 15, ID: sidebar-splitter
+				40 container Description: Server preview, ID: viewer-pane
+					41 text Editor
+					58 text Server preview
+					59 button Back to editor, Help: Return to the editor, ID: back-to-editor
+					60 container preview-pane
+						61 button (disabled) Back
+						62 button (disabled) Forward
+						63 button Reload
+						64 pop up button (collapsed, settable) Description: Server, Help: Which server: every port something in the folder listens on, Value: localhost:8000, Secondary Actions: Expand
+							65 menu
+								71 (selected) localhost:8000
+						67 text field (settable) Description: Address, Help: A path in this server, such as /about, or another server's address, such as localhost:5000/api, Value: /
+						68 checkbox Description: Requests, Help: Every request the page made: what went in and what came back, Value: 0
+						69 checkbox Description: Console, Help: What the page logged, and its errors, Value: 0
+						70 button Description: Open in a new tab, Help: Open this page in a tab of its own, for as long as the pad is open
+						72 container The page the server sent
+							73 AXWebArea Directory listing for /, URL: preview.rishwanth.dev/
+								74 heading Directory listing for /, Value: 1
+									75 text Directory listing for /
+								76 content list
+									77 container
+										78 AXListMarker • 
+										79 link Description: .ajar/, Value: preview.rishwanth.dev/.ajar/
+									80 container
+										81 AXListMarker • 
+										82 link Description: cash$HOME.py, Value: preview.rishwanth.dev/cash%24HOME.py
+									83 container
+										84 AXListMarker • 
+										85 link Description: main.py, Value: preview.rishwanth.dev/main.py
+									86 container
+										87 AXListMarker • 
+										88 link Description: src/, Value: preview.rishwanth.dev/src/
+						92 text Requests, newest first
+						90 button Clear
+						91 button Close
+						93 container
+							94 button (expanded) GET / 200 page 363 ms 347 B, Secondary Actions: Collapse
+								95 text GET
+								96 text /
+								97 text 200
+								98 text page
+								99 text 363 ms
+								100 text 347 B
+							101 heading REQUEST, Value: 4
+								102 text REQUEST
+							103 text GET http://localhost:8000/
+accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+sec-ch-ua: "Google Chrome";v="155", "Chromium";v="155", "Not(A:Brand";v="24"
+sec-ch-ua-mobile: ?0
+sec-ch-ua-platform: "Windows"
+upgrade-insecure-requests: 1
+user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36
+host: localhost:8000
+							104 heading RESPONSE · 200, Value: 4
+								105 text RESPONSE · 200
+							106 text server: SimpleHTTP/0.6 Python/3.13.15
+date: Sat, 17 Oct 2026 14:25:54 GMT
+content-type: text/html; charset=utf-8
+content-length: 347
+							107 heading RESPONSE BODY, Value: 4
+								108 text RESPONSE BODY
+							109 text <!DOCTYPE HTML>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Directory listing for /</title>
+</head>
+<body>
+<h1>Directory listing for /</h1>
+<hr>
+<ul>
+<li><a href=".ajar/">.ajar/</a></li>
+<li><a href="cash%24HOME.py">cash$HOME.py</a></li>
+<li><a href="main.py">main.py</a></li>
+<li><a href="src/">src/</a></li>
+</ul>
+<hr>
+</body>
+</html>
+
+				49 splitter Description: Resize editor and terminal, Value: 60, ID: splitter
+				50 container Terminal
+					51 text Terminal
+					52 container terminal-actions
+						53 button New terminal, Help: Another terminal, in the same folder (its own bash), ID: new-terminal
+						54 checkbox Description: Split terminal, Help: Two terminals side by side, Value: 0, ID: split
+					55 container
+						56 text field (settable) Terminal input
+
+The focused UI element is 0 AXWebArea solar-meadow-3820 — pad, URL: code.rishwanth.dev/solar-meadow-3820

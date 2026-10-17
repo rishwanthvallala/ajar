@@ -1,0 +1,147 @@
+[
+  {
+    "path": "/",
+    "status": 200,
+    "ms": 546,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-length": "847",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:22 GMT",
+      "etag": "\"dm74bvvn0ysq1dx-gzip\"",
+      "last-modified": "Sat, 17 Oct 2026 12:39:31 GMT",
+      "referrer-policy": "no-referrer",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>pad</title>\n    <!--\n      For a link preview from an app the server does not recognise as one: the\n      ones it does get the pad's own name and files (`@unfurl` in the\n      Caddyfile). Tags only, so the inline script below keeps its CSP hash.\n    -->\n    <meta name=\"description\" content=\"Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install.\" />\n    <meta property=\"og:site_name\" content=\"code.rishwanth.dev\" />\n    <meta property=\"og:title\" content=\"A pad on code.rishwanth.dev\" />\n    <meta property=\"og:description\" content=\"Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install.\" />\n    <meta property=\"og:image\" content=\"https://code.rishwanth.dev/og.png\" />\n    <meta name=\"twitter:card\" content=\"summary_large_image\" />\n      <!--\n      The SDK's WISP transport imports its client by bare specifier, which\n      assumes a bundler; we vendor the SDK unbundled because bundling it breaks\n      its workers. The import runs in this document, so a map here resolves it.\n      Inert unless a sandbox is started with a wisp network policy.\n    -->\n\n    <script type=\"importmap\">\n      {\n        \"imports\": {\n          \"@mercuryworkshop/wisp-js/client\": \"/vendor/wisp/src/entrypoints/client.mjs\"\n        }\n      }\n    </script>\n    <script type=\"module\" crossorigin src=\"/assets/index-DM0MFn8-.js\"></script>\n    <link rel=\"modulepreload\" crossorigin href=\"/assets/preload-helper-DD1OZmLC.js\">\n    <link rel=\"stylesheet\" crossorigin href=\"/assets/index-BYr3Wa3f.css\">\n  </head>\n  <body>\n    <div id=\"app\"></div>\n  </body>\n</html>\n"
+  },
+  {
+    "path": "/healthz",
+    "status": 200,
+    "ms": 45,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-length": "847",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:22 GMT",
+      "etag": "\"dm74bvvn0ysq1dx-gzip\"",
+      "last-modified": "Sat, 17 Oct 2026 12:39:31 GMT",
+      "referrer-policy": "no-referrer",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>pad</title>\n    <!--\n      For a link preview from an app the server does not recognise as one: the\n      ones it does get the pad's own name and files (`@unfurl` in the\n      Caddyfile). Tags only, so the inline script below keeps its CSP hash.\n    -->\n    <meta name=\"description\" content=\"Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install.\" />\n    <meta property=\"og:site_name\" content=\"code.rishwanth.dev\" />\n    <meta property=\"og:title\" content=\"A pad on code.rishwanth.dev\" />\n    <meta property=\"og:description\" content=\"Write code together and run it in the browser: Python, Fl"
+  },
+  {
+    "path": "/api/me",
+    "status": 200,
+    "ms": 42,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "108",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "application/json",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:22 GMT",
+      "referrer-policy": "no-referrer",
+      "via": "1.1 Caddy",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "{\"user\":null,\"providers\":[\"google\",\"github\"],\"limits\":{\"pads\":20,\"bytes\":262144000,\"named\":3},\"admin\":false}"
+  },
+  {
+    "path": "/api/my/pads",
+    "status": 401,
+    "ms": 138,
+    "headers": {
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "*",
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-length": "13",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/plain; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:22 GMT",
+      "referrer-policy": "no-referrer",
+      "via": "1.1 Caddy",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "sign in first"
+  },
+  {
+    "path": "/admin",
+    "status": 200,
+    "ms": 42,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-length": "847",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:23 GMT",
+      "etag": "\"dm74bvvn0ysq1dx-gzip\"",
+      "last-modified": "Sat, 17 Oct 2026 12:39:31 GMT",
+      "referrer-policy": "no-referrer",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>pad</title>\n    <!--\n      For a link preview from an app the server does not recognise as one: the\n      ones it does get the pad's own name and files (`@unfurl` in the\n      Caddyfile). Tags only, so the inline script below keeps its CSP hash.\n    -->\n    <meta name=\"description\" content=\"Write code together and run it in the browser: Python, Flask, numpy, Java, Go and more. Nothing to install.\" />\n    <meta property=\"og:site_name\" content=\"code.rishwanth.dev\" />\n    <meta property=\"og:title\" content=\"A pad on code.rishwanth.dev\" />\n    <meta property=\"og:description\" content=\"Write code together and run it in the browser: Python, Fl"
+  },
+  {
+    "path": "/privacy",
+    "status": 200,
+    "ms": 50,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:23 GMT",
+      "etag": "\"dm74bv6rogs695h-gzip\"",
+      "last-modified": "Sat, 17 Oct 2026 12:39:29 GMT",
+      "referrer-policy": "no-referrer",
+      "transfer-encoding": "chunked",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>Privacy — pad</title>\n    <meta name=\"description\" content=\"What pad at code.rishwanth.dev collects, why, and what it does not do.\" />\n    <!--\n      A plain page on purpose: no script, so it reads the same to a person, a\n      crawler and Google's consent-screen review, and nothing here can change\n      without this file changing. Served at /privacy by deploy/Caddyfile.\n      Keep it true: when what is collected changes, this changes with it.\n    -->\n    <style>\n      :root {\n        --bg: #f3f4f7; --surface: #ffffff; --ink: #13171e; --ink-2: #414b59;\n        --muted: #6c7684; --rule: #d9dde4; --accent: #2447c9;\n        color-scheme: "
+  },
+  {
+    "path": "/sw.js",
+    "status": 200,
+    "ms": 43,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=2592000",
+      "content-encoding": "gzip",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'",
+      "content-type": "text/javascript; charset=utf-8",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-opener-policy": "same-origin",
+      "date": "Sat, 17 Oct 2026 14:20:23 GMT",
+      "etag": "\"dm74bv6rq3z65n3-gzip\"",
+      "last-modified": "Sat, 17 Oct 2026 12:39:29 GMT",
+      "referrer-policy": "no-referrer",
+      "transfer-encoding": "chunked",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    },
+    "body": "// Serves the pinned wasm packages from this origin instead of Wasmer's CDN.\n//\n// The SDK has no registry override and cannot decode in-memory WEBC in the\n// browser — `packages.load(bytes)` fails with `FeatureNotEnabled {\n// \"authoring\" }`. So the packages are fetched by registry name as usual, and\n// this rewrites the requests on their way out.\n//\n// A service worker rather than a patched `fetch`, because the SDK does its\n// downloading inside workers, which have their own globals. This is the one\n// interception point that covers the page and everything it spawns.\n//\n// What it buys: Wasmer's CDN sends `.webc` with no content encoding at all, so\n// python is 58.9 MB on the wire. The same file from here, behind zstd, is\n// roughly a quarter of that — and immutable caching makes any later visit free.\n//\n// Anything not in the manifest passes straight through. A package we forgot to\n// mirror still works, just slowly, which is the right way round.\n//\n// The registry is answered from here too. The runtime asks registry.wasmer.io\n// where each package is, eleven times on every start, one after another — and\n// when that failed, as it did from one network in three runs of eight on 2\n// October, the terminal said so and Run never answered. fetch-packages.mjs\n// records the answers with the bytes; a package it did not record still asks.\n\nconst MANIFEST = \"/packages/manifest.json\";\nconst ANSWERS = \"/packages/registry.json\";\n// Packages of our own, which no registry has: Java (build-java.mjs). Their\n// answers and files, from one file, under a host nothing else answers for.\nconst OWN = \"/packages/own.json\";\nconst OWN_HOST = \"https://packages.ajar.invalid/\";\nlet mirrors = null;\nlet answers = null;\nlet own = null;\n\nasync function map() {\n  mirrors ??= fetch(MANIFEST)\n    .then((r) => (r.ok ? r.json() : {}))\n    .catch(() => ({}));\n  return mirrors;\n}\n\nasync function recorded() {\n  answers ??= fetch(ANSWERS)\n    .then((r) => (r.ok ? r.json() : {}))\n    .catch(() => ({}));\n  return answers;\n}\n\nasync function ours() {\n  own ??= fetch(OWN)\n    .then((r) => (r.ok ? r.json() : {}))\n    .catch(() => ({}));\n  return own;\n}\n\nself.addEventListener(\"install\", (event) => {\n  // Active immediately rather than after the next navigation: the page that\n  // registers this is the page about to download 60 MB.\n  event.waitUntil(Promise.all([map(), recorded(), ours()]).then(() => self.skipWaiting()));\n});\n\nself.addEventListener(\"activate\", (event) => {\n  event.waitUntil(self.clients.claim());\n});\n\n/**\n * The one version a dependency may resolve to.\n *\n * A package names what it depends on as a range — bash asks for\n * `wasmer/coreutils@^1.0.19` — and the SDK takes the newest version the\n * registry lists in it. So when Wasmer published coreutils 1.0.26 and 1.0.27,\n * every visitor moved to 1.0.27 without a deploy, from Wasmer's CDN because\n * the mirror had never seen it. The next release would have done the same.\n *\n * The packages the page asks for are pinned in runtime.ts with `=`. A\n * dependency cannot be pinned there — bash resolves its own range whatever\n * else is installed — so it is pinned here, where the SDK asks the registry\n * which versions exist: the answer lists only this one. Changing a version\n * here means running fetch-packages.mjs, which records through this worker.\n *\n * 1.0.27 and not the 1.0.25 it replaced, though that was 1.2 MB on the wire\n * against 2.8. Measured on 28 September: with 1.0.25 the browser check hung\n * on a python command near its end in 11 runs out of 11; with 1.0.27, and the\n * same worker passing every answer through, it finished in all 7.\n */\nconst PINS = {\n  \"wasmer/coreutils\": \"1.0.27\",\n};\nconst REGISTRY = \"https://registry.wasmer.io/graphql\";\n\n/** The package a registry lookup asks about, or null for any other query. */\nasync function packageOf(request) {\n  try {\n    return /getPackage\\(name: \"([^\"]+)\"\\)/.exec(JSON.parse(await request.clone().text()).query)?.[1] ?? null;\n  } catch {\n    // Not a query this knows how to read; pass it through untouched.\n    return null;\n  }\n}\n\n/** The recorded answer for a lookup, or the registry's, pinned. */\nasync function lookup(request) {\n  const name = await packageOf(request);\n  const known = name && ((await recorded())[name] ?? (await ours()).answers?.[name]);\n  if (known) {\n    answered += 1;\n    return new Response(JSON.stringify(known), {\n      status: 200,\n      headers: { \"Content-Type\": \"application/json\" },\n    });\n  }\n  return pinned(request, name);\n}\n\n/** The registry's answer, with a pinned package's other versions left out. */\nasync function pinned(request, name) {\n  const res = await fetch(request);\n  const version = name && PINS[name];\n  if (!version || !res.ok) return res;\n  const body = await res.clone().json().catch(() => null);\n  const versions = body?.data?.getPackage?.versions;\n  if (!Array.isArray(versions)) return res;\n  const kept = versions.filter((v) => v.version === version);\n  // A pin the registry no longer has would leave nothing to resolve. Floating\n  // is worse than pinned and better than broken, and app-check says so.\n  if (kept.length === 0) return res;\n  body.data.getPackage.versions = kept;\n  pinnedCount += 1;\n  return new Response(JSON.stringify(body), {\n    status: res.status,\n    statusText: res.statusText,\n    headers: { \"Content-Type\": \"application/json\" },\n  });\n}\n\nlet intercepted = 0;\nlet mirrored = 0;\nlet pinnedCount = 0;\nlet answered = 0;\n\nself.addEventListener(\"message\", (event) => {\n  if (event.data === \"stats\") {\n    event.source?.postMessage({ intercepted, mirrored, pinned: pinnedCount, answered });\n  }\n});\n\nself.addEventListener(\"fetch\", (event) => {\n  const url = event.request.url;\n  if (url === REGISTRY && event.request.method === \"POST\") {\n    event.respondWith(lookup(event.request));\n    return;\n  }\n  if (!url.startsWith(\"https://cdn.wasmer.io/\") && !url.startsWith(OWN_HOST)) return;\n  intercepted += 1;\n  event.respondWith(\n    (async () => {\n      const local = (await map())[url] ?? (await ours()).files?.[url];\n      if (!local) return fetch(event.request);\n      const res = await fetch(local);\n      // A mirror that 404s must not break the app — fall back to the origin it\n      // was mirroring rather than failing the request.\n      if (!res.ok) return fetch(event.request);\n      mirrored += 1;\n\n      // Strip the encoding headers before handing this back.\n      //\n      // `fetch` has already decompressed the body by the time it reaches us,\n      // but `Content-Encoding` and `Content-Length` still describe the\n      // compressed form. The SDK does its own HTTP decoding inside wasm, sees\n      // the header, and tries to decompress bytes that are already plain —\n      // failing with \"zstd content-encoding is not supported on wasm32\", which\n      // reads like a server misconfiguration and is the opposite.\n      //\n      // Stripping them is what lets the wire stay compressed: the transfer is\n      // 16 MB of zstd, and what the SDK receives is the 72 MB it expects.\n      const headers = new Headers(res.headers);\n      headers.delete(\"content-encoding\");\n      headers.delete(\"content-length\");\n      return new Response(res.body, {\n        status: res.status,\n        statusText: res.statusText,\n        headers,\n      });\n    })(),\n  );\n});\n"
+  }
+]

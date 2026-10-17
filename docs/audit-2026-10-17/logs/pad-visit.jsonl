@@ -1,0 +1,2 @@
+{"harness":"pad-visit","label":"first-visit-1","read_before_run_ms":5000,"cached":false,"editor_visible_ms":4622,"run_to_output_ms":21767,"landing_to_output_ms":31444}
+{"harness":"pad-visit","label":"return-visit-1","read_before_run_ms":3000,"cached":true,"editor_visible_ms":2043,"run_to_output_ms":2196,"landing_to_output_ms":7324,"second_run_ms":676,"shell_echo_ms":{"n":30,"min":7,"p50":10,"p95":16,"max":19},"shell_command_ms":{"n":3,"min":19,"p50":20,"p95":23,"max":23},"comment_line_finishes":true,"shell_runs_after_comment":true,"autosave_ms":753}

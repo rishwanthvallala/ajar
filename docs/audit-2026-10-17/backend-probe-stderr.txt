@@ -1,0 +1,9 @@
+file:///mnt/host/d/ajar/ajar/docs/audit-2026-10-17/backend-probes.mjs:24
+  throw Error('relay did not start');
+        ^
+
+Error: relay did not start
+    at start (file:///mnt/host/d/ajar/ajar/docs/audit-2026-10-17/backend-probes.mjs:24:9)
+    at async file:///mnt/host/d/ajar/ajar/docs/audit-2026-10-17/backend-probes.mjs:69:83
+
+Node.js v20.15.1

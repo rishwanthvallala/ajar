@@ -1,0 +1,15 @@
+{
+  "node": "24.21.0",
+  "initialNpm": "11.19.0",
+  "playwright": "1.63.0",
+  "edgeExecutableProductVersion": "155.0.4283.45",
+  "browserChannel": "msedge",
+  "initialAppCheckPlaywright": "pre-restoration installed version not separately recorded",
+  "headless": true,
+  "adapter": "docs/audit-2026-10-17/windows-test-adapter.mjs",
+  "windowsPython": "3.11",
+  "wslNpmRestore": "10.9.1 on Node20.15.1",
+  "restoredTypecheckExit": 0,
+  "restoredBuildExit": 0,
+  "userCheckExit": 0
+}

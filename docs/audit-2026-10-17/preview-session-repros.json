@@ -1,0 +1,16 @@
+[
+  {
+    "test": "navigation from pad A goes to latest active pad B",
+    "observed": {
+      "initial": "private response from a",
+      "afterOtherPadOpened": "private response from b"
+    }
+  },
+  {
+    "test": "ordinary preview page can replace control recipient",
+    "observed": {
+      "before": "control-a",
+      "after": "untrusted-page"
+    }
+  }
+]

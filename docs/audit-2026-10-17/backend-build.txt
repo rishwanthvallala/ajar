@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on build directory
+   Compiling ajar-relay v0.0.8 (/mnt/host/d/ajar/ajar/crates/ajar-relay)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8m 45s

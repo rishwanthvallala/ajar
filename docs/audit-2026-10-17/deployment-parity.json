@@ -1,0 +1,21 @@
+{
+  "index": "/assets/index-DM0MFn8-.js",
+  "bytes": 1739,
+  "files": [
+    "bootstrap-BYCpXIlo.js"
+  ],
+  "checks": [
+    {
+      "url": "https://code.rishwanth.dev/assets/bootstrap-BYCpXIlo.js",
+      "status": 200,
+      "bytes": 144962,
+      "shellJsonQuote": true,
+      "beforeUnload": true,
+      "noStore": false
+    }
+  ],
+  "previewSw": {
+    "status": 200,
+    "matchesSource": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "source": "pad/src/ui.ts:270-297",
+  "scenario": "Clear name while unavailable-name request is in flight",
+  "before": {
+    "value": "",
+    "disabled": false,
+    "text": ""
+  },
+  "after": {
+    "value": "",
+    "disabled": true,
+    "text": "taken is already used"
+  },
+  "defect": true
+}

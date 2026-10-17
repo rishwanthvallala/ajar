@@ -1,0 +1,9 @@
+{
+  "url": "https://python-registry.wasmer.app/simple/numpy/numpy-2.5.1%2Bwasix.3-cp313-cp313-wasix_wasm32.whl",
+  "sha256Verified": "84c967049bdf089778addfdda3d4b8b1b69d620be8477f66eebbfe5b65728ab4",
+  "compressedBytes": 5437168,
+  "archiveFiles": 925,
+  "nonPycFiles": 925,
+  "uncompressedBytes": 22156396,
+  "padMaxFilesIncludingDependencies": 500
+}

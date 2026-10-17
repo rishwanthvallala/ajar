@@ -1,0 +1,68 @@
+[
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "async saveEdits",
+    "offset": 95708,
+    "excerpt": "=[];for(const i of e){const n=this.known.get(i.path),o=n!==void 0&&n.length>=_s?U(n,i.content,n):null;if(n===void 0||!o){s.push(i);continue}s.push({path:i.path,content:null,base:await Tt(n),edits:[o]}),t=!0}return t?s:e}async saveEdits(e=!1){this.saveTimer=null;const t=[...this.dirty];return this.dirty.clear(),this.queueWrite(async()=>{const s=t.map(i=>({path:i,content:this.current(i)})).filter(i=>i.content!==void 0).filter(i=>this.known.get(i.path)!==i.content);if(s.length!==0)try{const i=await this.asEdits(s);let n;try{n=await this.store.write(this.name,i,e)}catch(o){if(!(o instanceof I&&o.stale)||i===s)throw o;n=await this.store.write(this.name,s,e)}this.stor"
+  },
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "this.byStream.set",
+    "offset": 81089,
+    "excerpt": "!this.peers.doc(t,l===\"update\"?de:Ae,h)&&this.say(\"error\",`that change to ${e} is too large to share live; it is saved, and others get it as saved`),l===\"update\"&&(this.dirty.add(e),this.saveSoon())});this.docs.set(e,s),this.byStream.set(t,e),await this.peers?.ready;const n=(this.dirty.has(e)?this.models.get(e)?.getValue():void 0)??this.known.get(e)??this.models.get(e)?.getValue()??\"\";if(!this.peers||this.peers.alone)return s.seed(n),this.seeds.set(e,n),s;this.unanswered.set(e,new Set(this.peers.otherIds)),this.peers.doc(t,G,s.stateVector());const o=await new Promise(l=>{this.awaiting.set(e,l),setTimeout(()=>l(!1),Is)});return this.awaiting.delete(e),this.unansw"
+  },
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "async move(",
+    "offset": 129743,
+    "excerpt": "odels.keys()].sort()[0];r&&this.show(r)}this.renderFiles(),this.say(\"\",`added ${i.length} ${i.length===1?\"file\":\"files\"} from ${t.name}${n?` — ${n}`:\"\"}`)}catch(s){this.say(\"error\",s.message)}finally{this.importing=!1}}}async move(e,t,s){if(this.viewer||this.moving)return;const i=s.trim().replace(/^\\/+|\\/+$/g,\"\");if(!i||i===e)return;if(!(i.split(\"/\").every(p=>p&&p!==\".\"&&p!==\"..\"&&!/[\\u0000-\\u001f\\\\]/.test(p))&&new TextEncoder().encode(i).length<=512))return this.say(\"error\",`${i} is not a path a pad can hold`);if(t&&i.startsWith(`${e}/`))return this.say(\"error\",\"a folder cannot go inside itself\");const o=p=>this.binaries.has(p)&&!this.models.has(p),l=p=>M(p,thi"
+  },
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "beforeunload",
+    "offset": 116402,
+    "excerpt": ".replaceShell()}wire(){this.el.run.onclick=()=>{const e=this.session;if(!e?.busy)return void this.run();performance.now()-this.runPressed>500&&e.console.stop()},this.el.share.onclick=()=>{this.share()},addEventListener(\"beforeunload\",e=>{this.viewer&&this.local.size>0&&e.preventDefault()},{signal:this.events.signal}),addEventListener(\"visibilitychange\",()=>{document.visibilityState===\"hidden\"&&this.flushSaves()},{signal:this.events.signal}),addEventListener(\"pagehide\",()=>this.flushSaves(),{signal:this.events.signal}),this.el.preview.onclick=()=>{this.togglePreview()},this.el.backToEditor.onclick=()=>this.imageShown!==null?this.closeImage():void this.togglePrevi"
+  },
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "Math.min(",
+    "offset": 2596,
+    "excerpt": "er:i}of Xt)a.register({id:e,extensions:t,aliases:s}),a.onLanguageEncountered(e,()=>{a.setTokensProvider(e,E(()=>import(\"./delimited-tokens-B6bcric6.js\"),[]).then(n=>n.delimitedTokens(i,e)))})}const j=(a,e,t)=>Math.max(e,Math.min(t,a)),se={system:{label:\"System\",icon:'<circle cx=\"8\" cy=\"8\" r=\"5.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"/><path d=\"M8 2.5a5.5 5.5 0 0 1 0 11Z\" fill=\"currentColor\"/>'},light:{label:\"Light\",icon:'<circle cx=\"8\" cy=\"8\" r=\"2.75\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"/><path d=\"M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1\" stroke=\"currentColor\" stroke-wid"
+  },
+  {
+    "file": "live-bootstrap-BYCpXIlo.js",
+    "term": "content:null,base:",
+    "offset": 95648,
+    "excerpt": "sEdits(e){if(!this.store.editsWork)return e;let t=!1;const s=[];for(const i of e){const n=this.known.get(i.path),o=n!==void 0&&n.length>=_s?U(n,i.content,n):null;if(n===void 0||!o){s.push(i);continue}s.push({path:i.path,content:null,base:await Tt(n),edits:[o]}),t=!0}return t?s:e}async saveEdits(e=!1){this.saveTimer=null;const t=[...this.dirty];return this.dirty.clear(),this.queueWrite(async()=>{const s=t.map(i=>({path:i,content:this.current(i)})).filter(i=>i.content!==void 0).filter(i=>this.known.get(i.path)!==i.content);if(s.length!==0)try{const i=await this.asEdits(s);let n;try{n=await this.store.write(this.name,i,e)}catch(o){if(!(o instanceof I&&o.stale)||i=="
+  },
+  {
+    "file": "live-problems-CVQixfdG.js",
+    "term": "16777619",
+    "offset": 87895,
+    "excerpt": "r(let i=0;i<r.length;i++){const o=r.charCodeAt(i);o>=128&&(e+=o<2048||o>=55296&&o<=57343?1:2)}}return e}const jl=/[^\\x00-\\x7f]/;function Fl(n){let t=2166136261;for(let e=0;e<n.length;e++)t^=n.charCodeAt(e),t=Math.imul(t,16777619);return t>>>0||1}class nh{constructor(t,e,s,r){this.docId=t,this.path=e,this.me=s,this.send=r,this.ytext=this.ydoc.getText(\"content\"),this.awareness=new Ll(this.ydoc),this.awareness.setLocalStateField(\"user\",{id:s.id,name:s.name}),this.ydoc.on(\"update\",(i,o)=>{o!==\"remote\"&&this.send(\"update\",i)}),this.awareness.on(\"update\",({added:i,updated:o,removed:c},l)=>{if(l===\"remote\")return;const h=[...i??[],...o??[],...c??[]];h.length&&this.send"
+  },
+  {
+    "file": "live-problems-CVQixfdG.js",
+    "term": "that zip's sizes do not add up",
+    "offset": 139653,
+    "excerpt": "ray(g,g+d.packed);if(p.length!==d.packed)throw new B(\"that zip is cut short\");const w=d.method===8?await oi(p,new DecompressionStream(\"deflate-raw\")):p.slice();if(f+=w.length,w.length!==d.size||f>t.maxBytes)throw new B(\"that zip's sizes do not add up\");if(ii(w)!==d.crc)throw new B(`that zip is damaged (${d.path})`);u.push({path:d.path,data:w})}for(const d of h)u.push({path:d,data:new Uint8Array});return u}function Ia(n){const t=n.split(\"/\");return t[0]===\"__MACOSX\"||t.some(e=>e===\".DS_Store\"||e===\"Thumbs.db\"||e===\"desktop.ini\"||e.startsWith(\"._\"))||xn(n)}function Ns(n){return!n||new TextEncoder().encode(n).length>512||n.startsWith(\"/\")?!1:n.split(\"/\").every(t=>t"
+  },
+  {
+    "file": "live-problems-CVQixfdG.js",
+    "term": "new DecompressionStream(\"deflate-raw\")",
+    "offset": 139543,
+    "excerpt": "ew B(\"that zip is damaged\");const g=d.local+30+s.getUint16(d.local+26,!0)+s.getUint16(d.local+28,!0),p=e.subarray(g,g+d.packed);if(p.length!==d.packed)throw new B(\"that zip is cut short\");const w=d.method===8?await oi(p,new DecompressionStream(\"deflate-raw\")):p.slice();if(f+=w.length,w.length!==d.size||f>t.maxBytes)throw new B(\"that zip's sizes do not add up\");if(ii(w)!==d.crc)throw new B(`that zip is damaged (${d.path})`);u.push({path:d.path,data:w})}for(const d of h)u.push({path:d,data:new Uint8Array});return u}function Ia(n){const t=n.split(\"/\");return t[0]===\"__MACOSX\"||t.some(e=>e===\".DS_Store\"||e===\"Thumbs.db\"||e===\"desktop.ini\"||e.startsWith(\"._\"))||xn(n)"
+  },
+  {
+    "file": "live-problems-CVQixfdG.js",
+    "term": "the server did not answer in time",
+    "offset": 96728,
+    "excerpt": "ew $e(n.status,t||`the server said ${n.status}`)}async function lt(n,t,e){const s=new AbortController,r=setTimeout(()=>s.abort(),e);try{return await fetch(n,{...t,signal:s.signal})}catch{throw new $e(0,s.signal.aborted?\"the server did not answer in time\":\"can't reach the server right now — check your connection\")}finally{clearTimeout(r)}}class rh{constructor(t=\"\",e=()=>null,s=3e4){this.base=t,this.code=e,this.deadline=s}base;code;deadline;editsWork=!1;requestBytes=Kr;headers(t){const e=this.code(t);return e?{\"x-pad-code\":e}:{}}async history(t){const e=await lt(`${this.base}/api/pad/${encodeURIComponent(t)}/history`,{headers:this.headers(t),cache:\"no-store\"},this"
+  },
+  {
+    "file": "live-problems-CVQixfdG.js",
+    "term": "Math.min(",
+    "offset": 4419,
+    "excerpt": "und(t):t.toFixed(1)} MB`}function $t(n,t,e){const s=r=>r>=0&&r<n.length&&n.charCodeAt(r)>=56320&&n.charCodeAt(r)<=57343;return t>0&&s(t)&&t--,e>0&&s(n.length-e)&&e--,[t,e]}function fi(n,t,e){if(t===n)return null;const s=Math.min(n.length,t.length);let r=0;for(;r<s&&n[r]===t[r];)r++;let i=0;for(;i<s-r&&n[n.length-1-i]===t[t.length-1-i];)i++;[r,i]=$t(n,r,i),[r,i]=$t(t,r,i);const o=n.slice(r,n.length-i),c=t.slice(r,t.length-i);if(e.startsWith(n.slice(0,r))&&e.slice(r,r+o.length)===o)return{at:r,remove:o.length,insert:c};const l=e.length-i-o.length;return l>=0&&e.endsWith(n.slice(n.length-i))&&e.slice(l,l+o.length)===o?{at:l,remove:o.length,insert:c}:{at:Math.min(r,"
+  }
+]

@@ -1,0 +1,11 @@
+{"test":"empty_pad_bypasses_blob_ceiling","create":{"status":200,"data":{"seq":1,"hashes":{}}},"lastRun":{"status":204,"data":""},"note":"store ceiling 1024 bytes; retained output 32768 bytes"}
+{"test":"two_incomplete_bodies_block_all_pad_writes","blockedForMs":2307,"afterRelease":200}
+{"test":"unbounded_write_operations","n":2000,"status":200,"ms":93}
+{"test":"unbounded_write_operations","n":4000,"status":200,"ms":512}
+{"test":"unbounded_write_operations","n":8000,"status":200,"ms":1528}
+{"test":"websocket_accepts_sibling_origin_owner_cookie","unauthenticatedHttp":403,"wrongOriginWelcome":true,"docForwarded":true}
+{"test":"hello_after_logout_retains_owner_grant","httpAfterLogout":403,"lateOwnerJoined":true,"docForwarded":true}
+{"test":"expired_session_keeps_socket_owner_privileges","httpAfterExpiry":403,"docForwarded":true}
+{"test":"account_lookup_sql_failure_opens_private_pad","status":200,"role":"editor","content":"local test secret","unauthenticatedWrite":200}
+{"test":"history_reads_materialize_full_content","versionMiB":8,"concurrency":4,"statuses":[200,200,200,200],"baselineRssMiB":16,"peakRssMiB":86.1,"growthMiB":70.1}
+{"test":"expired_pad_history_still_readable","ordinaryRead":{"status":200,"data":{"exists":false,"access":{"role":"editor","account":false},"seq":0,"files":{}}},"history":200,"oldVersion":200}

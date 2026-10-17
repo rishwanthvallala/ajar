@@ -1,0 +1,116 @@
+[
+  {
+    "test": "distinct valid file paths share the same document stream",
+    "observed": {
+      "paths": [
+        "file-1ezsubx.txt",
+        "file-6yp6oj.txt"
+      ],
+      "stream": 1802545438
+    }
+  },
+  {
+    "test": "coarse merge duplicates originals",
+    "observed": {
+      "base": "A\nB\nC\n",
+      "mine": "a\nB\nc\n",
+      "theirs": "A\nB!\nC\n",
+      "merged": "a\nB\ncA\nB!\nC\n",
+      "expected": "a\nB!\nc\n"
+    }
+  },
+  {
+    "test": "headers end timeout before stalled body completes",
+    "observed": {
+      "configuredDeadlineMs": 20,
+      "elapsedMs": 557,
+      "state": "pending",
+      "aborted": false
+    }
+  },
+  {
+    "test": "ZIP inflated beyond limit before rejection",
+    "observed": {
+      "zipBytes": 16425,
+      "declaredBytes": 1,
+      "configuredLimitBytes": 1024,
+      "fullyInflatedBytesBeforeRejection": 16777216
+    }
+  },
+  {
+    "test": "quota rejection forgets unsaved state",
+    "observed": {
+      "dirty": 0,
+      "retry": null,
+      "model": "unsaved work",
+      "durable": "old",
+      "status": {
+        "kind": "error",
+        "text": "storage full — this is not being saved"
+      }
+    }
+  },
+  {
+    "test": "stale-write fallback overwrites concurrent stored edit",
+    "observed": {
+      "firstAttempt": "hash-conditional edit rejected 409",
+      "secondAttempt": "unconditional complete replacement",
+      "keptMine": true,
+      "keptTheirs": false,
+      "status": {
+        "kind": "",
+        "text": "saved"
+      }
+    }
+  },
+  {
+    "test": "move folder to ancestor deletes moved descendant",
+    "observed": {
+      "move": "a/a -> a",
+      "expected": {
+        "a/x.txt": "first",
+        "a/a/x.txt": "second"
+      },
+      "stored": {
+        "a/x.txt": "first"
+      },
+      "modelPaths": [
+        "a/x.txt"
+      ],
+      "status": {
+        "kind": "",
+        "text": "moved a/a to a"
+      }
+    }
+  },
+  {
+    "test": "ZIP replacing a file open only on a peer is undone by next peer edit",
+    "observed": {
+      "afterImport": {
+        "stored": "IMPORTED",
+        "peerText": "old",
+        "importerStatus": {
+          "kind": "",
+          "text": "added 1 file from audit.zip"
+        }
+      },
+      "afterPeerEdit": "old plus next edit",
+      "importedContentLost": true
+    }
+  },
+  {
+    "test": "runtime read failure produces deletion of still-existing file",
+    "observed": {
+      "listed": [
+        "existing.txt"
+      ],
+      "read": "throws temporary read failure",
+      "outgoingChanges": [
+        {
+          "path": "existing.txt",
+          "content": null
+        }
+      ]
+    }
+  }
+]

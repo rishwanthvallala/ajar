@@ -1,0 +1,44 @@
+{
+  "asset": "D:\\ajar\\ajar\\docs\\audit-2026-10-17/live-problems-CVQixfdG.js",
+  "merge": {
+    "name": "fi",
+    "offset": 4371,
+    "baseline": "A\nB\nC\n",
+    "local": "a\nB\nc\n",
+    "other": "A\nB!\nC\n",
+    "observed": "a\nB\ncA\nB!\nC\n",
+    "expected": "a\nB!\nc\n"
+  },
+  "hashes": [
+    {
+      "name": "Fl",
+      "offset": 87803,
+      "snippet": "function Fl(n){let t=2166136261;for(let e=0;e<n.length;e++)t^=n.charCodeAt(e),t=Math.imul(t,16777619);return t>>>0||1}",
+      "values": [
+        {
+          "path": "file-1ezsubx.txt",
+          "id": 1802545438
+        },
+        {
+          "path": "file-6yp6oj.txt",
+          "id": 1802545438
+        }
+      ]
+    },
+    {
+      "name": "hh",
+      "offset": 99766,
+      "snippet": "function hh(n){let t=2166136261;for(let e=0;e<n.length;e++)t^=n.charCodeAt(e),t=Math.imul(t,16777619);return t>>>0||1}",
+      "values": [
+        {
+          "path": "file-1ezsubx.txt",
+          "id": 1802545438
+        },
+        {
+          "path": "file-6yp6oj.txt",
+          "id": 1802545438
+        }
+      ]
+    }
+  ]
+}

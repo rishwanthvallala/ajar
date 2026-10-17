@@ -1,0 +1,142 @@
+[
+  {
+    "case": "awk addition of numeric fields",
+    "argv": [
+      "{print $1 + $2}"
+    ],
+    "input": "3 4\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "34\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "7\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "awk multiplication of numeric field",
+    "argv": [
+      "{print $1 * 2}"
+    ],
+    "input": "3\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "33\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "6\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "awk regular-expression field separator",
+    "argv": [
+      "-F",
+      "[,:]",
+      "{print $2}"
+    ],
+    "input": "a,b:c\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "b\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "sort key without explicit end extends to line end",
+    "argv": [
+      "-k2"
+    ],
+    "input": "a same z\nb same a\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "a same z\nb same a\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "b same a\na same z\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "sort nonnumber under numeric sort equals zero",
+    "argv": [
+      "-n"
+    ],
+    "input": "-1\nword\n2\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "word\n-1\n2\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "-1\nword\n2\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "sort arbitrary precision numeric integers",
+    "argv": [
+      "-n"
+    ],
+    "input": "9007199254740993\n9007199254740992\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "9007199254740993\n9007199254740992\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "9007199254740992\n9007199254740993\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "sort last-resort whole-line comparison",
+    "argv": [
+      "-k2,2"
+    ],
+    "input": "z same\na same\n",
+    "shim": {
+      "exit": 0,
+      "stdout": "z same\na same\n",
+      "stderr": ""
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "a same\nz same\n",
+      "stderr": ""
+    },
+    "same": false
+  },
+  {
+    "case": "sort multiple input files without final newline",
+    "shim": {
+      "exit": 0,
+      "stdout": "za\n"
+    },
+    "GNU": {
+      "exit": 0,
+      "stdout": "a\nz\n"
+    },
+    "same": false
+  }
+]
