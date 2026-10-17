@@ -85,16 +85,36 @@ function cuttableProxy(listenPort, targetPort) {
   };
 }
 
-/** A hop that delays everything by `ms` each way, in order — a guest far away. */
+/**
+ * A hop that delays everything by `ms` each way, in order — a guest far away.
+ *
+ * In order by one queue and one timer. It was a timer per chunk, its delay
+ * `at - Date.now()` read a moment after `at` was: across a millisecond's turn
+ * that was 249 where the chunk before had 250, Node keeps timers of different
+ * lengths in different lists, and two due in the same millisecond could go
+ * out the wrong way round. A module's bytes reordered parse as nonsense —
+ * "the editor did not load: SyntaxError: Unexpected token ':'", then '{' on
+ * the Mac — opening ro.txt through here on CI: 11 October twice, 17 October
+ * on both at once.
+ */
 function laggyProxy(listenPort, targetPort, ms) {
   const server = createServer((down) => {
     const up = connect(targetPort, "127.0.0.1");
     const lag = (from, to) => {
-      let last = 0;
+      const queue = [];
+      let timer = null;
+      const pump = () => {
+        timer = null;
+        const now = Date.now();
+        while (queue.length && queue[0].at <= now) {
+          const { chunk } = queue.shift();
+          if (to.writable) to.write(chunk);
+        }
+        if (queue.length) timer = setTimeout(pump, queue[0].at - now);
+      };
       from.on("data", (chunk) => {
-        const at = Math.max(Date.now() + ms, last);
-        last = at;
-        setTimeout(() => to.writable && to.write(chunk), at - Date.now());
+        queue.push({ at: Date.now() + ms, chunk });
+        timer ??= setTimeout(pump, ms);
       });
     };
     lag(down, up);

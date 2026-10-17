@@ -60,10 +60,11 @@ export function languageOfLine(line: string): string | null {
 /** One run, in `language`, when it is one counted. */
 export function countRun(language: string | null, via: "run" | "typed"): void {
   if (!language) return;
+  // Not `keepalive`: a run is counted as it starts, with the page there, and
+  // Chrome holds keepalive requests to a budget of their own.
   void fetch("/api/usage/run", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ language, via }),
-    keepalive: true,
   }).catch(() => {});
 }

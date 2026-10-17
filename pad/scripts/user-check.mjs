@@ -43,6 +43,12 @@ const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
+  // A run counted (usage.rs): taken and forgotten, as the relay would.
+  if (path === "/api/usage/run") {
+    for await (const _ of req);
+    res.statusCode = 204;
+    return res.end();
+  }
   // The pad's last run (the relay's last_runs): the last one kept, for the
   // page that opens next, as the relay would give it.
   if (/^\/api\/pad\/[^/]+\/run$/.test(path)) {
