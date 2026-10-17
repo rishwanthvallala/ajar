@@ -37,11 +37,29 @@ const TYPES = {
   ".wasm": "application/wasm", ".webc": "application/webc", ".js": "text/javascript", ".mjs": "text/javascript",
 };
 
+let lastRun = null;
 const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
+  // The pad's last run (the relay's last_runs): the last one kept, for the
+  // page that opens next, as the relay would give it.
+  if (/^\/api\/pad\/[^/]+\/run$/.test(path)) {
+    if (req.method === "PUT") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      lastRun = { ...JSON.parse(body), at_ms: Date.now() };
+      res.statusCode = 204;
+      return res.end();
+    }
+    if (!lastRun) {
+      res.statusCode = 204;
+      return res.end();
+    }
+    res.setHeader("Content-Type", "application/json");
+    return res.end(JSON.stringify(lastRun));
+  }
   if (path.startsWith("/api/pad/")) {
     res.setHeader("Content-Type", "application/json");
     return res.end(req.method === "PUT" ? JSON.stringify({ seq: 1 }) : JSON.stringify({ exists: false, seq: 0, files: {} }));
@@ -1029,6 +1047,68 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   const leftForText = await page.locator("#image-pane").isHidden() && await page.locator("#editor").isVisible();
   expect("and an image file opened from the tree shows too, until a text file is opened", shownByTree && leftForText, `tree ${shownByTree}, text again ${leftForText}`);
   await typed("rm dot.png");
+  await clear();
+
+  // ---- errors that point into the pad, and the last run ----
+  // A traceback's file and line is a link in the terminal that opens it
+  // there; the run's error is a squiggle on that line until the next run;
+  // and what Run printed is kept for whoever opens the pad next.
+  section = "errors";
+  await newFile("errs/other.py", "x = 1\n");
+  await newFile("errs/boom.py", "print('before')\n\ndef f():\n    return undefined_name\n\nf()\n");
+  await clear();
+  await run("print('before')\n\ndef f():\n    return undefined_name\n\nf()\n");
+  const errMarks = () => page.evaluate(() => {
+    const errModel = window.monaco.editor.getModels().find((m) => m.getValue().includes("undefined_name") && m.getValue().startsWith("print('before')"));
+    return window.monaco.editor.getModelMarkers({ owner: "pad-run" }).map((m) => `${m.resource.toString() === errModel?.uri.toString() ? "boom.py" : m.resource.toString()}:${m.startLineNumber} ${m.message}`);
+  });
+  const errMarked = await errMarks();
+  expect("a run's error is marked on the line it happened, with what it said", errMarked.length === 1 && errMarked[0] === "boom.py:4 NameError: name 'undefined_name' is not defined", JSON.stringify(errMarked));
+  // The link: the frame's row, clicked where the path is, from another file.
+  await open("other.py");
+  const errSpot = await page.evaluate(() => {
+    for (const row of document.querySelectorAll("#terminal .xterm-rows > div")) {
+      const errText = row.textContent ?? "";
+      const errAt = errText.indexOf('File "/workspace/errs/boom.py", line 4');
+      if (errAt < 0) continue;
+      const errWalker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      let seen = 0;
+      for (let node = errWalker.nextNode(); node; node = errWalker.nextNode()) {
+        const errLen = node.textContent.length;
+        if (seen + errLen > errAt + 8) {
+          const errRange = document.createRange();
+          errRange.setStart(node, errAt + 8 - seen);
+          errRange.setEnd(node, errAt + 9 - seen);
+          const errR = errRange.getBoundingClientRect();
+          return { x: errR.left + errR.width / 2, y: errR.top + errR.height / 2 };
+        }
+        seen += errLen;
+      }
+    }
+    return null;
+  });
+  if (errSpot) {
+    await page.mouse.move(errSpot.x, errSpot.y);
+    await wait(300);
+    await page.mouse.click(errSpot.x, errSpot.y);
+    await wait(500);
+  }
+  const errLanded = await page.evaluate(() => ({ active: window.__pad.active(), line: window.monaco.editor.getEditors()[0].getPosition()?.lineNumber }));
+  expect("and the traceback's file and line is a link that opens the file there", errSpot !== null && errLanded.active === "errs/boom.py" && errLanded.line === 4, `${JSON.stringify(errSpot)} ${JSON.stringify(errLanded)}`);
+  await typed("ls > /dev/null");
+  const errStayed = (await errMarks()).length;
+  const errKept = lastRun;
+  expect("a command that is not a run leaves the marks, and Run's output is kept as the pad's last run", errStayed === 1 && errKept?.path === "errs/boom.py" && errKept?.exit === 1 && errKept?.output.includes("NameError") && errKept?.output.includes("before") && !/\x1b\][^\x07]*\x07/.test(errKept?.output ?? ""), `${errStayed} ${JSON.stringify(errKept)}`);
+  // Whoever opens the pad next sees it before running anything.
+  const errNext = await context.newPage();
+  await errNext.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+  const errOpened = await errNext.waitForFunction(() => /the last run, just now: python .*boom\.py"? · exit 1/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? "") && (document.querySelector("#terminal .xterm-rows")?.textContent ?? "").includes("NameError"), null, { timeout: 60_000 }).then(() => true, () => false);
+  await errNext.close();
+  expect("and a page opening the pad shows that run in its terminal before anything runs", errOpened, "");
+  await open("boom.py");
+  await run("print('fixed')\n");
+  expect("the next run that has no errors takes the marks away", (await errMarks()).length === 0, JSON.stringify(await errMarks()));
+  await typed("rm -r errs");
   await clear();
 
   // ---- Markdown, formatted ----

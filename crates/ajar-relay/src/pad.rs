@@ -444,6 +444,29 @@ pub struct Summary {
     pub paths: Vec<String>,
     /// The file that says most about the pad, and its text.
     pub lead: Option<(String, String)>,
+    /// What its last Run printed, and the file it ran.
+    pub ran: Option<(String, String)>,
+}
+
+/// The most of a run's output a pad keeps: the end of it, the page cuts it to.
+pub const LAST_RUN_MAX: usize = 32 * 1024;
+/// The longest command or path a last run may name.
+const LAST_RUN_NAME_MAX: usize = 1024;
+
+/// What Run last printed in a pad, for whoever opens it next to see before
+/// running anything (App.saveRun). The pad's, not a file in it: not in its
+/// tree, its zip or its history, and gone with it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LastRun {
+    /// The file Run ran.
+    pub path: String,
+    pub command: String,
+    pub exit: i32,
+    /// When, set by the store as it keeps it.
+    #[serde(default)]
+    pub at_ms: u64,
+    /// What it printed, colours and all.
+    pub output: String,
 }
 
 /// How many paths a preview names.
@@ -701,6 +724,14 @@ const SCHEMA: &str = "
         stored INTEGER NOT NULL,
         PRIMARY KEY (pad, version, path)
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS last_runs (
+        pad TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        command TEXT NOT NULL,
+        exit INTEGER NOT NULL,
+        at_ms INTEGER NOT NULL,
+        output TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS pads_touched ON pads (touched_ms);
     CREATE INDEX IF NOT EXISTS blobs_unheld ON blobs (unheld_ms) WHERE refs = 0;
 ";
@@ -1255,6 +1286,7 @@ impl Store {
         let now = now_ms();
         let held = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now)?
             + Self::drop_history(&tx, name, now)?;
+        tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
         tx.execute("DELETE FROM pads WHERE name = ?1", [name])?;
         tx.commit()?;
         self.adjust(held);
@@ -1342,8 +1374,16 @@ impl Store {
             let rows = Self::rows(&db, name)?;
             let lead = lead_file(&rows);
             let reading = self.hold(&db, lead.iter().map(|(_, r)| r.blob.clone()).collect());
-            (rows, lead, reading)
+            let ran: Option<(String, String)> = db
+                .query_row(
+                    "SELECT path, substr(output, 1, 4096) FROM last_runs WHERE pad = ?1",
+                    [name],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            (rows, (lead, ran), reading)
         };
+        let (lead, ran) = lead;
         let lead = match lead {
             Some((path, row)) => Some((path, self.blob_text(&row.blob)?)),
             None => None,
@@ -1356,7 +1396,71 @@ impl Store {
             files: theirs.len(),
             paths: theirs.into_iter().take(SUMMARY_PATHS).cloned().collect(),
             lead,
+            ran,
         }))
+    }
+
+    /// Keep `run` as the pad's last run, in place of the one before: how many
+    /// bytes it adds, which is what the writer is charged. `Ok(None)` for a
+    /// pad that is not there, which has nothing to keep it with.
+    pub fn set_last_run(&self, name: &str, run: &LastRun) -> Result<Option<u64>, Error> {
+        check_name(name)?;
+        if run.output.len() > LAST_RUN_MAX {
+            return Err(Error::TooBig {
+                bytes: run.output.len(),
+            });
+        }
+        if run.command.len() > LAST_RUN_NAME_MAX || run.path.len() > LAST_RUN_NAME_MAX {
+            return Err(Error::BadPath("longer than a run's file or command may be"));
+        }
+        let db = self.db.lock();
+        match Self::head(&db, name)? {
+            Some(head) if !self.lapsed(name, head.touched_ms) => {}
+            _ => return Ok(None),
+        }
+        let before: i64 = db
+            .query_row(
+                "SELECT length(CAST(output AS BLOB)) FROM last_runs WHERE pad = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        db.execute(
+            "INSERT INTO last_runs (pad, path, command, exit, at_ms, output) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(pad) DO UPDATE SET path = excluded.path, command = excluded.command,
+               exit = excluded.exit, at_ms = excluded.at_ms, output = excluded.output",
+            params![name, run.path, run.command, run.exit, now_ms() as i64, run.output],
+        )?;
+        Ok(Some(
+            (run.output.len() as u64).saturating_sub(before as u64),
+        ))
+    }
+
+    /// The pad's last run, if it has one — and none for a pad lapsed, whose
+    /// name may be somebody else's next.
+    pub fn last_run(&self, name: &str) -> Result<Option<LastRun>, Error> {
+        check_name(name)?;
+        let db = self.db.lock();
+        match Self::head(&db, name)? {
+            Some(head) if !self.lapsed(name, head.touched_ms) => {}
+            _ => return Ok(None),
+        }
+        Ok(db
+            .query_row(
+                "SELECT path, command, exit, at_ms, output FROM last_runs WHERE pad = ?1",
+                [name],
+                |r| {
+                    Ok(LastRun {
+                        path: r.get(0)?,
+                        command: r.get(1)?,
+                        exit: r.get(2)?,
+                        at_ms: r.get::<_, i64>(3)? as u64,
+                        output: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
@@ -1810,8 +1914,11 @@ impl Store {
             return false;
         };
         if tx
-            .execute("DELETE FROM pads WHERE name = ?1", [name])
+            .execute("DELETE FROM last_runs WHERE pad = ?1", [name])
             .is_err()
+            || tx
+                .execute("DELETE FROM pads WHERE name = ?1", [name])
+                .is_err()
             || tx.commit().is_err()
         {
             return false;
@@ -3025,6 +3132,60 @@ mod tests {
             (VERSIONS_KEPT + 5).to_string(),
             "the newest are the ones kept"
         );
+    }
+
+    #[test]
+    fn a_pad_keeps_its_last_run_until_the_next_and_lets_it_go_with_it() {
+        let (s, _d) = store();
+        let run = |output: &str| LastRun {
+            path: "main.py".into(),
+            command: "python main.py".into(),
+            exit: 1,
+            at_ms: 0,
+            output: output.into(),
+        };
+        assert_eq!(
+            s.set_last_run("nowhere", &run("x")).unwrap(),
+            None,
+            "a free name has nothing to keep it with"
+        );
+        s.write("p", &[put("main.py", "print(1)")]).unwrap();
+        assert_eq!(s.last_run("p").unwrap(), None);
+        assert_eq!(s.set_last_run("p", &run("hello\n")).unwrap(), Some(6));
+        assert_eq!(
+            s.set_last_run("p", &run("hello world\n")).unwrap(),
+            Some(6),
+            "charged only what it adds to the one before"
+        );
+        let kept = s.last_run("p").unwrap().unwrap();
+        assert_eq!((kept.output.as_str(), kept.exit), ("hello world\n", 1));
+        assert!(kept.at_ms > 0, "the store says when");
+        assert_eq!(
+            s.summary("p").unwrap().unwrap().ran,
+            Some(("main.py".into(), "hello world\n".into()))
+        );
+        assert!(matches!(
+            s.set_last_run("p", &run(&"y".repeat(LAST_RUN_MAX + 1))),
+            Err(Error::TooBig { .. })
+        ));
+        // Gone with the pad, deleted or lapsed, and not the name's next pad's.
+        s.remove("p").unwrap();
+        assert_eq!(s.last_run("p").unwrap(), None);
+        s.write("p", &[put("main.py", "print(2)")]).unwrap();
+        assert_eq!(
+            s.last_run("p").unwrap(),
+            None,
+            "a new pad under the name has none"
+        );
+        s.set_last_run("p", &run("again")).unwrap();
+        age(&s, "p");
+        assert_eq!(s.last_run("p").unwrap(), None, "a lapsed pad's is nobody's");
+        s.sweep();
+        let rows: i64 =
+            s.db.lock()
+                .query_row("SELECT COUNT(*) FROM last_runs", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(rows, 0, "and the sweep takes it with the pad");
     }
 
     #[test]

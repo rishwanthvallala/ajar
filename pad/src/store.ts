@@ -19,6 +19,15 @@ export interface StoredFile {
 }
 
 /** One kept version of a pad: when, how many files, how big. */
+/** What Run last printed in a pad: the file, the command, how it ended, when, and its output. */
+export interface LastRun {
+  path: string;
+  command: string;
+  exit: number;
+  at_ms: number;
+  output: string;
+}
+
 export interface Version {
   id: number;
   at_ms: number;
@@ -330,6 +339,24 @@ export class Store {
    * again — after a save elsewhere, a reconnect, a change of access — which
    * the relay counts as an open (usage.rs); nothing else about it is kept.
    */
+  /** What Run last printed in the pad (the relay's `last_runs`), or null when it has not been run. */
+  async lastRun(name: string): Promise<LastRun | null> {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}/run`, { headers: this.headers(name), cache: "no-store" }, this.deadline);
+    if (res.status === 204 || res.status === 404) return null;
+    if (!res.ok) await refuse(res);
+    return (await res.json()) as LastRun;
+  }
+
+  /** Keep a Run's output as the pad's last, in place of the one before. */
+  async keepRun(name: string, run: Omit<LastRun, "at_ms">): Promise<void> {
+    const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}/run`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...this.headers(name) },
+      body: JSON.stringify(run),
+    }, this.deadline);
+    if (!res.ok) await refuse(res);
+  }
+
   async read(name: string, opening = false): Promise<Pad> {
     const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       headers: opening ? { ...this.headers(name), "x-pad-open": "1" } : this.headers(name),

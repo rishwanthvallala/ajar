@@ -27,7 +27,8 @@ import { ICONS } from "./icons";
 import { openOpenShare, openShare } from "./share";
 import { button, clearBusy, confirmDialog, el, modal, nameDialog, toast, toastRegions } from "./ui";
 import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
-import { type Change, mintName, Store, StoreError, storedHash, type Pad, type Version } from "./store";
+import { type Change, type LastRun, mintName, Store, StoreError, storedHash, type Pad, type Version } from "./store";
+import { type Place, problemsIn } from "./problems";
 import { seedFiles } from "./seed";
 import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
@@ -139,6 +140,34 @@ function when(ms: number): string {
   return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+/** The owner of the editor's marks from a run (`App.markProblems`). */
+const RUN_MARKS = "pad-run";
+
+/** The largest output kept as a pad's last run, in bytes: the relay's `LAST_RUN_MAX`. */
+const RUN_KEPT_BYTES = 32 * 1024;
+
+/**
+ * A run's output as it should be shown again: its colours kept, and nothing
+ * else a terminal acts on — no image escape to open the image again, no
+ * cursor moves to draw over the prompt. A line a progress bar redrew is what
+ * it ended as. Its end, past what the relay keeps.
+ */
+function keptOutput(output: string): string {
+  const text = output
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, (seq) => (seq.endsWith("m") ? seq : ""))
+    .replace(/\x1b[^[\]]/g, "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.slice(line.lastIndexOf("\r") + 1))
+    .join("\n");
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= RUN_KEPT_BYTES) return text;
+  // Cut on a character, not inside one, and then on a line.
+  const end = new TextDecoder().decode(bytes.slice(bytes.length - RUN_KEPT_BYTES)).replace(/^\uFFFD+/, "");
+  return end.slice(end.indexOf("\n") + 1);
+}
+
 function terminalTheme(): { background: string; foreground: string } {
   const style = getComputedStyle(document.documentElement);
   return {
@@ -199,6 +228,10 @@ export class App {
   private markdownTimer: ReturnType<typeof setTimeout> | null = null;
   /** The newest render asked for: one finishing after a newer was asked is dropped. */
   private markdownAsked = 0;
+  /** The command each terminal ran last, typed or Run's: whether its output is a language's to read for problems. */
+  private commandOf = new WeakMap<TerminalSession, string>();
+  /** Files the last run marked problems in (`markProblems`). */
+  private marked = new Set<string>();
   /**
    * Where a link into another Markdown file asked to land: kept until a
    * render has the heading, as the first may come before the file's text
@@ -437,6 +470,7 @@ export class App {
     this.acceptDrops();
     await this.openTerminal();
     if (this.disposed) return;
+    void this.showLastRun();
     this.expose();
     this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
     this.welcomeCopy();
@@ -1743,6 +1777,106 @@ export class App {
     this.editor?.layout();
   }
 
+  // ------------------------------------------------------------- the last run
+
+  /**
+   * A path a program printed, as the pad's file it is: under /workspace, or
+   * relative — to wherever a typed command ran, which is not known here, so
+   * the one pad file it can be. Null for anything else, a library's file or
+   * a file the pad does not have.
+   */
+  private padPath(printed: string): string | null {
+    const path = printed.replace(/^\/workspace\//, "").replace(/^(\.\/)+/, "");
+    if (!path || path.startsWith("/") || path.startsWith("../")) return null;
+    if (this.models.has(path)) return path;
+    const ends = [...this.models.keys()].filter((p) => p.endsWith(`/${path}`));
+    return ends.length === 1 ? ends[0]! : null;
+  }
+
+  /** A file and line from the terminal, opened there in the editor. */
+  private openPlace(place: Place): void {
+    const model = this.models.get(place.path);
+    if (!model || !this.editor) return;
+    if (this.preview?.isOpen) void this.togglePreview();
+    if (this.active !== place.path || this.imageShown !== null) this.show(place.path);
+    const line = Math.max(1, Math.min(place.line, model.getLineCount()));
+    const column = place.column ?? (model.getLineFirstNonWhitespaceColumn(line) || 1);
+    this.editor.setPosition({ lineNumber: line, column });
+    this.editor.revealLineInCenter(line);
+    this.editor.focus();
+  }
+
+  /**
+   * The errors a run printed, as squiggles where they are — each with what
+   * it said, on hover and in F8's list. The last run's alone: what an earlier
+   * one marked goes, here and in every file. They move with the text as it is
+   * edited, and stay until the next run says otherwise.
+   */
+  private markProblems(output: string): void {
+    const monaco = this.monaco;
+    if (!monaco) return;
+    for (const path of this.marked) {
+      const model = this.models.get(path);
+      if (model) monaco.editor.setModelMarkers(model, RUN_MARKS, []);
+    }
+    this.marked.clear();
+    const byFile = new Map<string, ReturnType<typeof problemsIn>>();
+    for (const problem of problemsIn(output, (p) => this.padPath(p))) {
+      byFile.set(problem.path, [...(byFile.get(problem.path) ?? []), problem]);
+    }
+    for (const [path, problems] of byFile) {
+      const model = this.models.get(path);
+      if (!model) continue;
+      monaco.editor.setModelMarkers(model, RUN_MARKS, problems.map((p) => {
+        const line = Math.max(1, Math.min(p.line, model.getLineCount()));
+        return {
+          severity: p.severity === "warning" ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+          message: p.message,
+          source: "last run",
+          startLineNumber: line,
+          startColumn: p.column ?? (model.getLineFirstNonWhitespaceColumn(line) || 1),
+          endLineNumber: line,
+          endColumn: model.getLineMaxColumn(line),
+        };
+      }));
+      this.marked.add(path);
+    }
+  }
+
+  /**
+   * Run's output kept with the pad, so whoever opens it next sees what it
+   * printed before running anything (`showLastRun`). Not for someone who
+   * can only view, whose runs are their own; and only its end, as much as
+   * the relay keeps.
+   */
+  private keepRun(path: string, command: string, finished: Finished | null, output: string): void {
+    if (this.viewer || !finished) return;
+    const run = { path, command, exit: finished.exitCode, output: keptOutput(output) };
+    void this.store.keepRun(this.name, run).catch(() => {});
+  }
+
+  /**
+   * The pad's last run, in the terminal as the pad opens: what it printed,
+   * and when — and its errors marked, as they were. Not over anything typed
+   * meanwhile, which is the person's screen by then.
+   */
+  private async showLastRun(): Promise<void> {
+    let run: LastRun | null = null;
+    try {
+      run = await this.store.lastRun(this.name);
+    } catch {
+      return;
+    }
+    const session = this.sessions[0];
+    if (!run || typeof run.output !== "string" || typeof run.command !== "string" || !session || this.disposed) return;
+    const ended = run.exit === 0 ? "done" : `exit ${run.exit}`;
+    const rule = (text: string) => `\x1b[2m── ${text} ──\x1b[0m\r\n`;
+    const body = run.output.endsWith("\n") || !run.output ? run.output : `${run.output}\n`;
+    if (session.console.printAbove(`${rule(`the last run, ${when(run.at_ms)}: ${run.command} · ${ended}`)}${body}${rule("Run to run it again")}`)) {
+      this.markProblems(run.output);
+    }
+  }
+
   // ------------------------------------------------------------- markdown
 
   /** The Markdown file in the editor formatted, or back to its text alone. */
@@ -2099,9 +2233,17 @@ export class App {
       runtime: () => this.ensureRuntime(),
       prepare: (t, command) => {
         countRun(languageOfLine(command), "typed");
+        this.commandOf.set(t, command);
         return this.prepare(t, command);
       },
-      onBusy: (t, busy) => this.onBusy(t, busy),
+      onBusy: (t, busy) => {
+        this.onBusy(t, busy);
+        // A language's run says what is wrong where: marked in the editor.
+        // Anything else — ls, cd, pip — leaves the last run's marks alone.
+        if (!busy && languageOfLine(this.commandOf.get(t) ?? "")) this.markProblems(t.lastOutput);
+      },
+      place: (path) => this.padPath(path),
+      openPlace: (place) => this.openPlace(place),
       onFinished: () => void this.afterCommand(),
       installs: () => this.installs,
       ready: () => this.runtimeReady,
@@ -2444,6 +2586,8 @@ export class App {
       // button is a shortcut for typing, not a second way to execute.
       session.console.announce(command);
       countRun(languageOfFile(this.active), "run");
+      this.commandOf.set(session, command);
+      const ran = this.active;
       let finished: Finished | null = null;
       try {
         if (program?.startsWith("python")) await this.installRequirements(rt, session, sh);
@@ -2454,6 +2598,9 @@ export class App {
 
       this.say("saving", "saving…");
       await this.publish(rt);
+      // After the files, so a pad saved for the first time by this Run is
+      // there to keep it with.
+      this.keepRun(ran, command, finished, session.lastOutput);
       const { exitCode, interrupted } = finished;
       this.say("", exitCode === 0 ? "done" : interrupted ? "stopped" : `exited ${exitCode}`);
     } catch (e) {

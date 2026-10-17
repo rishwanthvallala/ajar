@@ -600,6 +600,18 @@ export class Console {
     this.handle(rest);
   }
 
+  /**
+   * Text above the prompt, from the page — the pad's last run, on opening
+   * it. Only at a prompt with nothing typed on it: while a command runs the
+   * screen is its, and half a typed line would be drawn over. Whether it was.
+   */
+  printAbove(text: string): boolean {
+    if (this.running || this.line || this.search) return false;
+    this.screen.write(`\r\x1b[K${text}${PROMPT}`);
+    this.cursorRow = 0;
+    return true;
+  }
+
   /** Echo a command the page is running on the user's behalf. */
   announce(command: string): void {
     this.setRunning(true);

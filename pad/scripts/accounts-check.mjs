@@ -278,6 +278,14 @@ try {
   await until(editor, () => document.getElementById("status")?.textContent === "done", undefined, 180_000);
   await sleep(1000);
   is((await stored(name))["main.py"]?.content.includes("while-you-were-away"), true, "Run in another file leaves the owner's newer line saved");
+  // And what it printed is the pad's last run now, kept by the relay for
+  // whoever opens the pad next — read with the pad, written with editing.
+  const lastRun = await (await fetch(`${ORIGIN}/api/pad/${name}/run`, { headers: { cookie: ownerCookie } })).json();
+  is(lastRun.path === "untitled.py" && /python/.test(lastRun.command) && lastRun.exit === 0 && lastRun.output.includes("ran") && lastRun.at_ms > 0, true, `the Run's output is kept as the pad's last run — ${JSON.stringify(lastRun)}`);
+  const viewCode = { "x-pad-code": viewUrl.split("#")[1] };
+  const asViewer = await fetch(`${ORIGIN}/api/pad/${name}/run`, { method: "PUT", headers: { ...viewCode, "content-type": "application/json" }, body: JSON.stringify({ path: "x.py", command: "python x.py", exit: 0, output: "not mine" }) });
+  const viewerReads = await fetch(`${ORIGIN}/api/pad/${name}/run`, { headers: viewCode });
+  is(`${asViewer.status} ${viewerReads.status}`, "403 200", "someone who can only view reads it and cannot replace it");
 
   await editor.click("#share");
   await editor.waitForSelector(".share-dialog .share-url");
@@ -292,6 +300,8 @@ try {
     await owner.reload();
     await owner.waitForSelector('#files .row.file[data-path="long.txt"]', { timeout: 30_000 });
     await until(owner, () => window.__pad?.role() === "owner");
+    const lastShown = await owner.waitForFunction(() => /the last run, .*untitled\.py/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 15_000 }).then(() => true, () => false);
+    is(lastShown, true, "and the pad opens with it in the terminal");
     const openIn = async (tab, path) => {
       await tab.click(`#files .row.file[data-path="${path}"]`);
       await until(tab, (p) => window.__pad?.active() === p && window.__pad?.docs().includes(p), path);
@@ -653,6 +663,7 @@ try {
   await stranger.goto(viewUrl);
   await stranger.waitForSelector("text=This pad is private", { timeout: 15_000 });
   is(await stranger.locator("a.provider", { hasText: "Continue with GitHub" }).count(), 1, "a stranger is told it is private, and offered sign-in");
+  is((await fetch(`${ORIGIN}/api/pad/${name}/run`)).status, 403, "and cannot read its last run either");
   await stranger.goto(`${ORIGIN}/no_such.pad`);
   await stranger.waitForSelector("text=That isn't a pad address", { timeout: 15_000 });
   await stranger.goto(`${ORIGIN}/admin`);

@@ -384,6 +384,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/unfurl/{name}", get(unfurl))
         .route("/api/pad/{name}/history", get(history).post(keep_version))
         .route("/api/pad/{name}/history/{id}", get(version))
+        .route("/api/pad/{name}/run", get(last_run).put(keep_last_run))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
         .merge(usage::routes())
@@ -562,6 +563,25 @@ async fn history_access(
     name: &str,
     write: bool,
 ) -> Result<(), (StatusCode, &'static str)> {
+    pad_access(
+        state,
+        headers,
+        name,
+        write,
+        "only someone who can edit this pad can keep a version of it",
+    )
+    .await
+}
+
+/// Whoever may read a pad, or with `write` whoever may edit it — refused
+/// otherwise, with `cannot` said to a reader who may not write.
+async fn pad_access(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    name: &str,
+    write: bool,
+    cannot: &'static str,
+) -> Result<(), (StatusCode, &'static str)> {
     let access = http_accounts::access(state, headers, name).await;
     if access.deleted {
         return Err((StatusCode::GONE, "this pad was deleted by its owner"));
@@ -574,14 +594,83 @@ async fn history_access(
     if !enough {
         return Err((
             StatusCode::FORBIDDEN,
-            if write {
-                "only someone who can edit this pad can keep a version of it"
+            if write && access.role > accounts::Role::None {
+                cannot
             } else {
                 "this pad is private"
             },
         ));
     }
     Ok(())
+}
+
+/// What Run last printed in the pad, for whoever may read it; 204 when it has
+/// not been run.
+async fn last_run(
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    if let Err(refused) = pad_access(&state, &headers, &name, false, "").await {
+        return refused.into_response();
+    }
+    let pads = state.pads.clone();
+    match tokio::task::spawn_blocking(move || pads.last_run(&name)).await {
+        Ok(Ok(Some(run))) => Json(run).into_response(),
+        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => refuse(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reading the last run failed",
+        )
+            .into_response(),
+    }
+}
+
+/// A Run's output kept as the pad's last, from whoever may edit it, and
+/// charged to their address's day as a write is — only what it adds, since
+/// it replaces the one before.
+async fn keep_last_run(
+    Path(name): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+    State(state): State<AppState>,
+    Json(run): Json<pad::LastRun>,
+) -> axum::response::Response {
+    if let Err(refused) = pad_access(
+        &state,
+        &headers,
+        &name,
+        true,
+        "only someone who can edit this pad can keep its output",
+    )
+    .await
+    {
+        return refused.into_response();
+    }
+    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
+    let now = std::time::Instant::now();
+    if run.output.len() as u64 > state.growth.remaining(caller, now) {
+        return refuse(pad::Error::OverAllowance).into_response();
+    }
+    let pads = state.pads.clone();
+    match tokio::task::spawn_blocking(move || pads.set_last_run(&name, &run)).await {
+        Ok(Ok(Some(grew))) => {
+            state.growth.charge(caller, now, grew);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            "there is no pad here to keep a run with",
+        )
+            .into_response(),
+        Ok(Err(e)) => refuse(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "keeping the last run failed",
+        )
+            .into_response(),
+    }
 }
 
 /// A pad's kept versions, newest first: when, how many files, how big.
@@ -741,7 +830,53 @@ fn describe(summary: &pad::Summary) -> String {
             out.push_str(&format!(" — {path}: {}", lines.join(" · ")));
         }
     }
+    if let Some((path, output)) = &summary.ran {
+        let plain = plain(output);
+        let lines: Vec<&str> = plain
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .take(3)
+            .collect();
+        if !lines.is_empty() {
+            out.push_str(&format!(" — ran {path}: {}", lines.join(" · ")));
+        }
+    }
     shorten(&out, 280)
+}
+
+/// A terminal's text without its escapes — colours, cursor moves, titles —
+/// for a preview that is only text.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // CSI: parameters, then one final letter.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: to BEL, or to ESC \.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\r' => {}
+            c if c.is_control() && c != '\n' && c != '\t' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn shorten(text: &str, max: usize) -> String {
@@ -1117,6 +1252,7 @@ mod tests {
                 "main.py".to_string(),
                 "\nimport flask\n\napp = Flask(__name__)\n".to_string(),
             )),
+            ran: None,
         };
         let said = super::describe(&summary);
         assert!(
@@ -1132,6 +1268,24 @@ mod tests {
             "&lt;script&gt;&quot;a&quot; &amp; &#39;b&#39;&lt;/script&gt;"
         );
         assert_eq!(super::shorten(&"x".repeat(300), 280).chars().count(), 280);
+    }
+
+    #[test]
+    fn a_link_preview_quotes_the_last_run_without_its_escapes() {
+        let summary = crate::pad::Summary {
+            files: 1,
+            paths: vec!["main.py".to_string()],
+            lead: None,
+            ran: Some((
+                "main.py".to_string(),
+                "\x1b]0;title\x07\x1b[32mhello\x1b[0m world\r\n\n42\n\x1b[1;31mdone\x1b[0m\nmore\n"
+                    .to_string(),
+            )),
+        };
+        assert_eq!(
+            super::describe(&summary),
+            "1 file: main.py — ran main.py: hello world · 42 · done"
+        );
     }
 
     #[cfg(target_os = "linux")]

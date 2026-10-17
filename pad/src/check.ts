@@ -22,6 +22,7 @@ import { starterFor } from "./starters";
 import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, type LocalFetch, vet } from "./fetch-bridge";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
+import { placesIn, problemsIn } from "./problems";
 
 const results: string[] = [];
 const el = document.getElementById("log")!;
@@ -161,6 +162,47 @@ async function main() {
   const warm = performance.now();
   await rt.run("python", ["-c", "pass"]);
   ok(`a warm run costs ${Math.round(performance.now() - warm)}ms`);
+
+  // ---- where output points into the pad (problems.ts) ----
+  // Real output of each, as it prints it here. Links come from `placesIn`,
+  // squiggles from `problemsIn`; a frame outside the pad is neither.
+  {
+    const ours = (p: string) => {
+      const q = p.replace(/^\/workspace\//, "").replace(/^\.\//, "");
+      return q.startsWith("/") ? null : q;
+    };
+    const said = (out: string) => problemsIn(out, ours).map((p) => `${p.path}:${p.line}${p.column ? `:${p.column}` : ""} ${p.severity} ${p.message}`).join(" | ");
+    is(
+      said(['Traceback (most recent call last):', '  File "/workspace/main.py", line 5, in <module>', "    f()", '  File "/workspace/main.py", line 2, in f', "    return json.loads(x)", '  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads', "    return _default_decoder.decode(s)", "json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)"].join("\n")),
+      "main.py:2 error json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
+      "a Python traceback is placed at the pad's innermost frame, not the library's",
+    );
+    is(said(['  File "/workspace/main.py", line 2', "    def f(in):", "          ^^", "SyntaxError: invalid syntax"].join("\n")), "main.py:2 error SyntaxError: invalid syntax", "and a SyntaxError, which has no Traceback line");
+    is(
+      said(["Traceback (most recent call last):", '  File \x1b[35m"/workspace/errs/boom.py"\x1b[0m, line \x1b[35m4\x1b[0m, in \x1b[35mf\x1b[0m', "    return \x1b[1;31mundefined_name\x1b[0m", "\x1b[1;35mNameError\x1b[0m: \x1b[35mname 'undefined_name' is not defined\x1b[0m"].join("\r\n")),
+      "errs/boom.py:4 error NameError: name 'undefined_name' is not defined",
+      "and one in Python 3.13's colours, which put escapes inside the frame",
+    );
+    is(said(['Traceback (most recent call last):', '  File "/workspace/app/run.py", line 9, in <module>', "    raise Boom('bad')", "Boom: bad"].join("\n")), "app/run.py:9 error Boom: bad", "and an exception of the program's own, whatever it is called");
+    is(said(['Traceback (most recent call last):', '  File "/workspace/main.py", line 3, in <module>', "    while True: pass", "KeyboardInterrupt"].join("\n")), "", "but not Ctrl-C, which is not a fault in the code");
+    is(
+      said(["main.c:2:1: warning: return type of 'main' is not 'int' [-Wmain-return-type]", "main.c:4:5: error: use of undeclared identifier 'x'", "main.c:1:1: note: previous definition is here", "1 warning and 1 error generated."].join("\n")),
+      "main.c:2:1 warning return type of 'main' is not 'int' [-Wmain-return-type] | main.c:4:5 error use of undeclared identifier 'x'",
+      "clang's errors and warnings, not its notes",
+    );
+    is(said("./main.go:5:2: undefined: x"), "main.go:5:2 error undefined: x", "go build's");
+    is(said(["panic: runtime error: index out of range [3] with length 1", "", "goroutine 1 [running]:", "main.main()", "\t/workspace/main.go:7 +0x1d", "exit status 2"].join("\n")), "main.go:7 error panic: runtime error: index out of range [3] with length 1", "a Go panic, at its first frame in the pad");
+    is(said("Main.java:3: error: ';' expected"), "Main.java:3 error ';' expected", "javac's");
+    is(said(['Exception in thread "main" java.lang.RuntimeException: boom', "\tat Main.main(Main.java:5)"].join("\n")), "Main.java:5 error java.lang.RuntimeException: boom", "a Java exception, at its frame");
+    is(said(["/workspace/app.js:3", "console.log(x)", "            ^", "", "ReferenceError: x is not defined", "    at Object.<anonymous> (/workspace/app.js:3:13)"].join("\n")), "app.js:3 error ReferenceError: x is not defined", "a Node error, at the line it names first");
+    is(said(["/workspace/app.js:1", 'throw new Error("boom")', "", "Error: boom"].join("\n")), "app.js:1 error Error: boom", "even one called just Error");
+    is(said("PHP Parse error:  syntax error, unexpected end of file in /workspace/index.php on line 3"), "index.php:3 error syntax error, unexpected end of file", "PHP's");
+    const links = (line: string) => placesIn(line).map((f) => `${f.path}:${f.line}${f.column ? `:${f.column}` : ""}@${f.start}-${f.end}`).join(" ");
+    is(links('  File "/workspace/main.py", line 2, in f'), "/workspace/main.py:2@2-35", "a link over a Python frame");
+    is(links("    at Object.<anonymous> (/workspace/app.js:3:13)"), "/workspace/app.js:3:13@27-49", "and a stack frame's place, inside its brackets");
+    is(links("main.c:4:5: error: x and util/b.c:9"), "main.c:4:5@0-10 util/b.c:9@25-35", "and every place in a line");
+    is(links(" * Running on http://127.0.0.1:5000 (Press CTRL+C to quit)"), "", "but not an address, which is not a file");
+  }
 
   // ---- the shell, which the Run design depends on ----
   let printed = "";

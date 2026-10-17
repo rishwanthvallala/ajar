@@ -16,6 +16,7 @@ import type { Terminal as XTerm } from "@xterm/xterm";
 
 import { Console } from "./console";
 import { IMAGE_OSC } from "./images";
+import { type Place, placesIn } from "./problems";
 import type { Runtime } from "./runtime";
 import { Shell } from "./shell";
 
@@ -29,12 +30,27 @@ export interface SessionHooks {
   installs: () => number;
   /** A program asked for an image to be shown (`images.ts`): the escape's text. */
   onImage?: (data: string) => void;
+  /** The pad file a path in the output is, or null when it is none of the pad's. */
+  place?: (path: string) => string | null;
+  /** A file and line in the output, clicked. */
+  openPlace?: (place: Place) => void;
   /** Whether the runtime has started. */
   ready: () => boolean;
 }
 
+/** The most of a command's output kept for after it (`lastOutput`): its end. */
+export const OUTPUT_KEPT = 64 * 1024;
+
 export class TerminalSession {
   readonly console: Console;
+  /**
+   * What the shell printed for the command that ran last, typed or Run's —
+   * its end, past [`OUTPUT_KEPT`]. For the errors in it (problems.ts) and the
+   * pad's saved last run.
+   */
+  lastOutput = "";
+  private recording: string[] | null = null;
+  private recorded = 0;
   shell: Shell | null = null;
   private opening: Promise<Shell> | null = null;
   cols: number;
@@ -58,6 +74,25 @@ export class TerminalSession {
       hooks.onImage?.(data);
       return true;
     });
+    // A traceback's file and line, a compiler's, a stack frame's: a link to
+    // the place, when it is one of the pad's files.
+    term.registerLinkProvider({
+      provideLinks: (y, callback) => {
+        const text = term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "";
+        const links = placesIn(text).flatMap((found) => {
+          const path = hooks.place?.(found.path);
+          if (!path) return [];
+          const place: Place = { path, line: found.line, ...(found.column ? { column: found.column } : {}) };
+          return [{
+            range: { start: { x: found.start + 1, y }, end: { x: found.end, y } },
+            text: text.slice(found.start, found.end),
+            decorations: { pointerCursor: true, underline: true },
+            activate: () => hooks.openPlace?.(place),
+          }];
+        });
+        callback(links.length ? links : undefined);
+      },
+    });
     // The console owns the prompt, the echo and the line editing — bash
     // provides none of them. It asks for a shell only when a line is entered,
     // and completes against one only if it is already open.
@@ -66,7 +101,17 @@ export class TerminalSession {
       onFinished: () => hooks.onFinished(this),
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
-      onBusy: (busy) => hooks.onBusy(this, busy),
+      onBusy: (busy) => {
+        // Each command's output, from its start to its end, for after it.
+        if (busy) {
+          this.recording = [];
+          this.recorded = 0;
+        } else if (this.recording) {
+          this.lastOutput = this.recording.join("").slice(-OUTPUT_KEPT);
+          this.recording = null;
+        }
+        hooks.onBusy(this, busy);
+      },
       fullScreen: () => term.buffer.active.type === "alternate",
       prepare: (command) => hooks.prepare(this, command),
       ready: () => hooks.ready(),
@@ -92,6 +137,20 @@ export class TerminalSession {
     this.term.write(text);
   }
 
+  /** What the shell prints: onto the screen, and kept while a command runs. */
+  private output(text: string): void {
+    this.term.write(text);
+    if (!this.recording) return;
+    this.recording.push(text);
+    this.recorded += text.length;
+    // Only the end is wanted, and a loop printing for minutes is megabytes.
+    if (this.recorded > OUTPUT_KEPT * 2) {
+      const end = this.recording.join("").slice(-OUTPUT_KEPT);
+      this.recording = [end];
+      this.recorded = end.length;
+    }
+  }
+
   start(): void {
     this.console.start();
   }
@@ -109,7 +168,7 @@ export class TerminalSession {
       try {
         const rt = await this.hooks.runtime();
         const installs = this.hooks.installs();
-        this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) => this.term.write(t));
+        this.shell = await Shell.open(rt, { columns: this.cols, rows: this.rows }, (t) => this.output(t));
         this.shellInstalls = installs;
         return this.shell;
       } finally {

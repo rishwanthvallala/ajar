@@ -67,6 +67,21 @@ over fifty other formats (JavaScript, TypeScript, HTML, CSS, Markdown, JSON,
 YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
 
+**Errors point at your code.** When a program fails, the file and line in its
+error — a Python traceback, a C, Go or Java compiler's error, a Java or Node
+stack, PHP's — are links in the terminal: click one and the file opens at that
+line. And the run's errors are marked in the editor, a squiggle under each line
+with what it said on hover (F8 steps through them). The marks follow the text
+as you edit, and the next run replaces them; a command that is not a program
+— `ls`, `pip install` — leaves them be.
+
+**The last run is kept with the pad.** What Run last printed — and which file,
+how it ended, when — is saved with the pad, so whoever opens the link next sees
+it in the terminal before running anything, its errors marked as they were.
+It is the pad's, not a file in it: not in the file list, the zip or the
+history, and gone with the pad. Only someone who can edit the pad saves it; up
+to 32 KB, the end of what it printed.
+
 **Where you were stays where you were.** Switch to another file and back, and
 each opens where you left it — scrolled to the same place, the cursor where it
 was, folds as they were — even if somebody else or a command changed it

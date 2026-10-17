@@ -424,8 +424,8 @@ in its own `usage.db` beside `accounts.db` (`--usage-db` to put it elsewhere):
   the eight languages and two ways it knows, 60 a minute per address at most,
   and answers 204 either way. It cannot tell a real run from a posted one;
   the limit is what keeps one address from being the chart.
-- **People online** is the registry's census every 30 seconds, kept as the
-  most in each five minutes. A five minutes the relay was down has no row,
+- **People online** is the registry's census every 30 seconds, and again
+  whenever `/admin` asks, kept as the most in each five minutes. A five minutes the relay was down has no row,
   and the chart leaves it out rather than drawing nobody.
 
 Kept: the daily counts about thirteen months, the five-minute figures 30

@@ -258,3 +258,15 @@ all take them, and typing meanwhile is kept (`restoreVersion` in app.ts).
 `pair-check.mjs` restores from one place and checks that the other place's
 open document, the store and the history all agree.
 
+## The last run
+
+What Run last printed in a pad, so the next person to open it sees the output
+before running anything: `last_runs`, one row per pad — the file, the
+command, its exit code, when, and the end of its output, at most
+`LAST_RUN_MAX` (32 KiB). A row of the pad's, not a file in it, so it is not
+in the tree, the zip or the history; it goes with the pad, deleted or lapsed,
+and a lapsed pad's is not given to the next pad of that name.
+`GET /api/pad/{name}/run` is for whoever may read the pad (204 when it has
+none), `PUT` for whoever may edit it, charged to the writer's address the way
+a save is — only what it adds to the one before, since it replaces it. A link
+preview quotes its first lines after the main file's (`describe`, main.rs).

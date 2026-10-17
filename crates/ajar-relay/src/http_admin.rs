@@ -89,12 +89,20 @@ async fn stats(
         state.pads.clone(),
         state.usage.clone(),
     );
+    // Who is in a pad now is a sample too, the moment the page asks: the
+    // most at once then includes now, rather than the last 30-second look.
+    let live = state.registry.census();
+    let (people, rooms, sessions) = (
+        (live.pad_people + live.session_people) as i64,
+        live.pad_rooms as i64,
+        live.sessions as i64,
+    );
     let (accounts, store, usage) = blocking(move || {
-        (
-            accounts.stats(DAYS, TOP),
-            pads.census(TOP),
-            usage.stats(DAYS, crate::usage::now()),
-        )
+        let now = crate::usage::now();
+        let usage = usage
+            .sample(people, rooms, sessions, now)
+            .and_then(|()| usage.stats(DAYS, now));
+        (accounts.stats(DAYS, TOP), pads.census(TOP), usage)
     })
     .await;
     let accounts = accounts.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message()))?;
@@ -103,7 +111,7 @@ async fn stats(
         accounts,
         store,
         usage,
-        live: state.registry.census(),
+        live,
         relay: Relay {
             version: env!("CARGO_PKG_VERSION"),
             uptime_secs: state.started.elapsed().as_secs(),
