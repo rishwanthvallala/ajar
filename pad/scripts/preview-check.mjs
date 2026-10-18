@@ -521,6 +521,169 @@ noticed && back
   ? ok("a server stopped says so over its page, and started again the page reloads")
   : fail(`stopped notice ${noticed}, reloaded ${back}; ${JSON.stringify(await state())}`);
 
+// ------------------------------------------------------ two pads at once
+//
+// From 18 October each page stays its own pad's (audit DC-10). Before, a
+// navigation in the preview went to whichever pad had last loaded a page, so
+// with two previews open a link clicked in one loaded the other's server, on
+// the same port, into it. And any page in the preview could tell the worker
+// to send its pad's requests and answers to that page instead (audit DC-11).
+//
+// The second pad is a stand-in in another tab: a page of the pad's origin
+// speaking the pad's side of the protocol — the SDK's handshake with the
+// control page, a route, `pad-preview:route` and a frame loaded through
+// /.wasmer/go/ — with a server of its own, in the page, on port 8080 too. A
+// second sandbox would add minutes and test nothing more of the worker. It
+// loads its page after this pad's: before the 18th, the pad that loaded last
+// was where a navigation with nothing to say whose it was went.
+await page.locator(".preview-url").fill("/");
+await page.locator(".preview-url").press("Enter");
+await until(async () => /signed in/.test(await frameText()));
+// Opened from the pad, because the browser's context here is the page's own
+// (browser.newPage), and another context would have a worker of its own.
+const openedStandIn = page.context().waitForEvent("page", { timeout: 15_000 });
+await page.evaluate((url) => window.open(url, "_blank", "noopener"), `${ORIGIN}/privacy.html`);
+const standIn = await openedStandIn;
+await standIn.waitForLoadState();
+const other = await standIn.evaluate(async (preview) => {
+  const session = crypto.randomUUID();
+  const heard = (window.__heard = []);
+  const host = document.createElement("iframe");
+  host.hidden = true;
+  host.src = `${preview}/.wasmer/host.html?parentOrigin=${encodeURIComponent(location.origin)}`;
+  await new Promise((resolve) => { host.onload = resolve; document.body.append(host); });
+  addEventListener("message", (e) => { if (e.source === host.contentWindow) heard.push(e.data); });
+  const connection = new MessageChannel();
+  await new Promise((resolve) => {
+    connection.port1.onmessage = (e) => e.data?.type === "wasmer-sdk:http-host-ready" && resolve();
+    host.contentWindow.postMessage({ type: "wasmer-sdk:http-host-connect" }, preview, [connection.port2]);
+  });
+  const serverId = crypto.randomUUID();
+  const server = new MessageChannel();
+  const html = (title) => `<!doctype html><title>${title}</title><h1>${title}</h1><a id="about" href="/about">about</a> <a id="home" href="/">home</a>`;
+  await new Promise((resolve) => {
+    server.port1.onmessage = (e) => {
+      const m = e.data;
+      if (m?.type === "wasmer-sdk:http-ready") return resolve();
+      if (m?.type !== "wasmer-sdk:http-request") return;
+      const body = new TextEncoder().encode(html(m.path.startsWith("/about") ? "the other pad's about" : "the other pad's home"));
+      server.port1.postMessage({ type: "wasmer-sdk:http-response", serverId, requestId: m.requestId, status: 200, statusText: "OK", headers: [["content-type", "text/html"]], body }, [body.buffer]);
+    };
+    connection.port1.postMessage({ type: "wasmer-sdk:http-register", serverId }, [server.port2]);
+  });
+  host.contentWindow.postMessage({ type: "pad-preview:route", session, serverId, guest: 8080 }, preview);
+  for (let i = 0; i < 50 && !heard.some((m) => m.type === "pad-preview:routed"); i++) await new Promise((r) => setTimeout(r, 100));
+  const frame = document.createElement("iframe");
+  frame.id = "other";
+  for (const capability of ["allow-forms", "allow-same-origin", "allow-scripts"]) frame.sandbox.add(capability);
+  frame.src = `${preview}/.wasmer/go/${session}/8080/`;
+  document.body.append(frame);
+  return session;
+}, PREVIEW_ORIGIN);
+const otherFrame = () => standIn.frames().find((f) => f.url().startsWith(PREVIEW_ORIGIN) && !f.url().includes("/.wasmer/host.html") && f.parentFrame() === standIn.mainFrame());
+const otherText = async () => (await otherFrame()?.evaluate(() => document.body?.innerText ?? "").catch(() => "")) ?? "";
+const otherLoad = () => standIn.evaluate(({ preview, session }) => document.getElementById("other").contentWindow.location.replace(`${preview}/.wasmer/go/${session}/8080/`), { preview: PREVIEW_ORIGIN, session: other });
+const otherHeard = () => standIn.evaluate(() => window.__heard.filter((m) => m.type === "pad-preview:request").length);
+
+const otherUp = await until(async () => /the other pad's home/.test(await otherText()));
+await shown()?.click("#about");
+const ownAbout = await until(async () => /about page/.test(await frameText()));
+otherUp && ownAbout && !/other pad/.test(await frameText())
+  ? ok("with another pad's preview open, a link clicked in this one stays on this pad's server")
+  : fail(`the other pad up ${otherUp}; this one's link showed ${JSON.stringify((await frameText()).slice(0, 100))}`);
+
+// This pad loaded last now, and the link is in the other's.
+await page.click(".preview-reload");
+await until(async () => /about page/.test(await frameText()));
+await otherFrame()?.click("#about");
+(await until(async () => /the other pad's about/.test(await otherText())))
+  ? ok("and one clicked in the other pad's preview stays on that one's")
+  : fail(`the other pad's link showed ${JSON.stringify((await otherText()).slice(0, 100))}`);
+
+// A page popped out of this pad is still this pad's after the other loads.
+const poppedOut = page.context().waitForEvent("page", { timeout: 15_000 }).catch(() => null);
+await page.click(".preview-pop-out");
+const popOut = await poppedOut;
+const poppedAbout = popOut ? await until(async () => /about page/.test(await popOut.innerText("body").catch(() => ""))) : false;
+await otherLoad();
+await until(async () => /the other pad's home/.test(await otherText()));
+await popOut?.click("#home").catch(() => {});
+const poppedHome = popOut ? await until(async () => /signed in/.test(await popOut.innerText("body").catch(() => ""))) : false;
+const poppedText = popOut ? await popOut.innerText("body").catch(() => "") : "";
+poppedAbout && poppedHome && !/other pad/.test(poppedText)
+  ? ok("and so does a link in a page popped out of this one, after the other pad loads a page")
+  : fail(`popped out ${Boolean(popOut)}, at about ${poppedAbout}, then home ${poppedHome}: ${JSON.stringify(poppedText.slice(0, 100))}`);
+await popOut?.close();
+
+// A frame a page adds names no page it replaces, and Chrome does not say
+// which page made it. With two pads open it could be either's, so the
+// worker says so rather than picking one.
+const nestedText = async () => (await shown()?.childFrames()[0]?.evaluate(() => document.body?.innerText ?? "").catch(() => "")) ?? "";
+const addNested = () => shown()?.evaluate(() => {
+  document.getElementById("nested")?.remove();
+  const f = document.createElement("iframe");
+  f.id = "nested";
+  f.src = "/about";
+  document.body.append(f);
+});
+await addNested();
+const refused = await until(async () => /could not be told/.test(await nestedText()));
+refused && !/about page|other pad/.test(await nestedText())
+  ? ok("with two pads open, a frame a page adds, which nothing says is whose, is refused rather than given to either")
+  : fail(`the nested frame showed ${JSON.stringify((await nestedText()).slice(0, 120))}`);
+await shown()?.evaluate(() => document.getElementById("nested")?.remove());
+
+// The page knows its own pad's session id — it is in its script tag — and
+// with the stand-in's it tries the instructions a pad gives through its
+// control page: to send it the session's reports, and to make a request for
+// it. And it writes a row into the pad's request log itself.
+const requestRows = async () => {
+  await page.click(".preview-requests");
+  const texts = await page.locator(".preview-log-row").allInnerTexts();
+  await page.click(".preview-requests");
+  return texts;
+};
+await page.click(".preview-requests");
+await page.click(".preview-log-clear");
+await page.click(".preview-requests");
+const otherBefore = await otherHeard();
+const tried = await shown()?.evaluate(async (other) => {
+  const own = document.querySelector("script[data-session]")?.dataset.session;
+  const heard = [];
+  navigator.serviceWorker.addEventListener("message", (e) => heard.push(e.data?.type));
+  navigator.serviceWorker.startMessages();
+  for (const session of [own, other]) {
+    for (const type of ["pad-preview:front", "pad-preview:route"]) {
+      navigator.serviceWorker.controller.postMessage({ type, session, guest: 8080, serverId: "x", padOrigin: location.origin });
+    }
+    navigator.serviceWorker.controller.postMessage({ type: "pad-preview:fetch", session, id: "x", url: "http://localhost:8080/about", method: "GET", headers: [] });
+  }
+  parent.postMessage({ type: "pad-preview:request", session: own, guest: 8080, from: 8080, method: "GET", path: "/written-by-the-page", status: 200, ms: 0, size: 0, kind: "fetch" }, "*");
+  await new Promise((r) => setTimeout(r, 2000));
+  return { own: Boolean(own), heard };
+}, other).catch((e) => ({ error: e.message }));
+tried?.own && Array.isArray(tried.heard) && tried.heard.length === 0
+  ? ok("a page in the preview that gives the worker a pad's instructions, for its own pad or another's, is not obeyed and hears nothing back")
+  : fail(`the page's attempt came to ${JSON.stringify(tried)}`);
+
+await page.click(".preview-reload");
+const ownReports = await until(async () => /about page/.test(await frameText()) && (await requestRows()).some((r) => /GET\s+\/about\s+200/.test(r)));
+await otherLoad();
+const otherReports = await until(async () => (await otherHeard()) > otherBefore);
+const rows = await requestRows();
+ownReports && otherReports && !rows.some((r) => r.includes("/written-by-the-page"))
+  ? ok("and both pads still get their own requests, and not the row the page wrote")
+  : fail(`this pad's reports ${ownReports}, the other's ${otherReports}; rows ${JSON.stringify(rows.slice(0, 4))}`);
+
+// With the other pad closed, everything of the preview's open is this pad's,
+// so a frame its page adds can only be this pad's, and is.
+await standIn.close();
+await addNested();
+(await until(async () => /about page/.test(await nestedText())))
+  ? ok("with one pad open, a frame its page adds loads from its server")
+  : fail(`the nested frame showed ${JSON.stringify((await nestedText()).slice(0, 120))}`);
+await shown()?.evaluate(() => document.getElementById("nested")?.remove());
+
 await browser.close(); pad.close(); host.close(); relay?.kill();
 await rm(padDir, { recursive: true, force: true });
 const bad = results.filter((r) => !r).length;

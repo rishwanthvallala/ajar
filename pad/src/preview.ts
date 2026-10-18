@@ -194,8 +194,11 @@ export class PreviewBrowser {
     };
     close.onclick = () => this.toggle(this.panel!);
     addEventListener("message", (event) => this.hear(event), { signal });
-    // Back in front after another tab's preview took the worker's attention:
-    // a link clicked in this one goes to this tab's server, not that one's.
+    // Back in view. The browser may have stopped the worker while this tab
+    // was away, and with it the route to the page on screen: the worker says
+    // so (`pad-preview:unrouted`), and the route is made again. Until
+    // 18 October this was also what kept a link clicked here going to this
+    // tab's server rather than another tab's; each page now keeps its own.
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && this.isOpen && this.front !== null) {
         this.tell({ type: "pad-preview:front", session: this.session, guest: this.front });
@@ -436,9 +439,13 @@ export class PreviewBrowser {
     this.paint();
   }
 
+  /** The SDK's control page for the preview's origin, which carries messages to and from its worker. */
+  private get control(): Window | null {
+    return document.querySelector<HTMLIFrameElement>(`iframe[src^="${this.origin}/.wasmer/host.html"]`)?.contentWindow ?? null;
+  }
+
   private tell(message: object): void {
-    const control = document.querySelector<HTMLIFrameElement>(`iframe[src^="${this.origin}/.wasmer/host.html"]`);
-    control?.contentWindow?.postMessage(message, this.origin);
+    this.control?.postMessage(message, this.origin);
   }
 
   /** What the worker says through the control page, and what the page says itself. */
@@ -448,7 +455,12 @@ export class PreviewBrowser {
     if (!message || typeof message.type !== "string") return;
     const fromPage = this.frame !== null && event.source === this.frame.contentWindow;
     if (message.type.startsWith("pad-preview:")) {
-      if (message.session !== this.session) return;
+      // The worker's, and only through the control page. The page in the
+      // frame is of the same origin and knows this session's id, and could
+      // otherwise answer a terminal's request, confirm a route or write the
+      // request log itself (audit DC-11, 18 October).
+      const control = this.control;
+      if (!control || event.source !== control || message.session !== this.session) return;
       if (message.type === "pad-preview:routed") this.unconfirmed.get(String(message.serverId))?.();
       else if (message.type === "pad-preview:fetched") this.asked.get(String(message.id))?.(message);
       else if (message.type === "pad-preview:unrouted") void this.unrouted(Number(message.guest));

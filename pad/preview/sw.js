@@ -15,7 +15,7 @@
  *     that request is applied here.
  *   - one browser tab, one session. Each pad tab's routes, front port and
  *     cookies are kept apart from another tab's, even when both run something
- *     on port 5000.
+ *     on port 5000. A page, and every page it goes on to, stays its own tab's.
  *   - cookies. A Response the worker builds itself cannot set one, so a Flask
  *     session, a login or a flash message never outlived its request. Each
  *     session's cookies are kept here: taken from Set-Cookie, sent back as
@@ -24,7 +24,8 @@
  *   - what the preview does, told to the pad: each page it loads, for the
  *     address bar, and each request with what went in and came out, for the
  *     request log. Sent through the control page (/.wasmer/host.html), the one
- *     window here the pad can reach. A small script added to each HTML page
+ *     window here the pad can reach, and the only one this worker takes an
+ *     instruction from. A small script added to each HTML page
  *     (`agent` below) reports what only the page knows: its console, its
  *     errors, and history.pushState.
  *
@@ -37,10 +38,13 @@ const REQUEST_TIMEOUT_MS = 300_000;
 const LOCAL = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
 const AGENT = "/.wasmer/page.js";
 const GO = /^\/\.wasmer\/go\/([\w-]{1,64})\/(\d{1,5})(\/.*)?$/;
+const CONTROL = "/.wasmer/host.html";
+/** Said in place of a page no one session can be shown to own. */
+const UNOWNED = "Which pad's preview this page belongs to could not be told, with more than one open here, so it was not loaded. Open it again from the pad.";
 /** How much of a body the request log is shown. */
 const SHOWN = { request: 8 * 1024, response: 32 * 1024 };
 
-/** Routes by the SDK's server id: { id, port: MessagePort, pending, session, guest } */
+/** Routes by the SDK's server id: { id, port: MessagePort, pending, session, guest, owner: client id of the control page that made it } */
 const routes = new Map();
 /** Route ids announced before the route itself arrived: the two come by different paths. */
 const early = new Map();
@@ -50,14 +54,17 @@ const early = new Map();
  */
 const sessions = new Map();
 /**
- * The session that last loaded a page or came back into view. A navigation
- * inside the preview's frame does not say which tab the frame is in. Every
- * load the pad makes goes through /.wasmer/go/ and says so, so this is
- * consulted only for a link clicked, or a form sent, in the page.
+ * The session and port each document came from, by client id: its requests,
+ * and the navigations that replace it, go back to them.
  */
-let active = null;
-/** The session and port each document came from, by client id: its requests go back to them. */
 const documents = new Map();
+/**
+ * A navigation part way through its redirects, by the client id it will
+ * have: { session, guest, at }. Its first step said whose it is — a pad's
+ * load through /.wasmer/go/, or a page of that session's — and the browser
+ * keeps that id through every redirect on this origin, so the rest follow.
+ */
+const navigating = new Map();
 
 scope.addEventListener("install", (event) => event.waitUntil(scope.skipWaiting()));
 scope.addEventListener("activate", (event) => event.waitUntil(scope.clients.claim()));
@@ -65,10 +72,18 @@ scope.addEventListener("activate", (event) => event.waitUntil(scope.clients.clai
 scope.addEventListener("message", (event) => {
   const message = event.data;
   if (!message || typeof message !== "object") return;
+  // Every message here is a pad's, through its control page
+  // (preview/relay.js, beside the SDK's own script). A page in the preview
+  // has nothing to tell this worker: what it reports goes to the pad itself.
+  const control = event.source;
+  if (!isControlPage(control)) return;
   if (message.type === "wasmer-sdk:http-register") {
     const port = event.ports[0];
     if (!port || typeof message.serverId !== "string") return;
-    const route = { id: message.serverId, port, pending: new Map(), session: null, guest: null };
+    // Never another control page's route under the same id.
+    const existing = routes.get(message.serverId);
+    if (existing && existing.owner !== control.id) return;
+    const route = { id: message.serverId, port, pending: new Map(), session: null, guest: null, owner: control.id };
     routes.set(route.id, route);
     port.addEventListener("message", (e) => receive(route, e.data));
     port.start();
@@ -76,21 +91,30 @@ scope.addEventListener("message", (event) => {
     const announced = early.get(route.id);
     if (announced) {
       early.delete(route.id);
-      attach(route, announced.session, announced.guest);
+      if (announced.session.control === control.id) attach(route, announced.session, announced.guest);
     }
     return;
   }
-  // The rest come from a pad, through its control page (preview/relay.js).
   if (typeof message.session !== "string" || !/^[\w-]{1,64}$/.test(message.session)) return;
-  const session = sessionFor(message.session, event.source, message.padOrigin);
+  const session = sessionFor(message.session, control.id, message.padOrigin);
+  if (!session) return;
   if (message.type === "pad-preview:route") {
     if (typeof message.serverId !== "string" || !validPort(message.guest)) return;
     const route = routes.get(message.serverId);
-    if (route) attach(route, session, message.guest);
-    else early.set(message.serverId, { session, guest: message.guest });
+    // A route this tab's own control page made, and no other's.
+    if (route && route.owner === control.id) attach(route, session, message.guest);
+    else if (!route) early.set(message.serverId, { session, guest: message.guest });
   } else if (message.type === "pad-preview:front") {
-    if (validPort(message.guest)) session.front = message.guest;
-    active = session.id;
+    // The tab is back in view. Until 18 October this also made it the
+    // session a navigation went to when nothing said whose it was, which let
+    // one pad's frame load another's server (audit DC-10); now each page
+    // keeps its own. What is left is the worker that the browser stopped
+    // while the tab was away: it has no route to the page on screen, whose
+    // own requests then fail without a word. Told so, the pad makes the route
+    // again and reloads the page.
+    if (!validPort(message.guest)) return;
+    session.front = message.guest;
+    if (!session.guests.has(message.guest)) tell(session, { type: "pad-preview:unrouted", session: session.id, guest: message.guest });
   } else if (message.type === "pad-preview:fetch" && typeof message.id === "string") {
     event.waitUntil(fetchFor(session, message));
   }
@@ -101,15 +125,41 @@ function validPort(value) {
   return Number.isInteger(value) && value > 0 && value < 65_536;
 }
 
-function sessionFor(id, source, padOrigin) {
-  let session = sessions.get(id);
-  if (!session) {
-    session = { id, control: null, padOrigin: null, guests: new Map(), front: null, jar: new Map() };
-    sessions.set(id, session);
-    void forgetClosedTabs();
+/**
+ * A pad's control page: /.wasmer/host.html, framed by the pad. Until
+ * 18 October any window here was taken for one (audit DC-11). Every page the
+ * preview shows is of this origin too, and its script tag tells it its own
+ * session's id, so a page could send `pad-preview:front` for that session and
+ * become where the worker sent the session's every request and answer,
+ * instead of the pad. A Client's url is where the document was made, which
+ * history.replaceState does not move, and a page this worker served is never
+ * a control page, whatever it calls itself.
+ */
+function isControlPage(client) {
+  if (!client || client.type !== "window" || client.frameType !== "nested" || documents.has(client.id)) return false;
+  try {
+    return new URL(client.url).pathname === CONTROL;
+  } catch {
+    return false;
   }
-  if (source && typeof source.id === "string") session.control = source.id;
-  if (typeof padOrigin === "string" && /^https?:\/\/[^/]+$/.test(padOrigin)) session.padOrigin = padOrigin;
+}
+
+/**
+ * The session `id`, made for this control page if it is new. It stays that
+ * page's: another sending for it is refused, rather than becoming where the
+ * session's reports go (audit DC-11, 18 October). A pad sends nothing for its
+ * session before its control page is connected, and the SDK keeps that page
+ * for as long as the tab is open.
+ */
+function sessionFor(id, control, padOrigin) {
+  const known = sessions.get(id);
+  if (known) return known.control === control ? known : null;
+  // The origin each page's frame-ancestors and script name. A pad is never on
+  // this one: a control page framed by a page here belongs to that page.
+  if (typeof padOrigin !== "string" || !/^https?:\/\/[^/]+$/.test(padOrigin) || padOrigin === scope.location.origin) return null;
+  const session = { id, control, padOrigin, guests: new Map(), front: null, jar: new Map() };
+  sessions.set(id, session);
+  void forgetClosedTabs();
   return session;
 }
 
@@ -135,7 +185,6 @@ async function forgetClosedTabs() {
       const route = routes.get(id);
       if (route) close(route);
     }
-    if (active === session.id) active = null;
   }
   for (const id of documents.keys()) if (!open.has(id)) documents.delete(id);
 }
@@ -149,35 +198,100 @@ scope.addEventListener("fetch", (event) => {
   if (url.origin === scope.location.origin) {
     if (url.pathname === AGENT) return event.respondWith(agentScript());
     const go = GO.exec(url.pathname);
-    if (go && navigation) return event.respondWith(goTo(go[1], Number(go[2]), (go[3] ?? "/") + url.search));
+    if (go && navigation) return event.respondWith(goTo(event, go[1], Number(go[2]), (go[3] ?? "/") + url.search));
     // The control page and its scripts, from the network.
     if (url.pathname.startsWith("/.wasmer/") || url.pathname === "/pad-preview.js" || url.pathname === "/wasmer-host.js") return;
-    const from = navigation ? null : documents.get(event.clientId);
-    const session = sessions.get(from?.session ?? active);
-    if (!session) return event.respondWith(navigation ? lost() : Response.error());
-    const guest = from?.guest ?? session.front;
-    return event.respondWith(forward({ event, session, guest, url, from: guest, navigation }));
+    if (navigation) return event.respondWith(navigate(event, url));
+    const from = documents.get(event.clientId);
+    const session = sessions.get(from?.session);
+    if (!session) return event.respondWith(Response.error());
+    // A worker the page starts is a client of its own, and asks as the page would.
+    if (event.resultingClientId) documents.set(event.resultingClientId, from);
+    return event.respondWith(forward({ event, session, guest: from.guest, url, from: from.guest, navigation }));
   }
   // http://localhost:PORT, from a page here, is the sandbox's PORT and never
   // this computer's: the folder is what the page was written against.
   if (!LOCAL.has(url.hostname)) return;
   const from = documents.get(event.clientId);
-  const session = sessions.get(from?.session ?? active);
+  const session = sessions.get(from?.session);
   if (!session) return event.respondWith(Response.error());
   const guest = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-  event.respondWith(forward({ event, session, guest, url, from: from?.guest ?? session.front, navigation }));
+  event.respondWith(forward({ event, session, guest, url, from: from.guest, navigation }));
 });
 
-/** A pad's load: this port in front for this session, then the path, at the root. */
-function goTo(id, guest, path) {
+/**
+ * A pad's load: this port in front for this session, then the path, at the
+ * root. The redirect that follows is this navigation's next step, under the
+ * same client id, and goes where this one said.
+ */
+function goTo(event, id, guest, path) {
   const session = sessions.get(id);
   if (!session) return lost();
+  // A frame showing another session's page, or a navigation another
+  // session's server redirected here, stays out: a page or a server would
+  // need only this session's id to load its pages and read them (audit
+  // DC-10, 18 October).
+  const before = [documents.get(event.clientId), navigating.get(event.resultingClientId)];
+  if (before.some((owner) => owner && owner.session !== id)) return lost(UNOWNED);
   session.front = guest;
-  active = session.id;
+  onTheWay(event, session, guest);
   // Only ever a path here: `//elsewhere` would make this an open redirect.
   const target = new URL(path, scope.location.origin);
   const location = target.origin === scope.location.origin ? target.pathname + target.search : "/";
   return new Response(null, { status: 302, headers: isolated({ location, "cache-control": "no-store" }) });
+}
+
+/**
+ * Any other navigation here: a link clicked or a form sent in a page, a
+ * page's redirect, a reload, Back. It goes to the session and server of the
+ * page it replaces, or of the step before it.
+ *
+ * Until 18 October it went to whichever session had last loaded a page or
+ * come back into view (audit DC-10). With two pads' previews open, or a page
+ * popped out of one, a link clicked in one could load the other's server
+ * into it, and a form could be sent there. Now nothing is guessed: what
+ * cannot be shown to be one session's is refused.
+ */
+async function navigate(event, url) {
+  // Chrome names, as the navigation's client, the document in the frame it
+  // replaces. A frame or window just made has none, and so do pages the
+  // worker served before the browser stopped it.
+  const owner = navigating.get(event.resultingClientId) ?? documents.get(event.clientId) ?? (await soleOwner());
+  const session = sessions.get(owner?.session);
+  if (!session) return lost(owner || !sessions.size ? undefined : UNOWNED);
+  return forward({ event, session, guest: owner.guest, url, from: owner.guest, navigation: true });
+}
+
+/**
+ * The owner of a navigation that names none, when there can only be one: an
+ * iframe a page adds, a link with target=_blank. Chrome does not say which
+ * page made the frame, but if everything of this origin open in the browser
+ * is one pad's — its control page, and pages this worker served it — that
+ * pad's page did. Otherwise, with two pads open, or a page here this worker
+ * does not know, it is refused.
+ */
+async function soleOwner() {
+  const open = await scope.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const controls = open.filter(isControlPage);
+  if (controls.length !== 1) return null;
+  const owners = new Set(open.filter((c) => c.id !== controls[0].id).map((c) => documents.get(c.id)?.session));
+  const session = owners.size === 1 ? sessions.get([...owners][0]) : null;
+  return session && session.control === controls[0].id ? { session: session.id, guest: session.front } : null;
+}
+
+/** A navigation redirected, or about to be: its next step is this session's, on this port. */
+function onTheWay(event, session, guest) {
+  if (!event.resultingClientId) return;
+  const now = Date.now();
+  for (const [id, step] of navigating) if (now - step.at > 60_000) navigating.delete(id);
+  navigating.set(event.resultingClientId, { session: session.id, guest, at: now });
+}
+
+/** And where it ended: the document it makes is this session's, from this port. */
+function arrived(event, session, guest) {
+  if (!event.resultingClientId) return;
+  navigating.delete(event.resultingClientId);
+  documents.set(event.resultingClientId, { session: session.id, guest });
 }
 
 /**
@@ -203,8 +317,9 @@ async function forward({ event, session, guest, url, from, navigation }) {
     // If the pad thinks otherwise, this worker lost the route — stopped by
     // the browser and started again — and the pad makes it again.
     tell(session, { type: "pad-preview:unrouted", session: session.id, guest });
-    if (navigation) return notice(session, guest, path, page, 502, `Nothing is listening on port ${guest}`, "Start the server in the terminal and the preview reloads when it is up.");
-    return Response.error();
+    if (!navigation) return Response.error();
+    arrived(event, session, guest);
+    return notice(session, guest, path, page, 502, `Nothing is listening on port ${guest}`, "Start the server in the terminal and the preview reloads when it is up.");
   }
   const credentials = request.credentials === "include" || (request.credentials === "same-origin" && sameOrigin);
   const body = new Uint8Array(await request.arrayBuffer());
@@ -216,8 +331,9 @@ async function forward({ event, session, guest, url, from, navigation }) {
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
     tell(session, { ...base, status: 0, ms: Date.now() - started, size: 0, error: text, requestHeaders: headers, requestBody: shownRequest });
-    if (navigation) return notice(session, guest, path, page, 502, `The server on port ${guest} did not answer`, text);
-    return Response.error();
+    if (!navigation) return Response.error();
+    arrived(event, session, guest);
+    return notice(session, guest, path, page, 502, `The server on port ${guest} did not answer`, text);
   }
   const status = message.status ?? 502;
   const pairs = message.headers ?? [];
@@ -249,8 +365,9 @@ async function forward({ event, session, guest, url, from, navigation }) {
   }
   const redirect = status >= 300 && status < 400 && out.has("location");
   const html = /^text\/html\b/i.test(out.get("content-type") ?? "") && !out.has("content-encoding");
+  if (navigation && redirect) onTheWay(event, session, guest);
   if (navigation && !redirect) {
-    if (event.resultingClientId) documents.set(event.resultingClientId, { session: session.id, guest });
+    arrived(event, session, guest);
     if (html) bytes = withAgent(bytes, session);
     // The pad's frame, and only after the last redirect: that is where it ended up.
     if (page) tell(session, { type: "pad-preview:navigate", session: session.id, guest, path });
@@ -462,12 +579,15 @@ function notice(session, guest, path, page, status, title, detail) {
  * When the worker has nothing of any pad: no pad is open, or the browser
  * stopped this worker and started it again, and every route it held is gone.
  * In the pad's frame, the pad hears this and sets them up again.
+ *
+ * Also a navigation no session can be shown to own, said as `why`. A frame
+ * nested in a page has no pad above it to reconnect, so it says that instead.
  */
-function lost() {
+function lost(why = "Nothing is being previewed here. A preview lasts as long as the pad that started it is open.") {
   const html = `<!doctype html><meta charset="utf-8"><title>No preview</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;color:#666;margin:3rem 2rem;max-width:36rem}</style>
-<p id="m">Nothing is being previewed here. A preview lasts as long as the pad that started it is open.</p>
-<script>if (parent !== window) { document.getElementById("m").textContent = "Reconnecting the preview…"; parent.postMessage({ type: "pad-page:lost" }, "*"); }</script>`;
+<p id="m">${escape(why)}</p>
+<script>if (parent !== window && parent === top) { document.getElementById("m").textContent = "Reconnecting the preview…"; parent.postMessage({ type: "pad-page:lost" }, "*"); }</script>`;
   return new Response(html, { status: 503, headers: isolated({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }) });
 }
 
