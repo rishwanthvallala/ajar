@@ -19,7 +19,7 @@ mod ws;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, DefaultBodyLimit, Path, State};
+use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
@@ -48,7 +48,8 @@ use crate::session::Registry;
 /// arrived at once. Four of them exceed the service's own `MemoryMax=512M`.
 const MAX_PAD_HTTP_BODY: usize = 33 * 1024 * 1024;
 
-/// Pad writes read off the wire at once.
+/// Pad writes parsed and stored at once, and in whole bodies, what every body
+/// being read off the wire may hold between them ([`PAD_BODY_BUDGET`]).
 ///
 /// The body limit bounds one request; this bounds the sum. Without it the two
 /// numbers that matter are unrelated — any limit times any concurrency is an
@@ -56,21 +57,65 @@ const MAX_PAD_HTTP_BODY: usize = 33 * 1024 * 1024;
 /// the OOM killer.
 ///
 /// A queue rather than a refusal, because waiting a moment is invisible and
-/// being told "busy" is not. Requests wait *before* their body is read, so
-/// queuing costs a connection rather than a body.
+/// being told "busy" is not — though not one with no end ([`PAD_WRITE_WAIT`]).
+///
+/// It was a permit taken *before* the body was read, held while it arrived:
+/// two uploads that sent their headers and then nothing more held both, and
+/// every save behind them waited for as long as they cared to (audit B04).
+/// Now a body takes room in [`PAD_BODY_BUDGET`] as its bytes arrive, so one
+/// that has stopped holds only what it sent, and only for [`BODY_IDLE`]; and
+/// the permit is taken once the body is in, for parsing and storing it,
+/// which waits on nobody's network.
 ///
 /// Two since pads went to 60 MiB (it was four at 25): the assertion below is
 /// what the two numbers have to satisfy together.
 const MAX_CONCURRENT_PAD_WRITES: usize = 2;
 
+/// Bytes of request bodies the relay holds at once — pad writes and kept runs,
+/// arriving or being stored — taken as they arrive and given back when the
+/// request is done with them: as much as [`MAX_CONCURRENT_PAD_WRITES`] bodies
+/// of the largest size, or any number of smaller ones adding up to the same.
+const PAD_BODY_BUDGET: usize = MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES;
+
 // These two are only meaningful together, and the unit file's MemoryMax=512M is
 // what they have to fit inside — along with every session, outbox and snapshot
 // the relay is also holding. Raising either one alone is how a limit stops being
 // one, so the product is stated here rather than left to be worked out after an
-// OOM. A write holds its body and the text parsed from it, so twice the body
-// each: 132 MiB against 512 MiB leaves room for the rest of the process. What
-// the store does with a write after that streams, whatever the file's size.
-const _: () = assert!(MAX_PAD_HTTP_BODY * 2 * MAX_CONCURRENT_PAD_WRITES < 256 * 1024 * 1024);
+// OOM. Every body held is inside the budget, and only a write with a permit
+// parses its body into text no bigger than it, so bodies and text together
+// are at most twice the budget: 132 MiB against 512 MiB leaves room for the
+// rest of the process. What the store does with a write after that streams,
+// whatever the file's size. The changes and edits a body may hold are capped
+// as it is parsed (`pad::MAX_WRITES`, `pad::MAX_EDITS`), so what they cost as
+// structures is a few hundred kilobytes, not a multiple of the body.
+const _: () = assert!(PAD_BODY_BUDGET * 2 < 256 * 1024 * 1024);
+
+/// How long a request body may go with nothing arriving before it is refused
+/// with 408 and lets go of what it held. A client that has stopped part-way
+/// through an upload is not going to finish it; one on a slow network still
+/// sends something every few seconds, and the page's own deadline for a
+/// write is 30 seconds and more for its size.
+const BODY_IDLE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The longest any request body may take, however it trickles in: a byte
+/// every few seconds would otherwise hold its connection, and what it had
+/// sent, for good. Ten minutes is a 24 MiB request — the most the page sends
+/// in one — at 40 KiB a second, and the page itself waits for one at 50 KB a
+/// second (`writeOnce` in pad/src/store.ts).
+const BODY_LONGEST: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// How long a write waits for room — for its body's bytes in
+/// [`PAD_BODY_BUDGET`], or for a permit once they are in — before it is told
+/// the server is busy, which the page tries again after. A permit is held for
+/// parsing and storing only, a second at most even for the largest write, so
+/// this is a long queue.
+const PAD_WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The largest body a kept run is read from: [`pad::LAST_RUN_MAX`] of output
+/// whose every byte is a control character six bytes long as JSON, and its
+/// command and path. It took axum's default of 2 MB.
+const MAX_RUN_HTTP_BODY: usize = 256 * 1024;
+const _: () = assert!(pad::LAST_RUN_MAX * 6 + 16 * 1024 < MAX_RUN_HTTP_BODY);
 
 /// Pad reads being streamed at once, from every caller together.
 ///
@@ -181,9 +226,14 @@ struct AppState {
     registry: Arc<Registry>,
     quota: Arc<quota::Quota>,
     pads: Arc<Store>,
-    /// Bounds how many pad bodies are being read at once. See
+    /// Bounds how many pad writes are parsed and stored at once. See
     /// [`MAX_CONCURRENT_PAD_WRITES`].
     writing: Arc<tokio::sync::Semaphore>,
+    /// Bytes of request bodies held at once, one permit a byte. See
+    /// [`PAD_BODY_BUDGET`].
+    receiving: Arc<tokio::sync::Semaphore>,
+    /// [`BODY_IDLE`], as a field so a test can reach it in a moment.
+    body_idle: std::time::Duration,
     /// Bounds how many pads are being streamed out at once. See
     /// [`MAX_CONCURRENT_PAD_READS`].
     reading: Arc<tokio::sync::Semaphore>,
@@ -290,6 +340,8 @@ async fn main() -> anyhow::Result<()> {
         quota: Arc::new(quota::Quota::new()),
         pads: pads.clone(),
         writing: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_WRITES)),
+        receiving: Arc::new(tokio::sync::Semaphore::new(PAD_BODY_BUDGET)),
+        body_idle: BODY_IDLE,
         reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
         growth: Arc::new(quota::Growth::new(args.pad_growth_per_address)),
         trust_forwarded: args.trust_forwarded_for,
@@ -409,15 +461,15 @@ fn router(state: AppState, web: Option<&str>) -> Router {
         .route("/healthz", get(health))
         .route("/install.sh", get(install_script))
         .route("/run.sh", get(run_script))
-        .route(
-            "/api/pad/{name}",
-            get(read_pad)
-                .put(write_pad)
-                .layer(DefaultBodyLimit::max(MAX_PAD_HTTP_BODY)),
-        )
+        // A write's body is read by `receive`, which keeps to
+        // `MAX_PAD_HTTP_BODY` itself: no extractor reads it, so a
+        // `DefaultBodyLimit` here would limit nothing.
+        .route("/api/pad/{name}", get(read_pad).put(write_pad))
         .route("/api/unfurl/{name}", get(unfurl))
         .route("/api/pad/{name}/history", get(history).post(keep_version))
         .route("/api/pad/{name}/history/{id}", get(version))
+        // Read by `receive`, which keeps to `MAX_RUN_HTTP_BODY`; the
+        // default limit is for extractors, and none reads this body.
         .route("/api/pad/{name}/run", get(last_run).put(keep_last_run))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
@@ -485,6 +537,9 @@ struct PadBody {
 
 #[derive(serde::Deserialize)]
 struct WriteBody {
+    /// Kept to what a request may hold as they are read, so a body of
+    /// millions costs no more than the most there may be: see `pad::writes`.
+    #[serde(deserialize_with = "pad::writes")]
     writes: Vec<pad::Write>,
 }
 
@@ -497,7 +552,10 @@ struct Wrote {
 
 fn refuse(e: pad::Error) -> (StatusCode, String) {
     let code = match e {
-        pad::Error::TooBig { .. } | pad::Error::TooManyFiles => StatusCode::PAYLOAD_TOO_LARGE,
+        pad::Error::TooBig { .. }
+        | pad::Error::TooManyFiles
+        | pad::Error::TooManyWrites
+        | pad::Error::TooManyEdits => StatusCode::PAYLOAD_TOO_LARGE,
         // Not the request's fault and worth retrying, which is what this status
         // means and what PAYLOAD_TOO_LARGE would wrongly deny.
         pad::Error::StoreFull => StatusCode::INSUFFICIENT_STORAGE,
@@ -703,8 +761,19 @@ async fn keep_last_run(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
-    Json(run): Json<pad::LastRun>,
+    body: axum::body::Body,
 ) -> axum::response::Response {
+    // Read as a write's body is, within the same budget and deadlines — it
+    // took no permit, but nothing bounded how many arrived at once, or how
+    // slowly.
+    let received = match receive(&state, &headers, body, MAX_RUN_HTTP_BODY).await {
+        Ok(received) => received,
+        Err(refused) => return refused.into_response(),
+    };
+    let run = match received.parse::<pad::LastRun>() {
+        Ok(run) => run,
+        Err(refused) => return refused.into_response(),
+    };
     if let Err(refused) = pad_access(
         &state,
         &headers,
@@ -1069,33 +1138,183 @@ fn stream_json(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// A permit to read one pad body.
+/// A request body read off the wire, and the room it holds in
+/// [`PAD_BODY_BUDGET`] until this is dropped — which the caller does when it
+/// is done with what it parsed from it, not when the bytes are parsed.
+struct Received {
+    bytes: axum::body::Bytes,
+    _held: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Received {
+    /// The body as JSON, refused as axum's `Json` would refuse it: 400 for
+    /// what is not JSON, 422 for JSON of the wrong shape.
+    fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, (StatusCode, String)> {
+        Json::<T>::from_bytes(&self.bytes)
+            .map(|Json(value)| value)
+            .map_err(|rejection| (rejection.status(), rejection.body_text()))
+    }
+}
+
+/// A JSON request body of at most `limit` bytes, read before anything waits
+/// on a write permit and taking room in [`PAD_BODY_BUDGET`] as its bytes
+/// arrive (see [`MAX_CONCURRENT_PAD_WRITES`]). Refused with 408 when nothing
+/// arrives for [`BODY_IDLE`] or all of it has not within [`BODY_LONGEST`],
+/// 413 past `limit` — said before a byte is read when the declared length
+/// is already over — and 503 when no room is free within [`PAD_WRITE_WAIT`].
 ///
-/// An extractor rather than something the handler takes for itself, because
-/// where it runs is the whole point: extractors that do not touch the body run
-/// first, so this waits *before* 51 MiB is pulled off the wire. Taken inside the
-/// handler it would bound nothing — the memory is already spent by then.
-struct WritePermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
+/// Room is taken a chunk at a time rather than for the declared length at
+/// the start, because a declared length costs nothing to send: two requests
+/// claiming 33 MiB and sending none of it would hold the whole budget, which
+/// is the stall this replaced. The price is that two large bodies arriving
+/// together into a nearly full budget can each wait on the room the other
+/// holds; the one that has waited longest gives up first, with a 503 the page
+/// tries again after, and the other goes on.
+async fn receive(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<Received, (StatusCode, String)> {
+    use futures_util::StreamExt;
 
-impl axum::extract::FromRequestParts<AppState> for WritePermit {
-    type Rejection = (StatusCode, String);
+    if !json_content_type(headers) {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Expected request with `Content-Type: application/json`".to_string(),
+        ));
+    }
+    let too_big = || {
+        let most = if limit >= 1024 * 1024 {
+            format!("{} MB", limit / (1024 * 1024))
+        } else {
+            format!("{} KB", limit / 1024)
+        };
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("this request is bigger than the {most} one may be"),
+        )
+    };
+    let shutting_down = || {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is shutting down".to_string(),
+        )
+    };
+    let declared = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|n| n > limit as u64) {
+        return Err(too_big());
+    }
 
-    async fn from_request_parts(
-        _parts: &mut axum::http::request::Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        state
-            .writing
-            .clone()
-            .acquire_owned()
-            .await
-            .map(WritePermit)
-            .map_err(|_| {
-                (
+    let mut held = state
+        .receiving
+        .clone()
+        .acquire_many_owned(0)
+        .await
+        .map_err(|_| shutting_down())?;
+    // The chunks as they came, joined once at the end: grown in place, the
+    // buffer would be up to twice what arrived, and the budget counts what
+    // arrived.
+    let mut chunks = Vec::new();
+    let mut total = 0usize;
+    let mut stream = body.into_data_stream();
+    let longest = tokio::time::Instant::now() + BODY_LONGEST;
+    loop {
+        let wait = (tokio::time::Instant::now() + state.body_idle).min(longest);
+        let chunk = match tokio::time::timeout_at(wait, stream.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(None) => break,
+            Ok(Some(Err(e))) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("the request's body did not arrive whole: {e}"),
+                ))
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::REQUEST_TIMEOUT,
+                    "the rest of this request never arrived — try again".to_string(),
+                ))
+            }
+        };
+        total += chunk.len();
+        if total > limit {
+            return Err(too_big());
+        }
+        // `total` is at most `limit`, a few tens of MiB, so it fits.
+        let room = tokio::time::timeout(
+            PAD_WRITE_WAIT,
+            state
+                .receiving
+                .clone()
+                .acquire_many_owned(chunk.len() as u32),
+        )
+        .await;
+        match room {
+            Ok(Ok(room)) => held.merge(room),
+            Ok(Err(_)) => return Err(shutting_down()),
+            Err(_) => {
+                return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "the server is shutting down".to_string(),
-                )
-            })
+                    "the server is busy saving other pads — try again in a moment".to_string(),
+                ))
+            }
+        }
+        chunks.push(chunk);
+    }
+    let bytes = match chunks.len() {
+        0 => axum::body::Bytes::new(),
+        1 => chunks.pop().expect("one chunk"),
+        _ => {
+            let mut joined = Vec::with_capacity(total);
+            for chunk in chunks.drain(..) {
+                joined.extend_from_slice(&chunk);
+            }
+            joined.into()
+        }
+    };
+    Ok(Received { bytes, _held: held })
+}
+
+/// Whether the request says its body is JSON, as axum's `Json` asks:
+/// `application/json`, or any `application/…+json`.
+fn json_content_type(headers: &axum::http::HeaderMap) -> bool {
+    let Some(value) = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json"
+        || (essence.starts_with("application/") && essence.ends_with("+json"))
+}
+
+/// One of the [`MAX_CONCURRENT_PAD_WRITES`] permits to parse and store a
+/// write, waiting at most [`PAD_WRITE_WAIT`] for it. Taken once the body is
+/// in: it was taken before, and held while the body arrived, however slowly
+/// (audit B04).
+async fn write_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, (StatusCode, String)> {
+    match tokio::time::timeout(PAD_WRITE_WAIT, state.writing.clone().acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is shutting down".to_string(),
+        )),
+        Err(_) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is busy saving other pads — try again in a moment".to_string(),
+        )),
     }
 }
 
@@ -1104,9 +1323,11 @@ async fn write_pad(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
-    _permit: WritePermit,
-    Json(body): Json<WriteBody>,
+    body: axum::body::Body,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
+    let received = receive(&state, &headers, body, MAX_PAD_HTTP_BODY).await?;
+    let _permit = write_permit(&state).await?;
+    let body: WriteBody = received.parse()?;
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Writing needs an edit link or the pad itself; viewing is not enough.
     // An anonymous pad lets everyone write, as it always has.

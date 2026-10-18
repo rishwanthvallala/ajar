@@ -84,6 +84,8 @@ impl Relay {
             writing: Arc::new(tokio::sync::Semaphore::new(
                 crate::MAX_CONCURRENT_PAD_WRITES,
             )),
+            receiving: Arc::new(tokio::sync::Semaphore::new(crate::PAD_BODY_BUDGET)),
+            body_idle: crate::BODY_IDLE,
             reading: Arc::new(tokio::sync::Semaphore::new(crate::MAX_CONCURRENT_PAD_READS)),
             growth: Arc::new(crate::quota::Growth::new(u64::MAX)),
             trust_forwarded: false,
@@ -800,4 +802,242 @@ async fn a_write_refused_for_one_file_says_which() {
         relay.state.pads.get("p").unwrap().is_none(),
         "part of a refused write was stored"
     );
+}
+
+// ------------------------------------ B04: a body that stops holds up nobody
+
+/// A body that sends `sent` and then nothing, for ever: a client that
+/// stopped part-way through an upload.
+fn stalled(sent: &str) -> Body {
+    let sent = axum::body::Bytes::from(sent.to_string());
+    Body::from_stream(
+        futures_util::stream::once(async move { Ok::<_, std::io::Error>(sent) })
+            .chain(futures_util::stream::pending()),
+    )
+}
+
+/// `request` through the router in a task of its own, as from [`CALLER`]:
+/// the status it is answered with, whenever that is.
+fn send(relay: &Relay, mut request: Request<Body>) -> tokio::task::JoinHandle<StatusCode> {
+    request.extensions_mut().insert(ConnectInfo(CALLER));
+    let router = crate::router(relay.state.clone(), None);
+    tokio::spawn(async move { router.oneshot(request).await.unwrap().status() })
+}
+
+#[tokio::test]
+async fn uploads_that_stop_part_way_hold_up_no_save() {
+    // Audit B04: a write took one of the two write permits before reading
+    // its body, and held it while the body arrived. Two uploads that sent
+    // their headers and part of a body held both, for as long as they liked,
+    // and every save behind them waited.
+    let mut relay = Relay::new("");
+    relay.state.body_idle = std::time::Duration::from_millis(800);
+    let json = ("content-type", "application/json");
+    let stopped: Vec<_> = (0..crate::MAX_CONCURRENT_PAD_WRITES + 2)
+        .map(|i| {
+            send(
+                &relay,
+                request(
+                    "PUT",
+                    &format!("/api/pad/upload-{i}"),
+                    &[json, ("content-length", "1000000")],
+                    stalled(r#"{"writes":[{"path":"big.txt","content":"xxxx"#),
+                ),
+            )
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(stopped.iter().all(|upload| !upload.is_finished()));
+
+    // Answered while they are still stuck, well inside the time they have.
+    let saved = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        relay.call(write(
+            "p",
+            &[],
+            serde_json::json!([{ "path": "a.txt", "content": "hello" }]),
+        )),
+    )
+    .await
+    .expect("a save waited behind uploads that had stopped");
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+
+    // They are told, and let go of everything they held.
+    for upload in stopped {
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), upload)
+            .await
+            .expect("an upload that stopped was never cut off")
+            .unwrap();
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+    }
+    assert_eq!(
+        relay.state.receiving.available_permits(),
+        crate::PAD_BODY_BUDGET
+    );
+    assert_eq!(
+        relay.state.writing.available_permits(),
+        crate::MAX_CONCURRENT_PAD_WRITES
+    );
+    assert!(relay.state.pads.get("upload-0").unwrap().is_none());
+
+    // A kept run is read the same way.
+    let run = send(
+        &relay,
+        request(
+            "PUT",
+            "/api/pad/p/run",
+            &[json, ("content-length", "5000")],
+            stalled(r#"{"path":"a.txt","command":"cat a.txt","exit":0,"output":"hel"#),
+        ),
+    );
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("a kept run that stopped was never cut off")
+        .unwrap();
+    assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+
+    // And a body that says it is too big is refused before any of it is
+    // read, not waited for.
+    let declared = (crate::MAX_PAD_HTTP_BODY + 1).to_string();
+    let huge = send(
+        &relay,
+        request(
+            "PUT",
+            "/api/pad/p",
+            &[json, ("content-length", &declared)],
+            stalled("{"),
+        ),
+    );
+    let status = tokio::time::timeout(std::time::Duration::from_millis(500), huge)
+        .await
+        .expect("a body declared too big was read anyway")
+        .unwrap();
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn a_write_body_is_still_refused_as_json_was() {
+    // Read by hand now rather than by axum's `Json`, so what it said about
+    // a body that is not JSON, or not ours, is checked here.
+    let relay = Relay::new("");
+    let plain = relay
+        .call(request(
+            "PUT",
+            "/api/pad/p",
+            &[("content-type", "text/plain")],
+            Body::from(r#"{"writes":[]}"#),
+        ))
+        .await;
+    assert_eq!(plain.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let json = ("content-type", "application/json; charset=utf-8");
+    for (body, status) in [
+        ("{not json", StatusCode::BAD_REQUEST),
+        (r#"{"writes":"no"}"#, StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            r#"{"writes":[{"path":"a.txt","content":"x"}]}"#,
+            StatusCode::OK,
+        ),
+    ] {
+        let answer = relay
+            .call(request("PUT", "/api/pad/p", &[json], Body::from(body)))
+            .await;
+        assert_eq!(answer.status, status, "{body}: {}", answer.body);
+    }
+    // Arriving in many pieces is the same body.
+    let pieces = futures_util::stream::iter(
+        [
+            r#"{"writes":[{"pa"#,
+            r#"th":"b.txt","con"#,
+            r#"tent":"y"}]}"#,
+        ]
+        .map(|p| Ok::<_, std::io::Error>(axum::body::Bytes::from(p))),
+    );
+    let answer = relay
+        .call(request(
+            "PUT",
+            "/api/pad/p",
+            &[json],
+            Body::from_stream(pieces),
+        ))
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(
+        relay.state.pads.get("p").unwrap().unwrap().files["b.txt"].content,
+        "y"
+    );
+}
+
+// --------------------------------- B10: how much one request may ask for
+
+#[tokio::test]
+async fn a_save_of_more_changes_than_one_may_make_is_refused() {
+    // Audit B10: nothing bounded how many changes one request made but its
+    // 33 MiB body, and each was compared with every one after it while the
+    // write held a permit: 8,000 deletions of files that did not exist took
+    // one and a half seconds, and these 200,000 would have taken a quarter
+    // of an hour.
+    let relay = Relay::new("");
+    let deletions = |n: usize| {
+        serde_json::Value::Array(
+            (0..n)
+                .map(|i| serde_json::json!({ "path": format!("gone/{i}.txt") }))
+                .collect(),
+        )
+    };
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        relay.call(write("p", &[], deletions(200_000))),
+    )
+    .await
+    .expect("200,000 changes in one request were worked through");
+    assert_eq!(
+        answer.status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        answer.body
+    );
+    assert!(
+        answer.body.contains(&crate::pad::MAX_WRITES.to_string()),
+        "{}",
+        answer.body
+    );
+    // The most one may make is taken.
+    let most = relay
+        .call(write("p", &[], deletions(crate::pad::MAX_WRITES)))
+        .await;
+    assert_eq!(most.status, StatusCode::OK, "{}", most.body);
+
+    // So many edits to one file, or to a request's files together.
+    let edits = |n: usize| {
+        serde_json::Value::Array(
+            (0..n)
+                .map(|i| serde_json::json!({ "at": i, "remove": 0, "insert": "" }))
+                .collect(),
+        )
+    };
+    let base = "0".repeat(64);
+    let one = relay
+        .call(write(
+            "p",
+            &[],
+            serde_json::json!([{
+                "path": "a.txt", "content": null, "base": base,
+                "edits": edits(crate::pad::MAX_EDITS + 1),
+            }]),
+        ))
+        .await;
+    assert_eq!(one.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", one.body);
+    assert!(one.body.contains("edits"), "{}", one.body);
+    let files = serde_json::Value::Array(
+        (0..crate::pad::MAX_EDITS_PER_REQUEST / crate::pad::MAX_EDITS + 1)
+            .map(|f| {
+                serde_json::json!({
+                    "path": format!("f{f}.txt"), "content": null, "base": base,
+                    "edits": edits(crate::pad::MAX_EDITS),
+                })
+            })
+            .collect(),
+    );
+    let all = relay.call(write("p", &[], files)).await;
+    assert_eq!(all.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", all.body);
 }

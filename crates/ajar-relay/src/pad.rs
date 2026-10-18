@@ -228,6 +228,11 @@ pub enum Error {
         bytes: usize,
     },
     TooManyFiles,
+    /// More changes in one request than [`MAX_WRITES`].
+    TooManyWrites,
+    /// More edits to one file than [`MAX_EDITS`], or to a request's files
+    /// together than [`MAX_EDITS_PER_REQUEST`].
+    TooManyEdits,
     /// Every pad together is at the ceiling. Nothing to do with *this* pad.
     StoreFull,
     /// This write would add more than the caller's address has left for the
@@ -256,6 +261,13 @@ impl Error {
                 MAX_BYTES / (1024 * 1024)
             ),
             Error::TooManyFiles => format!("a pad holds at most {MAX_FILES} files"),
+            Error::TooManyWrites => {
+                format!("one save changes at most {MAX_WRITES} files — send the rest in another")
+            }
+            Error::TooManyEdits => format!(
+                "one save makes at most {MAX_EDITS} edits to a file and {MAX_EDITS_PER_REQUEST} \
+                 in all — send the file whole instead"
+            ),
             // Deliberately says it is not the caller's fault. Somebody who has
             // just pasted four lines and been refused should not go looking for
             // what is wrong with their four lines.
@@ -452,8 +464,100 @@ pub struct Write {
     /// The hash of the stored file `edits` apply to.
     #[serde(default)]
     pub base: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "edits")]
     pub edits: Option<Vec<Edit>>,
+}
+
+/// Changes one request may make: files written, edited or removed.
+///
+/// The page sends at most twice [`MAX_FILES`] in one — every file a pad holds
+/// removed and as many put in its place, a command that replaced everything —
+/// so this is twice that again. Nothing bounded it before but the 33 MiB
+/// body, which holds 2.6 million `{"path":"a"}`: each parsed into a struct
+/// ten times its size, and each compared with every one after it while the
+/// write held one of the relay's two write permits (audit B10).
+pub const MAX_WRITES: usize = 4 * MAX_FILES;
+
+/// Edits one change may make to its file. The page sends one — what it
+/// works out between the text the store has and the text it has (carry.ts),
+/// and each later part of a file too big for one request — so this is room
+/// for a client that sends every keystroke, not a figure the page reaches.
+pub const MAX_EDITS: usize = 1_000;
+
+/// Edits one request may make, its files together: ten files at the most one
+/// may take, and twenty times what the page sends when a command has touched
+/// every text file a pad holds.
+pub const MAX_EDITS_PER_REQUEST: usize = 10 * MAX_EDITS;
+
+/// A file's edits as they arrive, kept no further than one past
+/// [`MAX_EDITS`]: the rest are read and dropped, so a write with a million
+/// costs what one with a thousand does, and is refused by its length
+/// ([`Store::write_within`]) as if every one had been kept.
+fn edits<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Edit>>, D::Error> {
+    Option::<Edits>::deserialize(d).map(|e| e.map(|e| e.0))
+}
+
+/// A request's writes as they arrive, kept no further than one past
+/// [`MAX_WRITES`], or than the write whose edits take the request past
+/// [`MAX_EDITS_PER_REQUEST`]: whichever comes first. What is not kept is read
+/// and dropped. A list cut short is always one the store refuses — it is
+/// longer than a request may be, or has more edits — so nothing is applied
+/// in part.
+pub fn writes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Write>, D::Error> {
+    struct Visit;
+    impl<'de> serde::de::Visitor<'de> for Visit {
+        type Value = Vec<Write>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of writes")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut kept = Vec::new();
+            let mut edits = 0usize;
+            while kept.len() <= MAX_WRITES && edits <= MAX_EDITS_PER_REQUEST {
+                let Some(w) = seq.next_element::<Write>()? else {
+                    return Ok(kept);
+                };
+                edits += w.edits.as_ref().map_or(0, Vec::len);
+                kept.push(w);
+            }
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(kept)
+        }
+    }
+    d.deserialize_seq(Visit)
+}
+
+/// A file's edits kept to one past [`MAX_EDITS`], the rest read and dropped.
+struct Edits(Vec<Edit>);
+
+impl<'de> Deserialize<'de> for Edits {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Edits;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of edits")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut kept = Vec::new();
+                while kept.len() <= MAX_EDITS {
+                    match seq.next_element()? {
+                        Some(edit) => kept.push(edit),
+                        None => return Ok(Edits(kept)),
+                    }
+                }
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(Edits(kept))
+            }
+        }
+        d.deserialize_seq(Visit)
+    }
 }
 
 fn utf8() -> Encoding {
@@ -1728,6 +1832,20 @@ impl Store {
         allowance: u64,
     ) -> Result<Written, Error> {
         check_name(name)?;
+        // Counted first, before anything is worked out for any of them. A
+        // list cut short as it was read (`writes`, `edits`) is over these by
+        // one, so it is refused here like the whole of it.
+        if writes.len() > MAX_WRITES {
+            return Err(Error::TooManyWrites);
+        }
+        let mut edits = 0usize;
+        for w in writes {
+            let n = w.edits.as_ref().map_or(0, Vec::len);
+            edits += n;
+            if n > MAX_EDITS || edits > MAX_EDITS_PER_REQUEST {
+                return Err(Error::TooManyEdits);
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         let mut edited = Vec::new();
         for w in writes {
@@ -1782,10 +1900,30 @@ impl Store {
         };
 
         // A file written twice in one request ends as the second; the first
-        // is not stored at all.
-        let last: Vec<bool> = (0..writes.len())
-            .map(|i| !writes[i + 1..].iter().any(|w| w.path == writes[i].path))
+        // is not stored at all. Found from where each path is written last,
+        // once through: it was every write against every one after it, which
+        // a request of a few thousand deletions made seconds of work while
+        // holding a write permit (audit B10).
+        let mut final_at: HashMap<&str, usize> = HashMap::with_capacity(writes.len());
+        for (i, w) in writes.iter().enumerate() {
+            final_at.insert(w.path.as_str(), i);
+        }
+        let last: Vec<bool> = writes
+            .iter()
+            .enumerate()
+            .map(|(i, w)| final_at[w.path.as_str()] == i)
             .collect();
+        // More files kept by this request alone than a pad may hold is too
+        // many whatever the pad has now: refused before a blob is staged for
+        // any of them, rather than after writing them all out.
+        let kept = writes
+            .iter()
+            .zip(&last)
+            .filter(|(w, &last)| last && (w.content.is_some() || w.edits.is_some()))
+            .count();
+        if kept > MAX_FILES {
+            return Err(Error::TooManyFiles);
+        }
 
         // Each new file's blob, written beside the store with nobody waiting:
         // a large file takes a while, and every pad's reads and saves wait on
@@ -2964,6 +3102,78 @@ mod tests {
             .map(|i| put(&format!("f{i}"), "x"))
             .collect();
         assert_eq!(s.write("p", &writes).err(), Some(Error::TooManyFiles));
+    }
+
+    #[test]
+    fn a_file_written_twice_in_one_request_ends_as_the_second() {
+        let (s, _d) = store();
+        s.write(
+            "p",
+            &[put("a", "1"), put("b", "2"), put("a", "3"), delete("b")],
+        )
+        .unwrap();
+        let pad = s.get("p").unwrap().unwrap();
+        assert_eq!(pad.files["a"].content, "3");
+        assert!(!pad.files.contains_key("b"));
+        // Put back after a removal in the same request, it stays.
+        s.write("p", &[delete("a"), put("a", "4")]).unwrap();
+        assert_eq!(s.get("p").unwrap().unwrap().files["a"].content, "4");
+        // And the files a request keeps are counted on their last write:
+        // the same path five hundred and one times is one file.
+        let same: Vec<Write> = (0..=MAX_FILES).map(|i| put("c", &i.to_string())).collect();
+        s.write("p", &same).unwrap();
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["c"].content,
+            MAX_FILES.to_string()
+        );
+    }
+
+    #[test]
+    fn a_request_is_read_no_further_than_it_may_go() {
+        // Audit B10: a request could hold millions of changes, each parsed
+        // into a struct many times its size. They are kept to one past the
+        // most a request may make, as they are read, and the store refuses
+        // a list that long as it would have refused the whole of it.
+        #[derive(Deserialize)]
+        struct Body {
+            #[serde(deserialize_with = "writes")]
+            writes: Vec<Write>,
+        }
+        let json = format!(
+            r#"{{"writes":[{}]}}"#,
+            vec![r#"{"path":"a"}"#; 50_000].join(",")
+        );
+        let body: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body.writes.len(), MAX_WRITES + 1);
+        let (s, _d) = store();
+        assert_eq!(s.write("p", &body.writes).err(), Some(Error::TooManyWrites));
+        assert_eq!(s.write("p", &body.writes[..MAX_WRITES]).err(), None);
+
+        // A file's edits, the same way.
+        let edits = vec![r#"{"at":0,"remove":0}"#; 5_000].join(",");
+        let w: Write =
+            serde_json::from_str(&format!(r#"{{"path":"a","base":"x","edits":[{edits}]}}"#))
+                .unwrap();
+        assert_eq!(w.edits.as_ref().map(Vec::len), Some(MAX_EDITS + 1));
+        assert_eq!(s.write("p", &[w]).err(), Some(Error::TooManyEdits));
+
+        // And a request's edits together: kept up to the write that takes
+        // them past the most, which is then refused.
+        let file = |f: usize| {
+            format!(
+                r#"{{"path":"f{f}","base":"x","edits":[{}]}}"#,
+                vec![r#"{"at":0,"remove":0}"#; MAX_EDITS].join(",")
+            )
+        };
+        let files: Vec<String> = (0..20).map(file).collect();
+        let body: Body =
+            serde_json::from_str(&format!(r#"{{"writes":[{}]}}"#, files.join(","))).unwrap();
+        assert_eq!(body.writes.len(), MAX_EDITS_PER_REQUEST / MAX_EDITS + 1);
+        assert_eq!(s.write("p", &body.writes).err(), Some(Error::TooManyEdits));
+        // And `null` for edits is still none at all.
+        let none: Write =
+            serde_json::from_str(r#"{"path":"a","content":"x","edits":null}"#).unwrap();
+        assert!(none.edits.is_none());
     }
 
     /// Set when a stored pad was last touched, as `ago` before now.
