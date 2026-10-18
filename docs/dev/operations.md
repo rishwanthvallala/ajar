@@ -37,14 +37,14 @@ and read the CI key from Parameter Store, and nothing more, and it checks the
 relay's host key against `deploy/known_hosts`.
 
 The pad's runtime packages are the one thing a runner cannot make — 1 GB, not
-in git, and partly the Java build's (`pad/scripts/build-java.mjs`, which takes
-containers and most of an hour). So the job takes them from the relay, which
+in git, and partly our own builds' — Java's (`pad/scripts/build-java.mjs`,
+which takes containers and most of an hour) and C++'s (`build-cxx.mjs`). So the job takes them from the relay, which
 serves exactly the ones deployed, cached between runs. That is right only while
 nothing has changed what they would be, so it deploys only when:
 
 - the relay names the commit it runs, a clean one this commit descends from;
-- nothing that makes the packages has changed since — the Java build, the
-  trim, `fetch-packages.mjs`, the service worker's pin;
+- nothing that makes the packages has changed since — the Java and C++
+  builds, the trim, `fetch-packages.mjs`, the service worker's pin;
 - and every package the code pins, at its version, is among them.
 
 Otherwise it deploys nothing and says why, as a warning on a green run:

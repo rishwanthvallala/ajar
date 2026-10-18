@@ -449,20 +449,22 @@ among them — serves its requests one after another instead.
 A server you start can be previewed by you, but it is not reachable from
 anywhere else.
 
-**C, Go, Java, JavaScript and PHP come the first time you use them.** Type
-`clang`, `go`, `java`, `node` or `php` — or press Run on a `.c`, `.go`, `.java`,
-`.js` or `.php` file — and the terminal says it is fetching that language, how
-big it is, and then runs your line: about 106 MB for C, 273 MB for Go, 66 for
-Java, 75 for Node and 82 for PHP before compression, the first time a tab uses
-it — so nobody who only writes Python pays for them. The terminal
+**C, C++, Go, Java, JavaScript and PHP come the first time you use them.** Type
+`clang`, `g++`, `go`, `java`, `node` or `php` — or press Run on a `.c`, `.cpp`,
+`.go`, `.java`, `.js` or `.php` file — and the terminal says it is fetching that
+language, how big it is, and then runs your line: about 106 MB for C, 20 for
+C++, 273 MB for Go, 66 for Java, 75 for Node and 82 for PHP before compression,
+the first time a tab uses it — so nobody who only writes Python pays for them. The terminal
 starts a fresh shell when one arrives; you stay in the same folder, with what
 you exported. Common Lisp is there the same way, as `repl`.
 
-Each has its limits. `gcc`, `g++` and `cc` are clang under those names.
-**C++ is C++ without its standard library**: classes, templates and the C
-headers (`<cstdio>`, `<cstring>`, `<cmath>`) compile, but `<iostream>`,
-`<vector>`, `<string>`, `<map>` and `<algorithm>` crash this compiler (exit
-27) or never finish — Run says so before it starts. JavaScript errors show
+Each has its limits. `gcc` and `cc` are clang under those names, for C.
+**C++ is clang 22 with libc++**, as `g++`, `c++` or `clang++`: the standard
+library — `<iostream>`, `<vector>`, `<string>`, `<map>`, `<algorithm>` and the
+rest — and exceptions, try and catch included; an exception nothing catches
+says what it was and ends the program, as it would anywhere. What it builds
+is a WASI program, run as `./a.out`; there are no threads in it, and a large
+exit status (100, say) comes back as 79. JavaScript errors show
 your program's frames as `<anonymous>:line:column`, without a file name, which
 this runtime's node does not give. Go runs with `go run`; `go mod init` works,
 but a Go program opens files by their full path (`/workspace/data.txt`) — a

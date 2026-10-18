@@ -412,7 +412,7 @@ likely name was then looked up too). So Java is a package of our own — see
 | | Package | As published | What works |
 |---|---|---|---|
 | C | `clang/clang` | 106 MB | compiling and running C, exit status (`syrusakbary/clang`, the same build, also 4/4); a C binary runs as often as it likes |
-| C++ | the same, `--driver-mode=g++` | — | lambdas, `<cstdio>`; `<iostream>` did not finish compiling in fifteen minutes, so Run says so first |
+| C++ | the same, `--driver-mode=g++` | — | lambdas, `<cstdio>`; `<iostream>` did not finish compiling in fifteen minutes. Since 18 October C++ is a package of our own — see [C++](#c) |
 | JavaScript | `wasmer/edgejs` | 75 MB | `node`, `npm`, `pnpm` — all ten checks |
 | PHP | `php/php` | 82 MB | all six checks |
 | Go | `golang/go@=1.25.5-wasix-1` | 273 MB | single-file programs through `go run`, given absolute paths — see below |
@@ -611,6 +611,65 @@ The licences: Ristretto and teavm-javac are Apache-2.0 (Ristretto also MIT);
 the class library and javac are GPLv2 with the Classpath Exception, the class
 library's notices in the package at `/usr/lib/jvm/java-25/legal`, the source of
 both at github.com/corretto/corretto-25, tag 25.0.4.10.1.
+
+### C++
+
+`clang++`, `g++` and `c++` are **clang 22 as YoWASP builds it** (yowasp.org,
+ISC; LLVM Apache-2.0 WITH LLVM-exception) with **wasi-sdk 34's libraries**,
+packed by `pad/scripts/build-cxx.mjs` as `ajar/cxx`: 98.9 MB, 19.4 MB zstd.
+C stays on the registry's `clang/clang`. Until 18 October C++ was that clang
+too, and it compiled C++ without its standard library and no more: the review
+of 17 October (H3) had `<vector>` crash it with exit 27, and `<iostream>` had
+not finished in fifteen minutes on the 12th.
+
+**Why it could not.** The registry's clang has wasm-ld's default stack:
+`__data_end` 2,416,336, `__stack_pointer` and `__heap_base` 2,481,872 —
+64 KiB. Parsing libc++'s headers recurses past that into the compiler's own
+data, so what happens next is whatever the overwritten memory says: `<utility>`
+ended in "out of bounds memory access" in 0.3 s, `<vector>` and `<iostream>`
+ran on past five minutes (measured 18 October, in the browser and under
+Wasmer's own CLI alike — not the browser's doing). The libraries were there,
+libc++ and all. The stack cannot be widened in place: the heap starts at its
+top, and that address is in the code as a constant.
+
+**What replaced it.** YoWASP's npm package is clang, clang++ and wasm-ld in
+one WASI preview 1 module (its `llvm.core.wasm`, before jco makes a component
+of it) with an 8 MiB stack, the stack first. Its own sysroot's libc++ has no
+exceptions, so a `throw` did not link; wasi-sdk's has, since 33, a second
+build with them, in `eh/` beside `noeh/` — which only clang 23's driver knows
+to choose between. So `/opt/cxx/sysroot` is wasi-sdk 34's `wasm32-wasip1` with
+the `eh` build's headers and `libc++`, `libc++abi` and `libunwind` where clang
+22 looks (and an empty `include/c++/v1`, without which clang adds no libc++
+include path at all), and `/opt/cxx/clang` is clang's own headers and builtins,
+less other machines' intrinsics. wasi-sdk 34 is LLVM 23; clang 22 compiles its
+headers. Both downloads are pinned by hash in `pad/scripts/cxx/pins.mjs`.
+
+**The steps.** A WASI module cannot start another, so the compiler cannot run
+the steps it plans. `tools/cxx.py`, which the three names are aliases to (as
+`go` is to `go.py`), asks it for them with `-###` and runs each — `cxx-llvm
+clang++ -cc1 …`, then `cxx-llvm wasm-ld …` — as YoWASP's own `runClang` does.
+Nor can it learn the shell's directory, so it is told (`-working-directory`)
+and source files stay as typed, which is how an error names them; the output,
+`-I`, `-L` and objects are made absolute. Every program is compiled with
+`-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false` and linked with
+`-lunwind`: WebAssembly's exception handling, in the standard instructions the
+libraries use, so try and catch work.
+
+**An exception nothing catches** leaves `main`, under WebAssembly's exception
+handling, as a trap: `std::terminate` is never called, and a program ended
+with status 11 and not a word. Every program is linked with a wrapper around
+wasi-libc's `__main_void` (`-Wl,--wrap=__main_void`, compiled once a session
+into `/tmp/.cxx`), which says `terminate called after throwing an instance of
+'std::runtime_error'` and its `what()`, as a native program does, and exits 1.
+Not 134: this runtime reports a WASI program's status as 79 past a few dozen
+(100 and 134 both came out as 79; 3 as 3).
+
+**Measured** in the browser that day, with the package from the mirror: the
+first `clang++` of a program using `<vector>`, `<map>`, `<string>`,
+`<algorithm>` and `<iostream>` 3.0 s with the fetch, 1.4 s to compile; again
+with `-O1`, 1.0 s. It read stdin, caught `std::out_of_range`, and printed what
+it should. What it builds is a WASI program, 3.8 MB for that one with libc++
+static in it.
 
 ## The shell, and detecting when a command ends
 
@@ -1403,7 +1462,8 @@ writes them with a tab per level and gives them the editor's indent; each
 prints the same two things, so one that runs is easy to tell. Java's class
 is named after the file when the name can be a class's, and otherwise is a
 `class Main` that is not public, which `javac` and `java File.java` both take.
-C++'s uses `<cstdio>`, since `<iostream>` does not finish compiling here. Each
+C++'s uses `<iostream>`, `<string>` and `<vector>`, since 18 October (it was
+`<cstdio>`, while C++ was the registry's clang). Each
 runnable one is run by `PAD_LANGUAGES=1 user-check.mjs`; Python's by every
 run.
 
