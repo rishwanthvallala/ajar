@@ -154,6 +154,22 @@ async function main() {
     assert(!requests.some((url) => /\/api\/|\/ws(?:$|\?)|\/vendor\/wasmer|\/public\/packages\//.test(url)), "fixture makes no backend/runtime/package request");
     assert.deepEqual(errors, []);
 
+    // A phone on its side: the files a drawer, the editor and the terminal
+    // side by side, each the screen's height — one above the other, the
+    // terminal had two rows (verification of 18 October).
+    {
+      const phone = await browser.newPage({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+      await phone.goto(`${base}/?preview=workspace`);
+      await phone.locator(".pad-shell").waitFor();
+      await settled(phone);
+      const at = (sel) => phone.locator(sel).boundingBox();
+      const [editor, terminal] = [await at("#viewer-pane"), await at(".terminals")];
+      assert.equal(await phone.locator("#sidebar").isVisible(), false, "a landscape phone's files are a drawer");
+      assert(Math.abs(editor.y - terminal.y) < 2 && terminal.x >= editor.x + editor.width - 2, `editor and terminal side by side on a landscape phone: ${JSON.stringify({ editor, terminal })}`);
+      assert(terminal.height > 200 && terminal.width > 380, `the terminal has room on a landscape phone: ${JSON.stringify(terminal)}`);
+      await phone.close();
+    }
+
     if (output) {
       fs.mkdirSync(output, { recursive: true });
       await page.setViewportSize({ width: 1440, height: 900 });

@@ -115,6 +115,15 @@ body { background: var(--bg); color: var(--ink); }
 @media (max-height: 30rem) and (orientation: landscape) {
   .pad-shell :is(.viewer-head, .terminal-head) { min-height: 2rem; padding-block: 0.1rem; }
 }
+/* And on a touch screen, the editor and the terminal side by side, each the
+   screen's height: one above the other, the terminal still had two rows
+   (verification of 18 October). Not for a zoomed desktop window of the same
+   shape, which keeps its splitter. */
+@media (max-height: 30rem) and (orientation: landscape) and (pointer: coarse) {
+  .shell.pad-shell .main { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1px; background: var(--rule); }
+  .shell.pad-shell .main > .splitter { display: none; }
+  .shell.pad-shell .main > :is(.viewer, .terminals) { grid-row: 1; min-width: 0; }
+}
 /* A name typed into the tree, where the thing will be; what is wrong with it under it. */
 .pad-shell .row.naming { cursor: default; overflow: visible; padding-right: 0.5rem; }
 .pad-shell .row.naming:hover { background: transparent; }
