@@ -706,3 +706,66 @@ async fn a_hello_too_big_to_be_one_is_refused_unread() {
     let answer = knock(addr, &[], &encoded(&peer_hello("open-pad"))).await;
     assert!(welcomed(&answer), "{answer:?}");
 }
+
+// ------------------------------------------------------------------ links
+
+#[tokio::test]
+async fn a_link_is_for_viewing_or_editing_and_nothing_else() {
+    // Asked for an owner link, or a link to nothing, the API minted a view
+    // link and said it had made what was asked.
+    let relay = Relay::new("");
+    let (owner, cookie) = relay.signed_in("1");
+    let pad = relay.owned_pad(owner, View::Code, Edit::Code);
+    let before = relay
+        .state
+        .accounts
+        .pad_of(owner, &pad.name)
+        .unwrap()
+        .links
+        .len();
+    let links = format!("/api/my/pads/{}/links", pad.name);
+    let ask = |role: &str, replace: bool| {
+        request(
+            "POST",
+            &links,
+            &[
+                ("cookie", &cookie),
+                ("x-ajar", "1"),
+                ("content-type", "application/json"),
+            ],
+            Body::from(serde_json::json!({ "role": role, "replace": replace }).to_string()),
+        )
+    };
+    for role in ["owner", "none"] {
+        for replace in [false, true] {
+            let answer = relay.call(ask(role, replace)).await;
+            assert_eq!(
+                answer.status,
+                StatusCode::BAD_REQUEST,
+                "{role} (replace: {replace}): {}",
+                answer.body
+            );
+        }
+    }
+    assert_eq!(
+        relay
+            .state
+            .accounts
+            .pad_of(owner, &pad.name)
+            .unwrap()
+            .links
+            .len(),
+        before,
+        "a link was made, or one revoked, all the same"
+    );
+    for role in ["viewer", "editor"] {
+        let answer = relay.call(ask(role, false)).await;
+        assert_eq!(
+            answer.status,
+            StatusCode::CREATED,
+            "{role}: {}",
+            answer.body
+        );
+        assert_eq!(answer.json()["role"], role);
+    }
+}

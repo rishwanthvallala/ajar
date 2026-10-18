@@ -276,6 +276,8 @@ pub enum AccountError {
     NameTaken(String),
     /// A chosen name that is not one: what is wrong with it.
     BadName(String),
+    /// A link asked for with a role no link carries: only viewer and editor.
+    NotALinkRole,
     Db(String),
 }
 
@@ -295,6 +297,9 @@ impl AccountError {
             ),
             AccountError::NameTaken(name) => format!("{name} is taken — pick another name"),
             AccountError::BadName(why) => why.clone(),
+            AccountError::NotALinkRole => {
+                "a link lets people view a pad or edit it — ask for viewer or editor".into()
+            }
             AccountError::Db(e) => format!("the account store failed: {e}"),
         }
     }
@@ -689,11 +694,12 @@ impl Accounts {
         replace: bool,
     ) -> Result<Link, AccountError> {
         self.owned(owner, name)?;
-        let role = if role == Role::Editor {
-            Role::Editor
-        } else {
-            Role::Viewer
-        };
+        // Refused rather than read as viewer, which is what an owner link or
+        // a link to nothing used to become — reported back as made, and with
+        // `replace`, every view link revoked for it.
+        if !matches!(role, Role::Viewer | Role::Editor) {
+            return Err(AccountError::NotALinkRole);
+        }
         let code = new_secret();
         let mut db = self.db.lock();
         let db = db.transaction()?;
@@ -1449,6 +1455,25 @@ mod tests {
         assert!(a
             .replace_link(person(&a, "2"), &pad.name, Role::Editor)
             .is_err());
+    }
+
+    #[test]
+    fn a_link_views_or_edits_and_is_never_anything_else() {
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
+        for role in [Role::Owner, Role::None] {
+            assert_eq!(
+                a.new_link(me, &pad.name, role).err(),
+                Some(AccountError::NotALinkRole)
+            );
+            assert_eq!(
+                a.replace_link(me, &pad.name, role).err(),
+                Some(AccountError::NotALinkRole)
+            );
+        }
+        let links = a.pad_of(me, &pad.name).unwrap().links;
+        assert_eq!(links.len(), 2, "the two it was made with, untouched");
     }
 
     #[test]

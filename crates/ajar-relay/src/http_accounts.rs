@@ -157,7 +157,7 @@ fn refuse(e: AccountError) -> Refusal {
         }
         AccountError::TooManyNamed(_) => StatusCode::FORBIDDEN,
         AccountError::NameTaken(_) => StatusCode::CONFLICT,
-        AccountError::BadName(_) => StatusCode::BAD_REQUEST,
+        AccountError::BadName(_) | AccountError::NotALinkRole => StatusCode::BAD_REQUEST,
         AccountError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, e.message())
