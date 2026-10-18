@@ -585,12 +585,18 @@ try {
   // Its sandbox was seeded before the delete. When the runtime arrives, the
   // file has to be gone from there too, or its next run brings it back.
   await loading.click("#terminal");
-  await loading.keyboard.type("ls\n");
+  // Up to a mark only the command's output has — `$((1+1))` is 2 once run,
+  // not as typed. Waiting for main.py instead was met at once by the last
+  // run the terminal opens with, `python 'main.py'`, before ls ran at all.
+  await loading.keyboard.type("ls; echo LS-$((1+1))-END\n");
   const listed = await loading
-    .waitForFunction(() => /main\.py/.test(document.getElementById("terminal")?.textContent ?? ""), null, { timeout: 120_000 })
-    .then(() => loading.evaluate(() => document.getElementById("terminal")?.textContent ?? ""), () => null);
-  if (listed === null || listed.includes("out.csv")) results.push(`note: its terminal ${JSON.stringify(listed?.slice(-300) ?? "never listed")}`);
-  is(listed !== null && !listed.includes("out.csv"), true, "and its sandbox, once that runtime arrives");
+    .waitForFunction(() => /LS-2-END/.test(document.getElementById("terminal")?.textContent ?? ""), null, { timeout: 120_000 })
+    .then(() => loading.evaluate(() => {
+      const text = document.getElementById("terminal")?.textContent ?? "";
+      return text.slice(Math.max(0, text.lastIndexOf("LS-$((1+1))-END")), text.lastIndexOf("LS-2-END"));
+    }), () => null);
+  if (listed === null || !listed.includes("main.py") || listed.includes("out.csv") || !listed.includes("pic.bin")) results.push(`note: its terminal ${JSON.stringify(listed?.slice(-300) ?? "never listed")}`);
+  is(listed !== null && listed.includes("main.py") && !listed.includes("out.csv"), true, "and its sandbox, once that runtime arrives");
   is(listed?.includes("pic.bin") ?? false, true, "a binary file made before it arrived is in its sandbox too");
   const afterDelete = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   is("out.csv" in afterDelete.files, false, "and the server's copy of the folder");
