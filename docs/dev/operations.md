@@ -239,7 +239,10 @@ none: the button appears and pressing it fails.
 The rest of a new domain is three more settings. `AJAR_DOMAIN` replaces
 `ajar.rishwanth.dev` in the Caddyfile; `AJAR_WISP_URL` (default
 `wss://code.rishwanth.dev/wisp`) is compiled into the pad; and
-`AJAR_PUBLIC_ORIGIN` in `/etc/ajar/relay.env` is the origin sign-in returns to.
+`AJAR_PUBLIC_ORIGIN` in `/etc/ajar/relay.env` is the origin sign-in returns to
+— and, since 18 October, the one page origin whose requests may use the
+sign-in cookie (`Auth::trusts_cookie_from`); `AJAR_TRUSTED_ORIGINS`,
+comma-separated, adds others if the pad is ever served from a second address.
 `AJAR_TARGET` and `AJAR_WISP_VERSION` pick the relay's build target and the
 egress endpoint's version, and rarely need changing.
 

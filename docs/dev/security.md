@@ -631,6 +631,46 @@ Caddyfile that ships, and CI runs it on every push.
   is an address and a path, and the plugin only groups a key that is a bare
   address. It has no IPv6 today, so this is a note for the day it does.
 
+## Closed on 18 October, from the audit and the review of 17 October
+
+Each has a test that drives the real router, in `serving_tests.rs` or beside
+the code.
+
+- **A lookup that fails grants nothing** (audit B01). The accounts database
+  could not be read, and the relay read that as "no row" — an anonymous pad,
+  editable by anyone — so a database fault opened every private pad. Every
+  such path now refuses: a 503 the page retries, `unavailable` on a socket
+  (which the agent waits out, as it does `host_taken`), and a name the store
+  cannot vouch for counts as taken.
+- **A cookie speaks only from our own pages** (B02). preview.rishwanth.dev is
+  the same *site* as the pad, so `SameSite=Lax` let a page somebody ran there
+  open a socket to the pad with the owner's cookie and take the owner's place
+  in a private room. A cookie now counts only with no `Origin`, our `Origin`
+  (`AJAR_PUBLIC_ORIGIN`, `AJAR_TRUSTED_ORIGINS`), or `Sec-Fetch-Site:
+  same-origin`, which a page cannot forge; anything else is answered as
+  nobody, which is still whatever the pad lets anyone do.
+- **No CORS at all.** `CorsLayer::permissive` told every origin it could call
+  the API; nothing of ours calls it from another origin, so the layer is gone.
+- **An `/api/` path that names nothing is a 404**, not the ajar app's page with
+  a 200; and **a missing file under `/assets`, `/vendor` or `/packages` is a
+  `no-store` 404**, not `index.html` with the year-long `immutable` header a
+  browser would keep as that script. **HSTS** on all three sites.
+- **A version is read as a pad is** (B03): within the per-address read slot and
+  the global read permits, and streamed from its blobs, where it was loaded
+  whole outside both.
+- **A lapsed pad's history and last run are nobody's** (B11): not readable
+  before the sweep, and dropped, not inherited, when a new pad takes the name.
+- **A first frame too big to be a hello is refused unread** — 256 KiB, above
+  three times the admitted-guest hashes a host's hello can carry.
+- **A link is a view link or an edit link**: asking for `owner` or `none`
+  is a 400, where it minted a view link.
+- **What a pad stores, it can show.** Names with control characters or
+  backslashes, base64 that is not base64, and anything under `.ajar/` or
+  `.deps/` or in a `.git` folder are refused by name (review M7: code put
+  where nobody sees it and the page runs its own); deleting there still works,
+  so old pads can be cleaned. The page checks the same rules before it saves
+  (`unstorable` in sync.ts) and never seeds those folders into a sandbox.
+
 ## Markdown, shown formatted
 
 A Markdown file's Preview (`pad/src/markdown.ts`) puts HTML that came from a

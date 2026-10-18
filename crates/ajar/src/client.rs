@@ -108,14 +108,16 @@ pub fn spawn(
                 Ok(Outcome::Closed) => {
                     let _ = ev_tx.send(RelayEvent::Disconnected("relay closed".into()));
                 }
-                // Two refusals are about the moment, not the session, and
+                // Three refusals are about the moment, not the session, and
                 // giving up on them ended every terminal on the machine.
                 // `host_taken` is the relay still holding our previous socket
                 // — half-open after a sleep or a network change — until it
                 // notices; `rate_limited` is a flaky network reconnecting
-                // faster than the relay allows. Both clear by waiting.
+                // faster than the relay allows; `unavailable` is the relay
+                // unable to check its accounts just now, which it refuses
+                // rather than guess (since 18 October). All clear by waiting.
                 Ok(Outcome::Refused { code, message })
-                    if code == "host_taken" || code == "rate_limited" =>
+                    if code == "host_taken" || code == "rate_limited" || code == "unavailable" =>
                 {
                     let _ = ev_tx.send(RelayEvent::Disconnected(format!("{code}: {message}")));
                     // At least a few seconds: a relay holding a stale socket

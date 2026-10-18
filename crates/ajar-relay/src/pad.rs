@@ -355,15 +355,13 @@ pub fn check_path(path: &str) -> Result<(), Error> {
 /// No control characters — a tab, a line break, an escape: a name that
 /// reaches other people's file trees, terminals and archives must not be
 /// able to rearrange them, and nothing a person names a file has one. And
-/// nothing under `.ajar/` or in a `.git` folder: the page's own machinery,
-/// and a repository's, which the page never saves (`IGNORED` in
-/// pad/src/sync.ts) and never shows — so a file there from the API is code
-/// nobody sees, put where the page runs its own (review finding M7).
-///
-/// Not `.deps/`, though it is hidden too: pip installs there and the page
-/// saves it with the pad on purpose (`App.installRequirements`), so the next
-/// person to open it finds the packages installed. Refused here, every save
-/// after a `pip install` would be refused with it.
+/// nothing under `.ajar/` or `.deps/` or in a `.git` folder: the page's own
+/// machinery, the packages pip installed, and a repository's, which the page
+/// never saves (`IGNORED` in pad/src/sync.ts) and never shows — so a file
+/// there from the API is code nobody sees, put where the page runs its own
+/// (review finding M7). `.deps` was saved with the pad until 18 October, when
+/// numpy's 1,336 files outgrew the 500 a pad holds; requirements.txt carries
+/// the packages now.
 fn check_storable(path: &str) -> Result<(), Error> {
     let refuse = |why| {
         Err(Error::Unstorable {
@@ -376,6 +374,11 @@ fn check_storable(path: &str) -> Result<(), Error> {
     }
     if path.starts_with(".ajar/") {
         return refuse("the .ajar folder is the page's own machinery, which a pad never keeps");
+    }
+    if path.starts_with(".deps/") {
+        return refuse(
+            "installed packages are never kept with a pad — requirements.txt carries them",
+        );
     }
     // Every segment but the last is a folder the file is in.
     if path.split('/').rev().skip(1).any(|dir| dir == ".git") {
@@ -2896,6 +2899,8 @@ mod tests {
         for bad in [
             ".ajar/site/sitecustomize.py",
             ".ajar/box.py",
+            ".deps/sitecustomize.py",
+            ".deps/flask/__init__.py",
             ".git/config",
             "src/.git/hooks/pre-commit",
         ] {
@@ -2915,11 +2920,10 @@ mod tests {
         // What a pad already holds there can be deleted.
         s.write("p", &[remove(".ajar/box.py")]).unwrap();
         assert!(s.get("p").unwrap().unwrap().files.is_empty());
-        // Not every dot is the page's: `.deps` is saved with the pad on
-        // purpose, an `.ajar` that is not the top one is a folder of somebody's,
-        // and a file called `.git` is a file.
+        // Not every dot is the page's: an `.ajar` or `.deps` that is not the
+        // top one is a folder of somebody's, and a file called `.git` is a file.
         for fine in [
-            ".deps/flask/__init__.py",
+            "sub/.deps/notes.txt",
             "sub/.ajar/notes.txt",
             "vendor/.git",
             ".gitignore",
@@ -3664,20 +3668,21 @@ mod tests {
         let (path, text) = summary.lead.expect("main.py is quoted");
         assert_eq!(path, "main.py");
         assert!(text.contains("print('hello')"));
-        // Installed packages are not the pad's files. Nor is the page's own
-        // folder, which a pad can no longer be given but may hold from before.
+        // A hidden folder is not the pad's files to show. Installed packages
+        // and the page's own folder a pad can no longer be given, but may
+        // hold from before.
         s.write(
             "p",
             &[
-                put(".deps/flask/__init__.py", "x"),
                 put(".config/x.py", "y"),
+                put(".cache/flask/__init__.py", "x"),
             ],
         )
         .unwrap();
         let summary = s.summary("p").unwrap().unwrap();
         assert_eq!(summary.files, 11, "hidden folders are not counted");
         assert!(summary.paths.iter().all(|p| !p.starts_with('.')));
-        assert!(hidden(".ajar/site/x.py"));
+        assert!(hidden(".ajar/site/x.py") && hidden(".deps/flask/__init__.py"));
         // With no main file, the first small text file; never one too big to read for a preview.
         s.write(
             "q",
