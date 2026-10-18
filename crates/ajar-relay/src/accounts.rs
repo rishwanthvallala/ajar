@@ -1175,7 +1175,26 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn store() -> (Accounts, PathBuf) {
+    /// A test's directory, gone when the test is: every run left one per
+    /// test behind, 1,400 of them by 18 October.
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Kept as `_dir`, not `_`, which would drop it — and the directory —
+    /// before the test has used the database in it.
+    fn store() -> (Accounts, Scratch) {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "ajar-accounts-{}-{}",
@@ -1185,7 +1204,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let accounts = Accounts::open(&dir.join("accounts.db")).unwrap();
-        (accounts, dir)
+        (accounts, Scratch(dir))
     }
 
     fn person(a: &Accounts, id: &str) -> i64 {
@@ -1213,7 +1232,7 @@ mod tests {
     fn a_lookup_that_fails_is_an_error_and_grants_nothing() {
         // Audit B01: every SQL error read as "no row", and no row is the
         // anonymous pad anyone may edit.
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Owner, Edit::Owner)
@@ -1259,7 +1278,7 @@ mod tests {
     fn a_store_that_cannot_say_which_names_are_taken_gets_no_new_pad() {
         // `taken` says yes when the store cannot answer, so the loop that
         // looks for a free name has to end.
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         assert!(matches!(
             a.create_pad(me, &|_| true, None),
@@ -1270,7 +1289,7 @@ mod tests {
 
     #[test]
     fn a_pad_with_no_row_is_open_to_everyone() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         assert_eq!(
             a.access("rustic-notch-5292", None, None).unwrap().role,
             Role::Editor
@@ -1279,7 +1298,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_view_by_link_and_edit_by_edit_link() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad.links.iter().find(|l| l.role == Role::Editor).unwrap();
@@ -1314,7 +1333,7 @@ mod tests {
 
     #[test]
     fn private_viewing_needs_a_link_and_an_edit_link_still_views() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad
@@ -1366,7 +1385,7 @@ mod tests {
 
     #[test]
     fn stats_count_what_is_there() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let you = person(&a, "2");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
@@ -1389,7 +1408,7 @@ mod tests {
 
     #[test]
     fn changing_one_setting_leaves_the_other_as_stored() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Link, Edit::Owner)
@@ -1403,7 +1422,7 @@ mod tests {
 
     #[test]
     fn a_link_says_what_it_grants_and_a_deleted_pad_says_so() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         let edit = pad
@@ -1434,7 +1453,7 @@ mod tests {
 
     #[test]
     fn reset_stops_every_link_of_its_kind_even_ones_it_cannot_show() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Code, Edit::Code).unwrap();
@@ -1495,7 +1514,7 @@ mod tests {
 
     #[test]
     fn a_link_views_or_edits_and_is_never_anything_else() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         for role in [Role::Owner, Role::None] {
@@ -1514,7 +1533,7 @@ mod tests {
 
     #[test]
     fn a_revoked_link_opens_nothing_and_a_new_one_does() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.set_access(me, &pad.name, View::Code, Edit::Code).unwrap();
@@ -1567,7 +1586,7 @@ mod tests {
 
     #[test]
     fn only_the_owner_can_change_a_pad() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let them = person(&a, "2");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
@@ -1582,7 +1601,7 @@ mod tests {
 
     #[test]
     fn a_deleted_pad_opens_for_nobody_and_its_name_is_never_minted_again() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         let code = pad.links[1].code.clone();
@@ -1598,7 +1617,7 @@ mod tests {
 
     #[test]
     fn deleting_an_account_takes_its_pads_sign_ins_and_details_and_retires_the_names() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let them = person(&a, "2");
         let token = a.new_session(me).unwrap();
@@ -1659,7 +1678,7 @@ mod tests {
 
     #[test]
     fn an_account_holds_a_limited_number_of_pads() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         for _ in 0..MAX_PADS_PER_ACCOUNT {
             a.create_pad(me, &|_| false, None).unwrap();
@@ -1672,7 +1691,7 @@ mod tests {
 
     #[test]
     fn a_name_the_store_has_is_not_minted() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let refused = std::cell::RefCell::new(0);
         // The first two candidates are "taken"; the third is used.
@@ -1693,7 +1712,7 @@ mod tests {
 
     #[test]
     fn an_owner_names_three_pads_and_a_name_is_kept_for_good() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let taken = |n: &str| n == "an-open-pad";
         let named = a.create_pad(me, &taken, Some("notes")).unwrap();
@@ -1742,7 +1761,7 @@ mod tests {
 
     #[test]
     fn sessions_find_their_user_until_they_end() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let token = a.new_session(me).unwrap();
         assert_eq!(a.session(&token).map(|u| u.id), Some(me));
@@ -1753,7 +1772,7 @@ mod tests {
 
     #[test]
     fn room_counts_every_other_pad_of_the_owner() {
-        let (a, _) = store();
+        let (a, _dir) = store();
         let me = person(&a, "1");
         let one = a.create_pad(me, &|_| false, None).unwrap();
         let two = a.create_pad(me, &|_| false, None).unwrap();
