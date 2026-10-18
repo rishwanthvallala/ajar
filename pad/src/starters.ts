@@ -8,8 +8,7 @@
  * that runs can be told from one that does not.
  *
  * Written with a tab for each level of indent, and given the indent set for
- * the editor (format.ts); Go's stays a tab, as gofmt has it. C++ uses
- * <cstdio>, because <iostream> does not finish compiling here (toolchains.ts).
+ * the editor (format.ts); Go's stays a tab, as gofmt has it.
  */
 
 export interface Starter {
@@ -45,8 +44,9 @@ int main(void) {
 }
 `;
 
-const CPP = `// <cstdio>, not <iostream>: <iostream> does not finish compiling here.
-#include <cstdio>
+const CPP = `#include <iostream>
+#include <string>
+#include <vector>
 
 template <typename T>
 T square(T n) {
@@ -54,9 +54,11 @@ T square(T n) {
 }
 
 int main() {
-\tstd::printf("Hello, %s!\\n", "world");
-\tfor (int i = 1; i <= 3; i++) {
-\t\tstd::printf("%d squared is %d\\n", i, square(i));
+\tstd::string name = "world";
+\tstd::cout << "Hello, " << name << "!\\n";
+\tstd::vector<int> numbers = {1, 2, 3};
+\tfor (int i : numbers) {
+\t\tstd::cout << i << " squared is " << square(i) << "\\n";
 \t}
 \treturn 0;
 }

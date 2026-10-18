@@ -64,7 +64,7 @@ git merge-base --is-ancestor "$deployed" HEAD || pass "the relay runs $deployed,
 # What makes the packages, rather than names them: the Java build, the trim,
 # the recording of what is downloaded, and the service worker's own pin.
 changed=$(git diff --name-only "$deployed" HEAD -- \
-  pad/scripts/build-java.mjs pad/scripts/java pad/scripts/webc-trim pad/scripts/fetch-packages.mjs pad/public/sw.js)
+  pad/scripts/build-java.mjs pad/scripts/java pad/scripts/build-cxx.mjs pad/scripts/cxx pad/scripts/webc-trim pad/scripts/fetch-packages.mjs pad/public/sw.js)
 [ -z "$changed" ] || pass "what makes the packages changed since $deployed: $(echo "$changed" | tr '\n' ' ')"
 
 # ---------------------------------------------------------------- packages

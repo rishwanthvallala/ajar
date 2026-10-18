@@ -24,7 +24,8 @@
 
 const MANIFEST = "/packages/manifest.json";
 const ANSWERS = "/packages/registry.json";
-// Packages of our own, which no registry has: Java (build-java.mjs). Their
+// Packages of our own, which no registry has: Java (build-java.mjs) and C++
+// (build-cxx.mjs). Their
 // answers and files, from one file, under a host nothing else answers for.
 const OWN = "/packages/own.json";
 const OWN_HOST = "https://packages.ajar.invalid/";

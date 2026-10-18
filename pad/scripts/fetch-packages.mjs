@@ -266,7 +266,7 @@ const keep = new Set(
 );
 keep.add("manifest.json");
 keep.add("registry.json");
-// Ours, from build-java.mjs, which keeps them current itself.
+// Ours, from build-java.mjs and build-cxx.mjs, which keep them current themselves.
 keep.add("own.json");
 let freed = 0;
 for (const name of await readdir(OUT)) {

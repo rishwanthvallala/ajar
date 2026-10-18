@@ -239,6 +239,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: pad/public/packages
-          key: pad-packages-${{ hashFiles('pad/src/runtime.ts', 'pad/src/toolchains.ts', 'pad/public/sw.js', 'pad/scripts/fetch-packages.mjs', 'pad/scripts/build-java.mjs') }}
+          key: pad-packages-${{ hashFiles('pad/src/runtime.ts', 'pad/src/toolchains.ts', 'pad/public/sw.js', 'pad/scripts/fetch-packages.mjs', 'pad/scripts/build-java.mjs', 'pad/scripts/build-cxx.mjs') }}
           restore-keys: pad-packages-
       - run: scripts/ci-annotate.sh "deploy" deploy/from-ci.sh

@@ -904,7 +904,8 @@ async function main() {
     is(runnerFor("it's.go")?.line, "go run 'it'\\''s.go'", "a name with a quote in it is quoted");
     is(runnerFor("app.js")?.toolchain.name, "Node.js", "a .js file runs with node");
     const cpp = runnerFor("hello.cpp")?.line ?? "";
-    is(cpp.includes("clang++ 'hello.cpp'") && cpp.includes("<iostream>"), true, "a .cpp file compiles with clang++, saying first if it uses the C++ standard library");
+    is(cpp, "clang++ 'hello.cpp' -o /tmp/a.out && /tmp/a.out", "a .cpp file compiles with clang++ and runs");
+    is([neededBy("g++ x.cpp", none)[0]?.pkg, neededBy("c++ x.cpp", none)[0]?.pkg, runnerFor("hello.cpp")?.toolchain.pkg].join(" "), "ajar/cxx@=1.0.0 ajar/cxx@=1.0.0 ajar/cxx@=1.0.0", "and g++, c++ and Run on it fetch C++, ours, not C's clang");
     is(neededBy("gcc hi.c && ./a.out", none)[0]?.pkg, runnerFor("hi.c")?.toolchain.pkg, "and gcc is clang's, so typing it fetches C");
     is(runnerFor("notes.txt"), null, "and nothing runs what no language does");
     is(neededBy("javac Main.java && java Main", none).map((t) => t.name).join(","), "Java", "javac and java are one language, fetched once");
@@ -941,7 +942,7 @@ async function main() {
     is(starterFor("class.java", "  ")?.text.startsWith("class Main"), true, "nor where it is a keyword");
     is(starterFor("x/main.go", "  ")?.text.includes("\n\tname := "), true, "Go's is indented with a tab whatever the indent");
     const cpp = starterFor("a.cpp", "    ")?.text ?? "";
-    is(cpp.includes("#include <cstdio>") && !cpp.includes("#include <iostream>"), true, "C++'s includes <cstdio>, which compiles here, and not <iostream>");
+    is(cpp.includes("#include <iostream>") && cpp.includes("std::vector<int>") && cpp.includes("\n    std::cout"), true, "C++'s uses the standard library, which compiles here since C++ is ours, indented as asked");
     is(starterFor("notes.txt", "    ") === null && starterFor("Makefile", "    ") === null && starterFor(".py", "    ") === null, true, "a kind with nothing to offer offers nothing");
     is(starterFor("a.YAML", "  ")?.text.includes("\n  - pad\n"), true, "an extension in capitals is the same kind");
   }

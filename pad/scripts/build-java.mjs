@@ -249,8 +249,11 @@ const answer = {
     info: { defaultFrontend: "https://wasmer.io/" },
   },
 };
-await writeFile(
-  `${OUT}own.json`,
-  JSON.stringify({ answers: { [NAME]: answer }, files: { [url]: `/packages/${file}` }, javac }, null, 1),
-);
+// own.json is ours and C++'s (build-cxx.mjs): only Java's entries are replaced.
+const own = existsSync(`${OUT}own.json`) ? JSON.parse(await readFile(`${OUT}own.json`, "utf8")) : {};
+own.answers = { ...(own.answers ?? {}), [NAME]: answer };
+own.files = Object.fromEntries(Object.entries(own.files ?? {}).filter(([, to]) => !to.startsWith("/packages/ajar-java-")));
+own.files[url] = `/packages/${file}`;
+own.javac = javac;
+await writeFile(`${OUT}own.json`, JSON.stringify(own, null, 1));
 say(`${NAME}@=${VERSION} and the fast javac are in pad/public/packages/own.json`);

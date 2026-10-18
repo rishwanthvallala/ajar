@@ -12,9 +12,10 @@
  * means a fresh shell, opened where the old one was and with what it had
  * exported: see `App.prepare`.
  *
- * The registry has no JVM, no javac, no gcc and no tcc. C is clang; Java is a
- * package of our own, built by pad/scripts/build-java.mjs and answered for by
- * the service worker. See docs/dev/pad.md, "Languages on first use" and "Java".
+ * The registry has no JVM, no javac, no gcc and no tcc. C is clang; Java and
+ * C++ are packages of our own, built by pad/scripts/build-java.mjs and
+ * build-cxx.mjs and answered for by the service worker. See docs/dev/pad.md,
+ * "Languages on first use", "Java" and "C++".
  */
 
 export interface Toolchain {
@@ -32,43 +33,44 @@ export interface Toolchain {
   note?: string;
 }
 
-/** Names people type for a C or C++ compiler, and what each stands for here. */
+/** Names people type for a C compiler, and what each stands for here. */
 export const CLANG_ALIASES = [
   ["gcc", "clang"],
   ["cc", "clang"],
-  ["g++", "clang --driver-mode=g++"],
-  ["c++", "clang --driver-mode=g++"],
-  ["clang++", "clang --driver-mode=g++"],
 ] as const;
+
+/** Names people type for a C++ compiler: each is tools/cxx.py, with ajar/cxx's clang 22. */
+export const CXX_COMMANDS = ["clang++", "g++", "c++"] as const;
 
 /** A path as one shell word, nothing in it expanded — `$`, backquotes, spaces. */
 export const quoted = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/**
- * C++, compiled and run — and said first when it includes the C++ standard
- * library, which this clang cannot build: <iostream> did not finish in
- * fifteen minutes on 12 October, and <vector>, <string>, <map> and
- * <algorithm> crash it ("clang frontend command failed with exit code 27",
- * review of 17 October). The C headers — <cstdio>, <cstring>, <cmath> — work.
- * Said, so the crash is not taken for a fault in the program.
- */
-const cxx = (f: string) =>
-  `{ grep -Eq '#include *<[a-z_]+>' ${quoted(f)} && grep -Eo '#include *<[a-z_]+>' ${quoted(f)} | grep -Evq '<c(assert|ctype|errno|float|limits|locale|math|setjmp|signal|stdarg|stddef|stdint|stdio|stdlib|string|time|wchar|wctype)>' && echo "note: the C++ standard library (<iostream>, <vector>, <string>, <map>…) does not compile here — the C headers (<cstdio>, <cstring>, <cmath>) and printf do" >&2; true; } && clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`;
-
 export const TOOLCHAINS: readonly Toolchain[] = [
   {
-    // C, and C++ through clang told to be one: the package has no clang++.
-    // gcc, g++, cc, c++ and clang++ are aliases to it (shell.ts), as on a Mac
-    // — there is no gcc for this sandbox at all.
-    name: "C and C++ (clang)",
+    // C. gcc and cc are aliases to it (shell.ts), as on a Mac — there is no
+    // gcc for this sandbox at all. Not C++: linked with wasm-ld's default
+    // 64 KiB stack, it ran past it on the C++ standard library's headers.
+    name: "C (clang)",
     pkg: "clang/clang@=0.160000.1",
     commands: ["clang", "clang-16", "lld", "wasm-ld", "llvm-ar", "llvm-nm", ...CLANG_ALIASES.map(([alias]) => alias)],
     mb: 106,
     runs: {
       c: (f) => `clang ${quoted(f)} -o /tmp/a.out && /tmp/a.out`,
-      cpp: (f) => cxx(f),
-      cc: (f) => cxx(f),
-      cxx: (f) => cxx(f),
+    },
+  },
+  {
+    // Ours: YoWASP's clang 22, one WASI module with an 8 MiB stack, and
+    // wasi-sdk 34's libc++, built with C++ exceptions (build-cxx.mjs). Its
+    // steps are run one at a time by tools/cxx.py, which clang++, g++ and c++
+    // are aliases to (shell.ts); what it builds is a WASI program.
+    name: "C++ (clang 22)",
+    pkg: "ajar/cxx@=1.0.0",
+    commands: ["cxx-llvm", ...CXX_COMMANDS],
+    mb: 20,
+    runs: {
+      cpp: (f) => `clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`,
+      cc: (f) => `clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`,
+      cxx: (f) => `clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`,
     },
   },
   {

@@ -982,6 +982,29 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     expect("javac compiles quickly, with the page's compiler", compiled < 3000 && !(await tail(6)).includes("error"), `${compiled} ms: ${await tail(4)}`);
     await typed("printf '21\\n' | java Ask", 120_000);
     expect("and java runs the class, reading stdin", await shows(/twice 21 is 42/, 5000), await tail(6));
+    // C++ with its standard library — ours, ajar/cxx: the registry's clang
+    // ran out of stack on <vector> and <iostream> (review of 17 October, H3).
+    // Reading stdin, and try and catch, which are WebAssembly's.
+    await clear();
+    await newFile("stl.cpp", [
+      "#include <algorithm>", "#include <iostream>", "#include <map>", "#include <stdexcept>", "#include <string>", "#include <vector>",
+      "int main() {",
+      "  std::vector<int> v{5, 3, 9, 1};",
+      "  std::sort(v.begin(), v.end());",
+      '  std::map<std::string, int> m{{"a", 1}, {"b", 2}};',
+      "  std::string name;",
+      "  std::getline(std::cin, name);",
+      '  std::cout << "hello " << name << ", smallest " << v.front() << ", b=" << m["b"] << std::endl;',
+      '  try { v.at(10); } catch (const std::out_of_range &e) { std::cout << "caught " << e.what() << std::endl; }',
+      '  if (name == "throw") throw std::runtime_error("boom");',
+      "}", "",
+    ].join("\n"));
+    await typed("echo Rishi > in.txt", 30_000);
+    await typed("g++ stl.cpp -o stl && ./stl < in.txt", 600_000);
+    expect("C++'s standard library compiles and runs, reading stdin, and catch catches", (await shows(/hello Rishi, smallest 1, b=2/, 5000)) && (await shows(/caught vector/, 5000)), await tail(8));
+    await typed("echo throw > in.txt; ./stl < in.txt", 60_000);
+    expect("and an exception nothing catches is said, as a native program says it", (await shows(/terminate called after throwing an instance of 'std::runtime_error'/, 5000)) && (await shows(/what\(\): +boom/, 5000)), await tail(6));
+    await typed("rm -f stl in.txt", 30_000);
     await open("main.py");
   }
 

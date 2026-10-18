@@ -1,6 +1,7 @@
 # Rewrites a mirrored .webc without the files that can never run in the pad.
 # Run by pad/scripts/fetch-packages.mjs; see docs/dev/pad.md, "The download".
-# Its second binary, webc-pack, writes a package of our own: build-java.mjs.
+# Its second binary, webc-pack, writes a package of our own: build-java.mjs
+# and build-cxx.mjs.
 #
 # Its own workspace, deliberately: it is needed only when the mirror is
 # refreshed, so neither the gate nor CI builds it.

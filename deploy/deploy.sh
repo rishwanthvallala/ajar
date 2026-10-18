@@ -151,13 +151,16 @@ if [ ! -f pad/public/packages/registry.json ]; then
     echo "      npm run build:pad && node pad/scripts/fetch-packages.mjs --registry-only" >&2
     exit 1
 fi
-# Java is a package of our own, which no registry has: without own.json, the
-# first `java` says the package does not exist.
-if [ ! -f pad/public/packages/own.json ]; then
-    echo "  pad/public/packages has no own.json — run:" >&2
-    echo "      node pad/scripts/build-java.mjs" >&2
-    exit 1
-fi
+# Java and C++ are packages of our own, which no registry has: without
+# own.json, or without one of them in it, the first `java` or `g++` says the
+# package does not exist.
+for own in ajar/java:build-java ajar/cxx:build-cxx; do
+    if ! grep -q "\"${own%%:*}\"" pad/public/packages/own.json 2>/dev/null; then
+        echo "  pad/public/packages/own.json has no ${own%%:*} — run:" >&2
+        echo "      node pad/scripts/${own##*:}.mjs" >&2
+        exit 1
+    fi
+done
 # The preview origin is compiled in: the pad has to know which origin may
 # serve what a visitor runs, and an empty value disables previews entirely,
 # which is the right behaviour for a deploy without that subdomain.

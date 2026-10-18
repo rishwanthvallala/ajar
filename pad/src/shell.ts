@@ -40,7 +40,8 @@ import SITE_PY from "./tools/sitecustomize.py?raw";
 import PADFETCH_PY from "./tools/_padfetch.py?raw";
 import CURL_PY from "./tools/curl.py?raw";
 import GO_PY from "./tools/go.py?raw";
-import { CLANG_ALIASES } from "./toolchains";
+import CXX_PY from "./tools/cxx.py?raw";
+import { CLANG_ALIASES, CXX_COMMANDS } from "./toolchains";
 import type { Runtime } from "./runtime";
 
 /** Where the shims live. Ignored by the sync, so it never joins the folder. */
@@ -144,6 +145,12 @@ export const WHEELS = "https://python-registry.wasmer.app/simple/";
  * fetches it.
  */
 export const GO = ".ajar/go.py";
+/**
+ * clang++, g++ and c++: the C++ compiler's steps, run one at a time — a WASI
+ * compiler cannot start its own. See tools/cxx.py. Aliased before it is
+ * fetched, as Go is.
+ */
+export const CXX = ".ajar/cxx.py";
 export const EDITORS = ["nano", "edit"] as const;
 
 const MARK = "";
@@ -364,6 +371,7 @@ export class Shell {
     await rt.write(PADFETCH, PADFETCH_PY);
     await rt.write(CURL, CURL_PY);
     await rt.write(GO, GO_PY);
+    await rt.write(CXX, CXX_PY);
 
     // One `run` for every alias rather than one each: each is a round trip
     // through the pty, and fourteen of them is a visible pause before the
@@ -381,6 +389,7 @@ export class Shell {
       `alias wget='python /workspace/${CURL} --as-wget'`,
       ...["go", "gofmt"].map((name) => `alias ${name}='python /workspace/${GO} ${name}'`),
       ...CLANG_ALIASES.map(([name, to]) => `alias ${name}='${to}'`),
+      ...CXX_COMMANDS.map((name) => `alias ${name}='python /workspace/${CXX}'`),
       // No `clear` ships in any package here, and it is the first thing
       // people type to tidy a terminal. It only has to say two sequences.
       `alias clear='printf "\\033[H\\033[2J\\033[3J"'`,
