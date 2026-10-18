@@ -556,3 +556,118 @@ async fn a_path_under_api_that_names_nothing_is_not_found() {
         (StatusCode::OK, "<!doctype html>the page")
     );
 }
+
+// ---------------------------------------- B03 and B11: versions and lapsing
+
+#[tokio::test]
+async fn a_version_is_read_within_the_bounds_on_reads() {
+    // Audit B03: a version was built whole in memory and sent with no read
+    // slot and no permit, so nothing bounded how many went out at once.
+    let relay = Relay::new("");
+    let pads = &relay.state.pads;
+    pads.write("p", &[put("a.txt", "first \"one\"\n")]).unwrap();
+    let id = pads.keep_now("p").unwrap().unwrap();
+    pads.write("p", &[put("a.txt", "second")]).unwrap();
+    let path = format!("/api/pad/p/history/{id}");
+
+    let answer = relay.call(get(&path, &[])).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.json()["id"], id);
+    assert_eq!(
+        answer.json()["files"]["a.txt"]["content"],
+        "first \"one\"\n"
+    );
+    assert_eq!(answer.json()["files"]["a.txt"]["encoding"], "utf8");
+    assert_eq!(
+        answer.headers[header::CONTENT_LENGTH],
+        answer.body.len().to_string()
+    );
+
+    // Every read slot this address has, held by reads still being sent.
+    let slots: Vec<_> = (0..crate::quota::MAX_READS_PER_IP)
+        .map(|_| {
+            relay
+                .state
+                .quota
+                .claim(
+                    CALLER.ip(),
+                    std::time::Instant::now(),
+                    crate::quota::Kind::Read,
+                )
+                .unwrap()
+        })
+        .collect();
+    let refused = relay.call(get(&path, &[])).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a version was read past the address's read slots"
+    );
+    drop(slots);
+
+    // And every one of the relay's permits: it waits its turn.
+    let permits = relay
+        .state
+        .reading
+        .clone()
+        .acquire_many_owned(crate::MAX_CONCURRENT_PAD_READS as u32)
+        .await
+        .unwrap();
+    let waiting = tokio::spawn({
+        let state = relay.state.clone();
+        let path = path.clone();
+        async move {
+            let mut request = get(&path, &[]);
+            request.extensions_mut().insert(ConnectInfo(CALLER));
+            crate::router(state, None)
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status()
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a version was read with no permit free"
+    );
+    drop(permits);
+    assert_eq!(waiting.await.unwrap(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_lapsed_pad_shows_nothing_of_itself() {
+    // Audit B11, as a page asks: a lapsed pad reads as free, and so do its
+    // history, its versions and its last run, until the sweep removes them.
+    let relay = Relay::new("");
+    let pads = &relay.state.pads;
+    pads.write("p", &[put("a.txt", "the old owner's")]).unwrap();
+    let id = pads.keep_now("p").unwrap().unwrap();
+    pads.set_last_run(
+        "p",
+        &crate::pad::LastRun {
+            path: "a.txt".into(),
+            command: "cat a.txt".into(),
+            exit: 0,
+            at_ms: 0,
+            output: "the old owner's output".into(),
+        },
+    )
+    .unwrap();
+    pads.set_touched("p", crate::pad::LEASE + std::time::Duration::from_secs(60));
+
+    let read = relay.call(get("/api/pad/p", &[])).await;
+    assert_eq!(read.json()["exists"], false);
+    let history = relay.call(get("/api/pad/p/history", &[])).await;
+    assert_eq!(history.json(), serde_json::json!([]));
+    let version = relay
+        .call(get(&format!("/api/pad/p/history/{id}"), &[]))
+        .await;
+    assert_eq!(version.status, StatusCode::NOT_FOUND, "{}", version.body);
+    let run = relay.call(get("/api/pad/p/run", &[])).await;
+    assert_eq!(run.status, StatusCode::NO_CONTENT, "{}", run.body);
+    let kept = relay
+        .call(request("POST", "/api/pad/p/history", &[], Body::empty()))
+        .await;
+    assert_eq!(kept.json()["id"], serde_json::Value::Null);
+}

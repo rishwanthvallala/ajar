@@ -1175,10 +1175,22 @@ impl Store {
         Ok(Some((at as u64, files)))
     }
 
-    /// A pad's versions, newest first.
+    /// Whether a name holds a pad now: written, and not lapsed. What every
+    /// read of a pad's content asks first — its files, its history, a
+    /// version, its last run — so that a pad past its lease is gone for all
+    /// of them at once, not only for the ones that remembered to look, while
+    /// it waits for the hourly sweep (audit B11).
+    fn live(&self, db: &Connection, name: &str) -> Result<bool, Error> {
+        Ok(Self::head(db, name)?.is_some_and(|h| !self.lapsed(name, h.touched_ms)))
+    }
+
+    /// A pad's versions, newest first. None for a pad that has lapsed.
     pub fn history(&self, name: &str) -> Result<Vec<Version>, Error> {
         check_name(name)?;
         let db = self.db.lock();
+        if !self.live(&db, name)? {
+            return Ok(Vec::new());
+        }
         let mut q = db.prepare_cached(
             "SELECT id, at_ms, files, bytes FROM versions WHERE pad = ?1 ORDER BY id DESC",
         )?;
@@ -1193,12 +1205,22 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// One version's files, as a read gives a pad's. `Ok(None)` when there is
-    /// no such version, kept or still.
-    pub fn version(&self, name: &str, id: u64) -> Result<Option<BTreeMap<String, File>>, Error> {
+    /// One version's files opened to be streamed, as [`Store::open_for_read`]
+    /// opens a pad: the document after its opening brace, `"id":…,"files":
+    /// {…}}`, each file sent from its blob. `Ok(None)` when there is no such
+    /// version, kept or still, or the pad has lapsed.
+    ///
+    /// It was read whole: every file into a string, then all of it into one
+    /// JSON value and out again — a version can be as big as the pad was, up
+    /// to 100 MiB, and a few at once took a fair part of the relay's memory
+    /// (audit B03). Streamed, it costs a chunk buffer, as a read does.
+    pub fn open_version(&self, name: &str, id: u64) -> Result<Option<Opened>, Error> {
         check_name(name)?;
-        let (rows, _reading) = {
+        let (rows, reading) = {
             let db = self.db.lock();
+            if !self.live(&db, name)? {
+                return Ok(None);
+            }
             let exists: bool = db.query_row(
                 "SELECT EXISTS (SELECT 1 FROM versions WHERE pad = ?1 AND id = ?2)",
                 params![name, id as i64],
@@ -1207,38 +1229,101 @@ impl Store {
             if !exists {
                 return Ok(None);
             }
-            let mut q = db.prepare_cached("SELECT path, blob, encoding FROM version_files WHERE pad = ?1 AND version = ?2 ORDER BY path")?;
-            let rows: Vec<(String, String, Encoding)> = q
+            let mut q = db.prepare_cached("SELECT path, blob, encoding, stored FROM version_files WHERE pad = ?1 AND version = ?2 ORDER BY path")?;
+            let rows: Vec<(String, String, Encoding, u64)> = q
                 .query_map(params![name, id as i64], |r| {
-                    Ok((r.get(0)?, r.get(1)?, encoding_from(r.get(2)?)))
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        encoding_from(r.get(2)?),
+                        r.get::<_, i64>(3)? as u64,
+                    ))
                 })?
                 .collect::<Result<_, _>>()?;
-            let reading = self.hold(&db, rows.iter().map(|(_, b, _)| b.clone()).collect());
+            let reading = self.hold(&db, rows.iter().map(|(_, b, _, _)| b.clone()).collect());
             (rows, reading)
         };
-        let mut files = BTreeMap::new();
-        for (path, blob, encoding) in rows {
-            files.insert(
-                path,
-                File {
-                    content: self.blob_text(&blob)?,
-                    encoding,
-                    seq: 0,
-                },
-            );
+        let (parts, remaining) = self.streamed(
+            format!(r#""id":{id},"files":{{"#),
+            rows.iter().map(|(path, blob, encoding, stored)| {
+                (
+                    path.as_str(),
+                    blob.as_str(),
+                    *stored,
+                    format!(r#""encoding":"{}","seq":0"#, encoding_name(*encoding)),
+                )
+            }),
+        )?;
+        Ok(Some(Opened {
+            parts,
+            remaining,
+            reading,
+        }))
+    }
+
+    /// One version's files, read whole. For the tests: over HTTP a version
+    /// goes out through [`Store::open_version`], which this reads back.
+    #[cfg(test)]
+    pub fn version(&self, name: &str, id: u64) -> Result<Option<BTreeMap<String, File>>, Error> {
+        use std::io::Read;
+        let Some(opened) = self.open_version(name, id)? else {
+            return Ok(None);
+        };
+        let mut rest = String::new();
+        opened.into_reader().read_to_string(&mut rest)?;
+        #[derive(Deserialize)]
+        struct Kept {
+            files: BTreeMap<String, File>,
         }
-        Ok(Some(files))
+        let kept: Kept =
+            serde_json::from_str(&format!("{{{rest}")).map_err(|e| Error::Io(e.to_string()))?;
+        Ok(Some(kept.files))
+    }
+
+    /// Files as the pieces of a JSON object, `before` in front of them: for
+    /// each, its key and `"content":`, its blob — sent from its file, already
+    /// a JSON string — and then `fields`, the rest of its members. Returns the
+    /// pieces and how many bytes they come to, which is the response's
+    /// length, so `stored` must be each blob's size on disk.
+    fn streamed<'a>(
+        &self,
+        before: String,
+        files: impl Iterator<Item = (&'a str, &'a str, u64, String)>,
+    ) -> Result<(Vec<Part>, u64), Error> {
+        let mut parts = Vec::new();
+        let mut remaining = 0u64;
+        let mut text = before;
+        for (i, (path, blob, stored, fields)) in files.enumerate() {
+            let key = serde_json::to_string(path).map_err(|e| Error::Io(e.to_string()))?;
+            text.push_str(&format!(
+                r#"{}{key}:{{"content":"#,
+                if i > 0 { "," } else { "" }
+            ));
+            remaining += text.len() as u64;
+            parts.push(Part::Bytes(std::mem::take(&mut text).into_bytes()));
+            remaining += stored;
+            parts.push(Part::Blob(self.blob_path(blob)));
+            text = format!(",{fields}}}");
+        }
+        text.push_str("}}");
+        remaining += text.len() as u64;
+        parts.push(Part::Bytes(text.into_bytes()));
+        Ok((parts, remaining))
     }
 
     /// Keep the pad as it is now as a version, unless the newest already is
     /// it: asked for before a restore, so whatever the restore replaces can be
-    /// had back. Returns the version that is the pad now, if it has files.
+    /// had back. Returns the version that is the pad now, if it has files —
+    /// and none for a lapsed pad, which is nobody's to keep.
     pub fn keep_now(&self, name: &str) -> Result<Option<u64>, Error> {
         check_name(name)?;
         let mut db = self.db.lock();
         let Some(head) = Self::head(&db, name)? else {
             return Ok(None);
         };
+        if self.lapsed(name, head.touched_ms) {
+            return Ok(None);
+        }
         let rows = Self::rows(&db, name)?;
         if rows.is_empty() {
             return Ok(None);
@@ -1493,32 +1578,25 @@ impl Store {
             (head, rows, reading)
         };
 
-        let mut parts = Vec::new();
-        let mut remaining = 0u64;
-        let mut text = format!(
-            r#""seq":{},"created_ms":{},"updated_ms":{},"files":{{"#,
-            head.seq, head.created_ms, head.updated_ms
-        );
-        for (i, (path, row)) in rows.iter().enumerate() {
-            let key = serde_json::to_string(path).map_err(|e| Error::Io(e.to_string()))?;
-            text.push_str(&format!(
-                r#"{}{key}:{{"content":"#,
-                if i > 0 { "," } else { "" }
-            ));
-            remaining += text.len() as u64;
-            parts.push(Part::Bytes(std::mem::take(&mut text).into_bytes()));
-            remaining += row.stored;
-            parts.push(Part::Blob(self.blob_path(&row.blob)));
-            text = format!(
-                r#","encoding":"{}","seq":{},"hash":"{}"}}"#,
-                encoding_name(row.encoding),
-                row.seq,
-                row.blob
-            );
-        }
-        text.push_str("}}");
-        remaining += text.len() as u64;
-        parts.push(Part::Bytes(text.into_bytes()));
+        let (parts, remaining) = self.streamed(
+            format!(
+                r#""seq":{},"created_ms":{},"updated_ms":{},"files":{{"#,
+                head.seq, head.created_ms, head.updated_ms
+            ),
+            rows.iter().map(|(path, row)| {
+                (
+                    path.as_str(),
+                    row.blob.as_str(),
+                    row.stored,
+                    format!(
+                        r#""encoding":"{}","seq":{},"hash":"{}""#,
+                        encoding_name(row.encoding),
+                        row.seq,
+                        row.blob
+                    ),
+                )
+            }),
+        )?;
         Ok(Some(Opened {
             parts,
             remaining,
@@ -1702,14 +1780,23 @@ impl Store {
         }
 
         // The way it was, kept as a version when the newest is old enough:
-        // see [`VERSION_EVERY`].
+        // see [`VERSION_EVERY`]. Never a lapsed pad's way: that is somebody
+        // else's, and was kept as the first version of whoever wrote next.
         let due = self.keeps_history
+            && live
             && !old.is_empty()
             && !changed.is_empty()
             && Self::newest_version(&db, name)?
                 .is_none_or(|(at, _)| now.saturating_sub(at) >= VERSION_EVERY.as_millis() as u64);
         let tx = db.transaction()?;
         let mut held = 0;
+        // A lapsed pad still here until the sweep goes with this write, all
+        // of it: its files above, and here its versions and its last run,
+        // which otherwise came back as the new pad's (audit B11).
+        if head.is_some() && !live {
+            held += Self::drop_history(&tx, name, now)?;
+            tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
+        }
         if due {
             let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
             held += Self::keep_version(&tx, name, &old, was_seq, now)?;
@@ -2090,7 +2177,7 @@ impl Store {
 
     /// Set when a pad was last touched, for tests of the lease.
     #[cfg(test)]
-    fn set_touched(&self, name: &str, ago: Duration) {
+    pub fn set_touched(&self, name: &str, ago: Duration) {
         let at = now_ms().saturating_sub(ago.as_millis() as u64);
         self.db
             .lock()
@@ -3115,6 +3202,104 @@ mod tests {
         assert!(s.history("p").unwrap().is_empty());
         assert_eq!(s.used(), 0, "a deleted pad's history is given back too");
         assert_eq!(s.keep_now("nobody").unwrap(), None);
+    }
+
+    #[test]
+    fn a_lapsed_pads_history_is_nobodys_and_does_not_come_back() {
+        // Audit B11: history, a version and keeping one checked the name and
+        // not the lease, so a pad that read as free still showed its old
+        // files until the hourly sweep. And a pad started at the name before
+        // the sweep inherited them: its versions, its last run, and the
+        // lapsed files themselves kept as a version of the new pad.
+        let (s, _d) = store();
+        s.write("p", &[put("old.py", "the old owner's")]).unwrap();
+        s.write("p", &[put("old.py", "the old owner's, changed")])
+            .unwrap();
+        let old = s.history("p").unwrap();
+        assert_eq!(old.len(), 1);
+        let run = LastRun {
+            path: "old.py".into(),
+            command: "python old.py".into(),
+            exit: 0,
+            at_ms: 0,
+            output: "the old owner's output".into(),
+        };
+        s.set_last_run("p", &run).unwrap();
+        age(&s, "p");
+
+        assert!(s.history("p").unwrap().is_empty(), "a lapsed pad's history");
+        assert!(s.version("p", old[0].id).unwrap().is_none());
+        assert!(s.open_version("p", old[0].id).unwrap().is_none());
+        assert_eq!(
+            s.keep_now("p").unwrap(),
+            None,
+            "kept a version of a lapsed pad"
+        );
+        assert_eq!(s.last_run("p").unwrap(), None);
+
+        // Somebody new, before the sweep.
+        s.write("p", &[put("new.py", "theirs")]).unwrap();
+        assert!(
+            s.history("p").unwrap().is_empty(),
+            "the lapsed pad's versions came back under the new one"
+        );
+        assert!(s.version("p", old[0].id).unwrap().is_none());
+        assert_eq!(s.last_run("p").unwrap(), None, "and its last run");
+        s.write("p", &[put("new.py", "theirs, changed")]).unwrap();
+        let history = s.history("p").unwrap();
+        assert_eq!(history.len(), 1);
+        let then = s.version("p", history[0].id).unwrap().unwrap();
+        assert_eq!(then.keys().collect::<Vec<_>>(), vec!["new.py"]);
+        let left: i64 =
+            s.db.lock()
+                .query_row(
+                    "SELECT COUNT(*) FROM version_files WHERE path = 'old.py'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(left, 0, "the old files are still held by a version");
+        let held_runs: i64 =
+            s.db.lock()
+                .query_row("SELECT COUNT(*) FROM last_runs", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(held_runs, 0);
+    }
+
+    #[test]
+    fn a_version_streamed_is_the_version_kept() {
+        // Sent from its blobs as a pad's read is, rather than built whole:
+        // escaping, binary files and an empty file all come out as kept.
+        let (s, _d) = store();
+        let files = [
+            put("a.txt", "one \"quoted\"\n\u{1F600}\\"),
+            Write {
+                encoding: Encoding::Base64,
+                ..put("logo.png", "iVBORw0KGgo=")
+            },
+            put("dir/empty.txt", ""),
+        ];
+        s.write("p", &files).unwrap();
+        let id = s.keep_now("p").unwrap().unwrap();
+        s.write("p", &[put("a.txt", "since")]).unwrap();
+
+        use std::io::Read;
+        let opened = s.open_version("p", id).unwrap().expect("kept");
+        let remaining = opened.remaining;
+        let mut rest = String::new();
+        opened.into_reader().read_to_string(&mut rest).unwrap();
+        assert_eq!(rest.len() as u64, remaining, "remaining was wrong");
+        let body: serde_json::Value = serde_json::from_str(&format!("{{{rest}")).unwrap();
+        assert_eq!(body["id"], id);
+        assert_eq!(
+            body["files"]["a.txt"]["content"],
+            "one \"quoted\"\n\u{1F600}\\"
+        );
+        assert_eq!(body["files"]["logo.png"]["encoding"], "base64");
+        assert_eq!(body["files"]["logo.png"]["content"], "iVBORw0KGgo=");
+        assert_eq!(body["files"]["dir/empty.txt"]["content"], "");
+        assert_eq!(body["files"].as_object().unwrap().len(), 3);
+        assert!(s.open_version("p", id + 1).unwrap().is_none());
     }
 
     #[test]

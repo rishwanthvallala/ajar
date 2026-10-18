@@ -513,31 +513,50 @@ fn refuse(e: pad::Error) -> (StatusCode, String) {
     (code, e.message())
 }
 
+/// What a read holds while it is sent: the address's read slot and one of
+/// the global permits. See [`admit_read`].
+type ReadHeld = (quota::Claim, tokio::sync::OwnedSemaphorePermit);
+
+/// Let a read in, or say why not: one of the caller's
+/// [`quota::MAX_READS_PER_IP`] slots, then one of the
+/// [`MAX_CONCURRENT_PAD_READS`] permits, waiting at most [`PAD_READ_WAIT`]
+/// for it. What it returns has to last until the response's last byte is
+/// sent — see [`stream_json`].
+async fn admit_read(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    peer: SocketAddr,
+) -> Result<ReadHeld, (StatusCode, &'static str)> {
+    let caller = caller_ip(headers, peer.ip(), state.trust_forwarded);
+    let Ok(slot) = state
+        .quota
+        .claim(caller, std::time::Instant::now(), quota::Kind::Read)
+    else {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many pads being read from this address at once — try again in a moment",
+        ));
+    };
+    let Ok(Ok(permit)) =
+        tokio::time::timeout(PAD_READ_WAIT, state.reading.clone().acquire_owned()).await
+    else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the server is busy sending other pads — try again in a moment",
+        ));
+    };
+    Ok((slot, permit))
+}
+
 async fn read_pad(
     Path(name): Path<String>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> axum::response::Response {
-    let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
-    let Ok(slot) = state
-        .quota
-        .claim(caller, std::time::Instant::now(), quota::Kind::Read)
-    else {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many pads being read from this address at once — try again in a moment",
-        )
-            .into_response();
-    };
-    let Ok(Ok(permit)) =
-        tokio::time::timeout(PAD_READ_WAIT, state.reading.clone().acquire_owned()).await
-    else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the server is busy sending other pads — try again in a moment",
-        )
-            .into_response();
+    let held = match admit_read(&state, &headers, peer).await {
+        Ok(held) => held,
+        Err(refused) => return refused.into_response(),
     };
 
     // An owned pad says who may see it; an anonymous one is anybody's. Asked
@@ -582,7 +601,17 @@ async fn read_pad(
     }
     let view = http_accounts::AccessView::from(&access);
     match opened {
-        Ok(Some(opened)) => stream_pad(opened, &view, (slot, permit)),
+        // `exists` and who you are to this pad, then the stored object's own
+        // fields. The stored document starts with `{`, which `open_for_read`
+        // left off.
+        Ok(Some(opened)) => stream_json(
+            format!(
+                r#"{{"exists":true,"access":{},"#,
+                serde_json::to_string(&view).unwrap_or_else(|_| "{}".into())
+            ),
+            opened,
+            held,
+        ),
         Ok(None) => Json(PadBody {
             exists: false,
             access: view,
@@ -734,19 +763,28 @@ async fn history(
 }
 
 /// One version's files, as a read of the pad gives its files.
+///
+/// Let in as a read is and sent as one is, from its blobs, holding the same
+/// slot and permit until the last byte has gone. It was neither: built whole
+/// in memory — a version is as big as the pad was, up to 100 MiB — and
+/// outside every bound on reads, so a few at once could take the relay's
+/// memory and everyone's sessions with it (audit B03).
 async fn version(
     Path((name, id)): Path<(String, u64)>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> axum::response::Response {
+    let held = match admit_read(&state, &headers, peer).await {
+        Ok(held) => held,
+        Err(refused) => return refused.into_response(),
+    };
     if let Err(refused) = history_access(&state, &headers, &name, false).await {
         return refused.into_response();
     }
     let pads = state.pads.clone();
-    match tokio::task::spawn_blocking(move || pads.version(&name, id)).await {
-        Ok(Ok(Some(files))) => {
-            Json(serde_json::json!({ "id": id, "files": files })).into_response()
-        }
+    match tokio::task::spawn_blocking(move || pads.open_version(&name, id)).await {
+        Ok(Ok(Some(opened))) => stream_json("{".to_string(), opened, held),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
             "no such version of this pad, or no longer kept",
@@ -980,26 +1018,21 @@ fn card(host: &str, name: &str, title: &str, description: &str) -> axum::respons
         .into_response()
 }
 
-/// The stored document, sent from its file with `exists` put in front.
+/// A stored document — a pad, or a version of one — sent from its files with
+/// `head` put in front: `{` and whatever fields the caller adds.
 ///
 /// `held` is what has to last as long as the sending: the address's read slot
 /// and the global permit. It rides inside the body stream, so it is released
 /// when the last byte goes or the client disappears — not when this function
 /// returns, which is before a single byte of the body has moved. Held by the
 /// handler instead, the bound would cover nothing but opening the file.
-fn stream_pad(
+fn stream_json(
+    head: String,
     opened: pad::Opened,
-    access: &http_accounts::AccessView,
     held: impl Send + 'static,
 ) -> axum::response::Response {
     use futures_util::{StreamExt, TryStreamExt};
 
-    // `exists` and who you are to this pad, then the stored object's own
-    // fields. The stored file starts with `{`, which `open_for_read` consumed.
-    let head = format!(
-        r#"{{"exists":true,"access":{},"#,
-        serde_json::to_string(access).unwrap_or_else(|_| "{}".into())
-    );
     let head_len = head.len() as u64;
     // Kept until the body is sent or dropped: the store deletes a blob a
     // write let go of only once nothing is sending it.
