@@ -64,7 +64,27 @@ ajar.rishwanth.dev {
 		}
 		# Session ids appear in paths. They are not secrets on their own —
 		# the key is — but there is no reason to keep them for a year.
-		format json
+		#
+		# What is a secret is left out (audit B05): the pad API answers on
+		# this site too, and its requests carry a link's code in
+		# X-Pad-Code — as good as the link — and the sign-in in Cookie.
+		# Caddy blanks Cookie, Set-Cookie and Authorization itself unless
+		# told to log credentials, but not a header it has never heard of,
+		# so every coded request kept its code here in the clear. Deleted
+		# by name, those three as well, so the answer does not rest on a
+		# default; and an OAuth callback's one-time code, from its URL.
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Pad-Code delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				resp_headers>Set-Cookie delete
+				request>uri query {
+					delete code
+				}
+			}
+		}
 	}
 }
 
@@ -328,7 +348,21 @@ code.rishwanth.dev {
 			roll_size 10MiB
 			roll_keep 5
 		}
-		format json
+		# The pad's API is here: a link's code in X-Pad-Code, the sign-in in
+		# Cookie, and the OAuth callback's code in its URL. None of them is
+		# kept — see the same block for ajar.rishwanth.dev.
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Pad-Code delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				resp_headers>Set-Cookie delete
+				request>uri query {
+					delete code
+				}
+			}
+		}
 	}
 }
 
@@ -417,6 +451,17 @@ preview.rishwanth.dev {
 			roll_size 10MiB
 			roll_keep 5
 		}
-		format json
+		# Nothing of ours should arrive here — the pad's cookie is host-only
+		# and its code goes to the pad's origin — but what a page sends is
+		# the page's choice, so the same headers are kept out.
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Pad-Code delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				resp_headers>Set-Cookie delete
+			}
+		}
 	}
 }
