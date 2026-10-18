@@ -1253,6 +1253,27 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await typed("rm -r errs");
   await clear();
 
+  // ---- Run pressed while the pad is still opening ----
+  // The button is there from the first paint; until 18 October a click before
+  // the pad had opened was dropped without a word (review N1). The pad's
+  // read is held back here, so the click lands while it says "opening…".
+  section = "run while opening";
+  {
+    const early = await context.newPage();
+    await early.route(/\/api\/pad\/[^/]+$/, async (route) => {
+      if (route.request().method() === "GET") await new Promise((r) => setTimeout(r, 1500));
+      await route.continue().catch(() => {});
+    });
+    await early.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+    await early.locator("#run").waitFor({ timeout: 30_000 });
+    const opening = await early.evaluate(() => document.getElementById("status")?.textContent ?? "");
+    await early.locator("#run").click();
+    const told = await early.evaluate(() => document.getElementById("status")?.textContent ?? "");
+    const ran = await early.waitForFunction(() => /wrote 10 rows to out\.csv/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 180_000 }).then(() => true, () => false);
+    expect("Run pressed while the pad is opening is said, and runs once it is open", /opening/.test(opening) && /Run starts/.test(told) && ran, JSON.stringify({ opening, told, ran }));
+    await early.close();
+  }
+
   // ---- Markdown, formatted ----
   // Preview beside the source or over it, as it will look: GitHub's
   // Markdown, the editor's colours in its code, the pad's own pictures — and

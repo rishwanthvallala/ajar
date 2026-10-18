@@ -557,7 +557,7 @@ export class Console {
     // and a program waiting for input look exactly the same from here.
     if (!this.warned) {
       this.warned = true;
-      this.screen.write("\x1b[90m(ctrl-c stops a running command)\x1b[0m\r\n");
+      this.screen.write("\x1b[90m(ctrl-c stops a running command · F6 leaves the terminal)\x1b[0m\r\n");
     }
     let finished: Finished | null = null;
     try {

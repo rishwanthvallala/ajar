@@ -69,6 +69,12 @@ const COMPILER = new RegExp(String.raw`^(${PATH}):(\d+)(?::(\d+))?:\s*(?:(fatal 
 const PHP_ERROR = new RegExp(String.raw`^(?:PHP )?(Parse error|Fatal error|Warning):\s+(.*?) in (${PATH})(?: on line |:)(\d+)`);
 /** A stack frame: Java's `at Main.main(Main.java:5)`, Node's `at f (/workspace/app.js:3:13)`. */
 const FRAME = new RegExp(String.raw`^\s+at .*?\(?(${PATH}):(\d+)(?::(\d+))?\)?$`);
+/**
+ * Node's frame in the program itself, which the runtime evaluates rather
+ * than loads from its file: `at Object.eval (<anonymous>:5:1)`, the line the
+ * program's own (shell.ts takes the wrapper's lines off).
+ */
+const ANONYMOUS_FRAME = /^\s+at .*?\(?<anonymous>:(\d+)(?::(\d+))?\)?$/;
 /** Go's, under a panic: a tab, the file and line, and an offset. */
 const GO_FRAME = new RegExp(String.raw`^\s+(${PATH}):(\d+)(?: \+0x[0-9a-f]+)?$`);
 /** A Node error's first line, the file and line it is in, before the code and the caret. */
@@ -79,7 +85,7 @@ const NODE_HEADER = new RegExp(String.raw`^(${PATH}):(\d+)$`);
  * the innermost frame of the pad's own files (`ours`), not the library's it
  * was in when it raised. Stopped by Ctrl-C is not a problem with the code.
  */
-export function problemsIn(output: string, ours: (path: string) => string | null): Problem[] {
+export function problemsIn(output: string, ours: (path: string) => string | null, evaluated: string | null = null): Problem[] {
   const problems: Problem[] = [];
   const add = (p: Problem) => {
     if (!problems.some((q) => q.path === p.path && q.line === p.line && q.message === p.message)) problems.push(p);
@@ -144,6 +150,16 @@ export function problemsIn(output: string, ours: (path: string) => string | null
       if (path) add({ path, line: Number(php[4]), message: php[2]!.trim(), severity: php[1] === "Warning" ? "warning" : "error" });
       continue;
     }
+    // `evaluated`: the file a `node` command ran, which is what Node calls
+    // `<anonymous>` — until 18 October no JS error was marked at all.
+    const anonymous = evaluated ? ANONYMOUS_FRAME.exec(line) : null;
+    if (anonymous) {
+      if (pending) {
+        add({ path: evaluated!, line: Number(anonymous[1]), ...(anonymous[2] ? { column: Number(anonymous[2]) } : {}), message: pending.message, severity: "error" });
+        pending = null;
+      }
+      continue;
+    }
     const stack = FRAME.exec(line);
     if (stack) {
       const path = ours(stack[1]!);
@@ -172,7 +188,7 @@ export function problemsIn(output: string, ours: (path: string) => string | null
     if (exception) {
       const message = exception[2] ? `${exception[1]}: ${exception[2]}` : exception[1]!;
       if (frame) add({ ...frame, message, severity: "error" });
-      else if (line.startsWith("Exception in thread")) pending = { message };
+      else if (line.startsWith("Exception in thread") || evaluated) pending = { message };
       frame = null;
     }
   }

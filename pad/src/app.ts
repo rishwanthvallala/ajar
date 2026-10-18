@@ -313,6 +313,14 @@ export class App {
   private busy = false;
   /** When Run was last pressed, so a double-click is not also a Stop. */
   private runPressed = 0;
+  /**
+   * Until the pad is open: its files read, the editor and the terminal up.
+   * Run pressed then — the button is there from the first paint — was
+   * dropped without a word until 18 October (review N1); now it is
+   * remembered (`runWanted`) and runs once the pad is open.
+   */
+  private opening = true;
+  private runWanted = false;
   private missed = false;
   /** And one of them was a refresh that may not be skipped (`refresh(true)`). */
   private missedForced = false;
@@ -482,6 +490,20 @@ export class App {
   }
 
   async start(): Promise<void> {
+    // Answered from the start; `wire` puts the full handler on later.
+    this.el.run.onclick = () => void this.run();
+    try {
+      await this.open();
+    } finally {
+      this.opening = false;
+    }
+    if (this.runWanted && !this.disposed) {
+      this.runWanted = false;
+      void this.run();
+    }
+  }
+
+  private async open(): Promise<void> {
     this.el.title.textContent = this.name;
     document.title = `${this.name} — pad`;
     toastRegions();
@@ -2150,16 +2172,19 @@ export class App {
    * one marked goes, here and in every file. They move with the text as it is
    * edited, and stay until the next run says otherwise.
    */
-  private markProblems(output: string): void {
+  private markProblems(output: string, command = ""): void {
     const monaco = this.monaco;
     if (!monaco) return;
+    // The file a `node` command ran: Node names it `<anonymous>`.
+    const node = /(?:^|[\s;&(])node\s+(?:'([^']+)'|"([^"]+)"|([^\s;&|)'"]+))/.exec(command);
+    const evaluated = node ? this.padPath(node[1] ?? node[2] ?? node[3]!) : null;
     for (const path of this.marked) {
       const model = this.texts.existing(path);
       if (model) monaco.editor.setModelMarkers(model, RUN_MARKS, []);
     }
     this.marked.clear();
     const byFile = new Map<string, ReturnType<typeof problemsIn>>();
-    for (const problem of problemsIn(output, (p) => this.padPath(p))) {
+    for (const problem of problemsIn(output, (p) => this.padPath(p), evaluated)) {
       byFile.set(problem.path, [...(byFile.get(problem.path) ?? []), problem]);
     }
     for (const [path, problems] of byFile) {
@@ -2212,7 +2237,7 @@ export class App {
     const rule = (text: string) => `\x1b[90m── ${text} ──\x1b[0m\r\n`;
     const body = run.output.endsWith("\n") || !run.output ? run.output : `${run.output}\n`;
     if (session.console.printAbove(`${rule(`the last run, ${when(run.at_ms)}: ${run.command} · ${ended}`)}${body}${rule("Run to run it again")}`)) {
-      this.markProblems(run.output);
+      this.markProblems(run.output, run.command);
     }
   }
 
@@ -2582,6 +2607,21 @@ export class App {
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+    // Tab is the terminal's, as in any shell, so the way out is F6
+    // (`cycleRegion`) — and a way out nobody is told of is no way out (WCAG
+    // 2.1.2; review, 18 October). Said as the terminal takes focus, and on
+    // screen beside the first wait (console.ts).
+    let keys = document.getElementById("terminal-keys");
+    if (!keys) {
+      keys = Object.assign(document.createElement("span"), {
+        id: "terminal-keys",
+        className: "visually-hidden",
+        textContent: "Tab types a tab here. F6 moves on to the next part of the page, Shift+F6 back; Ctrl+Enter runs the file.",
+      });
+      this.el.terms.append(keys);
+    }
+    term.textarea?.setAttribute("aria-describedby", "terminal-keys");
+    host.title = "F6 leaves the terminal";
     const session = new TerminalSession(number, host, term, fit, {
       runtime: () => this.ensureRuntime(),
       prepare: (t, command) => {
@@ -2593,7 +2633,7 @@ export class App {
         this.onBusy(t, busy);
         // A language's run says what is wrong where: marked in the editor.
         // Anything else — ls, cd, pip — leaves the last run's marks alone.
-        if (!busy && languageOfLine(this.commandOf.get(t) ?? "")) this.markProblems(t.lastOutput);
+        if (!busy && languageOfLine(this.commandOf.get(t) ?? "")) this.markProblems(t.lastOutput, this.commandOf.get(t));
       },
       place: (path) => this.padPath(path),
       openPlace: (place) => this.openPlace(place),
@@ -2916,6 +2956,11 @@ export class App {
   }
 
   private async run(): Promise<void> {
+    if (this.opening) {
+      this.runWanted = true;
+      this.say("loading", "opening… — Run starts as soon as the pad is open");
+      return;
+    }
     const program = interpreterFor(this.active);
     // A language fetched the first time it is used — C, Go, Node, PHP.
     const runner = program ? null : runnerFor(this.active);
@@ -3013,6 +3058,14 @@ export class App {
       const installed = command && finished?.exitCode === 0 && !finished.interrupted ? pipInstalled(command) : null;
       if (session && installed?.length) await this.recordInstalled(await this.runtime, session, installed);
       await this.publish(await this.runtime);
+      // Ctrl-C on a pipe the runtime did not end (docs/use/pad.md, "A
+      // pipeline can hang") can leave Python in this page answering nothing
+      // after: the prompt is back, and the next `python` prints nothing at
+      // all. Nothing else would say why (review, 18 October).
+      const piped = command && /\|(?!\|)/.test(command.replace(/'[^']*'|"[^"]*"|\|\|/g, ""));
+      if (session && finished?.interrupted && piped && /\b(python3?|pip3?)\b/.test(command)) {
+        session.console.printAbove("\x1b[90mnote: a pipe stopped with ctrl-c can leave Python in this page stuck — if it prints nothing now, reload the page; your files are saved\x1b[0m\r\n");
+      }
     } catch (e) {
       this.say("error", (e as Error).message);
     }

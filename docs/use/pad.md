@@ -75,7 +75,9 @@ stack, PHP's — are links in the terminal: click one and the file opens at that
 line. And the run's errors are marked in the editor, a squiggle under each line
 with what it said on hover (F8 steps through them). The marks follow the text
 as you edit, and the next run replaces them; a command that is not a program
-— `ls`, `pip install` — leaves them be.
+— `ls`, `pip install` — leaves them be. A JavaScript error is marked in the
+file `node` ran, though it is not a link: Node here names that file
+`<anonymous>`, at the right line.
 
 **The last run is kept with the pad.** What Run last printed — and which file,
 how it ended, when — is saved with the pad, so whoever opens the link next sees
@@ -530,10 +532,13 @@ the same once the program finishes.
 **A pipeline can hang.** Now and then a command piped into another —
 `pip install numpy 2>&1 | tail -2`, `cat poem.txt | grep two` — finishes its
 work and never ends: the runtime underneath does not always tell the second
-program the first one is done. About half the time for a long pip install
-into `tail`, rarely for short commands. Ctrl-C ends it and nothing is lost. To
-avoid it, write to a file and read that: `pip install numpy > log.txt 2>&1;
-tail -2 log.txt`.
+program the first one is done. Most of the time for a long pip install piped
+into `tail`, rarely for short commands. Ctrl-C brings the prompt back and no
+file is lost, but Python in that page may not answer again until you reload
+it. To avoid it, write to a file, then read it — two commands:
+`pip install numpy > log.txt 2>&1`, then `tail -2 log.txt`. The install is
+added to `requirements.txt` as a plain one is; joined with `;` or a pipe it is
+not, because the line's result is then `tail`'s, not pip's.
 
 The first command is slow — that is the 19 MB arriving. After that it is
 instant, and a later visit is free.

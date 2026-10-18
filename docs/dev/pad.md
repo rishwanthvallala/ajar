@@ -1490,3 +1490,40 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 - **A failed start of the runtime** is forgotten, so the next Run tries again
   (R6); **a file that cannot be read** is kept as stored, not published as
   deleted (R8).
+
+## After the verification of 18 October
+
+What the reviewer's second look at the deployed pad found, and what changed:
+
+- **Run pressed while the pad is opening** was dropped without a word: the
+  button is there from the first paint, but it had no handler until `wire`,
+  and `run` returned for want of a terminal. It is answered from the start
+  now; until `start` finishes (`App.opening`) a press says "Run starts as soon
+  as the pad is open" and is remembered (`runWanted`), and the run starts when
+  it is. Ctrl+Enter goes the same way. `user-check.mjs` holds the pad's read
+  back 1.5 s and clicks during it (review N1).
+- **`pip install x > log 2>&1` is recorded** in requirements.txt, as the guide
+  says to type to keep clear of a pipe that hangs: the recorder took any `>`
+  as "not a plain install" (`plainInstall` in requirements.ts). Output sent to
+  a file is fine, and so is a command after `&&`, which runs only if pip's
+  succeeded; a pipe, `;` or `||` is still not, since the line's exit status is
+  then another command's (review N2).
+- **After Ctrl-C on a piped `python` or `pip` command**, the terminal says that
+  Python in the page may be stuck and a reload clears it, since the next
+  `python` otherwise just prints nothing. The page does not start the runtime
+  again itself: that would end whatever the other terminals are running.
+- **F6 is said where the terminal is**: its text box is described by a
+  hidden line a screen reader reads as it takes focus, its area's title says
+  so, and the first wait's grey line says "F6 leaves the terminal" beside
+  "ctrl-c stops a running command" (WCAG 2.1.2 asks that the way out be told).
+- **A JavaScript error is marked in the editor**: the runtime's Node
+  evaluates the program, so its frames say `<anonymous>:5:1`; the file is the
+  one the command ran (`problemsIn`'s `evaluated`).
+- **The final empty line's number** has its own AA grey, where Monaco's own dim
+  came to 1.8:1 (`theme.ts`).
+- **A phone on its side** shows the editor and the terminal side by side,
+  each the screen's height, with the files a drawer as on a phone upright:
+  one above the other, the terminal had two rows. Only on a touch screen
+  (`pointer: coarse`, under 30 rem tall, landscape) — a desktop window zoomed
+  to the same shape keeps its splitter. `check-pad-layout.cjs` opens one at
+  844×390.

@@ -203,6 +203,12 @@ async function main() {
     is(said("python -m pip install -q --no-cache-dir 'flask>=3' requests==2.32.3"), '["flask>=3","requests==2.32.3"]', "with python -m, options skipped and versions kept");
     is(said("pip3 install -i https://example.com/simple six"), '["six"]', "an option's value is not a package");
     is([said("pip install -r requirements.txt"), said("pip install -e ."), said("pip install ./dist/x.whl"), said("pip install git+https://x/y.git"), said("pip install numpy | tail -2"), said("pip list"), said("pip install")].join(" "), "null null null null null null null", "but a file, a path, an address, a pipeline or no package names nothing");
+    is(
+      [said("pip install tomli > /tmp/t.log 2>&1"), said("pip install numpy >> log.txt"), said("pip install six &> log"), said("pip install 'flask>=3' 2>/dev/null && tail -2 log")].join(" "),
+      '["tomli"] ["numpy"] ["six"] ["flask>=3"]',
+      "its output sent to a file, as the guide says to keep clear of a hanging pipe, or something after && — still recorded (review N2)",
+    );
+    is([said("pip install numpy > log; tail log"), said("pip install numpy || true"), said("pip install $(cat x)"), said("pip install numpy < in")].join(" "), "null null null null", "but not where the line's status is not pip's, nor a substitution or input");
     is(JSON.stringify(requirementLines("# deps\nnumpy>=2  # fast\n\n-i https://x\nPandas\n")), '["numpy>=2","Pandas"]', "requirements.txt read as its requirements, without comments or options");
     is([requirementName("Pandas>=2"), requirementName("scikit_learn[all]"), requirementName("Flask")].join(" "), "pandas scikit-learn flask", "and a package named as pip compares names");
     is(
@@ -256,6 +262,14 @@ async function main() {
     is(said(["/workspace/app.js:3", "console.log(x)", "            ^", "", "ReferenceError: x is not defined", "    at Object.<anonymous> (/workspace/app.js:3:13)"].join("\n")), "app.js:3 error ReferenceError: x is not defined", "a Node error, at the line it names first");
     is(said(["/workspace/app.js:1", 'throw new Error("boom")', "", "Error: boom"].join("\n")), "app.js:1 error Error: boom", "even one called just Error");
     is(said("PHP Parse error:  syntax error, unexpected end of file in /workspace/index.php on line 3"), "index.php:3 error syntax error, unexpected end of file", "PHP's");
+    {
+      // The runtime's Node evaluates the program, so its frames say `<anonymous>`
+      // — the line the program's own — and only the command says which file.
+      const out = ["ReferenceError: foo is not defined", "    at Object.eval (<anonymous>:5:1)"].join("\n");
+      const marked = (ran: string | null) => problemsIn(out, ours, ran).map((p) => `${p.path}:${p.line}:${p.column} ${p.message}`).join(" | ");
+      is(marked("app.js"), "app.js:5:1 ReferenceError: foo is not defined", "a Node error in the program it ran, at its line, in the file the command ran");
+      is(marked(null), "", "and nothing where no command says which file that is");
+    }
     const links = (line: string) => placesIn(line).map((f) => `${f.path}:${f.line}${f.column ? `:${f.column}` : ""}@${f.start}-${f.end}`).join(" ");
     is(links('  File "/workspace/main.py", line 2, in f'), "/workspace/main.py:2@2-35", "a link over a Python frame");
     is(links("    at Object.<anonymous> (/workspace/app.js:3:13)"), "/workspace/app.js:3:13@27-49", "and a stack frame's place, inside its brackets");
