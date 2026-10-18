@@ -635,7 +635,15 @@ because the output stream stays open after bash dies.
 
 **Text in an open file** is a CRDT, straight between browsers on the doc
 channel. The stream id is a hash of the path, so every browser agrees which
-stream a file is on without being told.
+stream a file is on without being told. It is 32 bits, the frame's own, and
+32 bits of hash collide — `file-1ezsubx.txt` and `file-6yp6oj.txt` share
+one — so since 18 October each document message also names its path, after
+the Yjs bytes: the path, its length in two bytes, then `0xFF` (`docPayload`
+and `readDoc` in `peers.ts`). A page goes by the name, and drops a message
+whose name is not on the stream it came on. A page from before reads Yjs's
+encoding from the front and never reaches the name; a message from one names
+nothing, and is taken for the file open on its stream, or dropped when two
+are (audit DC-09).
 
 **Everything else** goes through the store: a peer broadcasts only that
 something *moved*, and everyone re-reads.
@@ -699,9 +707,19 @@ found on 2 October and all in `app.ts`'s `readyDoc`, `attach` and `onDoc`:
   one wait.
 - **Binding replaces the editor's text with the document's.** The editor
   shows the stored copy meanwhile, so it can be typed into, and that typing
-  went with it. `pad/src/carry.ts` turns it into one edit, made again after
-  binding so it reaches everybody and is saved; it lands where the text
-  around it still matches, and never removes anything somebody else wrote.
+  went with it. `pad/src/carry.ts` merges it into the document's text and
+  makes the difference one edit, made again after binding so it reaches
+  everybody and is saved. Since 18 October the merge is three-way and hunk
+  by hunk (`merge`): each side's change is cut into line hunks, a hunk goes
+  in where it was made when the other side left those lines alone, and lines
+  both sides changed are compared again by character. Where the two still
+  overlap, the same change goes in once; otherwise the other side's text
+  stays and what was typed follows it. Nothing of the base appears twice,
+  nothing typed is lost, and nothing somebody else wrote is removed. Until
+  then it was one span from the first difference to the last, so two edits
+  far apart carried everything between them over somebody else's work
+  (audit DC-06). A stretch too long to compare that has no line found once
+  on each side can still, when both changed it, show base text twice.
 - **Typing straight after New file went in twice** until 15 October: `abc`
   was `abcabc`. A new file is unsaved from the start, so the document was
   seeded from the model — typing and all — and binding then carried the same
@@ -753,7 +771,9 @@ to arrive hears `DOC_NONE` from everyone and seeds again from the stored copy.
 Under one id for every seed, that new document claims the same characters as
 the viewer's old one, and the viewer applied the new editor's typing against
 the wrong ones: garbled text, nothing pending, nothing to notice. With the id
-made from the text (FNV-1a, `seedId` in `editing.ts`), the same text still
+made from the text (`seedId` in `editing.ts` — 64-bit FNV-1a folded to the
+53 bits a number holds exactly, since 18 October; the 32-bit one gave two
+different seeds one id within tens of thousands of texts, audit DC-09), the same text still
 dedupes, and a different one shares no ids — the newcomer's edits wait in the
 viewer's document as unplaceable, which `App.unstick` notices after 1.5 s: it
 throws the document away and asks the room again. `accounts-check.mjs` plays
@@ -828,7 +848,13 @@ is the other history (`DocSession.foreignRoot`). Both places see it, and the
 one whose first insert has the smaller client id gives its document up and
 rejoins (`App.rejoin`): it takes the room's, then replays what it typed since
 the two parted — measured from its text when it lost the room, or from what
-it seeded, whichever came later. `pair-check.mjs` cuts a place's sockets the
+it seeded, whichever came later. That text is taken once, as the room is
+lost (`App.inRoom`); until 18 October every failed retry took it again, with
+the typing since in it, and a rejoin then saw nothing typed. And document
+frames queued while the room is lost are not sent when it is back: the room
+may have a history of its own by then, which cannot place them, and the
+state exchange every join starts carries the same typing anyway (`Peers.lost`).
+`pair-check.mjs` cuts a place's sockets the
 way a sleeping laptop's are cut, types on both sides of the gap, and wants
 one file with both people's work.
 
