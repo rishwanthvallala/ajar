@@ -585,6 +585,10 @@ struct PadBody {
     access: http_accounts::AccessView,
     seq: u64,
     files: std::collections::BTreeMap<String, pad::File>,
+    /// The reader has the pad at `seq` already (`x-pad-seq`), and `files`
+    /// is empty for that reason, not because the pad is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    unchanged: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -699,6 +703,32 @@ async fn read_pad(
     // elsewhere, a reconnect, a change of access — says so, and is counted
     // once it is served (usage.rs).
     let counted = headers.contains_key("x-pad-open").then(|| name.clone());
+    let view = http_accounts::AccessView::from(&access);
+
+    // A page that has the pad at a sequence says so, and is told it has it
+    // rather than sent it all again. It reads again on every welcome to its
+    // room and whenever anybody joins or leaves it, and for a 78 MB pad each
+    // was 9 MB more to download (18 October). Who it is to the pad is said
+    // either way: that is what a read after a change of access is for.
+    let since = headers
+        .get("x-pad-seq")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if let (Some(since), None) = (since, &counted) {
+        let (pads, name) = (state.pads.clone(), name.clone());
+        if let Ok(Ok(Some(seq))) =
+            tokio::task::spawn_blocking(move || pads.unchanged_since(&name, since)).await
+        {
+            return Json(PadBody {
+                exists: true,
+                access: view,
+                seq,
+                files: Default::default(),
+                unchanged: true,
+            })
+            .into_response();
+        }
+    }
 
     // Opening, checking and renewing are filesystem calls, so they go where
     // blocking belongs rather than stalling a worker carrying keystrokes.
@@ -709,7 +739,6 @@ async fn read_pad(
     if let (Some(pad), Ok(_)) = (counted, &opened) {
         usage::count_open(&state, pad);
     }
-    let view = http_accounts::AccessView::from(&access);
     match opened {
         // `exists` and who you are to this pad, then the stored object's own
         // fields. The stored document starts with `{`, which `open_for_read`
@@ -727,6 +756,7 @@ async fn read_pad(
             access: view,
             seq: 0,
             files: Default::default(),
+            unchanged: false,
         })
         .into_response(),
         Err(e) => refuse(e).into_response(),

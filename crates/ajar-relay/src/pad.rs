@@ -1860,6 +1860,37 @@ impl Store {
     /// Opening counts as touching it, so its lease starts again — at most once
     /// a day, as renewing is a write. What is sent is the version this looked
     /// at: its blobs never change, and none is deleted while it is in use.
+    /// The pad's sequence, when a reader that has it at `since` has it as it
+    /// is — the pad no further on — and nothing when it has moved on, or is
+    /// not there, or has lapsed: then the reader is sent it whole. The lease
+    /// is renewed as a read renews it, as somebody asking is somebody with
+    /// the pad open.
+    pub fn unchanged_since(&self, name: &str, since: u64) -> Result<Option<u64>, Error> {
+        check_name(name)?;
+        let db = self.db.lock();
+        let Some(head) = Self::head(&db, name)? else {
+            return Ok(None);
+        };
+        if self.lapsed(name, head.touched_ms) || head.seq > since {
+            return Ok(None);
+        }
+        Self::renew(&db, name, head.touched_ms)?;
+        Ok(Some(head.seq))
+    }
+
+    /// A read keeps a pad from lapsing: its lease is moved on, at most once
+    /// every `RENEW_EVERY`.
+    fn renew(db: &Connection, name: &str, touched_ms: u64) -> Result<(), Error> {
+        let now = now_ms();
+        if Duration::from_millis(now.saturating_sub(touched_ms)) > RENEW_EVERY {
+            db.execute(
+                "UPDATE pads SET touched_ms = ?2 WHERE name = ?1",
+                params![name, now as i64],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
         check_name(name)?;
         let (head, rows, reading) = {
@@ -1872,13 +1903,7 @@ impl Store {
             if self.lapsed(name, head.touched_ms) {
                 return Ok(None);
             }
-            let now = now_ms();
-            if Duration::from_millis(now.saturating_sub(head.touched_ms)) > RENEW_EVERY {
-                db.execute(
-                    "UPDATE pads SET touched_ms = ?2 WHERE name = ?1",
-                    params![name, now as i64],
-                )?;
-            }
+            Self::renew(&db, name, head.touched_ms)?;
             let rows = Self::rows(&db, name)?;
             let reading = self.hold(&db, rows.values().map(|r| r.blob.clone()).collect());
             (head, rows, reading)

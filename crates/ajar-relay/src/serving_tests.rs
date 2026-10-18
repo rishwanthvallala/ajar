@@ -1269,3 +1269,60 @@ async fn a_full_store_keeps_no_more_output() {
     assert_eq!(small.status, StatusCode::NO_CONTENT, "{}", small.body);
     assert_eq!(relay.state.pads.used(), (3 + 4 + 11) as u64);
 }
+
+// ------------------------------------ a read from a page that has the pad
+
+#[tokio::test]
+async fn a_page_that_has_the_pad_is_told_so_rather_than_sent_it_again() {
+    // Every welcome to a room, and everybody joining or leaving it, made each
+    // page read the whole pad again: 9 MB a time for a 78 MB pad.
+    let relay = Relay::new("");
+    let seq = relay
+        .state
+        .pads
+        .write("p", &[put("a.txt", "hello")])
+        .unwrap();
+    let at = |n: u64| n.to_string();
+
+    let same = relay
+        .call(get("/api/pad/p", &[("x-pad-seq", &at(seq))]))
+        .await;
+    assert_eq!(same.status, StatusCode::OK, "{}", same.body);
+    let body = same.json();
+    assert_eq!(body["unchanged"], true, "{body}");
+    assert_eq!(body["seq"], seq);
+    assert_eq!(body["files"], serde_json::json!({}));
+    assert_eq!(
+        body["access"]["role"], "editor",
+        "who it is is said all the same"
+    );
+
+    // Behind, or opening it, or saying nothing: the whole pad, as before.
+    for headers in [
+        vec![("x-pad-seq", at(seq - 1))],
+        vec![("x-pad-seq", at(seq)), ("x-pad-open", "1".into())],
+        vec![("x-pad-seq", "not a number".into())],
+        vec![],
+    ] {
+        let headers: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let whole = relay.call(get("/api/pad/p", &headers)).await.json();
+        assert_eq!(whole["files"]["a.txt"]["content"], "hello", "{headers:?}");
+        assert!(whole.get("unchanged").is_none(), "{headers:?}");
+    }
+    let none = relay
+        .call(get("/api/pad/nobody-here", &[("x-pad-seq", "5")]))
+        .await
+        .json();
+    assert_eq!(none["exists"], false);
+
+    // And a pad that is not the reader's to see says so, sequence or not.
+    let (owner, _) = relay.signed_in("1");
+    let private = relay.owned_pad(owner, View::Owner, Edit::Owner);
+    let refused = relay
+        .call(get(
+            &format!("/api/pad/{}", private.name),
+            &[("x-pad-seq", "999999")],
+        ))
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}

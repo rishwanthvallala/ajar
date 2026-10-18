@@ -116,6 +116,14 @@ pad's fields, then each file's fixed parts around its blob, read from disk a
 chunk at a time. Its length is known before the first byte, from the blobs'
 sizes. Memory is a chunk, whatever the pad's size.
 
+A reader that has the pad already says at which sequence, `x-pad-seq`, and if
+the pad is no further on it is answered with `"unchanged": true`, the sequence,
+who it is to the pad, and no files — the lease renewed all the same, and access
+checked first, as for any read (18 October). Pages read again on every welcome
+to the room and whenever anybody joins or leaves it; for a large pad each of
+those was the whole pad again. Opening a pad (`x-pad-open`) is always read
+whole.
+
 ## A save that sends only what changed
 
 A browser saving a file it already holds can send the edit rather than the file:
