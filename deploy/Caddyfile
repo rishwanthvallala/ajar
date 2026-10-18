@@ -51,6 +51,10 @@ ajar.rishwanth.dev {
 		# send anywhere — but a referrer leak of the path alone would
 		# still name the session, so send none at all.
 		-Server
+		# HTTPS only, for a year, once a browser has been here. Caddy
+		# redirects plain http already, but the request it redirects has
+		# gone out in the clear, where anything on the way can answer it.
+		Strict-Transport-Security "max-age=31536000"
 	}
 
 	log {
@@ -79,6 +83,8 @@ code.rishwanth.dev {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		-Server
+		# HTTPS only, for a year: see the same line for ajar.rishwanth.dev.
+		Strict-Transport-Security "max-age=31536000"
 
 		# `unsafe-eval` rather than the narrower `wasm-unsafe-eval`, because
 		# the Wasmer SDK's worker evaluates a string as JavaScript and fails
@@ -281,6 +287,21 @@ code.rishwanth.dev {
 		rewrite * /privacy.html
 		file_server
 	}
+	# A file under the asset folders that is not there is not found, rather
+	# than the page below: index.html with a 200, and the `immutable` header
+	# from above, so a browser kept a page as that script or package for a
+	# year. Said not to be kept at all, as a refusal is in `handle_errors`
+	# — it may well be there after the next deploy.
+	@missing_asset {
+		path /assets/* /vendor/* /packages/*
+		not file {
+			root /srv/ajar/pad
+		}
+	}
+	handle @missing_asset {
+		header Cache-Control "no-store"
+		respond "not found" 404
+	}
 	handle {
 		root * /srv/ajar/pad
 		# Any path that is not a file is a folder name, and the page reads
@@ -334,6 +355,8 @@ preview.rishwanth.dev {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		-Server
+		# HTTPS only, for a year: see the same line for ajar.rishwanth.dev.
+		Strict-Transport-Security "max-age=31536000"
 
 		# Framed by the pad and by nothing else. Whatever the sandbox
 		# serves gets `sandbox` besides, so a page someone runs in their
