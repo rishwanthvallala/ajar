@@ -1119,6 +1119,17 @@ impl Store {
             && Duration::from_millis(now_ms().saturating_sub(touched_ms)) > LEASE
     }
 
+    /// Whether the store's database answers, for the readiness check: a row
+    /// of the table every read and write starts from, looked for.
+    pub fn ping(&self) -> Result<(), Error> {
+        self.db
+            .lock()
+            .query_row("SELECT EXISTS (SELECT 1 FROM pads)", [], |r| {
+                r.get::<_, bool>(0)
+            })?;
+        Ok(())
+    }
+
     /// Bytes of the blobs some pad holds right now, and of the last runs
     /// pads keep.
     pub fn used(&self) -> u64 {

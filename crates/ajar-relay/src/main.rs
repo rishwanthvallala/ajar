@@ -499,8 +499,60 @@ fn router(state: AppState, web: Option<&str>) -> Router {
     app
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// How long a readiness check waits for the databases to answer.
+const READY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(serde::Deserialize)]
+struct HealthQuery {
+    deep: Option<String>,
+}
+
+/// `ok`, from a process that is up: what the deploy and the checks wait for,
+/// and what it always said.
+///
+/// With `?deep=1`, whether the pad can be used: the accounts database and
+/// the pad store's each asked for a row of the table every request reads,
+/// within [`READY_WAIT`] — 503 and which did not answer, and why, if either
+/// did not. Plain `/healthz` said `ok` from a relay whose every pad request
+/// was failing (audit B12); it still does, as liveness, and stays as cheap
+/// as it was. A query string rather than a route of its own, so it takes
+/// no name a pad could have.
+async fn health(
+    axum::extract::Query(query): axum::extract::Query<HealthQuery>,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    if query.deep.is_none() {
+        return "ok".into_response();
+    }
+    let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
+    let asked = tokio::task::spawn_blocking(move || {
+        let mut wrong = Vec::new();
+        if let Err(e) = accounts.ping() {
+            wrong.push(format!("the accounts database: {}", e.message()));
+        }
+        if let Err(e) = pads.ping() {
+            wrong.push(format!("the pad store: {}", e.message()));
+        }
+        wrong
+    });
+    let wrong = match tokio::time::timeout(READY_WAIT, asked).await {
+        Ok(Ok(wrong)) => wrong,
+        Ok(Err(_)) => vec!["the check itself failed".to_string()],
+        Err(_) => vec![format!(
+            "the databases did not answer within {} seconds",
+            READY_WAIT.as_secs()
+        )],
+    };
+    if wrong.is_empty() {
+        "ready".into_response()
+    } else {
+        tracing::error!(reasons = %wrong.join("; "), "not ready");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("not ready: {}", wrong.join("; ")),
+        )
+            .into_response()
+    }
 }
 
 async fn no_such_route() -> (StatusCode, &'static str) {

@@ -510,6 +510,18 @@ impl Accounts {
         Ok(expires.map(|e| std::time::Duration::from_millis((e * 1000 - now_ms).max(0) as u64)))
     }
 
+    /// Whether the database answers, for the readiness check: a row of the
+    /// table every pad's access is decided from, looked for. Not `SELECT 1`,
+    /// which a database whose tables are gone answers too.
+    pub fn ping(&self) -> Result<(), AccountError> {
+        self.db
+            .lock()
+            .query_row("SELECT EXISTS (SELECT 1 FROM pads)", [], |r| {
+                r.get::<_, bool>(0)
+            })?;
+        Ok(())
+    }
+
     pub fn end_session(&self, token: &str) {
         let _ = self.db.lock().execute(
             "DELETE FROM sessions WHERE token_hash = ?1",

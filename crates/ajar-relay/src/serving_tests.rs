@@ -187,6 +187,13 @@ impl Relay {
             .unwrap();
     }
 
+    /// The same for the pad store's database.
+    pub fn break_store(&self) {
+        let db = rusqlite::Connection::open(self.dir.0.join("pads").join("store.db")).unwrap();
+        db.execute_batch("ALTER TABLE pads RENAME TO pads_unreadable")
+            .unwrap();
+    }
+
     /// Every sign-in made so far runs out `secs` from now, as if it had been
     /// made thirty days less that ago.
     pub fn expire_sign_ins_in(&self, secs: i64) {
@@ -822,6 +829,42 @@ async fn a_lapsed_pad_shows_nothing_of_itself() {
         .call(request("POST", "/api/pad/p/history", &[], Body::empty()))
         .await;
     assert_eq!(kept.json()["id"], serde_json::Value::Null);
+}
+
+// ------------------------------------------- B12: up is not the same as ready
+
+#[tokio::test]
+async fn a_deep_health_check_says_whether_the_pad_can_be_used() {
+    // Audit B12: `/healthz` said ok from a relay whose every pad request was
+    // failing. It still says ok — the deploy waits for exactly that — and
+    // `?deep=1` asks both databases.
+    for broken in ["accounts", "store"] {
+        let relay = Relay::new("");
+        let plain = relay.call(get("/healthz", &[])).await;
+        assert_eq!((plain.status, plain.body.as_str()), (StatusCode::OK, "ok"));
+        let deep = relay.call(get("/healthz?deep=1", &[])).await;
+        assert_eq!((deep.status, deep.body.as_str()), (StatusCode::OK, "ready"));
+
+        match broken {
+            "accounts" => relay.break_accounts(),
+            _ => relay.break_store(),
+        }
+        let plain = relay.call(get("/healthz", &[])).await;
+        assert_eq!(
+            (plain.status, plain.body.as_str()),
+            (StatusCode::OK, "ok"),
+            "liveness is the process, not its databases"
+        );
+        let deep = relay.call(get("/healthz?deep=1", &[])).await;
+        assert_eq!(deep.status, StatusCode::SERVICE_UNAVAILABLE, "{broken}");
+        let named = if broken == "accounts" {
+            "the accounts database"
+        } else {
+            "the pad store"
+        };
+        assert!(deep.body.contains(named), "{broken}: {}", deep.body);
+        assert!(deep.body.contains("pads"), "says why: {}", deep.body);
+    }
 }
 
 // ------------------------------------------------------------- the hello
