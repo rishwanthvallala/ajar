@@ -14,7 +14,7 @@
 // the sandbox, so the page and the runtime are cached as a returning
 // visitor's are. DIST points at another build.
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
@@ -174,5 +174,9 @@ console.log(JSON.stringify({
 }));
 await browser.close();
 server.close();
+const gone = new Promise((r) => relay.once("exit", r));
 relay.kill();
+await gone;
+// The big pad is 78 MB on disk, and the relay keeps versions of it.
+await rm(dir, { recursive: true, force: true });
 process.exit(0);
