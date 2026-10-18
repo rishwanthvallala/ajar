@@ -346,10 +346,14 @@ push_caddyfile
 # ---------------------------------------------------------------- check
 
 say "checking"
+# The deep check: the relay answering, and both its databases too — a relay
+# that started but cannot read its accounts or its pads answered the plain
+# /healthz with 200 (audit B12). A relay from before it ignores the query
+# and answers as /healthz does.
 for i in $(seq 1 20); do
-    code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "https://$DOMAIN/healthz" || true)
+    code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$DOMAIN/healthz?deep=1" || true)
     if [ "$code" = "200" ]; then
-        printf '  healthz: 200\n'
+        printf '  healthz (deep): 200\n'
         printf '  version: %s\n' "$(ssh "$HOST" '/usr/local/bin/ajar-relay --version' 2>/dev/null || echo '?')"
         printf '\n  share something at it:\n      ajar ~/some/project --relay https://%s\n\n' "$DOMAIN"
         exit 0
@@ -357,6 +361,6 @@ for i in $(seq 1 20); do
     sleep 1
 done
 
-echo "  healthz never returned 200 (last: ${code:-none})" >&2
+echo "  healthz?deep=1 never returned 200 (last: ${code:-none}): $(curl -s -m 10 "https://$DOMAIN/healthz?deep=1" || true)" >&2
 ssh "$HOST" "$SUDO systemctl status ajar-relay --no-pager -l | tail -20" >&2
 exit 1
