@@ -728,9 +728,30 @@ the code.
   relay whose every pad request was failing. It still does — it is liveness,
   and what the deploy waits for — and `/healthz?deep=1` asks both databases
   for a row of the tables every request reads, `ready` or 503 with why.
-  *Still open:* the rest of B12 — the deploy rsyncs into the live asset
-  directories rather than swapping a release in, checks only plain
-  `/healthz`, and has no rollback — is in `deploy/deploy.sh`, untouched here.
+  The deploy now waits for `/healthz?deep=1`. *Still open:* the rest of
+  B12 — the deploy rsyncs into the live asset directories rather than
+  swapping a release in, and has no rollback.
+- **A preview page stays its own pad's** (audit DC-10). A navigation in the
+  preview with nothing in it to say which pad it was for went to whichever
+  pad last loaded a page. So with two previews open, or a page popped out of
+  one, a link or a form in one reached the other's server, on the same port,
+  and the page could read what came back. A navigation now goes where the page
+  it replaces came from, or the step before it. A frame or window a page makes
+  is served only when everything of the preview's origin open in the browser
+  is one pad's, and otherwise refused. See [networking.md](networking.md#a-small-browser).
+- **Only a pad's control page instructs the preview's worker** (DC-11). Every
+  preview page is on the worker's origin and knows its session's id, and could
+  send `pad-preview:front` for it. That made the page the session's control,
+  so it got the session's requests and answers instead of the pad. The worker
+  now takes messages only from a framed `/.wasmer/host.html` it did not serve.
+  It binds a session to the first such page and attaches a route only for the
+  control page that made it. The pad hears `pad-preview:` messages only from
+  that page's window, which also stops the page writing rows into its request
+  log.
+
+  These two are checked in `preview-check.mjs` rather than `serving_tests.rs`.
+  A second pad's control page and server stand beside the first, and a page
+  in the preview tries the instructions itself.
 
 ## Markdown, shown formatted
 

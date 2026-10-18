@@ -195,6 +195,13 @@ cannot be reached locally, and uses the preview as a person would:
 - the request log and one request opened up, and the console
 - the page in a tab of its own
 - Ctrl-C and a rerun bring the page back by itself
+- since 18 October, a second pad beside the first: a stand-in tab at the pad's
+  origin that speaks the pad's side of the protocol, with its own server on
+  8080 in the page. Links in either preview, and in a page popped out of the
+  first, stay on their own pad's server. A frame a page adds is refused while
+  two pads are open and served once one is. A page in the preview that sends
+  the worker a pad's instructions, or writes the pad a request-log row, is
+  ignored, and both pads keep their reports (audit DC-10 and DC-11)
 
 It takes `PAD_ORIGIN` to drive the deployed site, which it silently ignored
 until 15 September. It runs from `pad/`, because it starts the relay at

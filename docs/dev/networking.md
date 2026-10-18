@@ -381,11 +381,40 @@ the same way, so `ports.expose()` is unchanged, and it adds the rest:
   origin's root as it would at `localhost:<port>`. Each document's later
   requests go back to the server it came from, keyed by client id.
 - **One session per pad tab.** Each tab has its own routes, front server and
-  cookies. A navigation inside a frame does not say which tab it is in, so it
-  goes to the session that last loaded a page or came back into view. Every
-  load the pad makes names its session, so this matters only for a link
-  clicked in a background tab's preview while another tab's preview is in
-  front.
+  cookies, and each page stays its tab's. Every load the pad makes names its
+  session in the `/.wasmer/go/` path. Any other navigation goes where the page
+  it replaces came from: Chrome names that document as the navigation's
+  client. A redirect, the pad's own or the server's, goes where the step
+  before it went, because the browser keeps the navigation's client id
+  through redirects on one origin.
+
+  A frame or window that a page makes (an iframe it adds, a link with
+  `target=_blank`) names no page. It is served only when everything of the
+  preview's origin open in the browser is one pad's: its control page and
+  pages the worker served it. Otherwise the frame gets the worker's "no
+  preview" page and nothing loads. That covers two pads open, a page served
+  before the worker was restarted, and anything else it cannot vouch for.
+  A `/.wasmer/go/` load from a frame already showing another session's page
+  is refused too.
+
+  Until 18 October such a navigation went to whichever session had last
+  loaded a page or come back into view (audit DC-10). With two previews open,
+  or a page popped out of one, a link in one could load the other's server
+  into it, on the same port. `preview-check.mjs` opens a second pad beside
+  the first and checks links in both, in a popped-out page, and in a frame a
+  page adds.
+- **Instructions come only from a control page.** The worker takes messages
+  only from a framed `/.wasmer/host.html` that it did not serve itself. A
+  Client's `url` is where the document was made, so `history.replaceState`
+  cannot fake one. A session is bound to the first control page that speaks
+  for it, and messages for it from any other are refused. A route can be
+  attached only by the control page that registered it. The pad accepts
+  `pad-preview:` messages only from its control page's window. Until
+  18 October any window could send them (audit DC-11). Every preview page is
+  on this origin and has its own session's id in its script tag, so a page
+  could make itself the session's control and get the session's requests and
+  answers instead of the pad. It could also write rows into the pad's request
+  log.
 - **`http://localhost:PORT` is the sandbox's PORT.** Requests the page makes
   there are answered by the folder's server on that port, never by this
   computer's. The browser's CORS rule is applied to them as at localhost:
@@ -432,6 +461,11 @@ are throttled to once a minute. When the worker was stopped anyway:
   `pad-preview:unrouted`. If the pad knows something listens there, it makes
   that route again and reloads the page, or retries a terminal's request
   once.
+- **The tab coming back into view** (`pad-preview:front`) for a port the
+  worker has no route to gets `pad-preview:unrouted` straight away. A page
+  left open is one the new worker never served, and from 18 October its
+  requests are refused rather than given to whichever session is about, so it
+  is reloaded without waiting for it to ask for something.
 
 A page reloads for this at most once in ten seconds, per port for the
 second case, and a terminal's request is retried only once, so a worker that
