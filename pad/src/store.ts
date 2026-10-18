@@ -42,6 +42,12 @@ export interface Pad {
   files: Record<string, StoredFile>;
   /** Who you are to this pad. Absent from a relay older than accounts. */
   access?: Access;
+  /**
+   * The reader has the pad at `seq` already, which it said (`x-pad-seq`), and
+   * `files` is empty for that, not because the pad is. A relay from before
+   * 18 October never says it, and sends the pad whole.
+   */
+  unchanged?: boolean;
 }
 
 /** One change. A `content` of `null` with no `edits` deletes. */
@@ -318,12 +324,30 @@ export class Store {
   /** Bytes one request carries at most. A field so a check can make it small. */
   requestBytes = REQUEST_BYTES;
 
+  /**
+   * Told when a write comes back more than one past the last of the pad this
+   * store has seen, read or written: somebody else's write went in between,
+   * which this page has not read. Each write moves a pad on by one.
+   *
+   * Until 18 October the page took the write's number as how far it had read
+   * too, so the nudge for that other write — arriving after — asked for
+   * nothing newer than it had, and what it changed stayed unseen here until
+   * something else changed.
+   */
+  onBehind: ((name: string) => void) | null = null;
+  /** The furthest this store has seen each pad at. */
+  private seen = new Map<string, number>();
+
   constructor(
     private readonly base = "",
     private readonly code: (name: string) => string | null = () => null,
     /** How long the server has to start answering. A write gets more for its size. */
     private readonly deadline = 30_000,
   ) {}
+
+  private saw(name: string, seq: number): void {
+    this.seen.set(name, Math.max(this.seen.get(name) ?? 0, seq));
+  }
 
   private headers(name: string): Record<string, string> {
     const code = this.code(name);
@@ -374,14 +398,23 @@ export class Store {
     if (!res.ok) await refuse(res);
   }
 
-  async read(name: string, opening = false): Promise<Pad> {
+  /**
+   * The pad, or — given `since`, the sequence the reader has it at — only
+   * that it has not moved on, when it has not (`Pad.unchanged`).
+   */
+  async read(name: string, opening = false, since?: number): Promise<Pad> {
     const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
-      headers: opening ? { ...this.headers(name), "x-pad-open": "1" } : this.headers(name),
+      headers: {
+        ...this.headers(name),
+        ...(opening ? { "x-pad-open": "1" } : {}),
+        ...(since ? { "x-pad-seq": String(since) } : {}),
+      },
       // A pad's answer depends on who asks. Never one from a cache.
       cache: "no-store",
     }, this.deadline);
     if (!res.ok) await refuse(res);
     const pad = (await res.json()) as Pad;
+    this.saw(name, pad.seq);
     if (Object.values(pad.files ?? {}).some((f) => typeof f.hash === "string")) this.editsWork = true;
     return pad;
   }
@@ -428,6 +461,9 @@ export class Store {
     if (!res.ok) await refuse(res);
     const { seq, hashes } = (await res.json()) as { seq: number; hashes?: Record<string, string> };
     if (hashes) this.editsWork = true;
+    const before = this.seen.get(name);
+    this.saw(name, seq);
+    if (before !== undefined && seq !== before + 1) this.onBehind?.(name);
     return { seq, hashes: hashes ?? {} };
   }
 }

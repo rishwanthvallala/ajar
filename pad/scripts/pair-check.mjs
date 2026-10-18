@@ -507,6 +507,50 @@ try {
     await b.context().close();
   }
 
+  // ---- a write somebody else made just before this page's own --------------
+  // Each write moves a pad on by one. A page took its save's number as how far
+  // it had read, so a write that went in just before its own — whose nudge
+  // then asked for nothing newer — stayed unseen there until something else
+  // changed (18 October). Here that write has no nudge at all: it goes straight
+  // to the API while the page's own request is on its way. And a page that has
+  // the pad is told so when it reads it again, rather than sent it whole.
+  {
+    const name = `pair-between-${Date.now().toString(36)}`;
+    const put = (writes) => fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes }) });
+    await put([{ path: "main.py", content: "print(1)\n" }, { path: "other.txt", content: "before\n" }]);
+    const a = await place(name, "A");
+    await a.waitForFunction(() => window.__pad.active() === "main.py", null, { timeout: 15_000 });
+    let slipped = false;
+    await a.route(`**/api/pad/${name}`, async (route) => {
+      if (route.request().method() === "PUT" && !slipped) {
+        slipped = true;
+        await put([{ path: "other.txt", content: "from elsewhere\n" }]);
+      }
+      await route.continue();
+    });
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("# A\n");
+    const seen = await a.waitForFunction(() => window.__pad.text("other.txt") === "from elsewhere\n", null, { timeout: 15_000 }).then(() => true, () => false);
+    if (slipped && seen) ok("a write made just before this page's own save is read there, not taken as seen");
+    else fail(`a write made just before this page's own save — ${JSON.stringify({ slipped, other: await a.evaluate(() => window.__pad.text("other.txt")) })}`);
+    await a.unroute(`**/api/pad/${name}`);
+
+    // Somebody joining: the page reads the pad again, and is told it has it.
+    const reads = [];
+    a.on("response", (r) => {
+      if (r.request().method() === "GET" && new URL(r.url()).pathname === `/api/pad/${name}`) reads.push(r.text().catch(() => ""));
+    });
+    await wait(a, 2000);
+    const b = await place(name, "B");
+    await wait(a, 3000);
+    const bodies = await Promise.all(reads);
+    const short = bodies.filter((body) => body.includes('"unchanged":true') && !body.includes("from elsewhere"));
+    if (short.length > 0 && short.length === bodies.length) ok(`and when somebody joins, it is told it has the pad rather than sent it again (${bodies.length} read, ${short[0].length} bytes)`);
+    else fail(`a read again when somebody joins — ${JSON.stringify(bodies.map((body) => body.slice(0, 120)))}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- two files whose paths share a stream --------------------------------
   // A document's frames carry 32 bits to say which file, a hash of the path,
   // and these two names hash alike. The second opened took the first's place,

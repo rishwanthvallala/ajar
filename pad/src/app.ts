@@ -314,6 +314,8 @@ export class App {
   /** When Run was last pressed, so a double-click is not also a Stop. */
   private runPressed = 0;
   private missed = false;
+  /** And one of them was a refresh that may not be skipped (`refresh(true)`). */
+  private missedForced = false;
   /** Models edited since the last save. */
   private dirty = new Set<string>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -444,6 +446,10 @@ export class App {
     private readonly ui?: PadWorkspace,
     private readonly hooks: AppHooks = {},
   ) {
+    // A write that went past one this page never read: read the pad, all of it.
+    this.store.onBehind = (pad) => {
+      if (pad === this.name) void this.refresh(true);
+    };
     this.ui?.onLayout(() => {
       this.editor?.layout();
       this.fitTerminals();
@@ -659,14 +665,23 @@ export class App {
    * then, and writing someone else's version of a file underneath a running
    * script is a way to produce output that matches no version of anything.
    */
-  private async refresh(): Promise<void> {
+  /**
+   * Read the pad again and take in what changed. `forced` when a save of
+   * this page's came back past a write it never read (`Store.onBehind`): its
+   * own number is no proof then of having seen everything up to it.
+   */
+  private async refresh(forced = false, tries = 0): Promise<void> {
     if (this.busy) {
       this.missed = true;
+      this.missedForced ||= forced;
       return;
     }
     let pad: Pad;
     try {
-      pad = await this.store.read(this.name);
+      // How far this page has it, so a pad no further on is not sent whole
+      // again: this runs on every welcome to the room and whenever anybody
+      // joins or leaves it, and for a 78 MB pad each was 9 MB (18 October).
+      pad = await this.store.read(this.name, false, forced ? undefined : this.storeSeq);
     } catch (e) {
       if (e instanceof StoreError && (e.refused || e.gone)) this.lose(e.gone ? "gone" : "private");
       return;
@@ -675,7 +690,14 @@ export class App {
     // editing, revoked a link, or opened it up. The relay closes the room
     // when that happens, and this read follows the reconnect.
     this.adopt(pad.access);
-    if (pad.seq <= this.storeSeq) return;
+    if (forced && pad.seq < this.storeSeq) {
+      // Read before a save of this page's went in, so without it: taken in,
+      // it would undo that save here. Asked again in a moment, a few times;
+      // a pad that lapsed and began again at 1 never gets that far.
+      if (tries < 3) setTimeout(() => void this.refresh(true, tries + 1), 1000);
+      return;
+    }
+    if (!forced && (pad.unchanged || pad.seq <= this.storeSeq)) return;
     // Only a runtime that is already up is written to here. One still starting
     // is not waited for: this used to wait, so a browser still downloading its
     // runtime — a first visit, for a while — showed nobody else's new or
@@ -2967,8 +2989,10 @@ export class App {
       this.paintRun();
       // A change that arrived mid-run was put off rather than dropped.
       if (this.missed) {
+        const forced = this.missedForced;
         this.missed = false;
-        void this.refresh();
+        this.missedForced = false;
+        void this.refresh(forced);
       }
     }
   }

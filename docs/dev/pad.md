@@ -1006,14 +1006,28 @@ saved by no command. Against the code before, all four failed: 500 models,
 4 warnings, and both files saved converted. `check.ts` holds `Texts` to the
 same.
 
-**Not changed: the room's welcome reads the whole pad again.** `onPresence`
-calls `refresh` on every welcome — to catch a save made between the page's
-read and its joining the room — and whenever anyone joins or leaves. For
-the 78 MB pad on the slow link the welcome's is a second 9 MB, finished 7 s
-after the editor is up, and the terminal waits behind it: 14.8 s without
-that read, on the code before, against 17.4 s. Knowing that nothing moved
-needs the relay to say the pad's sequence in the welcome, or to answer a
-read with "unchanged".
+**The room's welcome no longer reads the whole pad again,** since later the
+same day. `onPresence` calls `refresh` on every welcome — to catch a save
+made between the page's read and its joining the room — and whenever anyone
+joins or leaves. For the 78 MB pad on the slow link the welcome's was a second
+9 MB, finished 7 s after the editor was up, and the terminal waited behind it:
+14.8 s without that read, on the code before, against 17.4 s. Now the read
+says how far the page has the pad (`x-pad-seq`), and a pad no further on is
+answered with that and who the page is to it, about 100 bytes
+(`Store.unchanged_since` in the relay, `Pad.unchanged` here). `pair-check.mjs`
+has a second place join and wants the first's read again to be that.
+
+**A save's number is no longer taken as how far the page has read.** Each
+write moves a pad on by one, and a page set its sequence to what its save came
+back with. When somebody else's write went in just before, that skipped it:
+its nudge, arriving after, asked for nothing newer than the page had, and what
+it changed stayed unseen there until something else changed. `Store` now
+keeps the furthest it has seen the pad at, read or written, and a write that
+comes back more than one past it says so (`onBehind`); the page then reads the
+pad whole, and takes in only a read at least as far on as its own last save,
+so a read that left that save out cannot undo it here. `pair-check.mjs` makes
+a write straight to the API while the page's own is on its way, with no nudge
+at all; before, the page never saw it.
 
 ## The download
 
