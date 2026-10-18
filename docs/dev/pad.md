@@ -252,7 +252,7 @@ sitecustomize changes a module only once it is imported, through a finder
 first on `sys.meta_path`, so the aliased tools that start a python for every
 `sort` pay nothing for it.
 
-**A pad of more than 200 text files was a page error.** Every file has a
+**A pad of more than 200 text files was a page error.** Every file had a
 Monaco model, every model listens to Monaco's language service, and that
 emitter calls more than 200 listeners a leak — `[001] potential listener LEAK
 detected` — thrown on a timer as an unexpected error. `pip install flask`
@@ -260,8 +260,9 @@ alone puts 187 files in `.deps` (not saved since 18 October, but models then).
 It is not a leak here, and a pad holds 500,
 so since 16 October `App.openEditor` drops that one report from Monaco's
 `errorHandler` and passes every other error on; Monaco's console warning
-stays. A model only for the files that are open would not need it, and
-would touch everything that reads a file's text.
+stays. Since 18 October a file has a model only once the editor needs one
+([Opening a pad of 500 files](#opening-a-pad-of-500-files)), so only someone
+who opens more than 200 files in one visit gets that far.
 
 **More than one terminal, since 16 October** (`terminals.ts`). Each is a
 `TerminalSession` — its xterm, its console, its bash — in the one sandbox, so
@@ -663,7 +664,9 @@ typing in, while this browser shows another, keeps the editor model it had
 when it was last on screen; its document — and the sandbox, which each update
 is written into — move on without it. So anything that writes a file into the
 sandbox reads it with `App.current`: the document when it has state, the model
-otherwise. Run wrote models until 4 October, which put the older text back
+otherwise — or, for a file this browser has not needed a model of, its text
+(since 18 October; see [Opening a pad of 500 files](#opening-a-pad-of-500-files)).
+Run wrote models until 4 October, which put the older text back
 into the sandbox, and the save after the run stored it over the newer — the
 other person's last edit gone from the store until they typed again.
 `accounts-check.mjs` has an editor press Run in one file while the owner types
@@ -874,7 +877,9 @@ yourself edited did nothing at all, and said nothing about why.
 
 1. **The store**, as the base layer — the only source already correct when the
    runtime starts.
-2. **The model**, where it has something, so unsaved edits run.
+2. **The model**, where it has something, so unsaved edits run — or the
+   file's text, for one the editor has not needed a model of, which reads the
+   same way.
 3. **The document**, where there is one, since it is what fills the model.
 
 An empty model is taken only for a path the store has never heard of, which is
@@ -943,6 +948,72 @@ someone else in the room saved the same file. The page now saves what is
 waiting when it is hidden and when it goes; `keepalive` lets the browser
 finish a request of up to 64 KB after the page has gone, so a bigger file
 relies on the hidden moment, which comes first.
+
+## Opening a pad of 500 files
+
+An outside review of 17 October found that a pad of 500 files made 500
+editor models as it opened, with Monaco's listener-leak warnings, and was
+usable after 61 s. Measured on 18 October with `pad/scripts/open-perf.mjs`:
+headless Chromium on this Mac, a local relay, 500 files in folders, and a
+return visit, the page and the runtime cached. Two runs each, before and
+after the change below. Editor is the first file on screen, ready the page
+wired up, terminal a typed `find` answering with all 500 files. Slow is
+Chromium's throttles — 20 Mbit/s with 80 ms of latency, the CPU four times
+slower — with the pad's reads gzipped, as Caddy sends them.
+
+| Pad | Link | Editor | Ready | Terminal | Longest task |
+|---|---|---:|---:|---:|---:|
+| 500 × 2.4 KB | local | 0.30 → 0.28 s | 0.38 → 0.35 s | 1.5 → 1.5 s | 0.15 → 0.15 s |
+| 500 × 165 KB, 78 MB | local | 1.2–1.4 → 1.2 s | 1.3–1.5 → 1.3 s | 3.0–3.6 → 2.9–3.1 s | 0.31–0.33 → 0.25–0.26 s |
+| 500 × 2.4 KB | slow | 0.61 → 0.50 s | 0.90 → 0.77 s | 8.3 → 8.1 s | 0.6 → 0.6 s |
+| 500 × 165 KB, 78 MB | slow | 6.1–6.2 → 4.9–5.2 s | 6.4–6.6 → 5.2–5.6 s | 17.4–17.5 → 15.7–16.2 s | 1.23–1.29 → 0.82–0.97 s |
+
+Models went from 500 to 1, the leak warnings from 4 to none, and the heap
+after opening from 19 to 14 MB for the small pad and from 94 to 89 MB for
+the large one.
+
+**The models were not the 61 s,** and nothing here came near it. For the
+small pad they were 25 ms. For 78 MB of text they were the largest part of
+the page's own work — 1.0 s of `App.start`'s 1.25 s with the CPU slowed, in
+one long task — and still less than the network: in the slow case most of
+the wait is the pad's read, 4 s for 9 MB gzipped, and then the same read
+again (below).
+
+**A file has a model only once the editor needs it, since 18 October**
+(`pad/src/texts.ts`). Saving, seeding the sandbox, Run, a move, a download
+and the history read a file's text, from its model when it has one. A model
+is made for the file shown (`App.show`), for one a run marks a problem in,
+for `requirements.txt` when a typed `pip install` adds to it, and for a file
+somebody else moved while typing in it here was not yet saved; once made,
+it stays, with its undo, until the file goes. New text for a file without a
+model is told as a change to a model is (`App.changed`), so it is saved and
+marked as an edit to its model would have been. A command that makes 499
+files, with another place watching, saved them and showed them there in
+4 to 5 s before and after; each place ended with one model rather than 500.
+
+**Text kept as text is kept exactly.** A model converts mixed line endings
+to one and sets a byte-order mark aside, and until 18 October that converted
+text was what the sandbox was given of every file nobody had opened — and
+what the first command saved of it, for everyone. A CSV from Excel lost its
+mark at the first Run anywhere in the pad. A file opened in the editor
+takes the editor's line ending, as before
+([above](#seeding-a-document-is-the-subtle-part)).
+
+`user-check.mjs` opens a 500-file pad and finds one model and no warning, a
+file opened from the tree given its model then, and a byte-order mark and
+mixed line endings in files nobody opened in the sandbox byte for byte and
+saved by no command. Against the code before, all four failed: 500 models,
+4 warnings, and both files saved converted. `check.ts` holds `Texts` to the
+same.
+
+**Not changed: the room's welcome reads the whole pad again.** `onPresence`
+calls `refresh` on every welcome — to catch a save made between the page's
+read and its joining the room — and whenever anyone joins or leaves. For
+the 78 MB pad on the slow link the welcome's is a second 9 MB, finished 7 s
+after the editor is up, and the terminal waits behind it: 14.8 s without
+that read, on the code before, against 17.4 s. Knowing that nothing moved
+needs the relay to say the pad's sequence in the welcome, or to answer a
+read with "unchanged".
 
 ## The download
 
