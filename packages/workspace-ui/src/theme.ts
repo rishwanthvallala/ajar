@@ -83,9 +83,14 @@ export function defineEditorThemes(editor: EditorThemes): void {
   // Line numbers and a CSV's commas at WCAG AA against it: Monaco's own and
   // the greys these had were too faint in one theme or the other (review of
   // 17 October, M6).
-  for (const [name, base, columns, delimiter, surface, lineNumber, lineNumberActive] of [
-    ["ajar-light", "vs", COLUMNS.light, "5d6673", "#ffffff", "#5d6673", "#1f2937"],
-    ["ajar-dark", "vs-dark", COLUMNS.dark, "9aa3b0", "#161a22", "#9aa3b0", "#e6e9ee"],
+  //
+  // The final empty line's number is dimmed, and Monaco's own dim — the
+  // number at 40 % — came to 1.8:1 in light and 2.2:1 in dark, which axe
+  // still reported after the rest were fixed (18 October). Its own grey here,
+  // dimmer than the rest and at AA: 4.6:1 and 4.7:1.
+  for (const [name, base, columns, delimiter, surface, lineNumber, lineNumberActive, lineNumberDimmed] of [
+    ["ajar-light", "vs", COLUMNS.light, "5d6673", "#ffffff", "#5d6673", "#1f2937", "#6e7681"],
+    ["ajar-dark", "vs-dark", COLUMNS.dark, "9aa3b0", "#161a22", "#9aa3b0", "#e6e9ee", "#7d8592"],
   ] as const) {
     editor.defineTheme(name, {
       base,
@@ -100,6 +105,7 @@ export function defineEditorThemes(editor: EditorThemes): void {
         "editorGutter.background": surface,
         "editorLineNumber.foreground": lineNumber,
         "editorLineNumber.activeForeground": lineNumberActive,
+        "editorLineNumber.dimmedForeground": lineNumberDimmed,
       },
     });
   }

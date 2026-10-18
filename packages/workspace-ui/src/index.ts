@@ -26,7 +26,9 @@ export class WorkspaceShell {
   readonly shell: HTMLElement;
   private readonly events = new AbortController();
   private readonly observer: ResizeObserver;
-  private readonly narrow = matchMedia("(max-width: 47.999rem)");
+  // Narrow, the files are a drawer: a phone upright, and since 18 October a
+  // phone on its side too, whose width the editor and terminal need more.
+  private readonly narrow = matchMedia("(max-width: 47.999rem), (max-height: 30rem) and (orientation: landscape) and (pointer: coarse)");
   private readonly storage: LayoutStorage | null;
   private readonly prefix: string;
   private hidden = false;

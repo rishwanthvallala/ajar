@@ -132,6 +132,10 @@ track and the one-column layouts are as they were.
 `check-workspace-layout.cjs` asserts nothing a keyboard reaches is outside a
 landmark.
 
+Narrow — the files a drawer — is under 48 rem wide, and since 18 October also
+a touch screen on its side under 30 rem tall, where the width is better spent
+on the editor and the terminal (the pad puts those side by side there).
+
 ## Final bundle comparison — 19 September 2026
 
 The comparable entry/controller assets from the locked production build are:
