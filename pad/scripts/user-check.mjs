@@ -38,6 +38,13 @@ const TYPES = {
 };
 
 let lastRun = null;
+// A pad as full as a pad gets, for "a pad of many files": 500 files, two of
+// them text an editor model would have converted — a byte-order mark, and
+// line endings of both kinds. What the page saves of it is kept to look at.
+const MANY = "five-hundred-files";
+const manyFiles = { "main.py": "print('five hundred')\n", "bom.csv": "\ufeffname,qty\n", "mixed.txt": "one\r\ntwo\nthree\r\n" };
+for (let i = 0; i < 497; i++) manyFiles[`src/m${Math.floor(i / 50)}/f${i}.py`] = `def f${i}(x):\n    return x * ${i}\n`;
+const manySaved = [];
 const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
@@ -45,6 +52,22 @@ const server = createServer(async (req, res) => {
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
   // A run counted (usage.rs): taken and forgotten, as the relay would.
   if (path === "/api/usage/run") {
+    for await (const _ of req);
+    res.statusCode = 204;
+    return res.end();
+  }
+  if (path === `/api/pad/${MANY}`) {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "PUT") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      manySaved.push(...JSON.parse(body).writes.map((w) => w.path));
+      return res.end(JSON.stringify({ seq: 2 }));
+    }
+    const files = Object.fromEntries(Object.entries(manyFiles).map(([p, content]) => [p, { content, encoding: "utf8", seq: 1 }]));
+    return res.end(JSON.stringify({ exists: true, seq: 1, files }));
+  }
+  if (path === `/api/pad/${MANY}/run`) {
     for await (const _ of req);
     res.statusCode = 204;
     return res.end();
@@ -976,14 +999,60 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   // ---- a pad of many files ----
   // A model per file, and Monaco called more than 200 of them a leak, thrown
   // as a page error — `pip install flask` makes 187. The page errors check at
-  // the end is what catches it.
+  // the end is what catches it. Since 18 October a file has a model only
+  // once the editor needs it (texts.ts), so files a command makes are text.
   section = "many files";
   await clear();
+  const modelsBefore = await page.evaluate(() => window.monaco.editor.getModels().length);
   await typed("mkdir -p many && for i in $(seq 1 260); do echo \"x = $i\" > many/f$i.py; done; echo made", 60_000);
   const manyShown = await page.waitForSelector('#files .row.dir[data-path="many"]', { timeout: 15_000 }).then(() => true, () => false);
   await wait(1500);
+  const modelsAfter = await page.evaluate(() => window.monaco.editor.getModels().length);
   await typed("rm -rf many", 30_000);
-  expect("a pad of 260 more files comes in", manyShown);
+  expect("a pad of 260 more files comes in, as text and not 260 more editor models", manyShown && modelsAfter === modelsBefore, `${modelsBefore} models before, ${modelsAfter} after`);
+  // And a pad that has 500 files as it opens, which made 500 models before
+  // anything could be used, and warned of a leak past 200. Each unopened
+  // file's text was its model's, which converts line endings and sets a
+  // byte-order mark aside: the sandbox got that, and the first command
+  // saved it for everyone. A stub's pad, so here only.
+  if (!LIVE) {
+    const big = await context.newPage();
+    const leaks = [];
+    big.on("console", (m) => { if (/listener LEAK/.test(m.text())) leaks.push(m.text()); });
+    big.on("pageerror", (e) => pageErrors.push(`${section}, 500 files: ${e.message}`));
+    const t0 = Date.now();
+    await big.goto(`${ORIGIN}/${MANY}`);
+    await big.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+    const opened = {
+      ...(await big.evaluate(() => ({
+        active: window.__pad.active(),
+        models: window.monaco.editor.getModels().length,
+        rows: document.querySelectorAll("#files .row.file").length,
+      }))),
+      ms: Date.now() - t0,
+      leaks: leaks.length,
+    };
+    expect("a pad of 500 files opens with one editor model, the open file's, and no leak warning", opened.active === "main.py" && opened.models === 1 && opened.rows === 500 && opened.leaks === 0, JSON.stringify(opened));
+    const deep = "src/m3/f170.py";
+    await big.locator(`#files .row.file[data-path="${deep}"]`).click();
+    const shown = await big.waitForFunction((p) => window.__pad.active() === p && window.monaco.editor.getEditors()[0].getValue(), deep, { timeout: 10_000 }).then((h) => h.jsonValue(), () => null);
+    const models = await big.evaluate(() => window.monaco.editor.getModels().length);
+    expect("…a file opened from the tree gets its model then, with its text", shown === manyFiles[deep] && models === 2, `${models} models, shows ${JSON.stringify(shown)}`);
+    // Byte for byte in the sandbox, compared by python: the mark, both line
+    // endings, and the file that was opened.
+    await big.click("#terminal");
+    const asPython = (text) => `'${text.replace(/\n/g, "\\n")}'`;
+    await big.keyboard.type(`python3 -c "print('kept', open('bom.csv','rb').read() == b'\\xef\\xbb\\xbfname,qty\\n', open('mixed.txt','rb').read() == b'one\\r\\ntwo\\nthree\\r\\n', open('${deep}').read() == ${asPython(manyFiles[deep])})"`);
+    await big.keyboard.press("Enter");
+    const kept = await big
+      .waitForFunction(() => /kept (True|False) (True|False) (True|False)/.exec((document.querySelector("#terminal .xterm-rows")?.innerText ?? "").replace(/\n/g, ""))?.[0] ?? null, null, { timeout: 240_000 })
+      .then((h) => h.jsonValue(), () => null);
+    await big.waitForFunction(() => window.__pad.shellBusy() === false, null, { timeout: 30_000 }).catch(() => {});
+    await big.waitForTimeout(1500);
+    const rewritten = manySaved.filter((p) => p in manyFiles);
+    expect("…files nobody opened are in the sandbox as stored, mark and line endings and all, and the command saves none of them", kept === "kept True True True" && rewritten.length === 0, `${kept}; saved ${JSON.stringify(rewritten.slice(0, 5))}`);
+    await big.close();
+  }
 
   // ---- http through the browser ----
   // The sandbox's own sockets reach PyPI alone. curl, wget and python's
