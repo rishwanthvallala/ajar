@@ -90,6 +90,7 @@ database copy you might restore.
 
 | | Example | What protects against it |
 |---|---|---|
+| The machine loses power or crashes | a host fault, a kernel panic | the store syncing each save before it answers (since 18 October; audit B07) — on the same volume, so not a copy |
 | The disk or the machine dies | EBS failure, instance retired | any copy off the volume |
 | We break it | a migration bug, a bad deploy, a wrong `rm` | copies from *before* — point-in-time history, not just the latest |
 | The account goes | AWS Free plan ends 25 February 2027, or credits run out; a future free host suspends us | a copy **with another provider** |

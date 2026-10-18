@@ -725,12 +725,21 @@ the code.
   with 413. Which write of a path is its last is one pass; an edit's splice
   was already linear in its edits.
 - **Up is not the same as ready** (B12). `/healthz` answered `ok` from a
-  relay whose every pad request was failing. It still does — it is liveness,
-  and what the deploy waits for — and `/healthz?deep=1` asks both databases
-  for a row of the tables every request reads, `ready` or 503 with why.
-  The deploy now waits for `/healthz?deep=1`. *Still open:* the rest of
-  B12 — the deploy rsyncs into the live asset directories rather than
-  swapping a release in, and has no rollback.
+  relay whose every pad request was failing. It still does — it is
+  liveness — and `/healthz?deep=1` asks both databases for a row of the
+  tables every request reads, `ready` or 503 with why. The deploy waits for
+  that one. *Still open:* the rest of B12 — the deploy rsyncs into the live
+  asset directories rather than swapping a release in, and has no rollback.
+- **A save that was answered outlasts a power cut** (B07). The store's
+  database was `synchronous = NORMAL`, which in WAL mode can lose the last
+  commits to a crash of the machine, and nothing synced a blob, or the
+  directory it was renamed into, so a commit could name a file whose bytes
+  never reached the disk. Now each blob's bytes are synced before its
+  rename, its directory after (and the store's, when the directory is new),
+  and only then does the row naming it commit, under `synchronous = FULL`.
+  A test holds the setting and that nothing is left half-placed; a real
+  power cut is not something CI can make, and none was made. The accounts
+  and usage databases were already FULL, SQLite's default.
 - **A preview page stays its own pad's** (audit DC-10). A navigation in the
   preview with nothing in it to say which pad it was for went to whichever
   pad last loaded a page. So with two previews open, or a page popped out of

@@ -97,6 +97,11 @@ changed after.
    the paths onto them, counts references, advances the sequence and checks the
    caps. It either happens whole or not; if not, the blobs it put in place are
    deleted.
+
+   On the disk in that order, since 18 October (audit B07): a blob's bytes
+   are synced before its rename and its directory after, and the database
+   is `synchronous = FULL`, so a save that was answered is there after a power
+   cut, and never as a row naming a blob that is not.
 3. A blob nothing refers to any more is deleted then, unless something is
    using it: a read still sending it, or an edit being applied to it. Those are
    marked while they run, and what they kept goes at the next write, or the

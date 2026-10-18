@@ -806,18 +806,30 @@ fn names_version(row: Option<&Row>, w: &Write) -> bool {
 
 /// `content` written to `path` as a JSON string, and how many bytes that is.
 /// Straight to the file: building it first was another copy of the file in
-/// memory.
+/// memory. On the disk, not only in the page cache, before it is renamed into
+/// place (see `settle`).
 fn write_json_string(path: &Path, content: &str) -> Result<u64, Error> {
     let write = || -> std::io::Result<u64> {
         let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
         serde_json::to_writer(&mut out, content)?;
         let file = out.into_inner().map_err(|e| e.into_error())?;
+        file.sync_data()?;
         Ok(file.metadata()?.len())
     };
     write().map_err(|e| {
         let _ = std::fs::remove_file(path);
         Error::Io(e.to_string())
     })
+}
+
+/// A directory's entries on the disk: a file renamed into it is there after
+/// a power cut only once its directory is synced too.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 pub enum Part {
@@ -900,7 +912,7 @@ pub struct Store {
 
 const SCHEMA: &str = "
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
+    PRAGMA synchronous = FULL;
     CREATE TABLE IF NOT EXISTS pads (
         name TEXT PRIMARY KEY,
         seq INTEGER NOT NULL,
@@ -1160,6 +1172,35 @@ impl Store {
         self.blobs.join(&hash[..2]).join(hash)
     }
 
+    /// The directory a blob goes in, made if it is not there yet; true when
+    /// this made it.
+    fn blob_dir(&self, path: &Path) -> Result<bool, Error> {
+        let dir = path.parent().expect("a blob's path has a directory");
+        if dir.is_dir() {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(dir)?;
+        Ok(true)
+    }
+
+    /// A blob just renamed into place, there after a power cut too: its
+    /// directory synced, and the store's when that directory is new. Its
+    /// bytes were synced before the rename.
+    ///
+    /// A save is said to be saved once the database commits it, and the
+    /// database is synchronous = FULL, so the commit outlasts a power cut. Until
+    /// 18 October it was NORMAL, nothing was synced here, and a crash of the
+    /// machine — not of the relay — could lose a save that had been answered,
+    /// or keep a file whose blob never reached the disk (audit B07). Now a
+    /// blob is on the disk under its name before the row naming it commits.
+    fn settle(&self, path: &Path, made: bool) -> Result<(), Error> {
+        sync_dir(path.parent().expect("a blob's path has a directory"))?;
+        if made {
+            sync_dir(&self.blobs)?;
+        }
+        Ok(())
+    }
+
     /// Store a file's text under its hash, if nothing has yet, and say which
     /// hash and how big the blob is. The text is kept as the JSON string it is
     /// sent as, so a read copies it rather than encoding it.
@@ -1169,9 +1210,7 @@ impl Store {
         if let Ok(meta) = std::fs::metadata(&path) {
             return Ok((hash, meta.len()));
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let made = self.blob_dir(&path)?;
         // Written beside its place and renamed into it: a blob is either all
         // there or not there.
         let tmp = self.tmp_path();
@@ -1179,6 +1218,7 @@ impl Store {
         std::fs::rename(&tmp, &path).inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
         })?;
+        self.settle(&path, made)?;
         Ok((hash, stored))
     }
 
@@ -2189,13 +2229,15 @@ impl Store {
             Encoding::Utf8 => b"u",
             Encoding::Base64 => b"b",
         };
-        let done = splice::splice(from, prefix, &cuts, out).map_err(|e| match e {
+        let done = splice::splice(from, prefix, &cuts, &out).map_err(|e| match e {
             splice::Error::Edit(why) => Error::BadEdit(why),
             splice::Error::Io(e) => Error::Io(e.to_string()),
             splice::Error::Corrupt => {
                 Error::Io(format!("the stored file {base} is not a JSON string"))
             }
         })?;
+        // On the disk before it is renamed into place (see `settle`).
+        out.sync_data()?;
         if encoding == Encoding::Base64 && !done.base64 {
             // Dropped, and with it the file it was written to.
             return Err(Error::Unstorable {
@@ -2219,12 +2261,11 @@ impl Store {
         }
         let stored = match staged.tmp.take() {
             Some(tmp) => {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
+                let made = self.blob_dir(&path)?;
                 std::fs::rename(&tmp, &path).inspect_err(|_| {
                     let _ = std::fs::remove_file(&tmp);
                 })?;
+                self.settle(&path, made)?;
                 staged.stored
             }
             // Already stored when it was staged, and deleted since.
@@ -2587,6 +2628,38 @@ mod tests {
         s.remove("owned").unwrap();
         assert!(s.get("owned").unwrap().is_none());
         assert_eq!(s.used(), 0);
+    }
+
+    /// Audit B07. A power cut is not something a test can make; what it can
+    /// hold is the setting that makes a commit outlast one, and that every
+    /// blob a save names is in its place, with no temporary file left, when
+    /// the save returns — whole or by edits.
+    #[test]
+    fn a_save_is_committed_in_full_and_its_blobs_are_in_place_when_it_returns() {
+        let (s, _d) = store();
+        let mode: i64 =
+            s.db.lock()
+                .query_row("PRAGMA synchronous", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(mode, 2, "synchronous = FULL");
+        s.write("p", &[put("a.txt", "one two")]).unwrap();
+        let whole = hash(&s, "p", "a.txt");
+        s.write("p", &[edit("a.txt", &whole, 3, 0, " and")])
+            .unwrap();
+        let edited = hash(&s, "p", "a.txt");
+        for blob in [&whole, &edited] {
+            assert!(s.blob_path(blob).is_file(), "blob {blob} is in place");
+        }
+        let stray: Vec<_> = std::fs::read_dir(&s.blobs)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(stray.is_empty(), "no temporary file is left: {stray:?}");
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["a.txt"].content,
+            "one and two"
+        );
     }
 
     /// A pad ~1 MiB on disk, so a ceiling can be reached without writing 4 GB.
