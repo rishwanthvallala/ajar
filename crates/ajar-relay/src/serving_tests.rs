@@ -769,3 +769,36 @@ async fn a_link_is_for_viewing_or_editing_and_nothing_else() {
         assert_eq!(answer.json()["role"], role);
     }
 }
+
+// ------------------------------------------------------- what a write holds
+
+#[tokio::test]
+async fn a_write_refused_for_one_file_says_which() {
+    let relay = Relay::new("");
+    for (writes, named) in [
+        (
+            serde_json::json!([{ "path": "ok.txt", "content": "x" }, { "path": "a\tb.txt", "content": "x" }]),
+            r#""a\tb.txt""#,
+        ),
+        (
+            serde_json::json!([{ "path": "logo.png", "content": "not base64!", "encoding": "base64" }]),
+            r#""logo.png""#,
+        ),
+        (
+            serde_json::json!([{ "path": ".ajar/site/sitecustomize.py", "content": "import os" }]),
+            r#"".ajar/site/sitecustomize.py""#,
+        ),
+    ] {
+        let answer = relay.call(write("p", &[], writes)).await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{}", answer.body);
+        assert!(
+            answer.body.contains(named),
+            "{named} is not named: {}",
+            answer.body
+        );
+    }
+    assert!(
+        relay.state.pads.get("p").unwrap().is_none(),
+        "part of a refused write was stored"
+    );
+}

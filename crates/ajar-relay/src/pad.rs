@@ -218,6 +218,12 @@ pub enum Error {
     Reserved,
     /// A path inside the pad that we will not store.
     BadPath(&'static str),
+    /// A file refused for its path or its content, named so that whoever
+    /// sent it can find it: one bad file refuses the whole write it came in.
+    Unstorable {
+        path: String,
+        why: &'static str,
+    },
     TooBig {
         bytes: usize,
     },
@@ -241,6 +247,9 @@ impl Error {
             Error::BadName(why) => format!("that name will not work: {why}"),
             Error::Reserved => "that name is reserved".into(),
             Error::BadPath(why) => format!("that file path will not work: {why}"),
+            // Quoted as Rust quotes a string, so a tab or a line break in the
+            // name shows as `\t` or `\n` rather than breaking the message.
+            Error::Unstorable { path, why } => format!("{path:?} cannot be stored: {why}"),
             Error::TooBig { bytes } => format!(
                 "{:.1} MB is over the {} MB limit",
                 *bytes as f64 / (1024.0 * 1024.0),
@@ -318,8 +327,14 @@ pub fn check_path(path: &str) -> Result<(), Error> {
     if path.len() > 512 {
         return Err(Error::BadPath("it is too long"));
     }
-    if path.starts_with('/') || path.contains('\\') {
+    if path.starts_with('/') {
         return Err(Error::BadPath("it must be relative, with forward slashes"));
+    }
+    if path.contains('\\') {
+        return Err(Error::Unstorable {
+            path: path.to_string(),
+            why: "it has a backslash in it, and a pad's paths use forward slashes",
+        });
     }
     if path
         .split('/')
@@ -332,6 +347,84 @@ pub fn check_path(path: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// What a path must be, besides [`check_path`], for a file to be stored at
+/// it. Only for storing: deleting at such a path is still allowed, so a pad
+/// that holds one from before can be cleaned.
+///
+/// No control characters — a tab, a line break, an escape: a name that
+/// reaches other people's file trees, terminals and archives must not be
+/// able to rearrange them, and nothing a person names a file has one. And
+/// nothing under `.ajar/` or in a `.git` folder: the page's own machinery,
+/// and a repository's, which the page never saves (`IGNORED` in
+/// pad/src/sync.ts) and never shows — so a file there from the API is code
+/// nobody sees, put where the page runs its own (review finding M7).
+///
+/// Not `.deps/`, though it is hidden too: pip installs there and the page
+/// saves it with the pad on purpose (`App.installRequirements`), so the next
+/// person to open it finds the packages installed. Refused here, every save
+/// after a `pip install` would be refused with it.
+fn check_storable(path: &str) -> Result<(), Error> {
+    let refuse = |why| {
+        Err(Error::Unstorable {
+            path: path.to_string(),
+            why,
+        })
+    };
+    if path.chars().any(|c| c < '\u{20}' || c == '\u{7f}') {
+        return refuse("its name has a control character in it — a tab, a line break or the like");
+    }
+    if path.starts_with(".ajar/") {
+        return refuse("the .ajar folder is the page's own machinery, which a pad never keeps");
+    }
+    // Every segment but the last is a folder the file is in.
+    if path.split('/').rev().skip(1).any(|dir| dir == ".git") {
+        return refuse("a .git folder is never kept with a pad");
+    }
+    Ok(())
+}
+
+/// Whether text is base64 the way a browser writes it (`btoa`), so far: the
+/// standard alphabet, and `=` only as the last one or two characters of a
+/// whole group. Fed in pieces, as a file being streamed is.
+///
+/// Not that it is whole groups. A file too big for one request arrives as
+/// its first part, cut wherever the request ran out (`pieces` in
+/// pad/src/store.ts), and the rest is added by edits — so text without
+/// padding may stop part-way through a group. Padding says it is the end,
+/// and then it has to be.
+#[derive(Debug, Default)]
+pub(crate) struct Base64Shape {
+    len: u64,
+    padding: u8,
+    bad: bool,
+}
+
+impl Base64Shape {
+    pub(crate) fn feed(&mut self, text: &[u8]) {
+        for &b in text {
+            match b {
+                b'=' if self.padding < 2 => self.padding += 1,
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' if self.padding == 0 => {}
+                _ => self.bad = true,
+            }
+        }
+        self.len += text.len() as u64;
+    }
+
+    pub(crate) fn ok(&self) -> bool {
+        !self.bad && (self.padding == 0 || self.len.is_multiple_of(4))
+    }
+}
+
+fn base64_shaped(text: &str) -> bool {
+    let mut shape = Base64Shape::default();
+    shape.feed(text.as_bytes());
+    shape.ok()
+}
+
+/// What a binary file's content is refused for when it is not base64.
+const NOT_BASE64: &str = "it is sent as base64 and is not base64";
 
 /// One change to a file's text: `remove` characters at `at`, then `insert`
 /// there. Counted in UTF-16 code units, as a browser counts a string.
@@ -1636,6 +1729,21 @@ impl Store {
         let mut edited = Vec::new();
         for w in writes {
             check_path(&w.path)?;
+            // Anything but a deletion stores a file.
+            if w.content.is_some() || w.edits.is_some() {
+                check_storable(&w.path)?;
+            }
+            // A page decodes a binary file to show and run it, and content
+            // that does not decode breaks that for everyone who opens the
+            // pad. Edits are checked on what they leave, once applied.
+            if let (Encoding::Base64, Some(content)) = (w.encoding, &w.content) {
+                if !base64_shaped(content) {
+                    return Err(Error::Unstorable {
+                        path: w.path.clone(),
+                        why: NOT_BASE64,
+                    });
+                }
+            }
             if w.content.is_none() && w.edits.is_some() {
                 if w.base.is_none() {
                     return Err(Error::BadEdit(
@@ -1685,7 +1793,7 @@ impl Store {
             staged.push(match (&w.content, &w.edits, &w.base) {
                 _ if !last => None,
                 (Some(content), _, _) => Some(self.stage_text(w.encoding, content)?),
-                (None, Some(edits), Some(base)) => Some(self.stage_edits(base, w.encoding, edits)?),
+                (None, Some(edits), Some(base)) => Some(self.stage_edits(w, base, edits)?),
                 _ => None,
             });
         }
@@ -1859,7 +1967,8 @@ impl Store {
 
     /// A file's new blob from edits to the one it holds, streamed from one to
     /// the other. The one it holds is in use while this runs.
-    fn stage_edits(&self, base: &str, encoding: Encoding, edits: &[Edit]) -> Result<Staged, Error> {
+    fn stage_edits(&self, w: &Write, base: &str, edits: &[Edit]) -> Result<Staged, Error> {
+        let encoding = w.encoding;
         let cuts = splice::cuts(edits).map_err(Error::BadEdit)?;
         let mut staged = Staged {
             hash: String::new(),
@@ -1880,6 +1989,13 @@ impl Store {
                 Error::Io(format!("the stored file {base} is not a JSON string"))
             }
         })?;
+        if encoding == Encoding::Base64 && !done.base64 {
+            // Dropped, and with it the file it was written to.
+            return Err(Error::Unstorable {
+                path: w.path.clone(),
+                why: NOT_BASE64,
+            });
+        }
         staged.hash = done.hash;
         staged.size = done.size;
         staged.stored = done.stored;
@@ -2661,9 +2777,155 @@ mod tests {
         let (s, _d) = store();
         for bad in ["../outside", "/absolute", "a/../../b", "back\\slash", ""] {
             assert!(
-                matches!(s.write("p", &[put(bad, "x")]), Err(Error::BadPath(_))),
+                matches!(
+                    s.write("p", &[put(bad, "x")]),
+                    Err(Error::BadPath(_) | Error::Unstorable { .. })
+                ),
                 "{bad:?} should be refused"
             );
+        }
+    }
+
+    /// What a write was refused for, if it was refused for a file: its
+    /// message, which has to name the file.
+    fn refused_naming(result: Result<u64, Error>, path: &str) -> String {
+        match result {
+            Err(e @ Error::Unstorable { .. }) => {
+                let message = e.message();
+                assert!(
+                    message.contains(&format!("{path:?}")),
+                    "the refusal does not name {path:?}: {message}"
+                );
+                message
+            }
+            other => panic!("{path:?} was not refused by name: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_path_with_a_control_character_or_a_backslash_is_refused_by_name() {
+        let (s, _d) = store();
+        for bad in [
+            "notes\tdraft.txt",
+            "two\nlines.py",
+            "dir/carriage\r.txt",
+            "bell\u{7}.txt",
+            "colour\u{1b}[31m.txt",
+            "delete\u{7f}.txt",
+            "dir\\file.txt",
+        ] {
+            refused_naming(s.write("p", &[put(bad, "x")]), bad);
+        }
+        let message = refused_naming(s.write("p", &[put("a\nb", "x")]), "a\nb");
+        assert!(
+            !message.contains('\n'),
+            "the name broke the message: {message}"
+        );
+        assert!(s.get("p").unwrap().is_none(), "a refused write was stored");
+        // Not every character past ASCII is a control character.
+        s.write("p", &[put("café/naïve 😀 file.txt", "x")]).unwrap();
+
+        // A pad that holds one from before can still let go of it.
+        s.db.lock()
+            .execute(
+                "UPDATE files SET path = 'old\tname.txt' WHERE pad = 'p'",
+                [],
+            )
+            .unwrap();
+        s.write("p", &[remove("old\tname.txt")]).unwrap();
+        assert!(s.get("p").unwrap().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn base64_that_is_not_base64_is_refused() {
+        let (s, _d) = store();
+        let binary = |path: &str, content: &str| Write {
+            encoding: Encoding::Base64,
+            ..put(path, content)
+        };
+        for bad in [
+            "not base64!",
+            "QUJD\n",
+            "QU JD",
+            "QQ=",
+            "Q===",
+            "QQ==QUJD",
+            "QUJD-_",
+        ] {
+            refused_naming(s.write("p", &[binary("x.bin", bad)]), "x.bin");
+        }
+        assert!(s.get("p").unwrap().is_none());
+        // Whole, padded or not, and the first part of a file sent in parts,
+        // which stops wherever its request ran out.
+        for good in ["", "QQ==", "QUI=", "QUJD", "iVBORw0KGgo=", "QUJDR"] {
+            s.write("p", &[binary("x.bin", good)])
+                .unwrap_or_else(|e| panic!("{good:?}: {}", e.message()));
+        }
+        // An edit is held to what it leaves.
+        let base = s
+            .write_within("p", &[binary("x.bin", "QUJD")], u64::MAX)
+            .unwrap()
+            .hashes["x.bin"]
+            .clone();
+        let padded_in_the_middle = Write {
+            encoding: Encoding::Base64,
+            ..edit("x.bin", &base, 2, 0, "==")
+        };
+        refused_naming(s.write("p", &[padded_in_the_middle]), "x.bin");
+        assert_eq!(s.get("p").unwrap().unwrap().files["x.bin"].content, "QUJD");
+        assert!(s.in_use.lock().is_empty(), "the edited blob is still held");
+        let the_rest = Write {
+            encoding: Encoding::Base64,
+            ..edit("x.bin", &base, 4, 0, "RA==")
+        };
+        s.write("p", &[the_rest]).unwrap();
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["x.bin"].content,
+            "QUJDRA=="
+        );
+        // Text is text, whatever it says.
+        s.write("p", &[put("notes.txt", "not base64!")]).unwrap();
+    }
+
+    #[test]
+    fn the_pages_own_folders_are_not_stored_but_can_be_cleaned() {
+        // Review M7: the page never saves `.ajar/` or a `.git` folder, and
+        // never shows them, so a file put there through the API is code
+        // nobody sees — and `.ajar/` is where the page runs its own.
+        let (s, _d) = store();
+        for bad in [
+            ".ajar/site/sitecustomize.py",
+            ".ajar/box.py",
+            ".git/config",
+            "src/.git/hooks/pre-commit",
+        ] {
+            let message = refused_naming(s.write("p", &[put(bad, "x")]), bad);
+            assert!(message.contains("never"), "{message}");
+        }
+        // Edits as much as whole files.
+        s.write("p", &[put("main.py", "print(1)")]).unwrap();
+        s.db.lock()
+            .execute("UPDATE files SET path = '.ajar/box.py' WHERE pad = 'p'", [])
+            .unwrap();
+        let base = hash(&s, "p", ".ajar/box.py");
+        refused_naming(
+            s.write("p", &[edit(".ajar/box.py", &base, 0, 0, "import os\n")]),
+            ".ajar/box.py",
+        );
+        // What a pad already holds there can be deleted.
+        s.write("p", &[remove(".ajar/box.py")]).unwrap();
+        assert!(s.get("p").unwrap().unwrap().files.is_empty());
+        // Not every dot is the page's: `.deps` is saved with the pad on
+        // purpose, an `.ajar` that is not the top one is a folder of somebody's,
+        // and a file called `.git` is a file.
+        for fine in [
+            ".deps/flask/__init__.py",
+            "sub/.ajar/notes.txt",
+            "vendor/.git",
+            ".gitignore",
+        ] {
+            s.write("p", &[put(fine, "x")])
+                .unwrap_or_else(|e| panic!("{fine:?}: {}", e.message()));
         }
     }
 
@@ -3402,18 +3664,20 @@ mod tests {
         let (path, text) = summary.lead.expect("main.py is quoted");
         assert_eq!(path, "main.py");
         assert!(text.contains("print('hello')"));
-        // Installed packages are not the pad's files.
+        // Installed packages are not the pad's files. Nor is the page's own
+        // folder, which a pad can no longer be given but may hold from before.
         s.write(
             "p",
             &[
                 put(".deps/flask/__init__.py", "x"),
-                put(".ajar/site/x.py", "y"),
+                put(".config/x.py", "y"),
             ],
         )
         .unwrap();
         let summary = s.summary("p").unwrap().unwrap();
         assert_eq!(summary.files, 11, "hidden folders are not counted");
         assert!(summary.paths.iter().all(|p| !p.starts_with('.')));
+        assert!(hidden(".ajar/site/x.py"));
         // With no main file, the first small text file; never one too big to read for a preview.
         s.write(
             "q",

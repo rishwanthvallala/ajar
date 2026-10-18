@@ -79,6 +79,9 @@ pub struct Spliced {
     pub hash: String,
     pub size: u64,
     pub stored: u64,
+    /// Whether the new text is base64 in the shape a browser writes it
+    /// ([`super::Base64Shape`]): what a binary file's edits must leave.
+    pub base64: bool,
 }
 
 struct Out<W: Write> {
@@ -86,6 +89,7 @@ struct Out<W: Write> {
     hash: Sha256,
     size: u64,
     stored: u64,
+    shape: super::Base64Shape,
 }
 
 impl<W: Write> Out<W> {
@@ -94,6 +98,7 @@ impl<W: Write> Out<W> {
         self.w.write_all(raw)?;
         self.stored += raw.len() as u64;
         self.hash.update(text);
+        self.shape.feed(text);
         self.size += text.len() as u64;
         Ok(())
     }
@@ -119,6 +124,7 @@ pub fn splice(
         hash: Sha256::new(),
         size: 0,
         stored: 0,
+        shape: Default::default(),
     };
     out.hash.update(prefix);
     let mut quote = [0u8; 1];
@@ -227,6 +233,7 @@ pub fn splice(
         hash: format!("{:x}", out.hash.finalize()),
         size: out.size,
         stored: out.stored,
+        base64: out.shape.ok(),
     })
 }
 
