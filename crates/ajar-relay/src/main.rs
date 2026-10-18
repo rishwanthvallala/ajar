@@ -1313,7 +1313,9 @@ async fn upgrade(
 ) -> impl IntoResponse {
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Who the cookie says is signed in, for an owned pad's room. Read here,
-    // on the upgrade, because it is the one request that carries the cookie.
+    // on the upgrade, because it is the one request that carries the cookie
+    // — and only from a page of ours: a socket opened by another page on the
+    // same site brings the cookie too, and is nobody (audit B02).
     let user = http_accounts::signed_in(&state, &headers).await;
     let gate = ws::Gate {
         accounts: state.accounts.clone(),

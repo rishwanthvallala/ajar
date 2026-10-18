@@ -621,7 +621,7 @@ fn kick(registry: &Registry, session_id: &str, participant_id: u32) {
 /// What a socket sent first.
 enum First {
     Frame(Frame),
-    /// Bigger than [`MAX_HELLO_BYTES`], by this many bytes in all.
+    /// Bigger than [`MAX_HELLO_BYTES`]: this many bytes.
     TooBig(usize),
     Gone,
 }

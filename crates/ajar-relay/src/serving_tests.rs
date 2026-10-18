@@ -97,13 +97,12 @@ impl Relay {
     }
 
     /// A request through the router, as from [`CALLER`].
-    pub async fn call(&self, mut request: Request<Body>) -> Answer {
-        self.call_with(None, &mut request).await
+    pub async fn call(&self, request: Request<Body>) -> Answer {
+        self.call_with(None, request).await
     }
 
     /// The same, with the web client's files served from `web`.
-    pub async fn call_with(&self, web: Option<&str>, request: &mut Request<Body>) -> Answer {
-        let mut request = std::mem::replace(request, Request::new(Body::empty()));
+    pub async fn call_with(&self, web: Option<&str>, mut request: Request<Body>) -> Answer {
         request.extensions_mut().insert(ConnectInfo(CALLER));
         let response = crate::router(self.state.clone(), web)
             .oneshot(request)
@@ -528,7 +527,7 @@ async fn a_path_under_api_that_names_nothing_is_not_found() {
         "/api/pad/a/b/c",
         "/api/my/nothing",
     ] {
-        let answer = relay.call_with(Some(&web), &mut get(path, &[])).await;
+        let answer = relay.call_with(Some(&web), get(path, &[])).await;
         assert_eq!(
             answer.status,
             StatusCode::NOT_FOUND,
@@ -546,10 +545,10 @@ async fn a_path_under_api_that_names_nothing_is_not_found() {
         );
     }
     // Routes that are there still answer, and a page is still the page.
-    let me = relay.call_with(Some(&web), &mut get("/api/me", &[])).await;
+    let me = relay.call_with(Some(&web), get("/api/me", &[])).await;
     assert_eq!(me.status, StatusCode::OK);
     let page = relay
-        .call_with(Some(&web), &mut get("/amber-falcon-river", &[]))
+        .call_with(Some(&web), get("/amber-falcon-river", &[]))
         .await;
     assert_eq!(
         (page.status, page.body.as_str()),

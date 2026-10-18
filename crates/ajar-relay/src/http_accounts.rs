@@ -85,9 +85,9 @@ fn set_cookie(state: &AppState, name: &str, value: Option<&str>, max_age: u64) -
 /// for nobody ([`crate::auth::Auth::trusts_cookie_from`]). Everything that
 /// asks who is signed in comes through here, the pad's socket among them.
 pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
-    let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     let site = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
-    if !state.auth.trusts_cookie_from(header(header::ORIGIN), site) {
+    if !state.auth.trusts_cookie_from(origin, site) {
         return None;
     }
     cookie(headers, cookie_name(state))
