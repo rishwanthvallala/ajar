@@ -10,6 +10,8 @@
  * race simply did not land that way in the check. As a function it is ordinary.
  */
 
+import { ignored } from "./sync";
+
 /** Only what the snapshot reads, so the checks can pass plain objects. */
 export interface Model {
   getValue(): string;
@@ -40,7 +42,11 @@ export function seedFiles(
   docs: Map<string, Doc>,
 ): Record<string, string> {
   const files: Record<string, string> = {};
-  for (const [path, content] of known) files[path] = content;
+  // Not what the pad never keeps — `.deps`, `.ajar`, `.git` — even where an
+  // old pad, or a write from elsewhere, stored some: a `sitecustomize.py`
+  // under `.deps` ran for the next visitor before anything on screen
+  // (18 October). The next command's save deletes them from the store.
+  for (const [path, content] of known) if (!ignored(path)) files[path] = content;
   for (const [path, model] of models) {
     const text = docs.get(path)?.contents() ?? model.getValue();
     if (text || files[path] === undefined) files[path] = text;

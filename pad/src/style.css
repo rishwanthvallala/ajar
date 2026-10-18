@@ -92,6 +92,29 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }
 /* No hover to reveal it on a touch screen, so it is always there. */
 @media (hover: none) { .pad-shell .file-row > :is(.delete, .get) { opacity: 0.7; } }
+/* The terminal's Screen reader button: as its neighbours, and marked when on. */
+.pad-shell .screen-reader { padding: 0.35rem 0.65rem; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); font-size: 0.75rem; cursor: pointer; }
+.pad-shell .screen-reader:hover { border-color: var(--accent); color: var(--accent); }
+.pad-shell .screen-reader[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+/* What a finger and a pointer can hit (review of 17 October, M5): 24 px at
+   least everywhere, as WCAG 2.2 asks, and 44 px on a touch screen, as phones
+   do. The per-file buttons were 19 px; the header's 26 on a phone. */
+.pad-shell .file-row > :is(.delete, .get), .pad-shell .tree-bar button { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; }
+.pad-shell .file-row > .get, .pad-shell .file-row.dir-row:has(> .delete) > .get { right: calc(0.3rem + 1.5rem + 2px); }
+.pad-shell .file-row.dir-row > .get { right: 0.3rem; }
+@media (pointer: coarse) {
+  .shell.pad-shell { --tree-row: 2.75rem; }
+  .pad-shell :is(.pad-action, .editor-tool, .side-toggle, .theme-toggle, .highlight-toggle, .terminal-actions button, .tree-bar button) { min-height: 2.75rem; min-width: 2.75rem; }
+  .pad-shell .file-row > :is(.delete, .get) { min-width: 2.5rem; min-height: 2.5rem; }
+  .pad-shell .file-row > .get, .pad-shell .file-row.dir-row:has(> .delete) > .get { right: calc(0.3rem + 2.5rem + 2px); }
+  .pad-shell .file-row.dir-row > .get { right: 0.3rem; }
+  .pad-shell .file-row.dir-row:has(> .delete) > .row { padding-right: 5.6rem; }
+}
+/* A phone on its side: the headers thinner, so the terminal has rows to
+   show — it had three. */
+@media (max-height: 30rem) and (orientation: landscape) {
+  .pad-shell :is(.viewer-head, .terminal-head) { min-height: 2rem; padding-block: 0.1rem; }
+}
 /* A name typed into the tree, where the thing will be; what is wrong with it under it. */
 .pad-shell .row.naming { cursor: default; overflow: visible; padding-right: 0.5rem; }
 .pad-shell .row.naming:hover { background: transparent; }

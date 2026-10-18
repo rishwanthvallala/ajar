@@ -19,9 +19,14 @@
  * ## The sentinel
  *
  * Each command is sent with a `printf` of `$?` after it, wrapped in `\x01` —
- * a control character no ordinary tool emits. That needs no prompt to work and
- * carries the exit status back for free. The marker is stripped before
- * anything reaches the screen, including one split across two chunks.
+ * a control character no ordinary tool emits — with a token of this shell's
+ * own beside it. That needs no prompt to work and carries the exit status
+ * back for free. The marker is stripped before anything reaches the screen,
+ * including one split across two chunks.
+ *
+ * The token is random and never shown: a program that printed `\x01130\x01`
+ * ended its own command as far as the page could tell — "exit 130", Run back
+ * to Run, and the folder saved half written while it went on running.
  */
 // `?raw` so the python stays python — embedded in a template literal the
 // TypeScript lexer objects to its escape sequences, and every `\` has to be
@@ -142,8 +147,12 @@ export const GO = ".ajar/go.py";
 export const EDITORS = ["nano", "edit"] as const;
 
 const MARK = "";
-/** Matches the sentinel and captures the exit status. */
-const DONE = /(\d+)/;
+
+/** A shell's marker token: random, so nothing a program prints can be its sentinel. */
+function token(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(9));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 // `$'...'` — ANSI-C quoting. Inside ordinary single quotes bash takes `\001`
 // as four literal characters and the marker never appears, which reads exactly
 // like the prompt not being printed at all.
@@ -178,6 +187,8 @@ export interface Finished {
 export class RuntimeNotices {
   private held = "";
   private brokenPipe = false;
+  /** In a Node stack, past the program's own frames: the runtime's, left out. */
+  private runtimeFrames = false;
 
   /** Text to show now, of what has arrived. */
   push(text: string): string {
@@ -195,11 +206,47 @@ export class RuntimeNotices {
         continue;
       }
       if (bare === ABORTED && this.brokenPipe) continue;
-      out += line;
+      const node = this.nodeLine(bare);
+      if (node === null) continue;
+      if (node !== bare) {
+        out += node + line.slice(bare.length);
+        continue;
+      }
+      // The runtime's own spelling, mended where people read it.
+      out += bare.startsWith(NOTICE_START) ? line.replace(NOTICE_START, "Program received ") : line;
     }
-    if (rest && (NOTICE_START.startsWith(rest) || rest.startsWith(NOTICE_START))) this.held = rest;
+    // Held until its line is whole: the start of a notice, or of a stack
+    // frame or the loader's line, which are taken out or rewritten whole.
+    if (rest && (NOTICE_START.startsWith(rest) || rest.startsWith(NOTICE_START) || NODE_FAILED.startsWith(rest) || /^\s+(a|at( .*)?)?$/.test(rest))) this.held = rest;
     else out += rest;
     return out;
+  }
+
+  /**
+   * A line of a Node error as it should read. The runtime's node shows its
+   * own machinery around a program's error: a line about its loader, then the
+   * program's frames as `eval at wasmer_napi_compile_function (…), <anonymous>:5:3`
+   * — three lines past where they are, for the wrapper it compiles each file
+   * in — and then a dozen of its loader's frames and the browser's
+   * (`wasm-function[6457]`, `wasm_bindgen…`). Review of 17 October, M4. What
+   * is left is the error and the program's frames, at their own lines. Null
+   * for a line left out.
+   */
+  private nodeLine(bare: string): string | null {
+    if (bare === NODE_FAILED) return null;
+    if (!/^\s+at /.test(bare)) {
+      this.runtimeFrames = false;
+      return bare;
+    }
+    if (this.runtimeFrames) return null;
+    // The program's place first, so what is left to tell the runtime's frames
+    // by is not the address every frame carries in its `eval at`.
+    const frame = bare.replace(/eval at wasmer_napi_compile_\w+ \(.*?\), <anonymous>:(\d+):(\d+)/, (_, line: string, column: string) => `<anonymous>:${Math.max(1, Number(line) - 3)}:${column}`);
+    if (/\/vendor\/wasmer\/|wasm-function\[|^\s+at (wasm_bindgen|real \(|Module\.|TracingChannel\.|wrapModuleLoad|Function\.executeUserEntryPoint|node:internal)/.test(frame)) {
+      this.runtimeFrames = true;
+      return null;
+    }
+    return frame;
   }
 
   /** Whether part of a line is being held. */
@@ -211,18 +258,21 @@ export class RuntimeNotices {
   flush(): string {
     const held = this.held;
     this.held = "";
-    return held;
+    return held.startsWith(NOTICE_START) ? held.replace(NOTICE_START, "Program received ") : held;
   }
 
   /** A command is over: the next one's abort is its own. */
   end(): void {
     this.brokenPipe = false;
+    this.runtimeFrames = false;
   }
 }
 
 const NOTICE_START = "Program recieved ";
 const BROKEN_PIPE = "Program recieved termination signal: Broken pipe";
 const ABORTED = "Program recieved fatal signal: Aborted";
+/** The runtime's node, before an uncaught error: its loader, not the program. */
+const NODE_FAILED = "Failed to execute builtin 'internal/main/run_main_module':";
 const HOLD_MS = 50;
 
 export class Shell {
@@ -241,6 +291,10 @@ export class Shell {
    */
   private echoed = "";
   private buffer = "";
+  /** This shell's sentinel: `\x01<token>:<status>\x01`, and the start of one. */
+  private readonly token = token();
+  private readonly done = new RegExp(`${MARK}${this.token}:(\\d+)${MARK}`);
+  private readonly opening = `${MARK}${this.token}:`;
   private notices = new RuntimeNotices();
   private releasing: ReturnType<typeof setTimeout> | null = null;
   /** While a `query` runs, what the shell says is collected here, not shown. */
@@ -365,9 +419,13 @@ export class Shell {
       // cost: a package published only as source does not install, which is
       // rare, and most of those would not build here anyway.
       `export PIP_EXTRA_INDEX_URL=${WHEELS} PIP_PLATFORM=wasix_wasm32 PIP_ONLY_BINARY=:all:`,
-      // matplotlib draws without a window, and keeps its font cache with the
-      // pad rather than building it again for every program.
+      // matplotlib draws without a window, and keeps its font cache beside the
+      // packages rather than building it again for every program.
       `export MPLBACKEND=Agg MPLCONFIGDIR=/workspace/${DEPS}/.matplotlib`,
+      // A home, which the sandbox has none of: `~` was `/`, and Python's
+      // expanduser('~') gave back '~'. Under /tmp, so what tools keep there
+      // — caches, history — is the sandbox's and never the pad's.
+      "mkdir -p /tmp/home && export HOME=/tmp/home",
       // Python 3.13's new prompt needs a terminfo database this runtime does
       // not find, so `python` on its own opened with "warning: can't use
       // pyrepl: setupterm: could not find terminfo database" and then used
@@ -412,7 +470,7 @@ export class Shell {
     this.buffer += text;
     this.dropEcho();
     for (;;) {
-      const found = DONE.exec(this.buffer);
+      const found = this.done.exec(this.buffer);
       if (!found) break;
       // Everything before the marker is real output; the marker itself is
       // bookkeeping and never reaches the terminal.
@@ -446,8 +504,12 @@ export class Shell {
     // its own input — so everything after it was held forever and a running
     // `cat` printed nothing at all. A split echo showing for one frame is a
     // far smaller price than swallowing output.
+    // Only what could still become this shell's sentinel: a `\x01` a program
+    // printed is its output, shown now rather than held to the command's end.
     const marker = this.buffer.lastIndexOf(MARK);
-    const flushable = marker === -1 ? this.buffer : this.buffer.slice(0, marker);
+    const tail = marker === -1 ? "" : this.buffer.slice(marker);
+    const partial = tail !== "" && (this.opening.startsWith(tail) || new RegExp(`^${this.opening}\\d*$`).test(tail));
+    const flushable = partial ? this.buffer.slice(0, marker) : this.buffer;
     if (flushable) {
       this.emit(flushable);
       this.buffer = this.buffer.slice(flushable.length);
@@ -578,7 +640,7 @@ export class Shell {
       // wins, as it would in a terminal: `2>/dev/null` silences, `>file`
       // leaves errors on screen.
       const quoted = `'${command.trimEnd().replaceAll("'", `'\\''`)}'`;
-      const line = `eval ${quoted} 2>&1; printf '\\001%s\\001' "$?"`;
+      const line = `eval ${quoted} 2>&1; printf '\\001${this.token}:%s\\001' "$?"`;
       // Without the newline. The terminal echoes CRLF where this writes LF, so
       // including it meant the two strings never matched and every command
       // after the first foreground job appeared twice.

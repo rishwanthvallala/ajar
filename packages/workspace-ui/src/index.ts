@@ -53,7 +53,7 @@ export class WorkspaceShell {
           <div class="connection-status"><span class="dot" id="dot"></span><span class="status" id="status" role="status">connecting</span></div>
           <span class="badge" id="locked" hidden>locked</span>
           <span class="badge" id="readonly" hidden>read-only</span>
-          <span class="people" id="people" aria-label="Participants"></span>
+          <span class="people" id="people" role="group" aria-label="Participants"></span>
           <div class="workspace-actions" id="workspace-actions"></div>
           <button class="theme-toggle" id="theme-toggle"></button>
         </header>

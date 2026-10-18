@@ -80,9 +80,12 @@ const COLUMNS = {
 export function defineEditorThemes(editor: EditorThemes): void {
   // The editor's own background is the workspace's surface, so it sits in
   // the page rather than on a slab of Monaco's grey.
-  for (const [name, base, columns, delimiter, surface] of [
-    ["ajar-light", "vs", COLUMNS.light, "8a94a2", "#ffffff"],
-    ["ajar-dark", "vs-dark", COLUMNS.dark, "6c7684", "#161a22"],
+  // Line numbers and a CSV's commas at WCAG AA against it: Monaco's own and
+  // the greys these had were too faint in one theme or the other (review of
+  // 17 October, M6).
+  for (const [name, base, columns, delimiter, surface, lineNumber, lineNumberActive] of [
+    ["ajar-light", "vs", COLUMNS.light, "5d6673", "#ffffff", "#5d6673", "#1f2937"],
+    ["ajar-dark", "vs-dark", COLUMNS.dark, "9aa3b0", "#161a22", "#9aa3b0", "#e6e9ee"],
   ] as const) {
     editor.defineTheme(name, {
       base,
@@ -92,7 +95,12 @@ export function defineEditorThemes(editor: EditorThemes): void {
         { token: "delimiter.csv", foreground: delimiter },
         { token: "delimiter.tsv", foreground: delimiter },
       ],
-      colors: { "editor.background": surface, "editorGutter.background": surface },
+      colors: {
+        "editor.background": surface,
+        "editorGutter.background": surface,
+        "editorLineNumber.foreground": lineNumber,
+        "editorLineNumber.activeForeground": lineNumberActive,
+      },
     });
   }
 }

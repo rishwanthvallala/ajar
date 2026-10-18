@@ -15,7 +15,7 @@
  */
 import type { Finished, Shell } from "./shell";
 
-const PROMPT = "\x1b[2m$\x1b[0m ";
+const PROMPT = "\x1b[90m$\x1b[0m ";
 /** Visible width of the prompt, for placing the cursor on a wrapped line. */
 const PROMPT_WIDTH = 2;
 
@@ -31,7 +31,8 @@ export interface ConsoleHooks {
    */
   shellFor: () => Promise<Shell>;
   /** Called after any command the person typed, so the folder can be synced. */
-  onFinished: () => void;
+  /** After a typed command, with how it ended — null when it could not start. */
+  onFinished: (finished: Finished | null) => void;
   /** The shell if one is open already, for completion — never starts one. */
   openShell?: () => Shell | null;
   /** The terminal's width, so a line longer than it is redrawn correctly. */
@@ -528,7 +529,7 @@ export class Console {
     // sign of why.
     if (finished?.forced) {
       this.screen.write(
-        `${this.freshRow()}\x1b[2m(it did not stop at ctrl-c, so the shell was ended — it may still be running, and holding its port, until you reload the page)\x1b[0m\r\n`,
+        `${this.freshRow()}\x1b[90m(it did not stop at ctrl-c, so the shell was ended — it may still be running, and holding its port, until you reload the page)\x1b[0m\r\n`,
       );
     }
     this.screen.write(`${this.freshRow()}${PROMPT}`);
@@ -556,7 +557,7 @@ export class Console {
     // and a program waiting for input look exactly the same from here.
     if (!this.warned) {
       this.warned = true;
-      this.screen.write("\x1b[2m(ctrl-c stops a running command)\x1b[0m\r\n");
+      this.screen.write("\x1b[90m(ctrl-c stops a running command)\x1b[0m\r\n");
     }
     let finished: Finished | null = null;
     try {
@@ -568,13 +569,13 @@ export class Console {
       if (this.shell && !this.shell.alive) this.shell = null;
       if (!this.shell && this.started) {
         this.screen.write(
-          "\x1b[2m(the shell restarted — you are back in the folder root)\x1b[0m\r\n",
+          "\x1b[90m(the shell restarted — you are back in the folder root)\x1b[0m\r\n",
         );
       }
       if (!this.shell) {
         if (!this.started) {
           this.started = true;
-          if (!this.hooks.ready?.()) this.screen.write("\x1b[2mstarting the runtime, first command only…\x1b[0m\r\n");
+          if (!this.hooks.ready?.()) this.screen.write("\x1b[90mstarting the runtime, first command only…\x1b[0m\r\n");
         }
         this.shell = await this.hooks.shellFor();
       }
@@ -588,7 +589,7 @@ export class Console {
       this.finish(finished);
     }
     // After the prompt is back, so a slow sync never delays the next command.
-    this.hooks.onFinished();
+    this.hooks.onFinished(finished);
     this.drainQueued();
   }
 

@@ -137,10 +137,9 @@ content.
 4. **A plain `pip install` reports success and installs nothing usable.**
    python's site-packages is under a read-only `/nix/store` path and the write
    lands in a layer that does not outlive the process. `PIP_TARGET` and
-   `PYTHONPATH` point at `/workspace/.deps`, so packages land in the folder —
-   which also means they sync, survive a reload, and reach whoever opens the
-   link. Verified: eight files on the server, imported from a freshly opened
-   page.
+   `PYTHONPATH` point at `/workspace/.deps`, so packages land in the folder,
+   for as long as the sandbox runs. Since 18 October `.deps` is not saved with
+   the pad; `requirements.txt` carries the packages to whoever opens it.
 
 ## What TLS and pip look like, since they decide whether egress is worth it
 

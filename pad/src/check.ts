@@ -20,9 +20,10 @@ import { nameProblem, pathFor } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { starterFor } from "./starters";
 import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, type LocalFetch, vet } from "./fetch-bridge";
-import { diff, fromBase64, ignored, knownFrom, textOf, toBase64 } from "./sync";
+import { diff, fromBase64, ignored, knownFrom, textOf, toBase64, unstorable } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 import { placesIn, problemsIn } from "./problems";
+import { pipInstalled, requirementLines, requirementName } from "./requirements";
 
 const results: string[] = [];
 const el = document.getElementById("log")!;
@@ -162,6 +163,25 @@ async function main() {
   const warm = performance.now();
   await rt.run("python", ["-c", "pass"]);
   ok(`a warm run costs ${Math.round(performance.now() - warm)}ms`);
+
+  // ---- what a pad keeps, and what pip install leaves for the next visitor ----
+  {
+    const said = (line: string) => JSON.stringify(pipInstalled(line));
+    is(said("pip install numpy pandas"), '["numpy","pandas"]', "a typed pip install names what goes into requirements.txt");
+    is(said("python -m pip install -q --no-cache-dir 'flask>=3' requests==2.32.3"), '["flask>=3","requests==2.32.3"]', "with python -m, options skipped and versions kept");
+    is(said("pip3 install -i https://example.com/simple six"), '["six"]', "an option's value is not a package");
+    is([said("pip install -r requirements.txt"), said("pip install -e ."), said("pip install ./dist/x.whl"), said("pip install git+https://x/y.git"), said("pip install numpy | tail -2"), said("pip list"), said("pip install")].join(" "), "null null null null null null null", "but a file, a path, an address, a pipeline or no package names nothing");
+    is(JSON.stringify(requirementLines("# deps\nnumpy>=2  # fast\n\n-i https://x\nPandas\n")), '["numpy>=2","Pandas"]', "requirements.txt read as its requirements, without comments or options");
+    is([requirementName("Pandas>=2"), requirementName("scikit_learn[all]"), requirementName("Flask")].join(" "), "pandas scikit-learn flask", "and a package named as pip compares names");
+    is(
+      [unstorable("ok/file.txt"), unstorable("out\\file.txt"), unstorable("a\tb.txt"), unstorable("line\nbreak"), unstorable("a//b"), unstorable("../x"), unstorable("x".repeat(513))].map((w) => (w === null ? "ok" : "no")).join(" "),
+      "ok no no no no no no",
+      "a file the store will not keep is known before it is sent: a backslash, a control character, an empty or relative part, a path too long",
+    );
+    is(ignored(".deps/numpy/__init__.py") && ignored(".ajar/fetch/x") && !ignored("requirements.txt") && !ignored("deps/x.py"), true, "installed packages and the pad's own shims are not the pad's files");
+    const seeded = seedFiles(new Map([[".deps/sitecustomize.py", "import os"], ["main.py", "print(1)"]]), new Map(), new Map());
+    is(Object.keys(seeded).join(), "main.py", "and never reach the sandbox, even where an old pad stored them");
+  }
 
   // ---- where output points into the pad (problems.ts) ----
   // Real output of each, as it prints it here. Links come from `placesIn`,
@@ -829,7 +849,7 @@ async function main() {
     is(runnerFor("it's.go")?.line, "go run 'it'\\''s.go'", "a name with a quote in it is quoted");
     is(runnerFor("app.js")?.toolchain.name, "Node.js", "a .js file runs with node");
     const cpp = runnerFor("hello.cpp")?.line ?? "";
-    is(cpp.includes("clang++ 'hello.cpp'") && cpp.includes("<iostream>"), true, "a .cpp file compiles with clang++, saying first if it needs <iostream>");
+    is(cpp.includes("clang++ 'hello.cpp'") && cpp.includes("<iostream>"), true, "a .cpp file compiles with clang++, saying first if it uses the C++ standard library");
     is(neededBy("gcc hi.c && ./a.out", none)[0]?.pkg, runnerFor("hi.c")?.toolchain.pkg, "and gcc is clang's, so typing it fetches C");
     is(runnerFor("notes.txt"), null, "and nothing runs what no language does");
     is(neededBy("javac Main.java && java Main", none).map((t) => t.name).join(","), "Java", "javac and java are one language, fetched once");
@@ -939,7 +959,7 @@ async function main() {
     const n = new RuntimeNotices();
     is(n.push(`alpha\r\n${PIPE}\r\n${ABORT}\r\n${ABORT}\r\n`), "alpha\r\n", "the broken pipe notice and the aborts after it are left out, the output kept");
     n.end();
-    is(n.push(`${ABORT}\r\n`), `${ABORT}\r\n`, "an abort with no broken pipe before it, in its own command, is shown");
+    is(n.push(`${ABORT}\r\n`), "Program received fatal signal: Aborted\r\n", "an abort with no broken pipe before it, in its own command, is shown — spelled right");
     n.end();
     is(n.push("Program rec"), "", "the start of a notice is held");
     is(n.push(`ieved termination signal: Broken pipe\r\n$ `), "$ ", "and dropped once its line is whole, with what follows shown");
@@ -947,6 +967,29 @@ async function main() {
     is(n.push("Progress 10%"), "Progress 10%", "and so is anything that cannot be a notice");
     is(n.push("Pro") + n.flush(), "Pro", "what was held is shown when let go");
     is(n.push(`say ${PIPE}\r\n`), `say ${PIPE}\r\n`, "a line that only mentions it is kept");
+  }
+
+  // ---- a Node error, as Node would print it ----
+  // The runtime's node wraps a program's error in its loader's line and a
+  // dozen frames of its own and the browser's (review M4).
+  {
+    const n = new RuntimeNotices();
+    const at = (fn: string, line: number, col: number) => `    at ${fn} (eval at wasmer_napi_compile_function (http://x/vendor/wasmer/pkg/snippets/wasmer-napi-1/inline0.js:354:10), <anonymous>:${line}:${col})`;
+    const out = n.push([
+      "before",
+      "Failed to execute builtin 'internal/main/run_main_module':",
+      "ReferenceError: undefinedThing is not defined",
+      at("f", 5, 3),
+      at("Object.eval", 8, 1),
+      at("Module._compile", 1807, 14),
+      "    at http://x/vendor/wasmer/pkg/wasmer_sdk_js_bg.wasm:wasm-function[6457]:0x3f462c",
+      "    at real (http://x/vendor/wasmer/pkg/wasmer_sdk_js.js:2871:20)",
+      "Node.js v24.13.2",
+      "",
+    ].join("\r\n"));
+    is(out, ["before", "ReferenceError: undefinedThing is not defined", "    at f (<anonymous>:2:3)", "    at Object.eval (<anonymous>:5:1)", "Node.js v24.13.2", ""].join("\r\n"), "a Node error keeps the program's frames at their own lines, and loses the runtime's");
+    n.end();
+    is(n.push("    at nothing.special (main.py:3)\r\n"), "    at nothing.special (main.py:3)\r\n", "and a frame that is not the runtime's is left alone");
   }
 
   // ---- a document message too big for the relay ----

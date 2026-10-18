@@ -116,10 +116,35 @@ const IGNORED = [
   // `pip install flask` — until 16 October, saved in the pad for everyone.
   // Already stored, it is deleted at the next command, as any ignored file is.
   /^~\//,
+  // What pip installs. numpy alone is 1,336 files and 32 MB, pandas with it
+  // 4,332 — past the 500 files a pad holds, and a batch the store refused
+  // whole took every other file a command made with it (18 October). The pad
+  // keeps `requirements.txt` instead, which `pip install` adds to and Run
+  // installs from (App.recordInstalled, App.installRequirements): each
+  // visitor's own sandbox fetches the packages, in seconds.
+  /^\.deps\//,
 ];
 
 export function ignored(path: string): boolean {
   return IGNORED.some((re) => re.test(path));
+}
+
+/** The files a pad holds at most: the relay's `pad::MAX_FILES`. */
+export const MAX_FILES = 500;
+
+/**
+ * Why the store will not keep a file at `path` — its `check_path`, and the
+ * control characters it also refuses — or null when it will. Asked before a
+ * save, so that one such file is left out and named rather than sent with
+ * the rest, which the store would then refuse whole.
+ */
+export function unstorable(path: string): string | null {
+  if (!path) return "it has no name";
+  if (new TextEncoder().encode(path).length > 512) return "its path is longer than a pad keeps";
+  if (path.includes("\\")) return "its name has a backslash, which a pad cannot keep — use / between folders";
+  if (/[\u0000-\u001f\u007f]/.test(path)) return "its name has a tab, a line break or another control character";
+  if (path.startsWith("/") || path.split("/").some((p) => !p || p === "." || p === "..")) return "its path has an empty or relative part";
+  return null;
 }
 
 export interface Diff {

@@ -20,7 +20,7 @@ import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
 import { PreviewBrowser } from "./preview";
 import { at, interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
-import { neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
+import { neededBy, quoted, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
 import { TerminalSession } from "./terminals";
 import { ICONS } from "./icons";
@@ -31,10 +31,11 @@ import { type Change, type LastRun, mintName, Store, StoreError, storedHash, typ
 import { type Place, problemsIn } from "./problems";
 import { seedFiles } from "./seed";
 import { starterFor } from "./starters";
-import { type Binaries, binariesFrom, diff, fromBase64, isMarker, type Known, knownFrom, MARKER, markedFolder, textOf, toBase64 } from "./sync";
+import { type Binaries, binariesFrom, diff, fromBase64, ignored, isMarker, type Known, knownFrom, MARKER, MAX_FILES, markedFolder, textOf, toBase64, unstorable } from "./sync";
 import { imageFromOsc, imageType } from "./images";
 import { isMarkdown, linkFor, MARKDOWN_MAX, renderMarkdown, slug } from "./markdown";
 import { countRun, languageOfFile, languageOfLine } from "./usage";
+import { pipInstalled, requirementLines, requirementName } from "./requirements";
 import type { PadWorkspace } from "./workspace";
 
 /**
@@ -140,6 +141,32 @@ function when(ms: number): string {
   return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+/**
+ * A name Windows can save a file or folder as: `con`, `nul`, `com1` and the
+ * rest are its devices, with or without an extension, so a pad called `con`
+ * downloaded as a con.zip nobody on Windows could keep.
+ */
+function windowsSafe(name: string): string {
+  return /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(name) ? `${name}-pad` : name;
+}
+
+/** Where this browser remembers the terminal's Screen reader button. */
+const SCREEN_READER_KEY = "pad.screenReader";
+
+/** A Mac's keys or everyone else's, for what the page says a key is. */
+const MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+const RUN_KEY = MAC ? "⌘⏎" : "Ctrl+Enter";
+const FORMAT_KEY = MAC ? "⇧⌥F" : "Shift+Alt+F";
+const PREVIEW_KEY = MAC ? "⇧⌘V" : "Ctrl+Shift+V";
+
+/** How the status line starts when a command's file was not saved (`App.tellUnsaved`). */
+const NOT_SAVED = "not saved:";
+
+/** A refusal for what a save holds — a name, a cap — rather than for who sent it or the network. */
+function contentRefusal(e: StoreError): boolean {
+  return e.status === 400 || e.status === 413 || e.status === 507;
+}
+
 /** The owner of the editor's marks from a run (`App.markProblems`). */
 const RUN_MARKS = "pad-run";
 
@@ -232,6 +259,18 @@ export class App {
   private commandOf = new WeakMap<TerminalSession, string>();
   /** Files the last run marked problems in (`markProblems`). */
   private marked = new Set<string>();
+  /** Whether the terminals give their text to screen readers (`addScreenReaderToggle`). */
+  private screenReader = (() => {
+    try {
+      return localStorage.getItem(SCREEN_READER_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })();
+  /** What the status line says of a binary file clicked in the tree, until another file opens. */
+  private binaryNote = "";
+  /** Files a command made that were not saved, and why, as last said (`tellUnsaved`). */
+  private toldUnsaved = new Map<string, string>();
   /**
    * Where a link into another Markdown file asked to land: kept until a
    * render has the heading, as the first may come before the file's text
@@ -261,7 +300,7 @@ export class App {
   /** Answers the sandbox's `javac` with the fast one, once Java is here: javac/bridge.ts. */
   private readonly javac = new JavacBridge(
     async () => (this.runtimeReady && this.runtime ? (await this.runtime).sandbox() : null),
-    (line) => this.session?.write(`\x1b[2mnote: ${line}\x1b[0m\r\n`),
+    (line) => this.session?.write(`\x1b[90mnote: ${line}\x1b[0m\r\n`),
   );
   private peers: Peers | null = null;
   private busy = false;
@@ -413,6 +452,7 @@ export class App {
       shellBusy: () => this.anyBusy,
       terminals: () => this.sessions.map((t) => ({ number: t.number, busy: t.busy, front: t === this.session })),
       preview: () => this.preview?.state(),
+      lastOutput: () => this.session?.lastOutput ?? "",
       role: () => this.access.role,
       local: () => [...this.local].sort(),
       // For fetch-packages.mjs, which records each by using it once.
@@ -446,7 +486,7 @@ export class App {
     this.adopt(pad.access);
 
     // Text for the editor; an empty folder's marker is the tree's, not a file.
-    const files = Object.entries(pad.files).filter(([path, f]) => f.encoding === "utf8" && !isMarker(path, f.content));
+    const files = Object.entries(pad.files).filter(([path, f]) => f.encoding === "utf8" && !isMarker(path, f.content) && !ignored(path));
     this.known = knownFrom(pad.files);
     this.binaries = binariesFrom(pad.files);
     this.storeSeq = pad.seq;
@@ -620,11 +660,41 @@ export class App {
     const rt = this.runtimeReady ? await this.runtime : null;
     const incoming = knownFrom(pad.files);
 
+    // Moved by somebody else: a file gone and one arrived with what it held.
+    // This place follows it to its new name, where it was in it, and typing
+    // here not yet saved goes along — until 18 October a rename half a
+    // second after someone typed took their typing and sent them to main.py
+    // (review of 17 October, M1).
+    const moves = new Map<string, string>();
+    {
+      const arrived = [...incoming.keys()].filter((p) => !this.known.has(p));
+      const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+      for (const from of this.known.keys()) {
+        if (incoming.has(from) || this.local.has(from) || ignored(from)) continue;
+        const was = this.known.get(from);
+        const free = arrived.filter((p) => ![...moves.values()].includes(p));
+        const same = free.filter((p) => incoming.get(p) === was);
+        // The same text, under the same name if one has it; or, the text
+        // since changed by the mover, the one file of that name that arrived.
+        const named = free.filter((p) => base(p) === base(from));
+        const to = same.find((p) => base(p) === base(from)) ?? (same.length === 1 ? same[0] : named.length === 1 ? named[0] : undefined);
+        if (to) moves.set(from, to);
+      }
+    }
+    const typedBefore = new Map([...moves.keys()].map((from) => [from, this.current(from)] as const));
+    const followFrom = moves.has(this.active) ? this.active : null;
+    if (followFrom && this.editor) {
+      const state = this.editor.saveViewState();
+      if (state) this.viewStates.set(moves.get(followFrom)!, state);
+    }
+
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
       // A viewer's own copy keeps what they made of it.
       if (this.local.has(path)) continue;
+      // What the pad never keeps, stored by an older page: not shown, not run.
+      if (ignored(path)) continue;
       // An empty folder: in the sandbox, not the editor.
       if (isMarker(path, content)) {
         if (rt) await rt.write(path, "");
@@ -653,7 +723,7 @@ export class App {
     // text just above, and is written back here as what it is now.
     const incomingBinaries = binariesFrom(pad.files);
     for (const [path, base64] of incomingBinaries) {
-      if (this.binaries.get(path) === base64 || this.local.has(path)) continue;
+      if (this.binaries.get(path) === base64 || this.local.has(path) || ignored(path)) continue;
       if (rt) await rt.writeBytes(path, fromBase64(base64));
     }
     for (const path of this.binaries.keys()) {
@@ -664,7 +734,23 @@ export class App {
     this.known = incoming;
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
-    if (!this.models.has(this.active)) {
+    for (const [from, to] of moves) {
+      if (this.formatted.delete(from)) this.formatted.add(to);
+      // What was typed here before the move reached here, onto the file as it
+      // now is: an edit like typing, which saves and reaches the room.
+      const typed = typedBefore.get(from);
+      const stored = incoming.get(to)!;
+      const model = this.models.get(to);
+      if (typed === undefined || typed === stored || !model || this.docs.has(to) || !this.monaco) continue;
+      const edit = carryOver(stored, typed, model.getValue());
+      if (!edit) continue;
+      const start = model.getPositionAt(edit.at);
+      const end = model.getPositionAt(edit.at + edit.remove);
+      model.applyEdits([{ range: new this.monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.insert }]);
+    }
+    if (followFrom && this.models.has(moves.get(followFrom)!)) {
+      this.show(moves.get(followFrom)!);
+    } else if (!this.models.has(this.active)) {
       const first = [...this.models.keys()].sort()[0];
       if (first) this.show(first);
     }
@@ -932,6 +1018,17 @@ export class App {
       contextMenuOrder: 1.3,
       run: () => this.formatActive(),
     });
+    // Ctrl/⌘-Enter runs, as the button says. Monaco's own binding for it —
+    // a blank line below — won in the editor, so on Linux and Windows the key
+    // typed a line instead (review of 17 October, M3).
+    this.editor.addAction({
+      id: "pad.run",
+      label: "Run This File",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 0,
+      run: () => void this.run(),
+    });
     this.editor.addAction({
       id: "pad.starter",
       label: "Insert Starter Code",
@@ -1048,7 +1145,7 @@ export class App {
     this.el.run.title = running
       ? "Stop what is running (ctrl-c)"
       : runnable
-        ? "Run this file (⌘⏎)"
+        ? `Run this file (${RUN_KEY})`
         : `nothing here runs a ${this.active.split(".").pop()} file`;
   }
 
@@ -1169,14 +1266,14 @@ export class App {
     this.el.format.hidden = formatter === null;
     this.el.format.disabled = this.formatting;
     this.el.format.textContent = this.formatting ? "Formatting…" : "Format";
-    if (formatter) this.el.format.title = `Format this file with ${formatter.name} (⇧⌥F)`;
+    if (formatter) this.el.format.title = `Format this file with ${formatter.name} (${FORMAT_KEY})`;
     this.canFormat?.set(formatter !== null && !this.formatting);
     const markdown = this.active !== "" && isMarkdown(this.active);
     const formatted = markdown && this.formatted.has(this.active);
     this.el.markdown.hidden = !markdown;
     this.el.markdown.classList.toggle("on", formatted);
     this.el.markdown.setAttribute("aria-pressed", String(formatted));
-    this.el.markdown.title = formatted ? "Hide the formatted view (⇧⌘V)" : "See this file formatted, as it will look (⇧⌘V)";
+    this.el.markdown.title = formatted ? `Hide the formatted view (${PREVIEW_KEY})` : `See this file formatted, as it will look (${PREVIEW_KEY})`;
     const other = this.indent === 4 ? 2 : 4;
     const tabs = usesTabs(this.active);
     this.el.indent.textContent = tabs ? `Tab size: ${this.indent}` : `Spaces: ${this.indent}`;
@@ -1289,9 +1386,14 @@ export class App {
       onOpen: (path) => {
         if (this.binaries.has(path) && !this.models.has(path) && imageType(path)) return void this.showImage(path);
         if (this.binaries.has(path) && !this.models.has(path)) {
-          const kb = Math.max(1, Math.round((this.binaries.get(path)!.length * 3) / 4 / 1024));
-          return this.say("", `${path} is not text (${kb} KB) — download it with the arrow beside it`);
+          const base64 = this.binaries.get(path)!;
+          const bytes = Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+          this.binaryNote = `${path} is not text (${size(bytes)}) — download it with the arrow beside it`;
+          return this.say("", this.binaryNote);
         }
+        // What was said of a file that could not open is not about this one.
+        if (this.binaryNote && this.el.status.textContent === this.binaryNote) this.say("", "");
+        this.binaryNote = "";
         this.show(path);
         if (this.ui?.fileSelected()) this.editor?.focus();
       },
@@ -1307,7 +1409,7 @@ export class App {
       onMove: (from, folder, to) => void this.move(from, folder, to),
       movable: () => !this.viewer,
     });
-    const binary = new Set([...this.binaries.keys()].filter((p) => !this.models.has(p)));
+    const binary = new Set([...this.binaries.keys()].filter((p) => !this.models.has(p) && !ignored(p)));
     this.tree.render([...this.models.keys(), ...binary], this.active, this.local, binary, this.keptFolders());
     this.ui?.setFileCount(this.models.size + binary.size);
   }
@@ -1630,7 +1732,7 @@ export class App {
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
       const files = seedFiles(this.known, this.models, this.docs);
-      const binaries = new Map(this.binaries);
+      const binaries = new Map([...this.binaries].filter(([path]) => !ignored(path)));
       // wisp carries egress *and* the http ingress the preview needs, so it
         // supersedes the http policy rather than sitting beside it. Without a
         // configured endpoint this falls back to http, which is what every
@@ -1676,7 +1778,7 @@ export class App {
     let appliedBinaries = seededBinaries;
     for (;;) {
       const now = seedFiles(this.known, this.models, this.docs);
-      const nowBinaries = new Map(this.binaries);
+      const nowBinaries = new Map([...this.binaries].filter(([path]) => !ignored(path)));
       const writes = Object.entries(now).filter(([path, text]) => applied[path] !== text);
       const binaryWrites = [...nowBinaries].filter(([path, base64]) => appliedBinaries.get(path) !== base64);
       const removals = [...Object.keys(applied), ...appliedBinaries.keys()].filter((path) => !(path in now) && !nowBinaries.has(path));
@@ -1777,6 +1879,52 @@ export class App {
     this.editor?.layout();
   }
 
+  /**
+   * The terminal's text for screen readers, on or off, beside New terminal:
+   * remembered in this browser, and for every terminal at once.
+   */
+  private addScreenReaderToggle(): void {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "screen-reader";
+    button.textContent = "Screen reader";
+    const paint = () => {
+      button.setAttribute("aria-pressed", String(this.screenReader));
+      button.title = this.screenReader ? "The terminal's text is read out — off again" : "Let a screen reader read the terminal's text";
+    };
+    button.onclick = () => {
+      this.screenReader = !this.screenReader;
+      try {
+        localStorage.setItem(SCREEN_READER_KEY, this.screenReader ? "1" : "0");
+      } catch {
+        // Not remembered, then; it still holds for this page.
+      }
+      for (const t of this.sessions) t.term.options.screenReaderMode = this.screenReader;
+      paint();
+    };
+    paint();
+    this.el.newTerminal.parentElement?.prepend(button);
+  }
+
+  /**
+   * Focus to the next part of the page, or the one before: the header's Run,
+   * the files, the editor, the terminal. What a keyboard needs to leave the
+   * terminal, where Tab completes and Esc belongs to the program (WCAG 2.1.2;
+   * review of 17 October, H4).
+   */
+  private cycleRegion(back: boolean): void {
+    const regions: Array<{ holds: (el: Element) => boolean; focus: () => void }> = [
+      { holds: (el) => this.el.run.parentElement?.contains(el) ?? false, focus: () => this.el.run.focus() },
+      { holds: (el) => this.el.files.contains(el), focus: () => (this.el.files.querySelector<HTMLElement>(".row.on") ?? this.el.files.querySelector<HTMLElement>(".row, button"))?.focus() },
+      { holds: (el) => this.el.editor.contains(el) || this.el.markdownPane.contains(el), focus: () => (this.el.markdownPane.hidden || !this.el.editor.parentElement?.classList.contains("md-shown") ? this.editor?.focus() : this.el.markdownPane.focus()) },
+      { holds: (el) => this.el.terms.contains(el), focus: () => this.session?.term.focus() },
+    ];
+    const at = document.activeElement;
+    const here = at ? regions.findIndex((r) => r.holds(at)) : -1;
+    const next = here < 0 ? (back ? regions.length - 1 : 0) : (here + (back ? -1 : 1) + regions.length) % regions.length;
+    regions[next]!.focus();
+  }
+
   // ------------------------------------------------------------- the last run
 
   /**
@@ -1870,7 +2018,7 @@ export class App {
     const session = this.sessions[0];
     if (!run || typeof run.output !== "string" || typeof run.command !== "string" || !session || this.disposed) return;
     const ended = run.exit === 0 ? "done" : `exit ${run.exit}`;
-    const rule = (text: string) => `\x1b[2m── ${text} ──\x1b[0m\r\n`;
+    const rule = (text: string) => `\x1b[90m── ${text} ──\x1b[0m\r\n`;
     const body = run.output.endsWith("\n") || !run.output ? run.output : `${run.output}\n`;
     if (session.console.printAbove(`${rule(`the last run, ${when(run.at_ms)}: ${run.command} · ${ended}`)}${body}${rule("Run to run it again")}`)) {
       this.markProblems(run.output);
@@ -2197,6 +2345,7 @@ export class App {
     this.el.split.title = "Two terminals side by side";
     this.el.split.onclick = () => void this.toggleSplit();
     this.addTouchKeys();
+    this.addScreenReaderToggle();
     onThemeChange(() => {
       for (const t of this.sessions) {
         t.term.options.theme = terminalTheme();
@@ -2224,7 +2373,20 @@ export class App {
     this.session = null;
     this.layoutTerminals();
     host.classList.add("shown");
-    const term = new Terminal({ fontSize: Math.max(11, this.codeFontPx() - 1), convertEol: true, theme: terminalTheme() });
+    const term = new Terminal({
+      fontSize: Math.max(11, this.codeFontPx() - 1),
+      convertEol: true,
+      theme: terminalTheme(),
+      // What it prints, for screen readers too, when asked for (the terminal's
+      // Screen reader button): off, a program's output and its errors were on
+      // screen and nowhere a screen reader could read (audit of 17 October,
+      // UX1). Not always on: in that mode xterm takes no plain text input,
+      // which is what a phone's keyboard and a pasted "ï" send.
+      screenReaderMode: this.screenReader,
+      // Text held to WCAG AA against its background in either theme — grey
+      // notes included, which were dim and too faint (review M6).
+      minimumContrastRatio: 4.5,
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -2244,7 +2406,7 @@ export class App {
       },
       place: (path) => this.padPath(path),
       openPlace: (place) => this.openPlace(place),
-      onFinished: () => void this.afterCommand(),
+      onFinished: (t, finished) => void this.afterCommand(t, finished),
       installs: () => this.installs,
       ready: () => this.runtimeReady,
       onImage: (data) => {
@@ -2442,20 +2604,35 @@ export class App {
       return;
     }
     this.requirementsInstalled = text;
-    session.write(`\x1b[2m${REQUIREMENTS} ${this.requirementsSeen ? "changed" : "is here"}: installing it first, as pip install -r ${REQUIREMENTS}…\x1b[0m\r\n`);
+    session.write(`\x1b[90m${REQUIREMENTS} ${this.requirementsSeen ? "changed" : "is here"}: installing it first, as pip install -r ${REQUIREMENTS}…\x1b[0m\r\n`);
     this.requirementsSeen = true;
-    const finished = await sh.run(`(cd /workspace && python -m pip install --disable-pip-version-check -q -r ${REQUIREMENTS})`);
-    if (finished.interrupted) {
+    const stopped = () => {
       // Asked again next time: it never finished.
       this.requirementsInstalled = null;
-      throw new Error(`stopped while installing ${REQUIREMENTS}, so the line did not run`);
+      return new Error(`stopped while installing ${REQUIREMENTS}, so the line did not run`);
+    };
+    const finished = await sh.run(`(cd /workspace && python -m pip install --disable-pip-version-check -q -r ${REQUIREMENTS})`);
+    if (finished.interrupted) throw stopped();
+    if (finished.exitCode === 0) {
+      await rt.write(INSTALLED_FOR, text);
+      return;
     }
-    // Whatever pip said: what failed is tried again when the file changes,
-    // not for everyone who opens the pad.
-    await rt.write(INSTALLED_FOR, text);
-    if (finished.exitCode !== 0) {
-      session.write(`\x1b[33mpip could not install all of ${REQUIREMENTS}; running anyway. It is tried again when the file changes.\x1b[0m\r\n`);
+    // pip resolves the whole file at once, so one misspelt line installed
+    // nothing — six==1.17.0 beside it too, and the program then failed on
+    // `import six` (18 October). Each line on its own, so the rest go in.
+    const failed: string[] = [];
+    for (const line of requirementLines(text)) {
+      const each = await sh.run(`(cd /workspace && python -m pip install --disable-pip-version-check -q ${quoted(line)})`);
+      if (each.interrupted) throw stopped();
+      if (each.exitCode !== 0) failed.push(line);
     }
+    if (!failed.length) {
+      await rt.write(INSTALLED_FOR, text);
+      return;
+    }
+    // Not recorded as installed: the next visitor, or this page after a
+    // reload, tries again. This page does not until the file changes.
+    session.write(`\x1b[33mpip could not install ${failed.join(", ")} from ${REQUIREMENTS}; the rest is installed and the program runs anyway. It is tried again when the file changes.\x1b[0m\r\n`);
   }
 
   /** The languages a line needs and this pad has not fetched yet: a fresh shell once they are here, false when one could not be. */
@@ -2463,7 +2640,7 @@ export class App {
     const needed = neededBy(command, rt.installed);
     if (!needed.length) return session.stale ? session.replaceShell() : null;
     for (const t of needed) {
-      session.write(`\x1b[2mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
+      session.write(`\x1b[90mfetching ${t.name} for this pad, the first time it is used — about ${t.mb} MB…\x1b[0m\r\n`);
       const began = performance.now();
       // Java's fast javac loads alongside the package, so the line about to
       // run finds it ready rather than compiling the slow way.
@@ -2476,9 +2653,9 @@ export class App {
         return false;
       }
       const fast = javac ? await this.javac.whenReady(20_000) : false;
-      session.write(`\x1b[2m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
+      session.write(`\x1b[90m${t.name} is here (${Math.round((performance.now() - began) / 1000)} s)\x1b[0m\r\n`);
       // The note says compiling is slow; with the fast javac it is not.
-      if (t.note && !fast) session.write(`\x1b[2mnote: ${t.note}\x1b[0m\r\n`);
+      if (t.note && !fast) session.write(`\x1b[90mnote: ${t.note}\x1b[0m\r\n`);
     }
     return session.replaceShell();
   }
@@ -2530,6 +2707,12 @@ export class App {
         e.preventDefault();
         this.say("", "no need — changes save as you type");
       }
+      // F6 and Shift-F6: to the next part of the page and back. The terminal
+      // keeps Tab for completing, so this is the keyboard's way out of it.
+      if (e.key === "F6" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        this.cycleRegion(e.shiftKey);
+      }
       // VS Code's key for a Markdown preview.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "v" && isMarkdown(this.active)) {
         e.preventDefault();
@@ -2572,7 +2755,9 @@ export class App {
       // file '/workspace/sub/main.py'". A subshell, so the terminal stays where
       // it was put; and only when it is needed, so the usual command is the
       // one a person would type. /workspace is the folder — see runtime.ts.
-      const plain = runner ? runner.line : `${program} ${JSON.stringify(this.active)}`;
+      // In single quotes: in double ones a file called `$HOME.py` or
+      // `a$(x).py`, which a pad holds happily, ran some other file.
+      const plain = runner ? runner.line : `${program} ${quoted(this.active)}`;
       if (runner) {
         const fresh = await this.prepare(session, plain);
         if (fresh) {
@@ -2623,9 +2808,14 @@ export class App {
    * doing it here as well would send the same diff twice and nudge everyone
    * else for the second one.
    */
-  private async afterCommand(): Promise<void> {
+  private async afterCommand(session?: TerminalSession, finished?: Finished | null): Promise<void> {
     if (this.busy || !this.runtime) return;
     try {
+      // A typed `pip install` that worked goes into requirements.txt first,
+      // so the save below takes it along.
+      const command = session ? this.commandOf.get(session) : undefined;
+      const installed = command && finished?.exitCode === 0 && !finished.interrupted ? pipInstalled(command) : null;
+      if (session && installed?.length) await this.recordInstalled(await this.runtime, session, installed);
       await this.publish(await this.runtime);
     } catch (e) {
       this.say("error", (e as Error).message);
@@ -2765,28 +2955,54 @@ export class App {
         const text = doc.contents();
         if (text !== change.content) await rt.write(change.path, text);
       }
-      if (changes.length === 0) {
-        this.known = next;
-        this.binaries = nextBinaries;
-        return;
+      // What the store will not keep — a name with a backslash or a tab, a
+      // file past the pad's count — left out and said, not sent with the rest
+      // for the store to refuse whole. Until 18 October one such file, or the
+      // 1,336 of numpy, stopped everything any later command made from being
+      // saved: refused, never remembered, sent again and refused again.
+      const unsaved = this.unsavable(changes);
+      let sendable = changes.filter((c) => !unsaved.has(c.path));
+      let seq = this.storeSeq;
+      if (sendable.length) {
+        try {
+          seq = await this.store.write(this.name, sendable);
+        } catch (e) {
+          // Refused: this page may not change the pad any more — its access
+          // went while the command ran. What the command made is kept here,
+          // as a viewer's own, rather than reported as an error and lost.
+          if (e instanceof StoreError && (e.refused || e.gone)) {
+            await this.recheckAccess();
+            if (this.viewer) await this.keepLocally(rt);
+            return;
+          }
+          // Refused for something in it the checks above did not foresee: each
+          // on its own, so a file refuses only itself.
+          if (!(e instanceof StoreError && contentRefusal(e)) || sendable.length === 1) {
+            if (e instanceof StoreError && contentRefusal(e)) unsaved.set(sendable[0]!.path, e.message);
+            else throw e;
+          } else {
+            const each = await this.writeEach(sendable);
+            seq = each.seq;
+            for (const [path, why] of each.refused) unsaved.set(path, why);
+          }
+          sendable = sendable.filter((c) => !unsaved.has(c.path));
+        }
       }
-      let seq: number;
-      try {
-        seq = await this.store.write(this.name, changes);
-      } catch (e) {
-        // Refused: this page may not change the pad any more — its access
-        // went while the command ran. What the command made is kept here,
-        // as a viewer's own, rather than reported as an error and lost.
-        if (!(e instanceof StoreError && (e.refused || e.gone))) throw e;
-        await this.recheckAccess();
-        if (this.viewer) await this.keepLocally(rt);
-        return;
+      // What was not saved is not what the store holds: the next command
+      // offers it again, and it goes then if it can.
+      for (const path of unsaved.keys()) {
+        if (this.known.has(path)) next.set(path, this.known.get(path)!);
+        else next.delete(path);
+        if (this.binaries.has(path)) nextBinaries.set(path, this.binaries.get(path)!);
+        else nextBinaries.delete(path);
       }
+      this.tellUnsaved(unsaved);
       this.storeSeq = Math.max(this.storeSeq, seq);
       this.known = next;
       this.binaries = nextBinaries;
-      if (!this.el.markdownPane.hidden && changes.some((c) => c.encoding === "base64")) this.renderMarkdownSoon();
-      for (const change of changes) {
+      if (!sendable.length) return;
+      if (!this.el.markdownPane.hidden && sendable.some((c) => c.encoding === "base64")) this.renderMarkdownSoon();
+      for (const change of sendable) {
         // Gone, or now binary: either way, no longer the editor's.
         if (change.content === null || change.encoding === "base64") {
           if (this.active === change.path) {
@@ -2811,6 +3027,89 @@ export class App {
       this.renderFiles();
       this.peers?.moved(seq);
     });
+  }
+
+  /**
+   * Which of a command's changes the store would refuse, and why: a name it
+   * will not keep, and new files past the pad's count, in the order made.
+   */
+  private unsavable(changes: Change[]): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const c of changes) {
+      if (c.content === null) continue;
+      const why = unstorable(c.path);
+      if (why) out.set(c.path, why);
+    }
+    const stored = new Set([...this.known.keys(), ...this.binaries.keys()]);
+    let count = stored.size;
+    for (const c of changes) if (c.content === null && stored.has(c.path)) count--;
+    for (const c of changes) {
+      if (c.content === null || stored.has(c.path) || out.has(c.path)) continue;
+      if (count >= MAX_FILES) out.set(c.path, `the pad holds at most ${MAX_FILES} files`);
+      else count++;
+    }
+    return out;
+  }
+
+  /** Each change on its own, so one the store refuses refuses only itself: the newest sequence, and what was refused. */
+  private async writeEach(changes: Change[]): Promise<{ seq: number; refused: Map<string, string> }> {
+    let seq = this.storeSeq;
+    const refused = new Map<string, string>();
+    for (const change of changes) {
+      try {
+        seq = Math.max(seq, await this.store.write(this.name, [change]));
+      } catch (e) {
+        if (!(e instanceof StoreError && contentRefusal(e))) throw e;
+        refused.set(change.path, e.message);
+      }
+    }
+    return { seq, refused };
+  }
+
+  /**
+   * Files a command made that the pad did not keep: by name and why, once
+   * for each until it changes — in the status line, and above the prompt
+   * where the command's output is. And the line cleared once saving is back
+   * to everything.
+   */
+  private tellUnsaved(unsaved: Map<string, string>): void {
+    if (!unsaved.size) {
+      if (this.el.status.textContent?.startsWith(NOT_SAVED)) this.say("", "");
+      return;
+    }
+    const fresh = [...unsaved].filter(([path, why]) => this.toldUnsaved.get(path) !== why);
+    for (const [path, why] of fresh) this.toldUnsaved.set(path, why);
+    if (!fresh.length) return;
+    const [path, why] = fresh[0]!;
+    const more = fresh.length > 1 ? ` and ${fresh.length - 1} more` : "";
+    this.say("error", `${NOT_SAVED} ${path}${more} — ${why}`);
+    this.session?.console.printAbove(`\x1b[33m${NOT_SAVED} ${path}${more} — ${why}\x1b[0m\r\n`);
+  }
+
+  /**
+   * What a typed `pip install` put in, added to requirements.txt — the
+   * packages themselves are not saved with the pad (`.deps` is ignored), so
+   * the file is how whoever opens it next gets them: Run installs from it
+   * first. Only names not there already; said above the prompt.
+   */
+  private async recordInstalled(rt: Runtime, session: TerminalSession, specs: string[]): Promise<void> {
+    const text = (await rt.read(REQUIREMENTS).catch(() => null)) ?? "";
+    const have = new Set(requirementLines(text).map(requirementName));
+    const add = [...new Set(specs)].filter((spec) => !have.has(requirementName(spec)));
+    if (!add.length) return;
+    const lines = `${add.join("\n")}\n`;
+    const next = text && !text.endsWith("\n") ? `${text}\n${lines}` : `${text}${lines}`;
+    const model = this.models.get(REQUIREMENTS);
+    if (model) {
+      // Open somewhere: an edit like typing, which saves and reaches the room.
+      const end = model.getFullModelRange().getEndPosition();
+      model.pushEditOperations([], [{ range: { startLineNumber: end.lineNumber, startColumn: end.column, endLineNumber: end.lineNumber, endColumn: end.column }, text: next.slice(text.length) }], () => null);
+    } else {
+      await rt.write(REQUIREMENTS, next);
+    }
+    // Installed already, by the command itself: Run need not do it again.
+    this.requirementsInstalled = next;
+    session.console.printAbove(`\x1b[90m(added ${add.join(", ")} to ${REQUIREMENTS}, so ${add.length === 1 ? "it installs" : "they install"} for whoever opens this pad)\x1b[0m\r\n`);
   }
 
   private async share(): Promise<void> {
@@ -3040,8 +3339,9 @@ export class App {
   private async downloadAll(): Promise<void> {
     const entries = await this.collect();
     if (!entries.length) return this.say("", "nothing here to download yet");
-    save(await makeZip(entries.map((e) => ({ path: `${this.name}/${e.path}`, data: e.data }))), `${this.name}.zip`);
-    this.say("", `downloaded ${entries.length} ${entries.length === 1 ? "file" : "files"} as ${this.name}.zip`);
+    const name = windowsSafe(this.name);
+    save(await makeZip(entries.map((e) => ({ path: `${name}/${e.path}`, data: e.data }))), `${name}.zip`);
+    this.say("", `downloaded ${entries.length} ${entries.length === 1 ? "file" : "files"} as ${name}.zip`);
   }
 
   /** One file as itself; a folder as a zip, with the folder at its top. */
@@ -3055,7 +3355,7 @@ export class App {
     const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
     const entries = (await this.collect(path)).map((e) => ({ path: e.path.slice(parent.length), data: e.data }));
     if (!entries.length) return this.say("", `${path} has nothing in it to download`);
-    save(await makeZip(entries), `${leaf}.zip`);
+    save(await makeZip(entries), `${windowsSafe(leaf)}.zip`);
   }
 
   /** The starter on an empty pad, as it was put there — unsaved and untouched. */

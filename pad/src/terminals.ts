@@ -18,14 +18,14 @@ import { Console } from "./console";
 import { IMAGE_OSC } from "./images";
 import { type Place, placesIn } from "./problems";
 import type { Runtime } from "./runtime";
-import { Shell } from "./shell";
+import { type Finished, Shell } from "./shell";
 
 export interface SessionHooks {
   runtime: () => Promise<Runtime>;
   /** Before a typed line runs: the languages it needs, and the fresh shell that needs. */
   prepare: (session: TerminalSession, command: string) => Promise<Shell | null>;
   onBusy: (session: TerminalSession, busy: boolean) => void;
-  onFinished: (session: TerminalSession) => void;
+  onFinished: (session: TerminalSession, finished: Finished | null) => void;
   /** How many languages the sandbox has had installed: a shell opened before one does not see it. */
   installs: () => number;
   /** A program asked for an image to be shown (`images.ts`): the escape's text. */
@@ -98,7 +98,7 @@ export class TerminalSession {
     // and completes against one only if it is already open.
     this.console = new Console({ write: (d) => term.write(d) }, {
       shellFor: () => this.ensureShell(),
-      onFinished: () => hooks.onFinished(this),
+      onFinished: (finished) => hooks.onFinished(this, finished),
       openShell: () => (this.shell?.alive ? this.shell : null),
       columns: () => this.cols,
       onBusy: (busy) => {
@@ -117,6 +117,15 @@ export class TerminalSession {
       ready: () => hooks.ready(),
     });
     term.onData((data) => this.console.handle(data));
+    // Keys the page takes from the terminal, left to bubble to its own
+    // handler: Ctrl/⌘-Enter runs the file, as anywhere else on the page, and
+    // F6 leaves for the next part of it.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) return false;
+      if (e.key === "F6") return false;
+      return true;
+    });
     term.onResize(({ cols, rows }) => {
       this.cols = cols;
       this.rows = rows;

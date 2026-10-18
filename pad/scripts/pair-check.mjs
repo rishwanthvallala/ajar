@@ -474,6 +474,38 @@ try {
     await a.context().close();
     await b.context().close();
   }
+
+  // ---- a rename in one place while the other is typing in the file -------
+  // The other place follows the file to its new name, and what was typed
+  // there before the rename reached it is kept (review of 17 October, M1:
+  // it was sent to main.py, its last half-second gone).
+  {
+    const name = `pair-move-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: "print(1)\n" }, { path: "fa.txt", content: "start\n" }] }) });
+    const [a, b] = await pair(name);
+    await a.locator("#files").getByText("fa.txt", { exact: true }).click();
+    await a.waitForFunction(() => window.__pad?.active() === "fa.txt" && window.__pad?.docs().includes("fa.txt"), null, { timeout: 30_000 });
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("FAST-");
+    await b.locator('#files .row[data-path="fa.txt"]').focus();
+    await b.keyboard.press("F2");
+    const input = b.locator("#files input.name-input");
+    await input.waitFor({ timeout: 5000 });
+    await input.fill("fb.txt");
+    await input.press("Enter");
+    const followed = await a.waitForFunction(() => window.__pad?.active() === "fb.txt", null, { timeout: 20_000 }).then(() => true, () => false);
+    let stored = {};
+    for (let i = 0; i < 40; i++) {
+      stored = (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files;
+      if (stored["fb.txt"]?.content?.includes("FAST-") && !stored["fa.txt"]) break;
+      await wait(a, 250);
+    }
+    const kept = stored["fb.txt"]?.content?.includes("FAST-") && !stored["fa.txt"];
+    if (followed && kept) ok("a rename in one place takes the other along to the new name, with its typing");
+    else fail(`a rename while typing — ${JSON.stringify({ followed, aActive: await a.evaluate(() => window.__pad?.active()), stored: Object.fromEntries(Object.entries(stored).map(([k, v]) => [k, v.content])) })}`);
+    await a.context().close();
+    await b.context().close();
+  }
 } catch (e) {
   fail(e.stack ?? String(e));
 } finally {

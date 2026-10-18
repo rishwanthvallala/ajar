@@ -81,9 +81,11 @@ Those exports are `PIP_TARGET` and `PYTHONPATH`, both pointing at
 lives under a read-only `/nix/store` path: a plain `pip install` reports
 success and the package is then not importable, because the write landed in a
 layer that does not outlive the process. Sending it to the folder instead makes
-it real — installed packages sync, survive a reload, and reach whoever opens
-the link, which was verified rather than assumed: eight files on the server,
-imported from a freshly opened page.
+it real for as long as the sandbox runs. They used to sync with the pad too,
+until numpy's 1,336 files met the 500 a pad holds (18 October): `.deps` is
+ignored by the sync now (sync.ts), and what reaches whoever opens the link is
+`requirements.txt`, which a typed `pip install` adds to (`App.recordInstalled`)
+and Run installs from (`App.installRequirements`).
 
 `find` is the one entry in that table that shadows a *working* binary, and it
 earns the exception twice over. `-exec` needs to spawn, which the binary cannot
@@ -254,7 +256,8 @@ first on `sys.meta_path`, so the aliased tools that start a python for every
 Monaco model, every model listens to Monaco's language service, and that
 emitter calls more than 200 listeners a leak — `[001] potential listener LEAK
 detected` — thrown on a timer as an unexpected error. `pip install flask`
-alone puts 187 files in `.deps`. It is not a leak here, and a pad holds 500,
+alone puts 187 files in `.deps` (not saved since 18 October, but models then).
+It is not a leak here, and a pad holds 500,
 so since 16 October `App.openEditor` drops that one report from Monaco's
 `errorHandler` and passes every other error on; Monaco's console warning
 stays. A model only for the files that are open would not need it, and
@@ -1122,8 +1125,7 @@ So it is 0.18.0, until a later version has both. The same upgrade changed
 `/workspace/.ajar/…`.
 
 **Plots.** `MPLBACKEND=Agg`, so drawing never looks for a window, and
-`MPLCONFIGDIR` in `.deps`, so the font cache is built once and travels with
-the pad. `plt.show()` is replaced (tools/sitecustomize.py): each figure is
+`MPLCONFIGDIR` in `.deps`, so the font cache is built once per sandbox. `plt.show()` is replaced (tools/sitecustomize.py): each figure is
 saved as `figure-<n>.png` where the program ran, and the program prints
 `ESC ] 7777 ; pad-image=<path> BEL`, a number no terminal standard uses. The
 terminal takes that escape off the screen (`registerOscHandler`, terminals.ts)
@@ -1133,9 +1135,21 @@ opened from the tree shows the same way (`images.ts`). They go in as `data:`
 URLs, since the CSP allows no other source for images.
 
 **requirements.txt** is installed before the first thing that runs Python,
-and again when it changes: `App.installRequirements`. What it was installed
-for is kept beside the packages, in `.deps/.installed-requirements.txt`, so
-it travels with the pad and the next person to open it fetches nothing.
+and again when it changes: `App.installRequirements`. pip resolves a file at
+once, so when it fails each line is tried on its own and only the ones that
+failed are named; a failure is never recorded as installed. A typed
+`pip install` that worked adds its packages to the file
+(`App.recordInstalled`, `requirements.ts`), since `.deps` is not saved — so the
+file is how the packages reach the next person, whose sandbox installs them.
+
+**What a pad cannot keep** is said, not refused with everything else.
+`App.publish` checks a command's files against the relay's rules first
+(`unstorable`, the 500-file cap) and leaves those out, naming them in the
+status line and above the prompt; a batch the relay refuses anyway is sent
+again one file at a time. Until 18 October one file with a backslash in its
+name, or the 1,336 of numpy, stopped every later command's files from saving:
+refused, never remembered, sent again and refused again. The files left out
+stay out of `known`, so a later command offers them again.
 
 ## Where a file was left
 

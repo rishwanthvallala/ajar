@@ -1011,13 +1011,61 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   await run(LIVE ? "import idna\nprint('idna', idna.encode('pad').decode())\n" : "print('ran anyway')\n", { ms: 180_000 });
   // Offline, pip's retries can scroll the note off the screen; the line
   // after a failed install is said only by the same code, so it is the proof.
-  const reqNoted = (await shows(/requirements\.txt is here: installing it first/)) || (!LIVE && (await shows(/pip could not install all of requirements\.txt/)));
-  const reqRan = LIVE ? await shows(/idna pad/) : (await shows(/pip could not install all of requirements\.txt/)) && (await shows(/ran anyway/));
+  const reqNoted = (await shows(/requirements\.txt is here: installing it first/)) || (!LIVE && (await shows(/pip could not install .* from requirements\.txt/)));
+  const reqRan = LIVE ? await shows(/idna pad/) : (await shows(/pip could not install .* from requirements\.txt/)) && (await shows(/ran anyway/));
   expect(LIVE ? "requirements.txt is installed before Run, and the program imports what it named" : "requirements.txt is installed before Run, and one that cannot be is said, and the program runs anyway", reqNoted && reqRan, await tail(4));
   await clear();
   await run("print('second run')\n", { ms: 60_000 });
   expect("and it is not installed again until it changes", (await shows(/second run/)) && !(await shows(/installing it first/, 500)), await tail(3));
   await typed("rm requirements.txt");
+  await clear();
+
+  // ---- what a command makes that the pad cannot keep, and what it can ----
+  // One file the store refuses is named and left out; it no longer takes
+  // everything else, then and after, with it (review of 17 October, M11).
+  section = "unsaved";
+  await clear();
+  const fileRow = (path) => page.locator(`#files .row.file[data-path="${path}"]`);
+  const savedInTree = (path) => fileRow(path).waitFor({ timeout: 20_000 }).then(() => true, () => false);
+  await typed("printf x > 'out\\file.txt'; printf kept > kept-beside.txt");
+  const besideKept = await savedInTree("kept-beside.txt");
+  const named = (await status()).startsWith("not saved: out\\file.txt");
+  await typed("printf later > made-later.txt");
+  const laterKept = await savedInTree("made-later.txt");
+  await typed("rm 'out\\file.txt'");
+  await wait(800);
+  const cleared = !(await status()).startsWith("not saved");
+  expect("a file the pad cannot keep is named and left out, and the rest — then and after — is saved", besideKept && named && laterKept && cleared, `beside ${besideKept}, named ${named}, later ${laterKept}, cleared ${cleared}: ${await status()}`);
+  await typed("rm kept-beside.txt made-later.txt");
+
+  // A typed pip install goes into requirements.txt, which the pad keeps where
+  // it cannot keep the packages: a stand-in pip, as there is no network here.
+  await clear();
+  await typed('pip() { echo "pretending to install $*"; }');
+  await typed("pip install pad-fake-pkg==1.0");
+  const recorded = await page.waitForFunction(() => /^pad-fake-pkg==1\.0$/m.test(window.__pad?.text("requirements.txt") ?? ""), null, { timeout: 15_000 }).then(() => true, () => false);
+  const said = await shows(/added pad-fake-pkg==1\.0 to requirements\.txt/);
+  await typed("pip install pad-fake-pkg==1.0");
+  await wait(800);
+  const once = ((await page.evaluate(() => window.__pad?.text("requirements.txt") ?? "")).match(/pad-fake-pkg/g) ?? []).length === 1;
+  expect("a typed pip install is added to requirements.txt, once, and said", recorded && said && once, `${recorded} ${said} ${once}: ${JSON.stringify(await page.evaluate(() => window.__pad?.text("requirements.txt")))}`);
+  await typed("unset -f pip; rm requirements.txt");
+
+  // A program cannot end its own command by printing what looks like the
+  // shell's end-of-command marker (M8).
+  await clear();
+  await typed("printf '\\001130\\001'; sleep 1; echo after-the-fake-marker", 20_000);
+  const notEnded = (await shows(/after-the-fake-marker/)) && !(await rows()).some((l) => /^exit 130$/.test(l.trim()));
+  expect("output that looks like the end of a command does not end it", notEnded, await tail(3));
+
+  // Run takes a file's name as it is: a `$` in it is not expanded (R2).
+  await newFile("dollar$HOME.py", "print('the dollar file ran')\n");
+  await clear();
+  await page.click("#run");
+  await idle();
+  expect("Run runs a file whose name has a $ in it", await shows(/the dollar file ran/), await tail(3));
+  await typed("rm 'dollar$HOME.py'");
+  await open("main.py");
   await clear();
 
   // ---- images, shown in place of the editor ----
@@ -1110,7 +1158,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   // Whoever opens the pad next sees it before running anything.
   const errNext = await context.newPage();
   await errNext.goto(`${ORIGIN}${errPad}`, { waitUntil: "domcontentloaded" });
-  const errOpened = await errNext.waitForFunction(() => /the last run, just now: python .*boom\.py"? · exit 1/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? "") && (document.querySelector("#terminal .xterm-rows")?.textContent ?? "").includes("NameError"), null, { timeout: 60_000 }).then(() => true, () => false);
+  const errOpened = await errNext.waitForFunction(() => /the last run, [^:]+: python .*boom\.py['"]? · exit 1/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? "") && (document.querySelector("#terminal .xterm-rows")?.textContent ?? "").includes("NameError"), null, { timeout: 60_000 }).then(() => true, () => false);
   await errNext.close();
   expect("and a page opening the pad shows that run in its terminal before anything runs", errOpened, "");
   await open("boom.py");

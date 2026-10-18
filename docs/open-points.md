@@ -111,9 +111,14 @@ on `cat poem.txt | grep two` inside the sandbox, so the page never finished.
 That happened twice on CI on 16 October. The first time, a rerun passed. The
 second was on 52113b2, which changed nothing the check runs. Locally it has
 not happened.
-Nobody has caught it on screen in the pad, but a pipe that never ends is what
-a person would meet. Its next run should keep the stuck processes' state,
-which the check does not record yet.
+The review of 17 October caught it on screen in the pad: `pip install numpy
+pandas matplotlib 2>&1 | tail -2` stayed busy for 10 to 30 minutes in four of
+eight tries, where the same install without the pipe takes 10 to 20 seconds
+(H2). `cat` and `grep` are the runtime's own binaries, not the pad's python
+shims, so this is the WASIX runtime's pipe not reaching end-of-file for its
+reader — not in pad's code. The user guide says so, with the workaround
+(write to a file, then read it). Next: a reproduction outside the pad against
+the Wasmer SDK, to report upstream, keeping the stuck processes' state.
 
 **The guest-counting limits test lost its shell four times, unexplained.**
 `a_guests_own_processes_do_not_raise_their_ceiling`, on 25 September, in WSL:

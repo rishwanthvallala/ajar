@@ -41,16 +41,19 @@ export const CLANG_ALIASES = [
   ["clang++", "clang --driver-mode=g++"],
 ] as const;
 
-/** A path as one shell word. */
-const quoted = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+/** A path as one shell word, nothing in it expanded — `$`, backquotes, spaces. */
+export const quoted = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
- * C++, compiled and run — and said first when it includes <iostream>, which
- * does not finish compiling here: fifteen minutes on a three-line program on
- * 12 October, where <cstdio> takes seconds. Without the word it looks hung.
+ * C++, compiled and run — and said first when it includes the C++ standard
+ * library, which this clang cannot build: <iostream> did not finish in
+ * fifteen minutes on 12 October, and <vector>, <string>, <map> and
+ * <algorithm> crash it ("clang frontend command failed with exit code 27",
+ * review of 17 October). The C headers — <cstdio>, <cstring>, <cmath> — work.
+ * Said, so the crash is not taken for a fault in the program.
  */
 const cxx = (f: string) =>
-  `{ grep -q '#include *<iostream>' ${quoted(f)} && echo "note: <iostream> does not finish compiling here — <cstdio> and printf do" >&2; true; } && clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`;
+  `{ grep -Eq '#include *<[a-z_]+>' ${quoted(f)} && grep -Eo '#include *<[a-z_]+>' ${quoted(f)} | grep -Evq '<c(assert|ctype|errno|float|limits|locale|math|setjmp|signal|stdarg|stddef|stdint|stdio|stdlib|string|time|wchar|wctype)>' && echo "note: the C++ standard library (<iostream>, <vector>, <string>, <map>…) does not compile here — the C headers (<cstdio>, <cstring>, <cmath>) and printf do" >&2; true; } && clang++ ${quoted(f)} -o /tmp/a.out && /tmp/a.out`;
 
 export const TOOLCHAINS: readonly Toolchain[] = [
   {

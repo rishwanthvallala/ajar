@@ -254,10 +254,10 @@ try {
   // stub store has no relay behind it, and the starter file is not what is
   // being checked here.
   await page.click("#run");
-  await page.waitForFunction(() => /\$ python3? "?main\.py"?/.test(document.getElementById("terminal")?.textContent ?? ""), null, { timeout: 60_000 });
+  await page.waitForFunction(() => /\$ python3? ['"]?main\.py['"]?/.test(document.getElementById("terminal")?.textContent ?? ""), null, { timeout: 60_000 });
   await idle(); await page.click("#terminal"); await settle();
   await press("ArrowUp"); await settle();
-  expect("↑ after Run recalls what Run ran", /^\$ python3? "?main\.py"?$/.test(await promptLine()), await promptLine());
+  expect("↑ after Run recalls what Run ran", /^\$ python3? ['"]?main\.py['"]?$/.test(await promptLine()), await promptLine());
   await press("Control+c");
 
   // ---- Run says why a program failed ----

@@ -68,7 +68,7 @@ export class PadWorkspace {
     presence.className = "presence";
     this.shell.el("people").replaceChildren(presence);
 
-    const run = button("run", "Run", RUN_ICON, "Run this file (⌘⏎)", true);
+    const run = button("run", "Run", RUN_ICON, "Run this file", true);
     const preview = button("preview", "Preview", PREVIEW_ICON, "Open the server running in this folder");
     preview.hidden = true;
     const share = button("share", "Share", SHARE_ICON, "Copy the link");

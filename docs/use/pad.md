@@ -30,9 +30,11 @@ the top of the pad. New folder works the same way.
 
 **Starting from something.** An empty file of a kind the pad knows — Python,
 Java, C, C++, Go, JavaScript, TypeScript, PHP, shell, HTML, CSS, JSON, SQL,
-Markdown, YAML, TOML — offers a starter on its first line: a few lines that
-run and print, the way an online compiler opens. A Java one is a class named
-after the file. Click it, or Insert Starter Code in the editor's right-click
+Markdown, YAML, TOML — offers a starter on its first line: a few lines to
+start from. For the kinds Run runs — Python, Java, C, C++, Go, JavaScript and
+PHP — it is a program that runs and prints, the way an online compiler opens;
+for the rest, a page, a query, a document to fill in. A Java one is a class
+named after the file. Click it, or Insert Starter Code in the editor's right-click
 menu; one undo takes it out again. Typing anything instead makes the offer go.
 
 **Formatting.** Format, above the editor, formats the file — Python with Ruff,
@@ -171,6 +173,8 @@ The terminal's keys are bash's:
 | Ctrl-U, Ctrl-K, Ctrl-W, Ctrl-Y | cut to the start, cut to the end, cut a word, paste it back |
 | Ctrl-L, `clear` | clear the screen |
 | Ctrl-C | abandon the line, or stop a running command — so does **Stop**, which Run becomes while anything runs |
+| Ctrl-Enter (⌘⏎ on a Mac) | Run, from anywhere on the page — the editor and the terminal too |
+| F6, Shift-F6 | to the next part of the page and back — the header, the files, the editor, the terminal: the way out of the terminal by keyboard, where Tab completes |
 | Ctrl-D | end the input a program is waiting for: `input()` raises `EOFError`, `cat > notes.txt` finishes |
 | Ctrl-S | nothing to do: every change is saved as you type |
 
@@ -395,22 +399,28 @@ Packages come from PyPI. `curl`, `wget`, `urllib` and `requests` go through
 your browser — see [Fetching from the internet](#fetching-from-the-internet) —
 and anything else that opens a connection reaches PyPI alone: no `git clone`,
 no `ssh`, no connecting to your own servers. Installs land in a `.deps` folder
-beside your files, so they stay after a reload and whoever opens the link has
-them too.
+that is not saved with the pad — numpy alone is over a thousand files — so
+**a typed `pip install` adds what it installed to `requirements.txt`**, and
+the terminal says so. That file is what reaches whoever opens the link.
 
 A `requirements.txt` at the top of the folder is installed by itself, before
 the first thing that runs Python — Run, or `python`, `flask` or `pytest` typed —
-and again when it changes, so a link to a Flask app runs for whoever opens it.
-What it was installed for is kept in `.deps` with the rest, so the next person
-to open the pad fetches nothing. A package that will not install is said, the
-program runs anyway, and it is tried again when the file changes.
+and again when it changes, so a link to a Flask app runs for whoever opens it:
+each visitor's own sandbox fetches the packages, in seconds. If a line will
+not install, the others still do — each is tried on its own — the program runs
+anyway, and the ones that failed are named and tried again when the file
+changes.
 
 `pip install requests` takes a few seconds, dependencies and all. **numpy,
 pandas and matplotlib** install too, from Wasmer's own builds for this
-runtime: `pip install numpy pandas matplotlib`, about a minute the first time
-and kept in `.deps` after. Pillow and the rest of what those need come with
-them. A package that only exists as source code to compile, which is rare, does
-not install.
+runtime: `pip install numpy pandas matplotlib` takes 10 to 20 seconds each
+time a sandbox starts without them. Pillow and the rest of what those need
+come with them. A package that only exists as source code to compile, which is
+rare, does not install. `pip list` shows only pip itself — the packages are in
+`.deps`, which `pip list --path .deps` lists — and `pip uninstall` is refused;
+take the line out of `requirements.txt` instead, and `rm -r .deps` to start
+over. Installing pandas after numpy says "Target directory … already exists"
+for numpy, which is harmless.
 
 **Plots show over the editor.** `plt.show()` saves each figure as
 `figure-1.png`, `figure-2.png`… beside your program and opens it in place of the
@@ -434,12 +444,18 @@ it — so nobody who only writes Python pays for them. The terminal
 starts a fresh shell when one arrives; you stay in the same folder, with what
 you exported. Common Lisp is there the same way, as `repl`.
 
-Each has its limits. `gcc`, `g++` and `cc` are clang under those names. C++
-compiles, but not `#include <iostream>` — it never finishes; use `<cstdio>` and
-`printf`. Go runs a single file with `go run`, not a module —
-`go mod init` does not work — a Go program opens files by their full path
-(`/workspace/data.txt`), and a program `go build` makes runs only once, so use
-`go run`. Lisp runs expressions and its REPL, not files.
+Each has its limits. `gcc`, `g++` and `cc` are clang under those names.
+**C++ is C++ without its standard library**: classes, templates and the C
+headers (`<cstdio>`, `<cstring>`, `<cmath>`) compile, but `<iostream>`,
+`<vector>`, `<string>`, `<map>` and `<algorithm>` crash this compiler (exit
+27) or never finish — Run says so before it starts. JavaScript errors show
+your program's frames as `<anonymous>:line:column`, without a file name, which
+this runtime's node does not give. Go runs with `go run`; `go mod init` works,
+but a Go program opens files by their full path (`/workspace/data.txt`) — a
+relative one fails with "Math result not representable" — and a program
+`go build` makes runs only once, so use `go run`. The first `go run` fetches
+273 MB and takes about 24 seconds. Lisp runs expressions and its REPL, not
+files.
 
 Java is Java 25 — the real class library, run by a JVM built for this sandbox.
 `javac Main.java` then `java Main` works, and so does `java Main.java` on its
@@ -451,6 +467,18 @@ usual. There is no `jshell`, and nothing that opens a window.
 
 **No `gcc`, no Ruby, no `git` or `make`.** There is no `gcc` for this kind of
 sandbox at all; C is clang. Ruby and Zig exist but do not work well enough yet.
+A Makefile is kept and indented with tabs, but nothing here runs it.
+
+**`ls` lays out columns even into a pipe** here, so `ls | wc -l` counts rows
+of names, not names; `ls -1` gives one a line.
+
+**What a pad keeps.** At most 500 files and 100 MB. A file a command makes
+that the pad cannot keep — past the 500, or with a name it cannot hold, a
+backslash in it (what a script written for Windows makes) or a tab — is named
+in the status line and above the prompt, and left out; everything else the
+command made is saved as usual. Links made with `ln` are not kept. `~` is a
+folder under `/tmp`, `$HOME`, which is the sandbox's and gone after a reload;
+so is `/tmp`.
 
 **No `ssh`, `vim` or `less`.** `nano` is there; the other two are not.
 
@@ -486,6 +514,14 @@ reaches the other one. The terminal says so, and the program goes on — a
 server keeps its port ("Address in use" next time) — until you reload the
 page. Ctrl-D, which ends a program's input, does
 the same once the program finishes.
+
+**A pipeline can hang.** Now and then a command piped into another —
+`pip install numpy 2>&1 | tail -2`, `cat poem.txt | grep two` — finishes its
+work and never ends: the runtime underneath does not always tell the second
+program the first one is done. About half the time for a long pip install
+into `tail`, rarely for short commands. Ctrl-C ends it and nothing is lost. To
+avoid it, write to a file and read that: `pip install numpy > log.txt 2>&1;
+tail -2 log.txt`.
 
 The first command is slow — that is the 19 MB arriving. After that it is
 instant, and a later visit is free.
