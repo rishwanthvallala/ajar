@@ -30,6 +30,7 @@ import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, re
 import { type Change, type LastRun, mintName, Store, StoreError, storedHash, type Pad, type Version } from "./store";
 import { type Place, problemsIn } from "./problems";
 import { seedFiles } from "./seed";
+import { Texts } from "./texts";
 import { starterFor } from "./starters";
 import { type Binaries, binariesFrom, diff, fromBase64, ignored, isMarker, type Known, knownFrom, MARKER, MAX_FILES, markedFolder, textOf, toBase64, unstorable } from "./sync";
 import { imageFromOsc, imageType } from "./images";
@@ -225,7 +226,8 @@ export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private monaco: typeof Monaco | null = null;
-  private models = new Map<string, Monaco.editor.ITextModel>();
+  /** The pad's text files: a model for those the editor has needed, text for the rest (`Texts`). */
+  private texts = new Texts<Monaco.editor.ITextModel>((path, text) => this.makeModel(path, text));
   private active = "";
   /**
    * Spaces to a level of indent, in every file: 4 unless set to 2, with
@@ -458,7 +460,7 @@ export class App {
       active: () => this.active,
       docs: () => [...this.docs.keys()],
       streams: () => [...this.byStream].flatMap(([stream, paths]) => [...paths].map((path) => [stream, path])),
-      text: (p: string) => this.docs.get(p)?.contents() ?? this.models.get(p)?.getValue(),
+      text: (p: string) => this.docs.get(p)?.contents() ?? this.texts.get(p)?.getValue(),
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
       room: () => this.peers?.seen,
@@ -737,8 +739,7 @@ export class App {
       if (incoming.has(path) || this.local.has(path)) continue;
       this.dirty.delete(path);
       this.closeDoc(path);
-      this.models.get(path)?.dispose();
-      this.models.delete(path);
+      this.texts.delete(path);
       // And the folders that leaves empty: kept, the next command would put
       // them back for everyone.
       if (rt) await rt.removeAndPrune(path);
@@ -764,18 +765,19 @@ export class App {
       // now is: an edit like typing, which saves and reaches the room.
       const typed = typedBefore.get(from);
       const stored = incoming.get(to)!;
-      const model = this.models.get(to);
-      if (typed === undefined || typed === stored || !model || this.docs.has(to) || !this.monaco) continue;
+      if (typed === undefined || typed === stored || !this.texts.has(to) || this.docs.has(to) || !this.monaco) continue;
+      // Into its model, made for it if it has none, as the edit typing is.
+      const model = this.texts.model(to)!;
       const edit = carryOver(stored, typed, model.getValue());
       if (!edit) continue;
       const start = model.getPositionAt(edit.at);
       const end = model.getPositionAt(edit.at + edit.remove);
       model.applyEdits([{ range: new this.monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.insert }]);
     }
-    if (followFrom && this.models.has(moves.get(followFrom)!)) {
+    if (followFrom && this.texts.has(moves.get(followFrom)!)) {
       this.show(moves.get(followFrom)!);
-    } else if (!this.models.has(this.active)) {
-      const first = [...this.models.keys()].sort()[0];
+    } else if (!this.texts.has(this.active)) {
+      const first = [...this.texts.keys()].sort()[0];
       if (first) this.show(first);
     }
     this.renderFiles();
@@ -845,8 +847,8 @@ export class App {
 
     // A model with unsaved text in it is newer than the store: a file moved
     // with typing it carried, waiting for its save.
-    const unsaved = this.dirty.has(path) ? this.models.get(path)?.getValue() : undefined;
-    const stored = unsaved ?? this.known.get(path) ?? this.models.get(path)?.getValue() ?? "";
+    const unsaved = this.dirty.has(path) ? this.texts.get(path)?.getValue() : undefined;
+    const stored = unsaved ?? this.known.get(path) ?? this.texts.get(path)?.getValue() ?? "";
     if (!this.peers || this.peers.alone) {
       doc.seed(stored);
       this.seeds.set(path, stored);
@@ -997,11 +999,13 @@ export class App {
       },
     };
     this.monaco = monaco;
-    // A model per file, each listening to the language service, and Monaco
-    // reports more than 200 listeners on that as a leak — thrown, on a timer,
-    // for any pad of over 200 text files, which one `pip install flask`
-    // makes. It is not a leak here: the models are the pad's files, and a
-    // pad holds 500. Only that report goes; Monaco still warns in the console.
+    // Each model listens to the language service, and Monaco reports more
+    // than 200 listeners on that as a leak — thrown, on a timer. A model was
+    // made for every file until 18 October, so any pad of over 200 text files
+    // threw it; now one is made for a file only once the editor needs it
+    // (`Texts`), and only somebody who opens more than 200 files in one visit
+    // gets there. It is not a leak then either: the models are the files they
+    // opened. Only that report goes; Monaco still warns in the console.
     const report = errorHandler.unexpectedErrorHandler;
     errorHandler.unexpectedErrorHandler = (e) => {
       if ((e as Error | undefined)?.name !== "ListenerLeakError") report(e);
@@ -1072,37 +1076,51 @@ export class App {
     });
   }
 
+  /**
+   * A file's text, new or changed. Into its model when it has one, and kept
+   * as text when it has none (`Texts`) — told as an edit to a model would
+   * be, so a file nobody has opened saves and marks itself as one that has.
+   */
   private setFile(path: string, content: string): void {
     if (!this.monaco) return;
-    const existing = this.models.get(path);
+    const existing = this.texts.existing(path);
     if (existing) {
       // Only what differs, so where somebody was in the file survives it.
       replaceText(this.monaco, existing, content);
       return;
     }
-    const model = this.monaco.editor.createModel(content, this.languageOf(path));
+    const fresh = !this.texts.has(path);
+    if (this.texts.put(path, content) && !fresh) this.changed(path);
+    if (fresh && !this.active) this.show(path);
+  }
+
+  /** A file's model, made the first time something needs one: `Texts`. */
+  private makeModel(path: string, content: string): Monaco.editor.ITextModel {
+    const model = this.monaco!.editor.createModel(content, this.languageOf(path));
     // The indent set here, not one guessed from the file.
     model.updateOptions(this.indentOptions(path));
     // Per model, not on the editor. `onDidChangeModelContent` fires only for
     // whichever model is attached right now, so a change to any other file —
     // including one arriving from the shell — would never be noticed.
-    model.onDidChangeContent(() => {
-      this.warm();
-      // A change the page just wrote in on somebody else's behalf is not an
-      // edit to send back. Without this every remote update bounces straight
-      // home and two browsers push the same content at each other forever.
-      if (this.applyingRemote) return;
-      // A file with a document marks itself dirty from the document's own
-      // send callback, which fires for local edits and not for applied
-      // remote ones. Marking here as well would save — and nudge everyone —
-      // once for every keystroke anybody else typed.
-      if (this.docs.has(path)) return;
-      this.dirty.add(path);
-      if (this.viewer) return this.markLocal(path);
-      this.saveSoon();
-    });
-    this.models.set(path, model);
-    if (!this.active) this.show(path);
+    model.onDidChangeContent(() => this.changed(path));
+    return model;
+  }
+
+  /** A file's text changed, in its model or as text. */
+  private changed(path: string): void {
+    this.warm();
+    // A change the page just wrote in on somebody else's behalf is not an
+    // edit to send back. Without this every remote update bounces straight
+    // home and two browsers push the same content at each other forever.
+    if (this.applyingRemote) return;
+    // A file with a document marks itself dirty from the document's own
+    // send callback, which fires for local edits and not for applied
+    // remote ones. Marking here as well would save — and nudge everyone —
+    // once for every keystroke anybody else typed.
+    if (this.docs.has(path)) return;
+    this.dirty.add(path);
+    if (this.viewer) return this.markLocal(path);
+    this.saveSoon();
   }
 
   /** The file's language, or plain text while colours are switched off. */
@@ -1119,11 +1137,12 @@ export class App {
    */
   private relanguage(): void {
     if (!this.monaco) return;
-    for (const [path, model] of this.models) this.monaco.editor.setModelLanguage(model, this.languageOf(path));
+    // A model made after this takes the choice as it is then.
+    for (const [path, model] of this.texts.models()) this.monaco.editor.setModelLanguage(model, this.languageOf(path));
   }
 
   private show(path: string): void {
-    const model = this.models.get(path);
+    const model = this.texts.model(path);
     if (!model || !this.editor || !this.monaco) return;
     if (this.imageShown !== null) this.closeImage();
     // Where this file was left — scrolled to, the cursor, what was folded —
@@ -1190,7 +1209,7 @@ export class App {
    * notes.py` should not have to press Run first to bring it into existence.
    */
   private addFile(name: string, open = true): void {
-    if (this.models.has(name)) return open ? this.show(name) : undefined;
+    if (this.texts.has(name)) return open ? this.show(name) : undefined;
     if (this.viewer) this.local.add(name);
     this.setFile(name, "");
     if (open) this.show(name);
@@ -1323,7 +1342,7 @@ export class App {
     } catch {
       // For this visit, then.
     }
-    for (const [path, model] of this.models) model.updateOptions(this.indentOptions(path));
+    for (const [path, model] of this.texts.models()) model.updateOptions(this.indentOptions(path));
     this.paintTools();
     // What is written already keeps its indent until it is formatted.
     this.say("", `indenting with ${size} spaces — Format re-indents a file`);
@@ -1337,7 +1356,7 @@ export class App {
     const editor = this.editor;
     const monaco = this.monaco;
     const path = this.active;
-    const model = this.models.get(path);
+    const model = this.texts.model(path);
     if (!editor || !monaco || !model || this.formatting || this.solo(path) || !formatterFor(path)) return;
     this.formatting = true;
     this.paintTools();
@@ -1417,8 +1436,8 @@ export class App {
   private renderFiles(): void {
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => {
-        if (this.binaries.has(path) && !this.models.has(path) && imageType(path)) return void this.showImage(path);
-        if (this.binaries.has(path) && !this.models.has(path)) {
+        if (this.binaries.has(path) && !this.texts.has(path) && imageType(path)) return void this.showImage(path);
+        if (this.binaries.has(path) && !this.texts.has(path)) {
           const base64 = this.binaries.get(path)!;
           const bytes = Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
           this.binaryNote = `${path} is not text (${size(bytes)}) — download it with the arrow beside it`;
@@ -1442,9 +1461,9 @@ export class App {
       onMove: (from, folder, to) => void this.move(from, folder, to),
       movable: () => !this.viewer,
     });
-    const binary = new Set([...this.binaries.keys()].filter((p) => !this.models.has(p) && !ignored(p)));
-    this.tree.render([...this.models.keys(), ...binary], this.active, this.local, binary, this.keptFolders());
-    this.ui?.setFileCount(this.models.size + binary.size);
+    const binary = new Set([...this.binaries.keys()].filter((p) => !this.texts.has(p) && !ignored(p)));
+    this.tree.render([...this.texts.keys(), ...binary], this.active, this.local, binary, this.keptFolders());
+    this.ui?.setFileCount(this.texts.size + binary.size);
   }
 
   /** The empty folders the pad keeps, by their markers. */
@@ -1462,8 +1481,8 @@ export class App {
    * compares, and would put this one straight back.
    */
   private async deleteFile(path: string): Promise<void> {
-    if (this.binaries.has(path) && !this.models.has(path)) return this.deleteBinary(path);
-    if (this.models.size <= 1) {
+    if (this.binaries.has(path) && !this.texts.has(path)) return this.deleteBinary(path);
+    if (this.texts.size <= 1) {
       this.say("error", "a folder keeps at least one file");
       return;
     }
@@ -1476,11 +1495,10 @@ export class App {
     try {
       const rt = await this.ensureRuntime();
       // Onto another file before this one's model is disposed under the editor.
-      if (this.active === path) this.show([...this.models.keys()].filter((p) => p !== path).sort()[0]!);
+      if (this.active === path) this.show([...this.texts.keys()].filter((p) => p !== path).sort()[0]!);
       this.dirty.delete(path);
       this.closeDoc(path);
-      this.models.get(path)?.dispose();
-      this.models.delete(path);
+      this.texts.delete(path);
       await rt.removeAndPrune(path);
       this.renderFiles();
       await this.publish(rt);
@@ -1501,10 +1519,10 @@ export class App {
     if (this.viewer) return this.say("error", "only people who can edit can delete folders");
     if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish");
     const under = (p: string) => p.startsWith(`${path}/`);
-    const text = [...this.models.keys()].filter(under);
-    const binary = [...this.binaries.keys()].filter((p) => under(p) && !this.models.has(p));
+    const text = [...this.texts.keys()].filter(under);
+    const binary = [...this.binaries.keys()].filter((p) => under(p) && !this.texts.has(p));
     const markers = [...this.known].filter(([p, c]) => under(p) && isMarker(p, c)).map(([p]) => p);
-    if (text.length > 0 && text.length === this.models.size) return this.say("error", "a pad keeps at least one file the editor can open");
+    if (text.length > 0 && text.length === this.texts.size) return this.say("error", "a pad keeps at least one file the editor can open");
     const count = text.length + binary.length;
     // Made in this tab and never kept — a viewer's: nothing to tell anyone.
     if (count === 0 && markers.length === 0) {
@@ -1524,15 +1542,14 @@ export class App {
         const seq = await this.store.write(this.name, [...text, ...binary, ...markers].map((p) => ({ path: p, content: null })));
         this.storeSeq = Math.max(this.storeSeq, seq);
         if (under(this.active)) {
-          const other = [...this.models.keys()].filter((p) => !under(p)).sort()[0];
+          const other = [...this.texts.keys()].filter((p) => !under(p)).sort()[0];
           if (other) this.show(other);
         }
         for (const p of text) {
           this.dirty.delete(p);
           this.known.delete(p);
           this.closeDoc(p);
-          this.models.get(p)?.dispose();
-          this.models.delete(p);
+          this.texts.delete(p);
         }
         for (const p of binary) this.binaries.delete(p);
         for (const p of markers) this.known.delete(p);
@@ -1577,7 +1594,7 @@ export class App {
     // A save sends the whole file, and at a few megabytes that is a tenth of
     // a second of the typist's editor, every pause. The room has each
     // keystroke as it is typed either way; only the stored copy waits longer.
-    const biggest = Math.max(0, ...[...this.dirty].map((p) => this.models.get(p)?.getValueLength() ?? 0));
+    const biggest = Math.max(0, ...[...this.dirty].map((p) => this.texts.get(p)?.getValueLength() ?? 0));
     this.saveTimer = setTimeout(() => void this.saveEdits(), biggest > 1_000_000 ? 2000 : 500);
   }
 
@@ -1828,7 +1845,8 @@ export class App {
 
   /**
    * A file's text as it stands: its live document's when it has one with
-   * state, its model's otherwise.
+   * state, its model's otherwise — or, for a file the editor has not needed
+   * yet, its text as it was given (`Texts`).
    *
    * Not the model alone. Only the file on screen is bound to its document;
    * one somebody else is typing in while this browser looks at another keeps
@@ -1840,7 +1858,7 @@ export class App {
   private current(path: string): string | undefined {
     const doc = this.docs.get(path);
     if (doc?.ready) return doc.contents();
-    return this.models.get(path)?.getValue();
+    return this.texts.get(path)?.getValue();
   }
 
   // --------------------------------------------------------------- runtime
@@ -1875,7 +1893,7 @@ export class App {
 
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
-      const files = seedFiles(this.known, this.models, this.docs);
+      const files = seedFiles(this.known, this.texts, this.docs);
       const binaries = new Map([...this.binaries].filter(([path]) => !ignored(path)));
       // wisp carries egress *and* the http ingress the preview needs, so it
         // supersedes the http policy rather than sitting beside it. Without a
@@ -1927,7 +1945,7 @@ export class App {
     let applied = seeded;
     let appliedBinaries = seededBinaries;
     for (;;) {
-      const now = seedFiles(this.known, this.models, this.docs);
+      const now = seedFiles(this.known, this.texts, this.docs);
       const nowBinaries = new Map([...this.binaries].filter(([path]) => !ignored(path)));
       const writes = Object.entries(now).filter(([path, text]) => applied[path] !== text);
       const binaryWrites = [...nowBinaries].filter(([path, base64]) => appliedBinaries.get(path) !== base64);
@@ -2086,14 +2104,14 @@ export class App {
   private padPath(printed: string): string | null {
     const path = printed.replace(/^\/workspace\//, "").replace(/^(\.\/)+/, "");
     if (!path || path.startsWith("/") || path.startsWith("../")) return null;
-    if (this.models.has(path)) return path;
-    const ends = [...this.models.keys()].filter((p) => p.endsWith(`/${path}`));
+    if (this.texts.has(path)) return path;
+    const ends = [...this.texts.keys()].filter((p) => p.endsWith(`/${path}`));
     return ends.length === 1 ? ends[0]! : null;
   }
 
   /** A file and line from the terminal, opened there in the editor. */
   private openPlace(place: Place): void {
-    const model = this.models.get(place.path);
+    const model = this.texts.model(place.path);
     if (!model || !this.editor) return;
     if (this.preview?.isOpen) void this.togglePreview();
     if (this.active !== place.path || this.imageShown !== null) this.show(place.path);
@@ -2114,7 +2132,7 @@ export class App {
     const monaco = this.monaco;
     if (!monaco) return;
     for (const path of this.marked) {
-      const model = this.models.get(path);
+      const model = this.texts.existing(path);
       if (model) monaco.editor.setModelMarkers(model, RUN_MARKS, []);
     }
     this.marked.clear();
@@ -2123,7 +2141,8 @@ export class App {
       byFile.set(problem.path, [...(byFile.get(problem.path) ?? []), problem]);
     }
     for (const [path, problems] of byFile) {
-      const model = this.models.get(path);
+      // A mark is the model's: made for a file the run named that has none.
+      const model = this.texts.model(path);
       if (!model) continue;
       monaco.editor.setModelMarkers(model, RUN_MARKS, problems.map((p) => {
         const line = Math.max(1, Math.min(p.line, model.getLineCount()));
@@ -2193,7 +2212,7 @@ export class App {
    * image or the server preview takes its place.
    */
   private paintMarkdown(): void {
-    const on = this.active !== "" && this.formatted.has(this.active) && isMarkdown(this.active) && this.models.has(this.active);
+    const on = this.active !== "" && this.formatted.has(this.active) && isMarkdown(this.active) && this.texts.has(this.active);
     this.el.markdownPane.hidden = !on;
     this.el.markdownPane.parentElement?.classList.toggle("md-shown", on);
     if (on) return this.renderMarkdownSoon(0);
@@ -2213,14 +2232,14 @@ export class App {
 
   private async renderMarkdown(): Promise<void> {
     const path = this.active;
-    const model = this.models.get(path);
+    const file = this.texts.get(path);
     const pane = this.el.markdownPane;
-    if (!model || pane.hidden) return;
+    if (!file || pane.hidden) return;
     const asked = ++this.markdownAsked;
     pane.setAttribute("aria-label", `${path}, formatted`);
     const note = (text: string) => pane.replaceChildren(Object.assign(document.createElement("p"), { className: "md-note", textContent: text }));
-    if (model.getValueLength() > MARKDOWN_MAX) return note(`${path} is more than ${MARKDOWN_MAX / 1024 / 1024} MB, too long to show formatted.`);
-    const source = model.getValue();
+    if (file.getValueLength() > MARKDOWN_MAX) return note(`${path} is more than ${MARKDOWN_MAX / 1024 / 1024} MB, too long to show formatted.`);
+    const source = file.getValue();
     if (!source.trim()) return note("Nothing to show yet: the file is empty.");
     let fragment: DocumentFragment;
     try {
@@ -2249,7 +2268,7 @@ export class App {
     let base64 = this.binaries.get(path) ?? null;
     // SVG is text, and an editor's model here. In an <img> it is a picture
     // and nothing else: its scripts do not run.
-    if (!base64 && svg && this.models.has(path)) base64 = toBase64(new TextEncoder().encode(this.models.get(path)!.getValue()));
+    if (!base64 && svg && this.texts.has(path)) base64 = toBase64(new TextEncoder().encode(this.texts.get(path)!.getValue()));
     if (!base64 && this.runtimeReady && this.runtime) {
       const bytes = await (await this.runtime).readBytes(path).catch(() => null);
       if (bytes) base64 = toBase64(bytes);
@@ -2284,7 +2303,7 @@ export class App {
     if (link.kind === "here") return void this.scrollMarkdownTo(link.id);
     if (link.kind === "none") return;
     const { path, fragment } = link;
-    if (this.models.has(path)) {
+    if (this.texts.has(path)) {
       if (isMarkdown(path)) {
         this.formatted.add(path);
         this.markdownAnchor = fragment ? { path, id: fragment } : null;
@@ -2293,7 +2312,7 @@ export class App {
       return this.show(path);
     }
     if (this.binaries.has(path) && imageType(path)) return void this.showImage(path);
-    const folder = [...this.models.keys(), ...this.binaries.keys()].some((p) => p.startsWith(`${path}/`));
+    const folder = [...this.texts.keys(), ...this.binaries.keys()].some((p) => p.startsWith(`${path}/`));
     this.say("", folder ? `${path} is a folder — its files are in the list` : `there is no ${path} in this pad`);
   }
 
@@ -2365,8 +2384,8 @@ export class App {
   /** One version beside the pad as it is: each file marked by how it differs, one shown, and the way back. */
   private showVersion(host: HTMLElement, v: Version, files: Pad["files"], close: () => void): void {
     const now = new Map<string, string>();
-    for (const path of this.models.keys()) now.set(path, this.current(path) ?? "");
-    for (const [path, base64] of this.binaries) if (!this.models.has(path)) now.set(path, base64);
+    for (const path of this.texts.keys()) now.set(path, this.current(path) ?? "");
+    for (const [path, base64] of this.binaries) if (!this.texts.has(path)) now.set(path, base64);
     const shown = (path: string) => !path.endsWith(`/${MARKER}`) && path !== MARKER;
     const paths = [...new Set([...Object.keys(files), ...now.keys()])].filter(shown).sort();
     const state = (path: string) => (!(path in files) ? "added" : !now.has(path) ? "deleted" : now.get(path) === files[path]!.content ? "same" : "changed");
@@ -2438,7 +2457,7 @@ export class App {
         if (f.encoding === "base64") await box.fs.writeFile(at(path), fromBase64(f.content));
         else await box.fs.writeText(at(path), f.content);
       }
-      const here = [...this.models.keys(), ...this.binaries.keys(), ...[...this.known.keys()].filter((p) => p.endsWith(MARKER))];
+      const here = [...this.texts.keys(), ...this.binaries.keys(), ...[...this.known.keys()].filter((p) => p.endsWith(MARKER))];
       for (const path of new Set(here)) if (!(path in files)) await rt.removeAndPrune(path);
       await this.publish(rt);
       this.say("", `restored to ${when(at_ms)}`);
@@ -2900,7 +2919,7 @@ export class App {
       // sandbox holds the file. They are not the same thing, and running
       // without this executes the previous version — the code on screen
       // correct, the output wrong, and nothing to suggest why.
-      for (const path of this.models.keys()) await rt.write(path, this.current(path)!);
+      for (const path of this.texts.keys()) await rt.write(path, this.current(path)!);
 
       this.say("running", "running…");
       // From the folder root, where the file tree's paths are, wherever the
@@ -3009,7 +3028,7 @@ export class App {
    * screen, so the binding carries it, and into the document otherwise.
    */
   private applyEdit(path: string, doc: DocSession, change: Edit): void {
-    const model = this.models.get(path);
+    const model = this.texts.existing(path);
     if (doc.bound && model && this.monaco) {
       // As replaceText does: an edit, so the view and the cursor stay where
       // they were, moving only as far as the text before them changed.
@@ -3159,12 +3178,11 @@ export class App {
         // Gone, or now binary: either way, no longer the editor's.
         if (change.content === null || change.encoding === "base64") {
           if (this.active === change.path) {
-            const other = [...this.models.keys()].filter((p) => p !== change.path).sort()[0];
+            const other = [...this.texts.keys()].filter((p) => p !== change.path).sort()[0];
             if (other) this.show(other);
           }
           this.closeDoc(change.path);
-          this.models.get(change.path)?.dispose();
-          this.models.delete(change.path);
+          this.texts.delete(change.path);
         } else if (!isMarker(change.path, change.content)) {
           // A file with a live document that is not the one on screen: the
           // command's change goes into the document too. Into the model alone,
@@ -3252,7 +3270,7 @@ export class App {
     if (!add.length) return;
     const lines = `${add.join("\n")}\n`;
     const next = text && !text.endsWith("\n") ? `${text}\n${lines}` : `${text}${lines}`;
-    const model = this.models.get(REQUIREMENTS);
+    const model = this.texts.model(REQUIREMENTS);
     if (model) {
       // Open somewhere: an edit like typing, which saves and reaches the room.
       const end = model.getFullModelRange().getEndPosition();
@@ -3451,7 +3469,7 @@ export class App {
       return;
     }
     if (pad.access?.role !== "owner") return;
-    const kept = new Map([...this.local].map((path) => [path, { base: this.keptFrom.get(path), mine: this.models.get(path)?.getValue() ?? null }]));
+    const kept = new Map([...this.local].map((path) => [path, { base: this.keptFrom.get(path), mine: this.texts.get(path)?.getValue() ?? null }]));
     const changes = putBack(kept, knownFrom(pad.files));
     try {
       if (changes.length) await this.store.write(this.name, changes);
@@ -3475,10 +3493,10 @@ export class App {
     const inside = (p: string) => !under || p.startsWith(`${under}/`);
     const out = new Map<string, Uint8Array>();
     for (const [path, base64] of this.binaries) {
-      if (inside(path) && !this.local.has(path) && !this.models.has(path)) out.set(path, fromBase64(base64));
+      if (inside(path) && !this.local.has(path) && !this.texts.has(path)) out.set(path, fromBase64(base64));
     }
     const enc = new TextEncoder();
-    for (const path of this.models.keys()) if (inside(path)) out.set(path, enc.encode(this.current(path) ?? ""));
+    for (const path of this.texts.keys()) if (inside(path)) out.set(path, enc.encode(this.current(path) ?? ""));
     // An empty folder as its marker, so it survives a download and coming back.
     for (const [path, content] of this.known) if (isMarker(path, content) && inside(path) && !out.has(path)) out.set(path, new Uint8Array());
     return [...out].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({ path, data }));
@@ -3513,7 +3531,7 @@ export class App {
 
   /** The starter on an empty pad, as it was put there — unsaved and untouched. */
   private untouchedStarter(): boolean {
-    return this.starter && !this.known.has("main.py") && this.models.get("main.py")?.getValue() === STARTER;
+    return this.starter && !this.known.has("main.py") && this.texts.get("main.py")?.getValue() === STARTER;
   }
 
   /**
@@ -3541,14 +3559,14 @@ export class App {
       // The starter makes way only for text: a zip of images alone would
       // leave the editor nothing to show.
       const starter = this.untouchedStarter() && files.some((f) => f.encoding === "utf8" && !isMarker(f.path, f.content));
-      const after = new Set([...this.models.keys(), ...this.binaries.keys(), ...files.map((f) => f.path)]);
+      const after = new Set([...this.texts.keys(), ...this.binaries.keys(), ...files.map((f) => f.path)]);
       if (starter && !files.some((f) => f.path === "main.py")) after.delete("main.py");
       if (after.size > PAD_LIMITS.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${PAD_LIMITS.maxFiles}`);
 
       const replacing = files.filter((f) =>
         f.encoding === "base64"
-          ? (this.binaries.has(f.path) && this.binaries.get(f.path) !== f.content) || this.models.has(f.path)
-          : (this.models.has(f.path) && !(f.path === "main.py" && starter) && this.current(f.path) !== f.content) || this.binaries.has(f.path),
+          ? (this.binaries.has(f.path) && this.binaries.get(f.path) !== f.content) || this.texts.has(f.path)
+          : (this.texts.has(f.path) && !(f.path === "main.py" && starter) && this.current(f.path) !== f.content) || this.binaries.has(f.path),
       );
       if (replacing.length) {
         const yes = await confirmDialog({
@@ -3578,11 +3596,10 @@ export class App {
           for (const f of files) {
             if (f.encoding === "base64") {
               // Not the editor's: into the tree and the sandbox as it is.
-              if (this.models.has(f.path)) {
+              if (this.texts.has(f.path)) {
                 if (this.active === f.path) this.active = "";
                 this.closeDoc(f.path);
-                this.models.get(f.path)?.dispose();
-                this.models.delete(f.path);
+                this.texts.delete(f.path);
                 this.known.delete(f.path);
               }
               this.binaries.set(f.path, f.content);
@@ -3600,7 +3617,7 @@ export class App {
             // A file someone has open changes as their typing would, so the
             // room's documents take it rather than undoing it on the next save.
             const doc = this.docs.get(f.path);
-            if (doc?.bound) this.models.get(f.path)?.setValue(f.content);
+            if (doc?.bound) this.texts.existing(f.path)?.setValue(f.content);
             else if (doc) {
               doc.replace(f.content);
               this.setFile(f.path, f.content);
@@ -3613,8 +3630,7 @@ export class App {
           if (starter && !files.some((f) => f.path === "main.py")) {
             if (this.active === "main.py") this.active = "";
             this.closeDoc("main.py");
-            this.models.get("main.py")?.dispose();
-            this.models.delete("main.py");
+            this.texts.delete("main.py");
             await rt?.remove("main.py").catch(() => {});
           }
         } finally {
@@ -3623,8 +3639,8 @@ export class App {
         this.starter = false;
         this.peers?.moved(seq);
       });
-      if (!this.models.has(this.active)) {
-        const first = files.filter((f) => f.encoding === "utf8" && !isMarker(f.path, f.content)).map((f) => f.path).sort()[0] ?? [...this.models.keys()].sort()[0];
+      if (!this.texts.has(this.active)) {
+        const first = files.filter((f) => f.encoding === "utf8" && !isMarker(f.path, f.content)).map((f) => f.path).sort()[0] ?? [...this.texts.keys()].sort()[0];
         if (first) this.show(first);
       }
       this.renderFiles();
@@ -3652,11 +3668,11 @@ export class App {
     const safe = to.split("/").every((p) => p && p !== "." && p !== ".." && !/[\u0000-\u001f\\]/.test(p)) && new TextEncoder().encode(to).length <= 512;
     if (!safe) return this.say("error", `${to} is not a path a pad can hold`);
     if (folder && to.startsWith(`${from}/`)) return this.say("error", "a folder cannot go inside itself");
-    const isBinary = (p: string) => this.binaries.has(p) && !this.models.has(p);
-    const isKeep = (p: string) => isMarker(p, this.known.get(p)) && !this.models.has(p);
-    const exists = (p: string) => this.models.has(p) || this.binaries.has(p);
+    const isBinary = (p: string) => this.binaries.has(p) && !this.texts.has(p);
+    const isKeep = (p: string) => isMarker(p, this.known.get(p)) && !this.texts.has(p);
+    const exists = (p: string) => this.texts.has(p) || this.binaries.has(p);
     const markers = [...this.known.keys()].filter(isKeep);
-    const paths = [...this.models.keys(), ...[...this.binaries.keys()].filter(isBinary), ...markers];
+    const paths = [...this.texts.keys(), ...[...this.binaries.keys()].filter(isBinary), ...markers];
     if (!folder && paths.some((p) => p.startsWith(`${to}/`))) return this.say("error", `there is already a folder called ${to}`);
     if (folder && exists(to)) return this.say("error", `there is already a file called ${to}`);
     if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish, then move it");
@@ -3717,10 +3733,9 @@ export class App {
           for (const [p, t] of binaryPairs) {
             const base64 = binaryValue.get(p)!;
             // Replacing a text file: it is not the editor's any more.
-            if (this.models.has(t)) {
+            if (this.texts.has(t)) {
               this.closeDoc(t);
-              this.models.get(t)?.dispose();
-              this.models.delete(t);
+              this.texts.delete(t);
               this.known.delete(t);
             }
             this.binaries.set(t, base64);
@@ -3759,8 +3774,7 @@ export class App {
             this.dirty.delete(p);
             this.known.delete(p);
             this.closeDoc(p);
-            this.models.get(p)?.dispose();
-            this.models.delete(p);
+            this.texts.delete(p);
           }
           for (const [p, t] of textPairs) {
             await rt?.write(t, later.get(p)!);
@@ -3903,16 +3917,15 @@ export class App {
         if (isMarker(change.path, change.content) || isMarker(change.path, this.known.get(change.path))) continue;
         const doc = this.docs.get(change.path);
         if (doc && change.content === doc.contents()) continue;
-        if (this.local.has(change.path) && this.models.get(change.path)?.getValue() === change.content) continue;
+        if (this.local.has(change.path) && this.texts.get(change.path)?.getValue() === change.content) continue;
         this.closeDoc(change.path);
         this.local.add(change.path);
         if (change.content === null) {
           if (this.active === change.path) {
-            const other = [...this.models.keys()].filter((p) => p !== change.path).sort()[0];
+            const other = [...this.texts.keys()].filter((p) => p !== change.path).sort()[0];
             if (other) this.show(other);
           }
-          this.models.get(change.path)?.dispose();
-          this.models.delete(change.path);
+          this.texts.delete(change.path);
         } else {
           this.setFile(change.path, change.content);
         }
@@ -3935,10 +3948,9 @@ export class App {
     try {
       if (stored === undefined) {
         // Made here and never in the pad: going back to the pad's is deleting it.
-        const other = [...this.models.keys()].filter((p) => p !== path).sort()[0];
+        const other = [...this.texts.keys()].filter((p) => p !== path).sort()[0];
         if (this.active === path && other) this.show(other);
-        this.models.get(path)?.dispose();
-        this.models.delete(path);
+        this.texts.delete(path);
         await rt?.remove(path).catch(() => {});
       } else {
         this.setFile(path, stored);
@@ -3949,7 +3961,7 @@ export class App {
     }
     // Showing it again joins the room's live document, which may be ahead of
     // the stored copy just put back.
-    if (this.models.has(path) && this.active === path) this.show(path);
+    if (this.texts.has(path) && this.active === path) this.show(path);
     this.renderFiles();
     this.paintBanner();
     this.say("", `back to the pad's ${path}`);
@@ -3967,7 +3979,7 @@ export class App {
     });
     if (!yes) return;
     for (const path of [...this.local]) await this.discard(path);
-    if (this.models.has(this.active)) this.show(this.active);
+    if (this.texts.has(this.active)) this.show(this.active);
     this.say("", "back to the pad as it is");
   }
 
@@ -3989,15 +4001,15 @@ export class App {
         const pad = await this.store.read(this.name);
         for (const [path, f] of Object.entries(pad.files)) files.set(path, { path, content: f.content, encoding: f.encoding });
       } else {
-        for (const [path, model] of this.models) files.set(path, { path, content: model.getValue() });
+        for (const [path, file] of this.texts) files.set(path, { path, content: file.getValue() });
         for (const [path, base64] of this.binaries) if (!files.has(path)) files.set(path, { path, content: base64, encoding: "base64" });
         for (const [path, content] of this.known) if (isMarker(path, content) && !files.has(path)) files.set(path, { path, content: "" });
       }
       // Live documents are ahead of the stored copy.
       for (const [path, doc] of this.docs) if (doc.hasState) files.set(path, { path, content: doc.contents() });
       for (const path of this.local) {
-        const model = this.models.get(path);
-        if (model) files.set(path, { path, content: model.getValue() });
+        const file = this.texts.get(path);
+        if (file) files.set(path, { path, content: file.getValue() });
         else files.delete(path);
       }
       if (files.size === 0) throw new Error("there is nothing here to copy");
@@ -4093,7 +4105,7 @@ export class App {
   /** What a viewer can do instead, always on screen. */
   private paintBanner(): void {
     if (!this.ui) return;
-    const own = this.local.has(this.active) && this.models.has(this.active);
+    const own = this.local.has(this.active) && this.texts.has(this.active);
     const key = this.viewer ? `${this.lost}|${this.signedOut}|${own ? this.active : ""}|${this.local.size}|${this.promoted}` : "";
     if (key === this.bannerKey) return;
     this.bannerKey = key;
@@ -4153,7 +4165,7 @@ export class App {
    * it is already shared, and each change is its own message.
    */
   private solo(path: string): boolean {
-    const model = this.models.get(path);
+    const model = this.texts.model(path);
     if (!model || this.docs.has(path)) return false;
     const units = model.getValueLength();
     if (units > LIVE_MAX) return true;
@@ -4212,8 +4224,7 @@ export class App {
     this.unbind?.();
     for (const doc of this.docs.values()) doc.destroy();
     this.docs.clear();
-    for (const model of this.models.values()) model.dispose();
-    this.models.clear();
+    this.texts.clear();
     this.editor?.dispose();
     for (const session of this.sessions) session.dispose();
   }

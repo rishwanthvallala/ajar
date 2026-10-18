@@ -35,10 +35,12 @@ export interface Doc {
  * is preferred when it is non-empty, and an empty one is taken only for a file
  * the store has never heard of — a new, still-empty file, which is the only
  * case where empty is the truth rather than a file that has not loaded yet.
+ * A file nobody has opened has no model since 18 October, only its text
+ * (`texts.ts`), which reads the same way.
  */
 export function seedFiles(
   known: Map<string, string>,
-  models: Map<string, Model>,
+  models: Iterable<readonly [string, Model]>,
   docs: Map<string, Doc>,
 ): Record<string, string> {
   const files: Record<string, string> = {};

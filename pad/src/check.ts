@@ -16,6 +16,7 @@ import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, docPayload, MAX_DOC_MESS
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./javac/protocol";
 import { seedFiles } from "./seed";
+import { Texts } from "./texts";
 import { nameProblem, pathFor } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
 import { starterFor } from "./starters";
@@ -93,6 +94,37 @@ async function main() {
       "only-stored.txt",
       "a stored file nobody has opened is seeded too",
     );
+  }
+
+  // The pad's files as text until the editor needs a model (texts.ts): every
+  // file had one from the start until 18 October, 500 for a full pad.
+  {
+    let made = 0;
+    let disposed = 0;
+    const texts = new Texts((_path, text: string) => {
+      made++;
+      // A stand-in that converts line endings, as a Monaco model does.
+      const value = text.replace(/\r\n/g, "\n");
+      return { getValue: () => value, getValueLength: () => value.length, dispose: () => void disposed++ };
+    });
+    texts.put("b.csv", "\ufeffa,b\r\nc,d\n");
+    texts.put("a.py", "print(1)\n");
+    is(made, 0, "a file put in is text, with no model made for it");
+    is(seedFiles(new Map(), texts, new Map())["b.csv"], "\ufeffa,b\r\nc,d\n", "and it is seeded byte for byte, mark and line endings and all");
+    is(texts.put("a.py", "print(1)\n"), false, "the same text again is no change");
+    const model = texts.model("a.py");
+    is(made === 1 && texts.model("a.py") === model && texts.existing("b.csv") === undefined, true, "a model is made once, for the file asked for");
+    is([...texts.keys()].join(), "b.csv,a.py", "and the files keep the order they came in");
+    let refused = false;
+    try {
+      texts.put("a.py", "print(2)\n");
+    } catch {
+      refused = true;
+    }
+    is(refused, true, "a file with a model is not changed behind it");
+    texts.delete("a.py");
+    texts.delete("b.csv");
+    is(disposed === 1 && texts.size === 0 && texts.model("a.py") === undefined, true, "deleting disposes the model it had, and makes none for a file gone");
   }
 
   // Whether the WISP transport can be loaded and used at all. It has been
