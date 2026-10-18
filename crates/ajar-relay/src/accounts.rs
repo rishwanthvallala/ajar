@@ -486,6 +486,30 @@ impl Accounts {
         .flatten()
     }
 
+    /// How long a sign-in has left, by its key ([`session_key`]): none once
+    /// it has ended or run out. Asked by a pad's room as it takes an owner
+    /// in, and how long it keeps them (ws.rs) — the socket's upgrade is the
+    /// only request that carries the cookie, and a socket can stay open for
+    /// longer than the sign-in it came with (audit B06).
+    pub fn session_left(&self, key: &[u8]) -> Result<Option<std::time::Duration>, AccountError> {
+        let expires: Option<i64> = self
+            .db
+            .lock()
+            .query_row(
+                "SELECT expires FROM sessions WHERE token_hash = ?1 AND expires > ?2",
+                params![key, now()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        // To the millisecond, so a room lets an owner go when the sign-in
+        // stops counting for everything else, not up to a second after.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        Ok(expires.map(|e| std::time::Duration::from_millis((e * 1000 - now_ms).max(0) as u64)))
+    }
+
     pub fn end_session(&self, token: &str) {
         let _ = self.db.lock().execute(
             "DELETE FROM sessions WHERE token_hash = ?1",

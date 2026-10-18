@@ -194,6 +194,9 @@ pub enum JoinError {
     /// Joining a hosted session as a peer, or the reverse. One session id is
     /// one shape for its whole life.
     WrongShape,
+    /// Joining a pad's room as its owner on a sign-in that ended — or ran
+    /// out — after the socket was opened and before the room took it in.
+    SignedOut,
 }
 
 /// Why a host's socket ended, which decides whether the session survives it.
@@ -380,14 +383,32 @@ impl Registry {
     /// Nothing here checks whether the caller may *write* to the folder that
     /// name refers to. That is the durable store's business: the relay routes
     /// frames and has never known what they mean.
-    pub fn join_peer(
+    ///
+    /// `owner` is the sign-in that makes the caller the pad's owner, and
+    /// `signed_in` says whether it is still live — asked here, holding the
+    /// room's lock, which is the lock signing out takes to close what that
+    /// sign-in let in ([`Registry::evict_session`]). Signing out ends the
+    /// sign-in first and closes its connections after, so whichever comes
+    /// first, no owner is left in: asked before the sign-in ended, the
+    /// connection is in the room by the time signing out looks for it; asked
+    /// after, it is refused. It was only checked at the socket's upgrade, and
+    /// a socket that signed out between its upgrade and its hello came in as
+    /// owner after signing out had already closed everything it could see
+    /// (audit B06).
+    pub fn join_peer_checked(
         &self,
         id: &str,
         tx: Tx,
         owner: Option<SessionKey>,
+        signed_in: impl FnOnce(&[u8]) -> bool,
     ) -> Result<(Participant, bool), JoinError> {
+        let entry = self.sessions.entry(id.to_string());
+        // Before anything is made, so a refusal leaves no empty room behind.
+        if owner.as_deref().is_some_and(|key| !signed_in(key)) {
+            return Err(JoinError::SignedOut);
+        }
         let mut created = false;
-        let mut entry = self.sessions.entry(id.to_string()).or_insert_with(|| {
+        let mut entry = entry.or_insert_with(|| {
             created = true;
             Session::new(Shape::Peer)
         });
@@ -410,6 +431,36 @@ impl Registry {
             entry.owners.insert(pid, key);
         }
         Ok((participant, created))
+    }
+
+    /// [`Registry::join_peer_checked`] with a sign-in taken as live, for the
+    /// tests of everything else about a room.
+    #[cfg(test)]
+    pub fn join_peer(
+        &self,
+        id: &str,
+        tx: Tx,
+        owner: Option<SessionKey>,
+    ) -> Result<(Participant, bool), JoinError> {
+        self.join_peer_checked(id, tx, owner, |_| true)
+    }
+
+    /// Close one peer's connection after telling it why, as
+    /// [`Registry::evict_session`] closes every one a sign-in made: the
+    /// sign-in that made this one owner has run out. It reconnects and is let
+    /// in on what it holds without it. True if it was still here.
+    pub fn evict_peer(&self, id: &str, pid: u32, notice: Vec<u8>) -> bool {
+        let Some(mut s) = self.sessions.get_mut(id) else {
+            return false;
+        };
+        s.owners.remove(&pid);
+        match s.guests.remove(&pid) {
+            Some(conn) => {
+                conn.tx.finish(notice);
+                true
+            }
+            None => false,
+        }
     }
 
     /// True when this id is already in use, whatever its shape.
@@ -892,6 +943,39 @@ mod tests {
             "only the laptop's owner page goes"
         );
         assert_eq!(r.evict_session(b"laptop", Vec::new()), 0, "and only once");
+    }
+
+    #[test]
+    fn an_owner_on_a_sign_in_that_ended_is_not_let_in() {
+        // Audit B06: the sign-in was asked about at the socket's upgrade and
+        // not as the room took the socket in, so one that signed out between
+        // the two came in as owner after signing out had closed the rest.
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let asked = std::cell::Cell::new(None);
+        let refused = r.join_peer_checked("pad", a, Some(b"laptop".to_vec()), |key| {
+            asked.set(Some(key.to_vec()));
+            false
+        });
+        assert_eq!(refused.err(), Some(JoinError::SignedOut));
+        assert_eq!(asked.take().as_deref(), Some(&b"laptop"[..]));
+        assert!(!r.exists("pad"), "a refusal left an empty room behind");
+        // Nobody else's sign-in is asked about.
+        let (b, _rb) = tx();
+        r.join_peer_checked("pad", b, None, |_| panic!("asked about no sign-in"))
+            .unwrap();
+
+        // And one let in goes on its own when its sign-in runs out.
+        let (c, _rc) = tx();
+        let (owner, _) = r
+            .join_peer_checked("pad", c, Some(b"phone".to_vec()), |_| true)
+            .unwrap();
+        assert!(r.evict_peer("pad", owner.id, Vec::new()));
+        assert_eq!(
+            r.with("pad", |s| (s.guests.len(), s.owners.len())),
+            Some((1, 0))
+        );
+        assert!(!r.evict_peer("pad", owner.id, Vec::new()), "only once");
     }
 
     #[test]

@@ -164,7 +164,7 @@ fn refuse(e: AccountError) -> Refusal {
 }
 
 /// What a room connection is told as it is closed for being reconsidered.
-fn closed(reason: &str) -> Vec<u8> {
+pub fn closed(reason: &str) -> Vec<u8> {
     ajar_proto::Frame::json(
         ajar_proto::Channel::Control,
         ajar_proto::TARGET_ALL,
@@ -311,13 +311,17 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return r.into_response();
     }
     if let Some(token) = session_token(&state, &headers) {
-        // The rooms this sign-in made someone owner in hear of it now, in
-        // every tab, rather than when their sockets next happen to drop.
-        state
-            .registry
-            .evict_session(&crate::accounts::session_key(&token), closed("signed out"));
+        // Ended first, and then the rooms this sign-in made someone owner in
+        // hear of it, in every tab, rather than when their sockets next
+        // happen to drop. In that order: a socket opened on this sign-in and
+        // still on its way into a room asks whether it is live as the room
+        // takes it in (`Registry::join_peer_checked`), so it is either refused
+        // or in the room before it is looked for here. The other way round,
+        // one that came in between the two was missed (audit B06).
+        let key = crate::accounts::session_key(&token);
         let accounts = state.accounts.clone();
         blocking(move || accounts.end_session(&token)).await;
+        state.registry.evict_session(&key, closed("signed out"));
     }
     let cleared = set_cookie(&state, cookie_name(&state), None, 0);
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cleared)]).into_response()

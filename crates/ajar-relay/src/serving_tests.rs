@@ -186,6 +186,17 @@ impl Relay {
         db.execute_batch("ALTER TABLE pads RENAME TO pads_unreadable")
             .unwrap();
     }
+
+    /// Every sign-in made so far runs out `secs` from now, as if it had been
+    /// made thirty days less that ago.
+    pub fn expire_sign_ins_in(&self, secs: i64) {
+        let db = rusqlite::Connection::open(self.dir.0.join("accounts.db")).unwrap();
+        db.execute(
+            "UPDATE sessions SET expires = CAST(strftime('%s', 'now') AS INTEGER) + ?1",
+            [secs],
+        )
+        .unwrap();
+    }
 }
 
 pub fn put(path: &str, content: &str) -> crate::pad::Write {
@@ -229,9 +240,11 @@ pub fn peer_hello(pad: &str) -> Control {
     }
 }
 
-/// Open a socket with these headers, send `hello` as its first frame, and
-/// say what the relay answered: a welcome or an error.
-pub async fn knock(addr: SocketAddr, headers: &[(&str, &str)], hello: &[u8]) -> Control {
+pub type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A socket opened with these headers, before it has said anything.
+pub async fn open(addr: SocketAddr, headers: &[(&str, &str)]) -> Socket {
     let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
     for (k, v) in headers {
         request.headers_mut().insert(
@@ -239,24 +252,44 @@ pub async fn knock(addr: SocketAddr, headers: &[(&str, &str)], hello: &[u8]) -> 
             v.parse().unwrap(),
         );
     }
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     socket
-        .send(Message::Binary(hello.to_vec().into()))
+}
+
+pub async fn say(socket: &mut Socket, frame: &[u8]) {
+    socket
+        .send(Message::Binary(frame.to_vec().into()))
         .await
         .unwrap();
+}
+
+/// The next control frame the relay sends, or none if it closes the socket
+/// first. Ten seconds of silence is a failure.
+pub async fn next_control(socket: &mut Socket) -> Option<Control> {
     let wait = std::time::Duration::from_secs(10);
     loop {
         match tokio::time::timeout(wait, socket.next()).await {
             Ok(Some(Ok(Message::Binary(bytes)))) => {
                 let frame = Frame::decode(&bytes).unwrap();
                 if frame.channel == Channel::Control {
-                    return frame.parse_json().unwrap();
+                    return Some(frame.parse_json().unwrap());
                 }
             }
+            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => return None,
             Ok(Some(Ok(_))) => continue,
-            other => panic!("the relay answered the hello with {other:?}"),
+            Err(_) => panic!("the relay said nothing for {wait:?}"),
         }
     }
+}
+
+/// Open a socket with these headers, send `hello` as its first frame, and
+/// say what the relay answered: a welcome or an error.
+pub async fn knock(addr: SocketAddr, headers: &[(&str, &str)], hello: &[u8]) -> Control {
+    let mut socket = open(addr, headers).await;
+    say(&mut socket, hello).await;
+    next_control(&mut socket)
+        .await
+        .expect("the relay closed the socket without answering the hello")
 }
 
 pub fn encoded(hello: &Control) -> Vec<u8> {
@@ -474,6 +507,119 @@ async fn a_request_from_another_page_is_answered_as_nobody() {
     assert!(hidden.status.is_success(), "{}", hidden.body);
     let me = relay.call(get("/api/me", preview)).await;
     assert_eq!(me.json()["user"], serde_json::Value::Null);
+}
+
+// ------------------------ B06: an owner is one for as long as the sign-in
+
+#[tokio::test]
+async fn an_owner_is_let_go_when_the_sign_in_runs_out() {
+    // Audit B06: a sign-in was asked about at the socket's upgrade and never
+    // again, so an owner's page kept its place in a private room — sending
+    // and receiving — after the same cookie had stopped opening anything
+    // over HTTP.
+    let relay = Relay::new("");
+    let (owner, cookie) = relay.signed_in("1");
+    let pad = relay.owned_pad(owner, View::Owner, Edit::Code);
+    let code = relay
+        .state
+        .accounts
+        .pad_of(owner, &pad.name)
+        .unwrap()
+        .links
+        .into_iter()
+        .find(|l| l.role == crate::accounts::Role::Editor)
+        .unwrap()
+        .code;
+    relay.expire_sign_ins_in(2);
+    let addr = relay.serve().await;
+
+    let mut mine = open(addr, &[("cookie", &cookie)]).await;
+    say(&mut mine, &encoded(&peer_hello(&pad.name))).await;
+    let welcome = next_control(&mut mine).await;
+    assert!(
+        matches!(welcome, Some(Control::Welcome { .. })),
+        "{welcome:?}"
+    );
+    // Someone with the edit link, who stays.
+    let mut with_link = peer_hello(&pad.name);
+    if let Control::Hello { code: c, .. } = &mut with_link {
+        *c = Some(code);
+    }
+    let mut theirs = open(addr, &[]).await;
+    say(&mut theirs, &encoded(&with_link)).await;
+    let welcome = next_control(&mut theirs).await;
+    assert!(
+        matches!(welcome, Some(Control::Welcome { .. })),
+        "{welcome:?}"
+    );
+    let room = || {
+        relay
+            .state
+            .registry
+            .with(&pad.name, |s| (s.guests.len(), s.owners.len()))
+    };
+    assert_eq!(room(), Some((2, 1)));
+
+    let started = std::time::Instant::now();
+    let reason = loop {
+        match next_control(&mut mine).await {
+            Some(Control::Closed { reason }) => break reason,
+            Some(_) => continue,
+            None => panic!("the owner's socket closed without saying why"),
+        }
+    };
+    assert!(reason.contains("expired"), "{reason}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "let go {:?} after the sign-in ran out",
+        started.elapsed()
+    );
+    assert_eq!(room(), Some((1, 0)), "the owner goes and the editor stays");
+    // As the HTTP side says, and as the page is when it comes back.
+    let read = relay
+        .call(get(
+            &format!("/api/pad/{}", pad.name),
+            &[("cookie", &cookie)],
+        ))
+        .await;
+    assert_eq!(read.status, StatusCode::FORBIDDEN);
+    let again = knock(
+        addr,
+        &[("cookie", &cookie)],
+        &encoded(&peer_hello(&pad.name)),
+    )
+    .await;
+    assert_eq!(refused_with(&again), Some("private"), "{again:?}");
+}
+
+#[tokio::test]
+async fn signing_out_before_the_hello_lets_no_owner_in() {
+    // Audit B06's second probe: a socket opened while signed in, then the
+    // sign-out, then the hello. Signing out closed every owner the room
+    // knew, and this one it did not know yet; it then came in as owner.
+    let relay = Relay::new("");
+    let (owner, cookie) = relay.signed_in("1");
+    let pad = relay.owned_pad(owner, View::Owner, Edit::Owner);
+    let addr = relay.serve().await;
+
+    let mut socket = open(addr, &[("cookie", &cookie)]).await;
+    let out = relay
+        .call(request(
+            "POST",
+            "/auth/logout",
+            &[("cookie", &cookie), ("x-ajar", "1")],
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT);
+    say(&mut socket, &encoded(&peer_hello(&pad.name))).await;
+    let answer = next_control(&mut socket).await.unwrap();
+    assert_eq!(refused_with(&answer), Some("signed_out"), "{answer:?}");
+    assert_eq!(
+        relay.state.registry.with(&pad.name, |s| s.owners.len()),
+        None,
+        "an owner was let into the room after signing out"
+    );
 }
 
 // ------------------------------------------------ CORS, and /api/ answering

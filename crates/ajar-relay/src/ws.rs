@@ -241,6 +241,10 @@ pub async fn handle(
         }
     }
 
+    // How long the sign-in that makes this socket the pad's owner has left,
+    // asked as the room takes it in. An owner is one for that long and no
+    // longer (see the routing loop below).
+    let mut signed_in_for = None;
     let joined = match role {
         Role::Host => registry.open_hosted(
             &session_id,
@@ -255,9 +259,31 @@ pub async fn handle(
             .map(|p| (p, false)),
         // A peer never "resumes": there is no agent whose absence it could
         // be waiting out.
-        Role::Peer => registry
-            .join_peer(&session_id, tx.clone(), owner)
+        Role::Peer if owner.is_none() => registry
+            .join_peer_checked(&session_id, tx.clone(), None, |_| true)
             .map(|(p, _created)| (p, false)),
+        // The pad's owner, on a sign-in read at the upgrade, which may have
+        // ended since: asked again under the room's lock, as signing out
+        // closes owners under it (`Registry::join_peer_checked`). A database
+        // lookup, so off the workers; one that fails lets nobody in as owner.
+        Role::Peer => {
+            let (registry, accounts) = (registry.clone(), gate.accounts.clone());
+            let (name, tx) = (session_id.clone(), tx.clone());
+            let (joined, left) = crate::http_accounts::blocking(move || {
+                let mut left = None;
+                let joined = registry.join_peer_checked(&name, tx, owner, |key| {
+                    left = accounts.session_left(key).unwrap_or_else(|e| {
+                        warn!(session = %name, error = %e.message(), "could not look up an owner's sign-in; not let in as owner");
+                        None
+                    });
+                    left.is_some()
+                });
+                (joined, left)
+            })
+            .await;
+            signed_in_for = left;
+            joined.map(|(p, _created)| (p, false))
+        }
     };
 
     let (me, resumed): (Participant, bool) = match joined {
@@ -278,6 +304,11 @@ pub async fn handle(
             "wrong_shape",
             "that name belongs to a different kind of session"
         ),
+        // Not a door shut for good: the page knocks again, and is let in on
+        // what it holds without the sign-in.
+        Err(JoinError::SignedOut) => {
+            refuse!("signed_out", "the sign-in this page came with has ended")
+        }
     };
 
     info!(session = %session_id, participant = me.id, role = ?me.role, "joined");
@@ -366,8 +397,30 @@ pub async fn handle(
     let mut host_exit = HostExit::Dropped;
     // Set between an accepted offer and the blob that follows it.
     let mut expecting: Option<(u64, u32)> = None;
+    // When the sign-in that made this socket the pad's owner runs out. The
+    // room then lets it go as signing out would, and the page comes back as
+    // whatever it is without it. It kept the owner's place for as long as
+    // the socket stayed open, while the same cookie was refused by every
+    // request over HTTP (audit B06).
+    let mut owner_until = signed_in_for.map(|left| tokio::time::Instant::now() + left);
 
-    while let Some(frame) = next_frame(&mut stream).await {
+    loop {
+        let frame = tokio::select! {
+            frame = next_frame(&mut stream) => frame,
+            () = until(owner_until) => {
+                owner_until = None;
+                info!(session = %session_id, participant = me.id, "an owner's sign-in ran out; let go");
+                registry.evict_peer(
+                    &session_id,
+                    me.id,
+                    crate::http_accounts::closed("your sign-in has expired"),
+                );
+                // On until the socket closes, as one signing out closed
+                // does: a frame from it now finds it gone from the room.
+                continue;
+            }
+        };
+        let Some(frame) = frame else { break };
         if !registry.holds(&session_id, &me, &tx) {
             debug!(
                 participant = me.id,
@@ -616,6 +669,14 @@ fn kick(registry: &Registry, session_id: &str, participant_id: u32) {
         registry.drop_guest(session_id, participant_id);
     }
     warn!(session = %session_id, participant_id, "kicked");
+}
+
+/// Until `at`, or for ever when there is no `at`.
+async fn until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// What a socket sent first.
