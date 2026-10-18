@@ -8,6 +8,38 @@ built; the recommendation at the end is a proposal, not what runs.
 Today nothing is copied anywhere. Every pad, every account and every share
 link lives on one EBS volume in Mumbai.
 
+## In short
+
+- **What to keep:** `accounts.db`, `pads/store.db` and `pads/blobs/` —
+  everything; `usage.db` if the charts matter; `accounts.key` and the env
+  files once, by hand, in a password manager; one copy of the 1 GB of
+  runtime packages. The store cannot pass 4 GiB, so all of it fits a 10 GB
+  free tier.
+- **How:** continuously, not daily — losing a day is not acceptable.
+  Litestream ships each database change within a second and can restore to
+  any moment of the last 30 days; the blobs, which never change once written,
+  are copied every minute.
+- **Where:** two independent places, because no free service is promised for
+  ten years. Backblaze B2 first (10 GB free since 2015, a key that cannot
+  delete); a nightly second copy on the NixOS machine or Cloudflare R2.
+- **Unattended:** an alarm that emails when a backup stops (healthchecks.io,
+  free), a weekly restore test on the server that is what feeds the alarm,
+  nothing that expires, pinned tools, retention that keeps it inside the free
+  tier by itself, and a restore runbook here.
+- **February:** if AWS extends the Free plan nothing changes; if pad moves,
+  the move is a restore from B2 — Oracle's free ARM machines or the NixOS
+  machine behind Cloudflare Tunnel are the free places that fit.
+
+### To decide before building it
+
+1. A Backblaze B2 account (and whether it asks for a card).
+2. The second copy: the NixOS machine, or Cloudflare R2 (which needs a card).
+3. A healthchecks.io account, at the address alerts should go to.
+4. The real sizes, from the `du` command below.
+
+The B2 and healthchecks.io keys go into a root-only env file on the server,
+never into this repository.
+
 ## What there is to keep
 
 All of it is under `/var/lib/ajar` on the relay, plus a few secrets in
@@ -248,3 +280,7 @@ blobs copied down, `deploy.sh` pointed at it, and DNS.
 - Litestream: <https://litestream.io/guides/s3-compatible/>, <https://litestream.io/reference/vfs/>,
   <https://fly.io/blog/litestream-v050-is-here/>
 - healthchecks.io plans: <https://www.capterra.com/p/249957/Healthchecksio/pricing/>
+- R2's card requirement (third-party guide): <https://tech-insider.org/au/how-to-set-up-cloudflare-r2-2026/>
+- B2 and R2 free tiers compared: <https://agentdeals.dev/backblaze-b2-vs-cloudflare-r2>
+- Oracle's 2026 cut to the Always Free ARM allowance: <https://braindetox.kr/en/posts/oracle_always_free_tier_reduced_2026.html>
+- Litestream's `replicate` command (one replica per database in 0.5): <https://litestream.io/reference/replicate/>
