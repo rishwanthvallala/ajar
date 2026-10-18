@@ -350,15 +350,36 @@ modification time, which is what the old relay reads. `pads/legacy/` is the
 store as it was when the new relay first started, and misses everything since.
 
 The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
-together, each file's text counted once however many pads hold it) and
+together, each file's text counted once however many pads hold it, and since
+18 October each pad's last run as well) and
 `--pad-growth-per-address` (512 MiB a day per address — five full pads since a
 pad went to 100 MiB on 11 October). The size of one pad is not a flag. A save no
 longer costs the pad's size — the store streams the files a save names, and
 an edit from one blob to the next — but a single request is still read off
-the wire whole, up to 33 MiB, two at a time, and `main.rs` asserts that what
-they hold with the text parsed out of them, 132 MiB, stays under 256 MiB of
-the unit's `MemoryMax=512M`. Lowering `MemoryMax` is therefore a code change as
-well. An account's 250 MB holds two full pads and half a third.
+the wire whole, up to 33 MiB. Since 18 October bodies take room as their bytes
+arrive, out of 66 MiB for every body at once, and two are parsed and stored
+at a time; `main.rs` asserts that the bodies with the text parsed out of
+them, 132 MiB, stay under 256 MiB of the unit's `MemoryMax=512M`. Lowering
+`MemoryMax` is therefore a code change as well. An account's 250 MB holds two
+full pads and half a third.
+
+What a writer is told when these bite: **408** for a body that sent nothing
+for 20 seconds or had not finished in ten minutes (an upload that stopped
+part-way, audit B04); **503**, "busy saving other pads", after 20 seconds
+waiting for room, which the page tries again after; **413** for more than
+2,000 changes, 1,000 edits to a file or 10,000 edits in one request (the page
+sends at most 1,000 changes and one edit a file); **507** for a last run, as
+for a file, once the store is at `--max-store-bytes`. A run of 408s or 503s
+in the journal with nobody uploading is someone holding uploads open.
+
+`/var/log/caddy/{ajar,code,preview}.log` are Caddy's access logs, JSON, five
+rolls of 10 MiB each. Since 18 October they keep no `X-Pad-Code` (a link's
+code, as good as the link), `Cookie`, `Authorization` or `Set-Cookie`, nor an
+OAuth callback's `code` from its URL — see `format filter` in
+`deploy/Caddyfile`. **Logs from before that deploy may hold link codes**:
+once it is live, delete the rolled files in `/var/log/caddy/` and truncate the
+current ones, and reset the links of any pad that matters, since anyone who
+read them could have kept a copy.
 
 The unit also fixes glibc's mmap threshold at 1 MiB
 (`MALLOC_MMAP_THRESHOLD_`). Without it the allocator keeps what large requests
@@ -589,8 +610,17 @@ the thing that mattered was broken. Check from outside:
 
 ```sh
 curl -sS https://ajar.rishwanth.dev/healthz
+curl -sS 'https://ajar.rishwanth.dev/healthz?deep=1'
 PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs
 ```
+
+`/healthz` says `ok` from a relay that is running, whatever state its
+databases are in — it is what `deploy.sh` waits for, and it should stay that
+cheap. `/healthz?deep=1` says `ready` only when the accounts database and the
+pad store's both answer a query on the table every request reads, within five
+seconds, and otherwise 503 with which did not and why (audit B12). It proves
+the relay can serve pads, not that the page, the preview or the runtime
+packages are right — `app-check.mjs` is for those.
 
 Comparing the live asset hash against a fresh local build is the strongest
 cheap check available: Vite hashes filenames by content, so a matching sha

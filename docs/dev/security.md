@@ -670,6 +670,67 @@ the code.
   where nobody sees it and the page runs its own); deleting there still works,
   so old pads can be cleaned. The page checks the same rules before it saves
   (`unstorable` in sync.ts) and never seeds those folders into a sandbox.
+- **An upload that stops holds up nobody** (B04). A write took one of the
+  two write permits before reading its body, and held it while the body
+  arrived, with no deadline, so two uploads that sent their headers and part
+  of a body stopped every save. A body is now read first, taking room in a
+  66 MiB budget (two whole bodies, the memory bound the permits stood for) as
+  its bytes arrive: one that has stopped holds what it sent and no more, and
+  is refused with 408 after 20 seconds of nothing or ten minutes in all. The
+  permit is taken once the body is in, for parsing and storing; waiting for
+  either is bounded at 20 seconds, then 503. A kept run's body is read the
+  same way, within 256 KiB. *Still open:* room is taken as bytes arrive, not
+  for the declared length — two requests declaring 33 MiB and sending none
+  would otherwise hold it all — so someone who uploads nearly two whole
+  bodies at speed and then trickles a byte every few seconds can hold the
+  budget, and every save behind it, for up to ten minutes at a time, at the
+  cost of 66 MiB sent each time. Per-address shares of the budget would raise
+  that cost; they are not built, and would not stop many addresses.
+- **The access logs keep no codes** (B05). A link's code travels in
+  `X-Pad-Code`, which Caddy does not blank as it does `Cookie` and
+  `Authorization`, so both sites that answer the pad API logged every coded
+  request's code. The logs now delete it, those two, `Set-Cookie`, and an
+  OAuth callback's `code` — checked by a test that reads the Caddyfile that
+  ships, and once by hand against Caddy 2.11.4, whose logs then held none of
+  them. Logs written before the change may still hold codes: see
+  [operations](operations.md#what-is-on-disk).
+- **An owner is one for as long as the sign-in** (B06). The cookie is read
+  at the socket's upgrade only, so an owner's socket kept its place in a
+  private room after the sign-in expired, and a socket that signed out
+  between its upgrade and its hello came in as owner after signing out had
+  closed the rest. The room now asks whether the sign-in is live as it takes
+  an owner in, under the lock signing out closes owners under, and signing
+  out ends the sign-in before it closes them, so no interleaving leaves one
+  in. When the sign-in runs out, the room lets the owner go as signing out
+  does. *Still open:* only the owner's role comes from a sign-in, so only it
+  is watched; a viewer or editor by link keeps its place until the link is
+  revoked, which evicts as it always has.
+- **A last run counts against the store's ceiling** (B09). The ceiling
+  counted blobs only, so a full store still kept 32 KiB of output for each of
+  as many empty pads as anyone made. A run's output, command and path now
+  count, kept up by one row's length as runs change, and one past the ceiling
+  is refused with 507. Not charged to the owning account, whose quota is its
+  files: under 700 KiB for every pad an account may own. *Still open:* the
+  databases' own rows — each file's and version's path and hashes, a pad with
+  no files at all, SQLite's WAL — are still outside the ceiling, and a pad
+  can still be made with `writes: []` at no charge but the per-address
+  limits. `--max-store-bytes` should stay well under the disk's free space
+  for that reason.
+- **A request's changes are counted** (B10). Nothing bounded how many
+  changes one request made but its 33 MiB body, and each was compared with
+  every one after it while holding a write permit — 8,000 deletions of
+  nothing took a second and a half. Now at most 2,000 changes, 1,000 edits to
+  a file and 10,000 to a request, kept to one past the cap as they are
+  parsed, so a body of millions costs what one at the cap does, and refused
+  with 413. Which write of a path is its last is one pass; an edit's splice
+  was already linear in its edits.
+- **Up is not the same as ready** (B12). `/healthz` answered `ok` from a
+  relay whose every pad request was failing. It still does — it is liveness,
+  and what the deploy waits for — and `/healthz?deep=1` asks both databases
+  for a row of the tables every request reads, `ready` or 503 with why.
+  *Still open:* the rest of B12 — the deploy rsyncs into the live asset
+  directories rather than swapping a release in, checks only plain
+  `/healthz`, and has no rollback — is in `deploy/deploy.sh`, untouched here.
 
 ## Markdown, shown formatted
 

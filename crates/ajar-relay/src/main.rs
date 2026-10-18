@@ -1668,6 +1668,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_access_log_leaves_out_the_link_code() {
+        // Audit B05: the page sends a link's code in `X-Pad-Code`, read in
+        // http_accounts.rs, and Caddy logs request headers — blanking Cookie
+        // and Authorization by default, but not one it does not know. Read
+        // out of the Caddyfile that ships, as the reserved names are, so a
+        // site or a log added later without the filter fails here. Caddy
+        // itself checks the syntax, at every deploy.
+        let caddyfile = include_str!("../../../deploy/Caddyfile");
+        let logs: Vec<&str> = caddyfile
+            .split("\n\tlog {")
+            .skip(1)
+            .map(|rest| rest.split("\n\t}").next().unwrap_or_default())
+            .collect();
+        assert_eq!(logs.len(), 3, "one access log a site");
+        for log in logs {
+            for header in ["X-Pad-Code", "Cookie", "Authorization"] {
+                assert!(
+                    log.contains(&format!("request>headers>{header} delete")),
+                    "a log keeps {header}:{log}"
+                );
+            }
+            assert!(log.contains("wrap json"), "the logs are still JSON:{log}");
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_peer_that_stops_reading_is_cut_off() {
