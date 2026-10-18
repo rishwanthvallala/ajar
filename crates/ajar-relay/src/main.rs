@@ -10,6 +10,8 @@ mod http_admin;
 mod outbox;
 mod pad;
 mod quota;
+#[cfg(test)]
+mod serving_tests;
 mod session;
 mod usage;
 mod ws;
@@ -247,8 +249,17 @@ async fn main() -> anyhow::Result<()> {
                 named: accounts::MAX_NAMED_PER_ACCOUNT,
             }),
     );
-    // An owned pad lasts as long as its account: none of them lapses.
-    for name in accounts.owned_names() {
+    // An owned pad lasts as long as its account: none of them lapses. Not
+    // starting is better than starting without knowing which those are, when
+    // the hourly sweep would treat every one of them as anonymous.
+    let owned = accounts.owned_names().map_err(|e| {
+        anyhow::anyhow!(
+            "cannot read which pads are owned from {}: {}",
+            args.accounts_db,
+            e.message()
+        )
+    })?;
+    for name in owned {
         pads.pin(&name);
     }
     let auth = Arc::new(auth::Auth::from_env());
@@ -370,6 +381,30 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    let app = router(state, args.web.as_deref());
+    if let Some(dir) = args.web.as_deref() {
+        info!("serving web client from {dir}");
+    }
+
+    use axum::serve::ListenerExt;
+    let listener = tokio::net::TcpListener::bind(args.bind)
+        .await?
+        .tap_io(|tcp| give_up_on_stalled_peers(tcp, STALLED_PEER));
+    info!("relay listening on {}", args.bind);
+    // `into_make_service_with_connect_info` so the quota can see who is
+    // calling. Behind a proxy every connection is the proxy, which is why
+    // `--trust-forwarded-for` exists.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Every route the relay answers, and the web client's files behind them when
+/// it serves one. Apart from `main` so the tests can serve exactly this.
+fn router(state: AppState, web: Option<&str>) -> Router {
     let mut app = Router::new()
         .route("/ws", get(upgrade))
         .route("/healthz", get(health))
@@ -393,26 +428,11 @@ async fn main() -> anyhow::Result<()> {
 
     // In development the client is served by Vite; in a release build we can
     // hand out the compiled assets from the same process.
-    if let Some(dir) = args.web.as_deref() {
+    if let Some(dir) = web {
         let index = ServeFile::new(format!("{dir}/index.html"));
         app = app.fallback_service(ServeDir::new(dir).fallback(index));
-        info!("serving web client from {dir}");
     }
-
-    use axum::serve::ListenerExt;
-    let listener = tokio::net::TcpListener::bind(args.bind)
-        .await?
-        .tap_io(|tcp| give_up_on_stalled_peers(tcp, STALLED_PEER));
-    info!("relay listening on {}", args.bind);
-    // `into_make_service_with_connect_info` so the quota can see who is
-    // calling. Behind a proxy every connection is the proxy, which is why
-    // `--trust-forwarded-for` exists.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
-    Ok(())
+    app
 }
 
 async fn health() -> &'static str {
@@ -508,7 +528,10 @@ async fn read_pad(
     // after the slot and the permit, not before: the answer is a database
     // lookup, and a flood of reads the limits would refuse should not get one
     // each first.
-    let access = http_accounts::access(&state, &headers, &name).await;
+    let access = match http_accounts::access(&state, &headers, &name).await {
+        Ok(access) => access,
+        Err(refused) => return refused.into_response(),
+    };
     // Deleted is not private: the page says which, so an owner who deleted
     // it in another tab is not told to sign in as someone else.
     if access.deleted {
@@ -582,7 +605,7 @@ async fn pad_access(
     write: bool,
     cannot: &'static str,
 ) -> Result<(), (StatusCode, &'static str)> {
-    let access = http_accounts::access(state, headers, name).await;
+    let access = http_accounts::access(state, headers, name).await?;
     if access.deleted {
         return Err((StatusCode::GONE, "this pad was deleted by its owner"));
     }
@@ -784,7 +807,18 @@ async fn unfurl(
             "A pad: files you can edit together and run in the browser, nothing to install.",
         );
     }
-    let access = http_accounts::access(&state, &axum::http::HeaderMap::new(), &name).await;
+    let access = match http_accounts::access(&state, &axum::http::HeaderMap::new(), &name).await {
+        Ok(access) => access,
+        // Who may see it is not known, so nothing of it is said.
+        Err(_) => {
+            return card(
+                &host,
+                &name,
+                &name,
+                "A pad: files you can edit together and run in the browser.",
+            )
+        }
+    };
     if access.deleted {
         return card(&host, &name, &name, "This pad was deleted by its owner.");
     }
@@ -1027,7 +1061,9 @@ async fn write_pad(
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Writing needs an edit link or the pad itself; viewing is not enough.
     // An anonymous pad lets everyone write, as it always has.
-    let access = http_accounts::access(&state, &headers, &name).await;
+    let access = http_accounts::access(&state, &headers, &name)
+        .await
+        .map_err(|(code, why)| (code, why.to_string()))?;
     if access.deleted {
         return Err((
             StatusCode::GONE,
@@ -1058,16 +1094,27 @@ async fn write_pad(
     };
     let now = std::time::Instant::now();
     let by_address = state.growth.remaining(caller, now);
-    // An owned pad also draws on its account's room, whoever is writing.
+    // An owned pad also draws on its account's room, whoever is writing —
+    // and a room that cannot be counted is none, not all of it.
     let by_account = match access.owner {
         Some(owner) => {
             let (accounts, pad) = (state.accounts.clone(), name.clone());
             http_accounts::blocking(move || {
-                accounts
-                    .room_for(owner, &pad)
-                    .saturating_sub(accounts.bytes_of(&pad))
+                Ok::<_, accounts::AccountError>(
+                    accounts
+                        .room_for(owner, &pad)?
+                        .saturating_sub(accounts.bytes_of(&pad)?),
+                )
             })
             .await
+            .map_err(|e| {
+                tracing::error!(pad = %name, error = %e.message(), "could not count an account's room; write refused");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the server could not check the room this pad's account has left — try again in a moment"
+                        .to_string(),
+                )
+            })?
         }
         None => u64::MAX,
     };
@@ -1102,7 +1149,14 @@ async fn write_pad(
     if access.owner.is_some() {
         let accounts = state.accounts.clone();
         let (bytes, files) = (written.bytes, written.files);
-        http_accounts::blocking(move || accounts.record_size(&name, bytes, files)).await;
+        let pad = name.clone();
+        // The write is in, so this cannot refuse it; it can say so. Left
+        // unsaid, the account's room went on being counted at the size before.
+        if let Err(e) =
+            http_accounts::blocking(move || accounts.record_size(&pad, bytes, files)).await
+        {
+            tracing::error!(pad = %name, error = %e.message(), "could not record an owned pad's size");
+        }
     }
     Ok(Json(Wrote {
         seq: written.seq,

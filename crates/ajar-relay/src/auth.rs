@@ -14,6 +14,7 @@
 //! | `AJAR_GOOGLE_CLIENT_ID`, `AJAR_GOOGLE_CLIENT_SECRET` | Google, if set |
 //! | `AJAR_GITHUB_CLIENT_ID`, `AJAR_GITHUB_CLIENT_SECRET` | GitHub, if set |
 //! | `AJAR_<P>_AUTHORIZE_URL`, `_TOKEN_URL`, `_USERINFO_URL` | Endpoint overrides — the checks point them at a stand-in |
+//! | `AJAR_TRUSTED_ORIGINS` | Other origins of this relay's own pages whose requests may carry the sign-in, comma-separated; the public origin always may |
 //!
 //! A provider with no client id is simply not offered.
 //!
@@ -83,6 +84,10 @@ pub struct Started {
 
 pub struct Auth {
     pub origin: String,
+    /// The origins whose pages may use the sign-in cookie: the public one and
+    /// `AJAR_TRUSTED_ORIGINS`, each as a browser writes an `Origin` header.
+    /// Empty when there is no public origin, which is a development relay.
+    trusted: Vec<String>,
     providers: Vec<Provider>,
     http: ureq::Agent,
     /// Who sees /admin: `AJAR_ADMINS`, comma-separated, each an email or
@@ -212,8 +217,11 @@ impl Auth {
                 scope,
             });
         }
+        let origin = var("AJAR_PUBLIC_ORIGIN").unwrap_or_default();
+        let trusted = trusted_origins(&origin, &var("AJAR_TRUSTED_ORIGINS").unwrap_or_default());
         Auth {
-            origin: var("AJAR_PUBLIC_ORIGIN").unwrap_or_default(),
+            origin,
+            trusted,
             providers,
             http: agent(),
             admins: var("AJAR_ADMINS")
@@ -236,6 +244,19 @@ impl Auth {
             .any(|a| Some(a) == by_id.as_ref() || (a.contains('@') && Some(a) == email.as_ref()))
     }
 
+    /// An `Auth` with no providers, for a relay in a test: `origin` as
+    /// `AJAR_PUBLIC_ORIGIN` would give it, nothing read from the environment.
+    #[cfg(test)]
+    pub fn for_tests(origin: &str) -> Self {
+        Auth {
+            origin: origin.to_string(),
+            trusted: trusted_origins(origin, ""),
+            providers: Vec::new(),
+            http: agent(),
+            admins: Vec::new(),
+        }
+    }
+
     /// Providers someone can sign in with here.
     pub fn offered(&self) -> Vec<&'static str> {
         if self.origin.is_empty() {
@@ -255,6 +276,36 @@ impl Auth {
     /// origin, where a browser would refuse to keep them.
     pub fn secure(&self) -> bool {
         self.origin.starts_with("https://")
+    }
+
+    /// Whether a request's sign-in cookie may speak for it, from the `Origin`
+    /// and `Sec-Fetch-Site` headers the browser sent with it.
+    ///
+    /// `SameSite=Lax` keeps the cookie off requests from other *sites*, and
+    /// that is not enough here: preview.rishwanth.dev is the same site as the
+    /// pad, and it serves whatever somebody ran in their folder. A page there
+    /// could open a socket to the pad's origin and the browser would bring the
+    /// owner's cookie along — and with it the owner's place in a private
+    /// pad's room (audit B02, 17 October). So a cookie counts only from a page
+    /// of ours: no `Origin` at all, which is a program rather than a page, or a
+    /// browser's same-origin read; an `Origin` we serve; or a request the
+    /// browser itself says is same-origin, which a page cannot claim — that
+    /// covers a browser that sends `Origin: null` for one of our own pages
+    /// because of its referrer policy. Anything else is answered as if
+    /// nobody were signed in, which is still whatever the pad lets anyone do.
+    ///
+    /// With no public origin — a development relay, and most of the checks —
+    /// there is nothing to compare with, and every cookie counts as it always
+    /// has.
+    pub fn trusts_cookie_from(&self, origin: Option<&str>, fetch_site: Option<&str>) -> bool {
+        if self.trusted.is_empty() {
+            return true;
+        }
+        let Some(origin) = origin else {
+            return true;
+        };
+        let origin = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+        self.trusted.contains(&origin) || fetch_site == Some("same-origin")
     }
 
     fn redirect_uri(&self, provider: &str) -> String {
@@ -345,6 +396,20 @@ impl Auth {
             .map(|id| (id, next))
             .ok_or_else(|| refused(format!("{} did not say who you are", p.id)))
     }
+}
+
+/// The origins a cookie may come from: the public one and any others named,
+/// written as a browser writes an `Origin` header — scheme and host, port if
+/// any, lowercase and with no trailing slash — so a comparison is a lookup.
+fn trusted_origins(public: &str, others: &str) -> Vec<String> {
+    if public.trim().is_empty() {
+        return Vec::new();
+    }
+    std::iter::once(public)
+        .chain(others.split(','))
+        .map(|o| o.trim().trim_end_matches('/').to_ascii_lowercase())
+        .filter(|o| !o.is_empty())
+        .collect()
 }
 
 /// Google's userinfo has `sub`; GitHub's user has a numeric `id` and a
@@ -453,12 +518,7 @@ mod tests {
 
     #[test]
     fn nothing_is_offered_without_a_public_origin() {
-        let auth = Auth {
-            origin: String::new(),
-            providers: Vec::new(),
-            http: agent(),
-            admins: Vec::new(),
-        };
+        let auth = Auth::for_tests("");
         assert!(auth.offered().is_empty());
         assert!(auth.start("google", "/").is_none());
     }
@@ -466,10 +526,8 @@ mod tests {
     #[test]
     fn admins_by_email_or_provider_id_and_unverified_emails_are_dropped() {
         let auth = Auth {
-            origin: String::new(),
-            providers: Vec::new(),
-            http: agent(),
             admins: vec!["ana@example.com".into(), "github:583231".into()],
+            ..Auth::for_tests("")
         };
         assert!(auth.is_admin("google", Some("1"), Some("Ana@Example.com")));
         assert!(auth.is_admin("github", Some("583231"), None));
@@ -480,6 +538,38 @@ mod tests {
         assert!(!auth.is_admin("github", Some("2"), Some("bo@example.com")));
         let unverified = serde_json::json!({ "sub": "9", "email": "ana@example.com", "email_verified": false, "name": "X" });
         assert_eq!(identity("google", &unverified).unwrap().email, None);
+    }
+
+    #[test]
+    fn a_cookie_counts_only_from_our_own_pages() {
+        let auth = Auth {
+            trusted: trusted_origins(
+                "https://code.rishwanth.dev/",
+                " https://Ajar.rishwanth.dev ,",
+            ),
+            ..Auth::for_tests("https://code.rishwanth.dev")
+        };
+        // The pad's own page, and the other origin named as ours.
+        assert!(auth.trusts_cookie_from(Some("https://code.rishwanth.dev"), Some("same-origin")));
+        assert!(auth.trusts_cookie_from(Some("https://ajar.rishwanth.dev"), Some("same-site")));
+        // No Origin: a program, or a browser's same-origin read.
+        assert!(auth.trusts_cookie_from(None, None));
+        // The preview origin is the same site and still not ours.
+        assert!(!auth.trusts_cookie_from(Some("https://preview.rishwanth.dev"), Some("same-site")));
+        assert!(!auth.trusts_cookie_from(Some("https://preview.rishwanth.dev"), None));
+        assert!(!auth.trusts_cookie_from(Some("https://evil.example"), Some("cross-site")));
+        // `null` from a sandboxed frame, and from our own page under a
+        // referrer policy — which the browser says is same-origin.
+        assert!(!auth.trusts_cookie_from(Some("null"), Some("cross-site")));
+        assert!(!auth.trusts_cookie_from(Some("null"), None));
+        assert!(auth.trusts_cookie_from(Some("null"), Some("same-origin")));
+        // A look-alike is not a match.
+        assert!(!auth.trusts_cookie_from(Some("https://code.rishwanth.dev.evil.example"), None));
+        assert!(!auth.trusts_cookie_from(Some("http://code.rishwanth.dev"), None));
+
+        // With no public origin nothing is compared, as before.
+        let dev = Auth::for_tests("");
+        assert!(dev.trusts_cookie_from(Some("https://evil.example"), Some("cross-site")));
     }
 
     #[test]

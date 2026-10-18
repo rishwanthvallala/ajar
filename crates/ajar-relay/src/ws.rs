@@ -171,16 +171,26 @@ pub async fn handle(
     // session opened under its name first would take the name, and the
     // pad's own people would be refused as the wrong shape for as long as it
     // was held — anyone who knew the name could keep a private pad's room shut.
+    //
+    // A lookup that fails refuses, on either path: nothing is let in on an
+    // answer nobody had (audit B01). Read as no row, it opened a private
+    // pad's room to anyone, as an editor.
     if role != Role::Peer {
         let accounts = gate.accounts.clone();
         let name = session_id.clone();
         let owned = crate::http_accounts::blocking(move || {
-            let a = accounts.access(&name, None, None);
-            a.owner.is_some() || a.deleted
+            accounts
+                .access(&name, None, None)
+                .map(|a| a.owner.is_some() || a.deleted)
         })
         .await;
-        if owned {
-            refuse!("wrong_shape", "that name belongs to a pad");
+        match owned {
+            Ok(false) => {}
+            Ok(true) => refuse!("wrong_shape", "that name belongs to a pad"),
+            Err(e) => {
+                warn!(session = %session_id, error = %e.message(), "could not look up whether a name is an owned pad's; refused");
+                refuse!("unavailable", crate::http_accounts::UNCHECKED.1)
+            }
         }
     }
     if role == Role::Peer {
@@ -189,6 +199,13 @@ pub async fn handle(
         let access =
             crate::http_accounts::blocking(move || accounts.access(&name, user, code.as_deref()))
                 .await;
+        let access = match access {
+            Ok(access) => access,
+            Err(e) => {
+                warn!(session = %session_id, error = %e.message(), "could not look up who may join a pad's room; refused");
+                refuse!("unavailable", crate::http_accounts::UNCHECKED.1)
+            }
+        };
         if access.deleted {
             refuse!("gone", "this pad was deleted by its owner");
         }

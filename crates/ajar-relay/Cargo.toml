@@ -30,6 +30,13 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ureq = { version = "3.4.2", features = ["json"] }
 
+[dev-dependencies]
+# The relay as a page or an agent meets it: requests to its router, and a
+# socket to it served on a port (src/serving_tests.rs). Both already in the
+# tree through axum, at these versions.
+tokio-tungstenite = "0.29.0"
+tower = { version = "0.5.3", features = ["util"] }
+
 # TCP_USER_TIMEOUT, which only Linux has and only behind `all` — see
 # `give_up_on_stalled_peers`. Already in the tree through tokio.
 [target.'cfg(target_os = "linux")'.dependencies]

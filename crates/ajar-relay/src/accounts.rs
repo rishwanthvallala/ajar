@@ -57,6 +57,10 @@ impl Default for Limits {
         }
     }
 }
+/// How many three-word names a new pad tries before giving up. There are
+/// some 470 billion and nearly all are free, so a run of misses is not bad
+/// luck but a store that cannot say.
+const MINT_TRIES: usize = 64;
 /// How long a sign-in lasts.
 const SESSION_DAYS: i64 = 30;
 /// The same, for the cookie that carries it.
@@ -470,6 +474,9 @@ impl Accounts {
             },
         )
         .optional()
+        // Signed out, if the lookup fails: the least anyone can be, so it
+        // grants nothing a stranger lacks. Said, so it is not silent.
+        .inspect_err(|e| tracing::error!(error = %e, "could not look up a sign-in; treated as signed out"))
         .ok()
         .flatten()
     }
@@ -530,7 +537,17 @@ impl Accounts {
             self.new_link(owner, wanted, Role::Editor)?;
             return self.pad_of(owner, wanted);
         }
+        // Bounded, though a free name is nearly every name: `taken` says yes
+        // when the store cannot answer, and a store that cannot answer would
+        // otherwise keep this here for good, holding the lock.
+        let mut tries = 0;
         let name = loop {
+            tries += 1;
+            if tries > MINT_TRIES {
+                return Err(AccountError::Db(
+                    "no free name could be found for a new pad".into(),
+                ));
+            }
             let candidate = three_words();
             let exists: bool = db.query_row(
                 "SELECT EXISTS (SELECT 1 FROM pads WHERE name = ?1)",
@@ -791,51 +808,54 @@ impl Accounts {
 
     /// Every owned pad that still exists: the names the store must never let
     /// lapse.
-    pub fn owned_names(&self) -> Vec<String> {
+    ///
+    /// An error, not an empty list, when they cannot be read: the relay pins
+    /// these at start, and an empty list would leave every owned pad on the
+    /// ninety-day lease of an anonymous one — to be swept, files and all.
+    pub fn owned_names(&self) -> Result<Vec<String>, AccountError> {
         let db = self.db.lock();
-        let Ok(mut q) = db.prepare("SELECT name FROM pads WHERE deleted IS NULL") else {
-            return Vec::new();
-        };
-        q.query_map([], |r| r.get(0))
-            .map(|rows| rows.filter_map(Result::ok).collect())
-            .unwrap_or_default()
+        let mut q = db.prepare("SELECT name FROM pads WHERE deleted IS NULL")?;
+        let rows = q.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Record what a write left an owned pad at, for the dashboard and the
     /// account's quota.
-    pub fn record_size(&self, name: &str, bytes: u64, files: u64) {
-        let _ = self.db.lock().execute(
+    pub fn record_size(&self, name: &str, bytes: u64, files: u64) -> Result<(), AccountError> {
+        self.db.lock().execute(
             "UPDATE pads SET bytes = ?1, files = ?2 WHERE name = ?3",
             params![bytes as i64, files as i64, name],
-        );
+        )?;
+        Ok(())
     }
 
-    /// What an owned pad held after its last write.
-    pub fn bytes_of(&self, name: &str) -> u64 {
-        self.db
+    /// What an owned pad held after its last write; nothing for a pad with no
+    /// row. A lookup that failed is an error rather than nothing, which would
+    /// be room the account does not have.
+    pub fn bytes_of(&self, name: &str) -> Result<u64, AccountError> {
+        Ok(self
+            .db
             .lock()
             .query_row(
                 "SELECT bytes FROM pads WHERE name = ?1",
                 params![name],
                 |r| r.get::<_, i64>(0),
             )
-            .map(|b| b.max(0) as u64)
-            .unwrap_or(0)
+            .optional()?
+            .map_or(0, |b| b.max(0) as u64))
     }
 
     /// Bytes an owner may still add across all their pads, other than `name`'s
-    /// current size — which the write that asks is about to replace.
-    pub fn room_for(&self, owner: i64, name: &str) -> u64 {
-        let used: i64 = self
-            .db
-            .lock()
-            .query_row(
-                "SELECT COALESCE(SUM(bytes), 0) FROM pads WHERE owner_id = ?1 AND deleted IS NULL AND name != ?2",
-                params![owner, name],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        self.limits.bytes.saturating_sub(used.max(0) as u64)
+    /// current size — which the write that asks is about to replace. An error
+    /// when it cannot be counted: read as nothing used, it was the whole of
+    /// the account's room.
+    pub fn room_for(&self, owner: i64, name: &str) -> Result<u64, AccountError> {
+        let used: i64 = self.db.lock().query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM pads WHERE owner_id = ?1 AND deleted IS NULL AND name != ?2",
+            params![owner, name],
+            |r| r.get(0),
+        )?;
+        Ok(self.limits.bytes.saturating_sub(used.max(0) as u64))
     }
 
     // ---------------------------------------------------------- the operator
@@ -940,7 +960,18 @@ impl Accounts {
     /// owner is the owner; a code gives what its link grants, as far as the
     /// pad's settings allow; and the bare name gives viewing if viewing is
     /// open. An edit link always lets you view, even with editing locked.
-    pub fn access(&self, name: &str, user: Option<i64>, code: Option<&str>) -> Access {
+    ///
+    /// A lookup that fails is an error, never an answer. Both lookups used to
+    /// read an error as no row: no pad row is the open, anonymous pad above,
+    /// so a database that could not be read made every private pad editable
+    /// by anyone (audit B01, 17 October); and no link row told the page its
+    /// code was dead, and the page forgot it.
+    pub fn access(
+        &self,
+        name: &str,
+        user: Option<i64>,
+        code: Option<&str>,
+    ) -> Result<Access, AccountError> {
         let db = self.db.lock();
         let row: Option<(Option<i64>, String, String, Option<i64>)> = db
             .query_row(
@@ -948,11 +979,9 @@ impl Accounts {
                 params![name],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
-            .optional()
-            .ok()
-            .flatten();
+            .optional()?;
         let Some((owner, view, edit, deleted)) = row else {
-            return Access::anonymous();
+            return Ok(Access::anonymous());
         };
         let (view, edit) = (View::parse(&view), Edit::parse(&edit));
         let mut access = Access {
@@ -965,11 +994,11 @@ impl Accounts {
             edit: Some(edit),
         };
         if access.deleted {
-            return access;
+            return Ok(access);
         }
         if user.is_some() && user == owner {
             access.role = Role::Owner;
-            return access;
+            return Ok(access);
         }
         if view == View::Link {
             access.role = Role::Viewer;
@@ -981,9 +1010,7 @@ impl Accounts {
                     params![name, hash(code)],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()
-                .ok()
-                .flatten();
+                .optional()?;
             if let Some((id, role)) = link {
                 access.link_role = Some(role_parse(&role));
                 let granted = match role_parse(&role) {
@@ -997,7 +1024,7 @@ impl Accounts {
                 }
             }
         }
-        access
+        Ok(access)
     }
 }
 
@@ -1141,9 +1168,71 @@ mod tests {
     }
 
     #[test]
+    fn a_lookup_that_fails_is_an_error_and_grants_nothing() {
+        // Audit B01: every SQL error read as "no row", and no row is the
+        // anonymous pad anyone may edit.
+        let (a, _) = store();
+        let me = person(&a, "1");
+        let pad = a.create_pad(me, &|_| false, None).unwrap();
+        a.set_access(me, &pad.name, View::Owner, Edit::Owner)
+            .unwrap();
+        let code = pad.links[1].code.clone();
+
+        // A code that cannot be checked is not a dead code, which a page
+        // forgets, nor no code at all.
+        a.db.lock()
+            .execute_batch("ALTER TABLE links RENAME TO links_unreadable")
+            .unwrap();
+        assert!(matches!(
+            a.access(&pad.name, None, Some(&code)),
+            Err(AccountError::Db(_))
+        ));
+        assert_eq!(
+            a.access(&pad.name, Some(me), None).unwrap().role,
+            Role::Owner,
+            "without a code the links are not read"
+        );
+
+        a.db.lock()
+            .execute_batch("ALTER TABLE pads RENAME TO pads_unreadable")
+            .unwrap();
+        for (user, held) in [(None, None), (Some(me), None), (None, Some(code.as_str()))] {
+            assert!(
+                matches!(a.access(&pad.name, user, held), Err(AccountError::Db(_))),
+                "a private pad read as {:?}",
+                a.access(&pad.name, user, held)
+            );
+        }
+        assert!(a.access("never-owned-pad", None, None).is_err());
+        assert!(a.owned_names().is_err(), "the names to pin, read as none");
+        assert!(
+            a.room_for(me, &pad.name).is_err(),
+            "room, read as all of it"
+        );
+        assert!(a.bytes_of(&pad.name).is_err());
+        assert!(a.record_size(&pad.name, 1, 1).is_err());
+    }
+
+    #[test]
+    fn a_store_that_cannot_say_which_names_are_taken_gets_no_new_pad() {
+        // `taken` says yes when the store cannot answer, so the loop that
+        // looks for a free name has to end.
+        let (a, _) = store();
+        let me = person(&a, "1");
+        assert!(matches!(
+            a.create_pad(me, &|_| true, None),
+            Err(AccountError::Db(_))
+        ));
+        assert!(a.pads_of(me).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_pad_with_no_row_is_open_to_everyone() {
         let (a, _) = store();
-        assert_eq!(a.access("rustic-notch-5292", None, None).role, Role::Editor);
+        assert_eq!(
+            a.access("rustic-notch-5292", None, None).unwrap().role,
+            Role::Editor
+        );
     }
 
     #[test]
@@ -1154,25 +1243,28 @@ mod tests {
         let edit = pad.links.iter().find(|l| l.role == Role::Editor).unwrap();
         let view = pad.links.iter().find(|l| l.role == Role::Viewer).unwrap();
 
-        assert_eq!(a.access(&pad.name, Some(me), None).role, Role::Owner);
         assert_eq!(
-            a.access(&pad.name, None, None).role,
+            a.access(&pad.name, Some(me), None).unwrap().role,
+            Role::Owner
+        );
+        assert_eq!(
+            a.access(&pad.name, None, None).unwrap().role,
             Role::Viewer,
             "the bare name views"
         );
         assert_eq!(
-            a.access(&pad.name, None, Some(&view.code)).role,
+            a.access(&pad.name, None, Some(&view.code)).unwrap().role,
             Role::Viewer
         );
-        let editor = a.access(&pad.name, None, Some(&edit.code));
+        let editor = a.access(&pad.name, None, Some(&edit.code)).unwrap();
         assert_eq!((editor.role, editor.link), (Role::Editor, Some(edit.id)));
         assert_eq!(
-            a.access(&pad.name, None, Some("not-a-code")).role,
+            a.access(&pad.name, None, Some("not-a-code")).unwrap().role,
             Role::Viewer
         );
         let stranger = person(&a, "2");
         assert_eq!(
-            a.access(&pad.name, Some(stranger), None).role,
+            a.access(&pad.name, Some(stranger), None).unwrap().role,
             Role::Viewer,
             "signed in is not owning"
         );
@@ -1200,22 +1292,34 @@ mod tests {
 
         a.set_access(me, &pad.name, View::Code, Edit::Owner)
             .unwrap();
-        assert_eq!(a.access(&pad.name, None, None).role, Role::None);
-        assert_eq!(a.access(&pad.name, None, Some(&view)).role, Role::Viewer);
+        assert_eq!(a.access(&pad.name, None, None).unwrap().role, Role::None);
         assert_eq!(
-            a.access(&pad.name, None, Some(&edit)).role,
+            a.access(&pad.name, None, Some(&view)).unwrap().role,
+            Role::Viewer
+        );
+        assert_eq!(
+            a.access(&pad.name, None, Some(&edit)).unwrap().role,
             Role::Viewer,
             "edit locked: the edit link views and no more"
         );
 
         a.set_access(me, &pad.name, View::Owner, Edit::Owner)
             .unwrap();
-        assert_eq!(a.access(&pad.name, None, Some(&edit)).role, Role::None);
-        assert_eq!(a.access(&pad.name, Some(me), None).role, Role::Owner);
+        assert_eq!(
+            a.access(&pad.name, None, Some(&edit)).unwrap().role,
+            Role::None
+        );
+        assert_eq!(
+            a.access(&pad.name, Some(me), None).unwrap().role,
+            Role::Owner
+        );
 
         // Unlocking brings the same links back.
         a.set_access(me, &pad.name, View::Link, Edit::Code).unwrap();
-        assert_eq!(a.access(&pad.name, None, Some(&edit)).role, Role::Editor);
+        assert_eq!(
+            a.access(&pad.name, None, Some(&edit)).unwrap().role,
+            Role::Editor
+        );
     }
 
     #[test]
@@ -1225,7 +1329,7 @@ mod tests {
         let you = person(&a, "2");
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         a.create_pad(you, &|_| false, None).unwrap();
-        a.record_size(&pad.name, 5000, 2);
+        a.record_size(&pad.name, 5000, 2).unwrap();
         a.new_session(me).unwrap();
         let s = a.stats(30, 5).unwrap();
         assert_eq!((s.users, s.pads, s.bytes, s.signed_in), (2, 2, 5000, 1));
@@ -1270,18 +1374,19 @@ mod tests {
         a.set_access(me, &pad.name, View::Link, Edit::Owner)
             .unwrap();
         // Locked for now, but still an edit link — a viewer must not pass it on.
-        let held = a.access(&pad.name, None, Some(&edit));
+        let held = a.access(&pad.name, None, Some(&edit)).unwrap();
         assert_eq!(
             (held.role, held.link_role),
             (Role::Viewer, Some(Role::Editor))
         );
         assert_eq!(
             a.access(&pad.name, None, Some("no-such-code-anywhere"))
+                .unwrap()
                 .link_role,
             None
         );
         a.delete_pad(me, &pad.name).unwrap();
-        let gone = a.access(&pad.name, Some(me), None);
+        let gone = a.access(&pad.name, Some(me), None).unwrap();
         assert!(gone.deleted && gone.role == Role::None);
     }
 
@@ -1319,25 +1424,25 @@ mod tests {
             .iter()
             .all(|l| l.id != second.id));
         assert_eq!(
-            a.access(&pad.name, None, Some(&second.code)).role,
+            a.access(&pad.name, None, Some(&second.code)).unwrap().role,
             Role::Editor
         );
 
         let fresh = a.replace_link(me, &pad.name, Role::Editor).unwrap();
         assert_eq!(
-            a.access(&pad.name, None, Some(&first.code)).role,
+            a.access(&pad.name, None, Some(&first.code)).unwrap().role,
             Role::None
         );
         assert_eq!(
-            a.access(&pad.name, None, Some(&second.code)).role,
+            a.access(&pad.name, None, Some(&second.code)).unwrap().role,
             Role::None
         );
         assert_eq!(
-            a.access(&pad.name, None, Some(&fresh.code)).role,
+            a.access(&pad.name, None, Some(&fresh.code)).unwrap().role,
             Role::Editor
         );
         assert_eq!(
-            a.access(&pad.name, None, Some(&view.code)).role,
+            a.access(&pad.name, None, Some(&view.code)).unwrap().role,
             Role::Viewer,
             "links of the other kind are untouched"
         );
@@ -1359,10 +1464,13 @@ mod tests {
             .unwrap()
             .clone();
         a.revoke_link(me, &pad.name, old.id).unwrap();
-        assert_eq!(a.access(&pad.name, None, Some(&old.code)).role, Role::None);
+        assert_eq!(
+            a.access(&pad.name, None, Some(&old.code)).unwrap().role,
+            Role::None
+        );
         let fresh = a.new_link(me, &pad.name, Role::Editor).unwrap();
         assert_eq!(
-            a.access(&pad.name, None, Some(&fresh.code)).role,
+            a.access(&pad.name, None, Some(&fresh.code)).unwrap().role,
             Role::Editor
         );
         assert!(
@@ -1418,10 +1526,13 @@ mod tests {
         let pad = a.create_pad(me, &|_| false, None).unwrap();
         let code = pad.links[1].code.clone();
         a.delete_pad(me, &pad.name).unwrap();
-        assert_eq!(a.access(&pad.name, Some(me), Some(&code)).role, Role::None);
+        assert_eq!(
+            a.access(&pad.name, Some(me), Some(&code)).unwrap().role,
+            Role::None
+        );
         // Nor does it fall back to an open, anonymous pad anyone could write.
-        assert_eq!(a.access(&pad.name, None, None).role, Role::None);
-        assert!(a.owned_names().is_empty());
+        assert_eq!(a.access(&pad.name, None, None).unwrap().role, Role::None);
+        assert!(a.owned_names().unwrap().is_empty());
     }
 
     #[test]
@@ -1461,22 +1572,28 @@ mod tests {
                 )
                 .unwrap();
         assert_eq!(codes, 0, "and the links' codes");
-        let access = a.access(&kept.name, None, Some(&code));
+        let access = a.access(&kept.name, None, Some(&code)).unwrap();
         assert!(
             access.deleted && access.role == Role::None,
             "an old link finds a deleted pad"
         );
-        assert!(!a.owned_names().contains(&kept.name));
+        assert!(!a.owned_names().unwrap().contains(&kept.name));
         assert_eq!(
             a.pads_of(them).unwrap().len(),
             1,
             "someone else's pads are untouched"
         );
-        assert_eq!(a.access(&theirs.name, Some(them), None).role, Role::Owner);
+        assert_eq!(
+            a.access(&theirs.name, Some(them), None).unwrap().role,
+            Role::Owner
+        );
         // Signing in again with the same provider id is a new, empty account.
         let again = person(&a, "1");
         assert!(a.pads_of(again).unwrap().is_empty());
-        assert_eq!(a.access(&kept.name, Some(again), None).role, Role::None);
+        assert_eq!(
+            a.access(&kept.name, Some(again), None).unwrap().role,
+            Role::None
+        );
     }
 
     #[test]
@@ -1579,13 +1696,13 @@ mod tests {
         let me = person(&a, "1");
         let one = a.create_pad(me, &|_| false, None).unwrap();
         let two = a.create_pad(me, &|_| false, None).unwrap();
-        a.record_size(&one.name, 60 * 1024 * 1024, 3);
+        a.record_size(&one.name, 60 * 1024 * 1024, 3).unwrap();
         assert_eq!(
-            a.room_for(me, &two.name),
+            a.room_for(me, &two.name).unwrap(),
             MAX_BYTES_PER_ACCOUNT - 60 * 1024 * 1024
         );
         assert_eq!(
-            a.room_for(me, &one.name),
+            a.room_for(me, &one.name).unwrap(),
             MAX_BYTES_PER_ACCOUNT,
             "a pad's own size is not counted against it"
         );

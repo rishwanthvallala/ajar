@@ -80,8 +80,16 @@ fn set_cookie(state: &AppState, name: &str, value: Option<&str>, max_age: u64) -
     )
 }
 
-/// The session token from the request's cookies, if any.
+/// The session token from the request's cookies, if any — and only from a
+/// page of ours, or a program: a cookie a same-site page brought along speaks
+/// for nobody ([`crate::auth::Auth::trusts_cookie_from`]). Everything that
+/// asks who is signed in comes through here, the pad's socket among them.
 pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
+    let site = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
+    if !state.auth.trusts_cookie_from(header(header::ORIGIN), site) {
+        return None;
+    }
     cookie(headers, cookie_name(state))
 }
 
@@ -91,17 +99,40 @@ pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Option<User> {
     blocking(move || accounts.session(&token)).await
 }
 
+/// What a caller is told when who may do what to a pad could not be looked
+/// up. Retryable, and not the caller's doing — a 503, not a 403: the page
+/// says the server is unreachable and tries again, rather than that the pad
+/// is private, which might be untrue.
+pub const UNCHECKED: (StatusCode, &str) = (
+    StatusCode::SERVICE_UNAVAILABLE,
+    "the server could not check who may open this pad — try again in a moment",
+);
+
 /// What the caller may do with a pad: their session if they have one, the
 /// code in `X-Pad-Code` if they sent one.
-pub async fn access(state: &AppState, headers: &HeaderMap, name: &str) -> Access {
+///
+/// An error rather than an answer when the account store cannot say. It used
+/// to read a failed lookup as "no row", and no row is an anonymous pad that
+/// everyone may edit — so a broken database opened every private pad to
+/// anyone (audit B01, 17 October). Nothing is granted on a lookup that failed.
+pub async fn access(
+    state: &AppState,
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<Access, (StatusCode, &'static str)> {
     let user = signed_in(state, headers).await.map(|u| u.id);
     let code = headers
         .get("x-pad-code")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let accounts = state.accounts.clone();
-    let name = name.to_string();
-    blocking(move || accounts.access(&name, user, code.as_deref())).await
+    let pad = name.to_string();
+    blocking(move || accounts.access(&pad, user, code.as_deref()))
+        .await
+        .map_err(|e| {
+            tracing::error!(pad = %name, error = %e.message(), "could not look up who may open a pad; refused");
+            UNCHECKED
+        })
 }
 
 fn intended(headers: &HeaderMap) -> Result<(), Refusal> {
@@ -416,7 +447,9 @@ async fn create_pad(
         .filter(|n| !n.is_empty());
     let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
     let pad = blocking(move || {
-        let taken = |name: &str| pads.exists(name).unwrap_or(false);
+        // Taken, when the store cannot say: a pad made over an anonymous one
+        // would hand somebody else's files to this account.
+        let taken = |name: &str| pads.exists(name).unwrap_or(true);
         let pad = accounts.create_pad(me.id, &taken, wanted.as_deref())?;
         pads.pin(&pad.name);
         Ok(pad)
@@ -444,7 +477,7 @@ async fn name_free(
     let (accounts, pads) = (state.accounts.clone(), state.pads.clone());
     let name = name.trim().to_ascii_lowercase();
     let answer = blocking(move || {
-        let taken = |n: &str| pads.exists(n).unwrap_or(false);
+        let taken = |n: &str| pads.exists(n).unwrap_or(true);
         Ok(accounts.name_free(&name, &taken))
     })
     .await
