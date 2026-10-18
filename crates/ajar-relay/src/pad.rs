@@ -669,6 +669,18 @@ pub struct LastRun {
     pub output: String,
 }
 
+impl LastRun {
+    /// What keeping it costs the store: its output, command and path, every
+    /// byte of them the sender's. [`RUN_SIZE`] measures one already kept.
+    pub fn bytes(&self) -> u64 {
+        (self.output.len() + self.command.len() + self.path.len()) as u64
+    }
+}
+
+/// [`LastRun::bytes`] of a row of `last_runs`, in SQL.
+const RUN_SIZE: &str = "length(CAST(output AS BLOB)) + length(CAST(command AS BLOB)) \
+                        + length(CAST(path AS BLOB))";
+
 /// How many paths a preview names.
 pub const SUMMARY_PATHS: usize = 6;
 /// The largest file a preview reads, to quote its first lines.
@@ -862,11 +874,19 @@ pub struct Store {
     /// checks and its transaction are one step, so two writes to one pad
     /// cannot both start from the same version and lose one another.
     db: Mutex<Connection>,
-    /// Bytes of the blobs some file holds, maintained rather than measured.
+    /// Bytes of the blobs some file holds, and of the last runs kept in the
+    /// database, maintained rather than measured.
     ///
     /// A blob is counted once however many pads hold it, which is what it
     /// costs the disk. One held by nothing stops counting at once, though its
     /// file waits out [`GRACE`].
+    ///
+    /// A last run is up to [`LAST_RUN_MAX`] of output a pad, in a table
+    /// rather than a blob, and was not counted at all: with the store at its
+    /// ceiling, a pad with no files could still be given 32 KiB of output,
+    /// and any number of them (audit B09). Counted as [`RUN_SIZE`] measures
+    /// it, added and taken away where a run is kept, replaced or deleted —
+    /// one row's length each time, never a scan.
     used: AtomicU64,
     /// Pads that belong to an account. Their lease never lapses: an owned
     /// pad lasts as long as its account, and deleting it is the owner's call.
@@ -985,11 +1005,15 @@ impl Store {
         store.import_legacy()?;
         // Nothing is being read yet, so a blob held by nothing can go now.
         store.collect(Duration::ZERO);
+        // Once, at the start: from here on it is kept up as things change.
         let used: i64 = store
             .db
             .lock()
             .query_row(
-                "SELECT COALESCE(SUM(stored), 0) FROM blobs WHERE refs > 0",
+                &format!(
+                    "SELECT (SELECT COALESCE(SUM(stored), 0) FROM blobs WHERE refs > 0)
+                          + (SELECT COALESCE(SUM({RUN_SIZE}), 0) FROM last_runs)"
+                ),
                 [],
                 |r| r.get(0),
             )
@@ -1095,9 +1119,30 @@ impl Store {
             && Duration::from_millis(now_ms().saturating_sub(touched_ms)) > LEASE
     }
 
-    /// Bytes of the blobs some pad holds right now.
+    /// Bytes of the blobs some pad holds right now, and of the last runs
+    /// pads keep.
     pub fn used(&self) -> u64 {
         self.used.load(Ordering::Relaxed)
+    }
+
+    /// The bytes a pad's last run keeps, as `used` counts them: none when
+    /// it has none.
+    fn stored_run(db: &Connection, name: &str) -> Result<u64, Error> {
+        Ok(db
+            .query_row(
+                &format!("SELECT {RUN_SIZE} FROM last_runs WHERE pad = ?1"),
+                [name],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .map_or(0, |n| n.max(0) as u64))
+    }
+
+    /// A pad's last run deleted, and the change that makes to `used`.
+    fn drop_run(tx: &rusqlite::Transaction, name: &str) -> Result<i64, Error> {
+        let size = Self::stored_run(tx, name)?;
+        tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
+        Ok(-(size as i64))
     }
 
     fn blob_path(&self, hash: &str) -> PathBuf {
@@ -1570,8 +1615,8 @@ impl Store {
         let tx = db.transaction()?;
         let now = now_ms();
         let held = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now)?
-            + Self::drop_history(&tx, name, now)?;
-        tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
+            + Self::drop_history(&tx, name, now)?
+            + Self::drop_run(&tx, name)?;
         tx.execute("DELETE FROM pads WHERE name = ?1", [name])?;
         tx.commit()?;
         self.adjust(held);
@@ -1688,6 +1733,17 @@ impl Store {
     /// Keep `run` as the pad's last run, in place of the one before: how many
     /// bytes it adds, which is what the writer is charged. `Ok(None)` for a
     /// pad that is not there, which has nothing to keep it with.
+    ///
+    /// Counted against the store's ceiling as a file is, and refused with
+    /// [`Error::StoreFull`] when what it adds would go past it — a smaller one
+    /// in place of a bigger one always goes in. Not counted against the
+    /// account that owns the pad: what an account is charged is its files,
+    /// which is what its dashboard shows a pad holding, and a run is at most
+    /// [`LAST_RUN_MAX`] and two names a pad — 700 KiB for every pad an account
+    /// may own together, against the 250 MiB it may hold — so charging it
+    /// would add a second database write to every run for a sum the per-pad
+    /// cap already bounds, and a size on the dashboard nobody could find in
+    /// the pad.
     pub fn set_last_run(&self, name: &str, run: &LastRun) -> Result<Option<u64>, Error> {
         check_name(name)?;
         if run.output.len() > LAST_RUN_MAX {
@@ -1703,23 +1759,22 @@ impl Store {
             Some(head) if !self.lapsed(name, head.touched_ms) => {}
             _ => return Ok(None),
         }
-        let before: i64 = db
-            .query_row(
-                "SELECT length(CAST(output AS BLOB)) FROM last_runs WHERE pad = ?1",
-                [name],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
+        let before = Self::stored_run(&db, name)?;
+        let after = run.bytes();
+        // Under the store's lock, as a write's check is, so the two cannot
+        // both see the same room and together go past it.
+        let grew = after.saturating_sub(before);
+        if grew > 0 && self.used() + grew > self.ceiling {
+            return Err(Error::StoreFull);
+        }
         db.execute(
             "INSERT INTO last_runs (pad, path, command, exit, at_ms, output) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(pad) DO UPDATE SET path = excluded.path, command = excluded.command,
                exit = excluded.exit, at_ms = excluded.at_ms, output = excluded.output",
             params![name, run.path, run.command, run.exit, now_ms() as i64, run.output],
         )?;
-        Ok(Some(
-            (run.output.len() as u64).saturating_sub(before as u64),
-        ))
+        self.adjust(after as i64 - before as i64);
+        Ok(Some(grew))
     }
 
     /// The pad's last run, if it has one — and none for a pad lapsed, whose
@@ -2044,7 +2099,7 @@ impl Store {
         // which otherwise came back as the new pad's (audit B11).
         if head.is_some() && !live {
             held += Self::drop_history(&tx, name, now)?;
-            tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
+            held += Self::drop_run(&tx, name)?;
         }
         if due {
             let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
@@ -2254,15 +2309,13 @@ impl Store {
         let now = now_ms();
         let Ok(held) = Self::apply_rows(&tx, name, &old, &BTreeMap::new(), &[], now)
             .and_then(|h| Ok(h + Self::drop_history(&tx, name, now)?))
+            .and_then(|h| Ok(h + Self::drop_run(&tx, name)?))
         else {
             return false;
         };
         if tx
-            .execute("DELETE FROM last_runs WHERE pad = ?1", [name])
+            .execute("DELETE FROM pads WHERE name = ?1", [name])
             .is_err()
-            || tx
-                .execute("DELETE FROM pads WHERE name = ?1", [name])
-                .is_err()
             || tx.commit().is_err()
         {
             return false;
@@ -3812,7 +3865,11 @@ mod tests {
         );
         s.write("p", &[put("main.py", "print(1)")]).unwrap();
         assert_eq!(s.last_run("p").unwrap(), None);
-        assert_eq!(s.set_last_run("p", &run("hello\n")).unwrap(), Some(6));
+        // Its output and its two names: "main.py" and "python main.py".
+        assert_eq!(
+            s.set_last_run("p", &run("hello\n")).unwrap(),
+            Some(6 + 7 + 14)
+        );
         assert_eq!(
             s.set_last_run("p", &run("hello world\n")).unwrap(),
             Some(6),
@@ -3847,6 +3904,62 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM last_runs", [], |r| r.get(0))
                 .unwrap();
         assert_eq!(rows, 0, "and the sweep takes it with the pad");
+    }
+
+    #[test]
+    fn a_last_run_counts_against_the_ceiling_as_a_file_does() {
+        // Audit B09: the store counted its blobs and nothing in its database,
+        // so a store at its ceiling still took 32 KiB of output for each of
+        // as many empty pads as anyone made.
+        let dir = tempdir::Dir::new();
+        let s = Store::open(dir.path(), 40 * 1024).unwrap();
+        let run = |output: &str| LastRun {
+            path: "a.py".into(),
+            command: "python a.py".into(),
+            exit: 0,
+            at_ms: 0,
+            output: output.into(),
+        };
+        s.write("one", &[]).unwrap();
+        s.write("two", &[]).unwrap();
+        assert_eq!(s.used(), 0, "a pad with no files holds nothing");
+        let big = run(&"x".repeat(LAST_RUN_MAX));
+        s.set_last_run("one", &big).unwrap();
+        assert_eq!(s.used(), big.bytes());
+        assert_eq!(
+            s.set_last_run("two", &big).err(),
+            Some(Error::StoreFull),
+            "past the ceiling, a run is refused as a file is"
+        );
+        assert_eq!(s.last_run("two").unwrap(), None);
+        // A file is refused for the room a run takes.
+        assert_eq!(
+            s.write("two", &[put("a.py", &"y".repeat(10 * 1024))]).err(),
+            Some(Error::StoreFull)
+        );
+        // A smaller run in place of the big one goes in and gives room back,
+        // and so does the pad going.
+        let small = run("ok\n");
+        s.set_last_run("one", &small).unwrap();
+        assert_eq!(s.used(), small.bytes());
+        s.set_last_run("two", &small).unwrap();
+        assert_eq!(s.used(), 2 * small.bytes());
+        s.remove("one").unwrap();
+        assert_eq!(s.used(), small.bytes());
+        // A lapsed pad's, swept or written over, likewise.
+        s.write("three", &[]).unwrap();
+        s.set_last_run("three", &small).unwrap();
+        age(&s, "three");
+        s.write("three", &[]).unwrap();
+        assert_eq!(s.used(), small.bytes(), "written over, its run is gone");
+        age(&s, "two");
+        s.sweep();
+        assert_eq!(s.used(), 0, "swept, its run is gone");
+        // And a store opened again counts what runs it has.
+        s.set_last_run("three", &big).unwrap();
+        drop(s);
+        let s = Store::open(dir.path(), 40 * 1024).unwrap();
+        assert_eq!(s.used(), big.bytes());
     }
 
     #[test]

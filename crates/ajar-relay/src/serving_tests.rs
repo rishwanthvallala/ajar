@@ -73,8 +73,13 @@ impl Relay {
     /// A relay whose public origin is `origin`, as `AJAR_PUBLIC_ORIGIN` would
     /// set it: empty for a development relay.
     pub fn new(origin: &str) -> Self {
+        Self::with_ceiling(origin, u64::MAX)
+    }
+
+    /// The same, its pad store refusing past `ceiling` bytes.
+    pub fn with_ceiling(origin: &str, ceiling: u64) -> Self {
         let dir = Dir::new();
-        let pads = Arc::new(crate::pad::Store::open(dir.0.join("pads"), u64::MAX).unwrap());
+        let pads = Arc::new(crate::pad::Store::open(dir.0.join("pads"), ceiling).unwrap());
         let accounts =
             Arc::new(crate::accounts::Accounts::open(&dir.0.join("accounts.db")).unwrap());
         let state = AppState {
@@ -1040,4 +1045,38 @@ async fn a_save_of_more_changes_than_one_may_make_is_refused() {
     );
     let all = relay.call(write("p", &[], files)).await;
     assert_eq!(all.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", all.body);
+}
+
+// ------------------------------- B09: what the store's ceiling counts
+
+#[tokio::test]
+async fn a_full_store_keeps_no_more_output() {
+    // Audit B09, as its probe ran it: a store of 1 KiB, a pad with no files
+    // in it, and 32 KiB of output kept with a 204 all the same.
+    let relay = Relay::with_ceiling("", 1024);
+    let made = relay.call(write("p", &[], serde_json::json!([]))).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let keep = |output: String| {
+        request(
+            "PUT",
+            "/api/pad/p/run",
+            &[("content-type", "application/json")],
+            Body::from(
+                serde_json::json!({
+                    "path": "a.py", "command": "python a.py", "exit": 0, "output": output,
+                })
+                .to_string(),
+            ),
+        )
+    };
+    let big = relay.call(keep("x".repeat(crate::pad::LAST_RUN_MAX))).await;
+    assert_eq!(big.status, StatusCode::INSUFFICIENT_STORAGE, "{}", big.body);
+    assert_eq!(
+        relay.call(get("/api/pad/p/run", &[])).await.status,
+        StatusCode::NO_CONTENT
+    );
+    // What fits is kept, and counted.
+    let small = relay.call(keep("ok\n".into())).await;
+    assert_eq!(small.status, StatusCode::NO_CONTENT, "{}", small.body);
+    assert_eq!(relay.state.pads.used(), (3 + 4 + 11) as u64);
 }

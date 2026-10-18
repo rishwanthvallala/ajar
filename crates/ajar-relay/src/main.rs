@@ -787,7 +787,9 @@ async fn keep_last_run(
     }
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     let now = std::time::Instant::now();
-    if run.output.len() as u64 > state.growth.remaining(caller, now) {
+    // What the store counts a run as, names and all; a store at its ceiling
+    // refuses it below as it refuses a write (audit B09).
+    if run.bytes() > state.growth.remaining(caller, now) {
         return refuse(pad::Error::OverAllowance).into_response();
     }
     let pads = state.pads.clone();
