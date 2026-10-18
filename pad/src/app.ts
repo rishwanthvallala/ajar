@@ -402,6 +402,8 @@ export class App {
    * meanwhile (`rejoin`).
    */
   private atDrop = new Map<string, { text: string; at: number }>();
+  /** In the room: from a welcome until the socket that earned it goes. */
+  private inRoom = false;
   /** For each file this page kept when its access went, the stored text then. */
   private keptFrom = new Map<string, string | undefined>();
   private dropGeneration = 0;
@@ -565,12 +567,22 @@ export class App {
       onMoved: () => void this.refresh(),
       onPresence: (_others, id) => {
         if (id === null) {
-          for (const [path, doc] of this.docs) if (doc.ready) this.atDrop.set(path, { text: doc.contents(), at: Date.now() });
-        } else if (this.atDrop.size) {
-          const generation = ++this.dropGeneration;
-          setTimeout(() => {
-            if (generation === this.dropGeneration) this.atDrop.clear();
-          }, 30_000);
+          // As the room is lost, and not again: every retry that fails while
+          // the network is gone says so too, and each took the text with what
+          // had been typed since in it. A rejoin then measured from that saw
+          // nothing typed, and the typing went. Found on 18 October, when
+          // wider seed ids made the place that dropped out the one to rejoin
+          // in `pair-check.mjs`.
+          if (this.inRoom) for (const [path, doc] of this.docs) if (doc.ready) this.atDrop.set(path, { text: doc.contents(), at: Date.now() });
+          this.inRoom = false;
+        } else {
+          this.inRoom = true;
+          if (this.atDrop.size) {
+            const generation = ++this.dropGeneration;
+            setTimeout(() => {
+              if (generation === this.dropGeneration) this.atDrop.clear();
+            }, 30_000);
+          }
         }
         const renamed = id !== null && id !== this.me;
         if (id !== null) this.me = id;

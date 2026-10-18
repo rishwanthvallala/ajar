@@ -135,6 +135,19 @@ export class Peers {
    * not from this queue.
    */
   private pending: Frame[] = [];
+  /**
+   * The room was lost since the last welcome: the document frames waiting
+   * then are not sent on when it is back. What was typed while away builds
+   * on this page's history, and when the room grew a document of its own
+   * meanwhile, those updates reached it as ones nobody there could place:
+   * its document was stuck, said it had nothing to give, and this page,
+   * rejoining, seeded a third history from its own copy — its typing in
+   * none of the others'. The state exchange after every reconnect carries
+   * the same typing when there is one history, and the rejoin when there
+   * are two. Found on 18 October, with `pair-check.mjs`'s dropout. Nudges
+   * still go.
+   */
+  private lost = false;
   private others = new Set<number>();
   /** Everyone else on this link, by participant id — which is also their colour. */
   get otherIds(): number[] {
@@ -210,6 +223,7 @@ export class Peers {
       // The relay issues a new participant id on every join and refuses a
       // frame stamped with any other, so the old one must not survive the
       // socket that earned it.
+      if (this.id !== null) this.lost = true;
       this.id = null;
       this.others.clear();
       this.events.onPresence(0, null);
@@ -251,7 +265,10 @@ export class Peers {
         );
         this.events.onPresence(this.others.size, this.id);
         this.arrived?.();
-        for (const q of this.pending.splice(0)) this.send(q.channel, q.payload, q.streamId);
+        for (const q of this.pending.splice(0)) {
+          if (!(this.lost && q.channel === CH_DOC)) this.send(q.channel, q.payload, q.streamId);
+        }
+        this.lost = false;
       } else if (msg.t === "joined") {
         this.others.add((msg as { participant: { id: number } }).participant.id);
         this.events.onPresence(this.others.size, this.id);
@@ -345,6 +362,7 @@ export class Peers {
     this.retry = null;
     const old = this.ws;
     this.ws = null;
+    if (this.id !== null) this.lost = true;
     this.id = null;
     this.others.clear();
     this.events.onPresence(0, null);
