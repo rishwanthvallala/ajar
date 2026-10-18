@@ -7,7 +7,7 @@
 import { parsePadLink } from "./access";
 import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
-import { carryOver, putBack } from "./carry";
+import { applied, carryOver, merge, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId, utf8Of } from "./editing";
 import { RuntimeNotices, Shell } from "./shell";
@@ -1152,6 +1152,54 @@ async function main() {
     } finally {
       window.fetch = realFetch;
     }
+  }
+
+  // ---- typing merged with somebody else's work, hunk by hunk ----
+  //
+  // The typing went in as one replacement, from the first character typed to
+  // the last; when somebody else had changed anything in between, the whole
+  // of it went in beside theirs, original lines and all (audit of 17
+  // October, DC-06). Each case as the text it leaves, through the edit
+  // `carryOver` returns, which has to make the document exactly the merge.
+  {
+    const after = (shown: string, typed: string, doc: string) => applied(doc, carryOver(shown, typed, doc));
+    is(after("A\nB\nC\n", "a\nB\nc\n", "A\nB!\nC\n"), "a\nB!\nc\n", "the audit's case: the first and last lines typed over, the middle changed by somebody else, all three kept, nothing twice");
+    is(after("a\nb\nc\n", "a0\nb\nc\n", "a\nb\nc1\n"), "a0\nb\nc1\n", "an edit at the start here and one at the end there are both kept");
+    is(after("a\nb\nc\n", "a\nb\nc1\n", "a0\nb\nc\n"), "a0\nb\nc1\n", "and the other way round");
+    is(after("A B C", "a B c", "A B! C"), "a B! c", "a file of one line is merged by character");
+    is(after("B\n", "Bx\n", "yB\n"), "yBx\n", "two edits to one line that do not meet are both kept");
+    const deleted = after("1\n2\n3\n4\n", "1\n2\nx\n3\n4\n", "1\n4\n");
+    is(deleted, "1\nx\n4\n", "a line typed inside lines somebody deleted is kept, and their deletion too");
+    is(/[23]/.test(deleted), false, "and none of what they deleted comes back");
+    is(carryOver("a\nb\n", "a\nB\n", "a\nB\n"), null, "the same change on both sides leaves nothing to do");
+    is(after("a\nb\n", "a\nB\nmine\n", "x\na\nB\n"), "x\na\nB\nmine\n", "the same change and more on one side goes in once, with the more");
+    is(after("ab", "aXb", "aXbY"), "aXbY", "the same character typed at one place on both sides goes in once");
+    is(after("x = 1\n", "x = 2\n", "x = 3\n"), "x = 32\n", "two changes of the same character keep theirs, then what was typed — the original not at all");
+    is(merge("keep this", "keep", "keep that"), "keep that", "a deletion over a word somebody changed removes none of theirs");
+
+    // Far apart in a long file: the one edit spans them, and what lies
+    // between is the document's, untouched.
+    const rows = Array.from({ length: 20_000 }, (_, i) => `row ${i}\n`);
+    const swap = (at: Record<number, string>) => rows.map((r, i) => at[i] ?? r).join("");
+    is(
+      after(rows.join(""), swap({ 3: "mine 3\n", 19_990: "mine 19990\n" }), swap({ 10_000: "theirs 10000\n" })),
+      swap({ 3: "mine 3\n", 10_000: "theirs 10000\n", 19_990: "mine 19990\n" }),
+      "edits 20,000 lines apart here, and one between them there, are all kept",
+    );
+    // Too many changes for the shortest-path comparison: half of 4,000
+    // lines. The unchanged ones, each unique, hold the two sides together.
+    const many = Array.from({ length: 4000 }, (_, i) => `line ${i}\n`);
+    const half = many.map((l, i) => (i % 2 ? `changed ${i}\n` : l)).join("");
+    is(
+      merge(many.join(""), half, many.map((l, i) => (i === 2000 ? "theirs\n" : l)).join("")),
+      many.map((l, i) => (i === 2000 ? "theirs\n" : i % 2 ? `changed ${i}\n` : l)).join(""),
+      "a change to every other line of 4,000 here, and one line there, are both kept",
+    );
+    // An emoji changed on one side and a letter added on the other: no half
+    // of one anywhere.
+    is(merge("a👍b", "a🔥b", "a👍bc"), "a🔥bc", "an emoji changed here and a letter added there are both kept, the emoji whole");
+    // What putBack writes when the pad already has the change: nothing.
+    is(putBack(new Map([["p.txt", { base: "a\n", mine: "b\n" }]]), new Map([["p.txt", "b\n"]])).length, 0, "a file the pad already holds the change in is not written again");
   }
 
   await sh.close();
