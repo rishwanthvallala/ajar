@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use crate::outbox::{self, Outbox};
 use crate::quota::Kind;
 use crate::quota::Quota;
-use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYTES};
+use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_ADMITTED, MAX_SNAPSHOT_BYTES};
 
 /// How long a socket may stay open without saying hello.
 ///
@@ -23,6 +23,22 @@ use crate::session::{HostExit, JoinError, Registry, HOST_GRACE, MAX_SNAPSHOT_BYT
 /// never sent one stayed open for good. Ten seconds is far longer than any
 /// client takes; the browser sends its hello the moment the socket opens.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The largest first frame that is read as a hello.
+///
+/// A hello is a handful of short strings — a session's name, a pad link's
+/// code, a host's key, a guest's resume secret — and, from a host, the hash
+/// of every guest it has let in, 64 hex characters each. Those are nearly
+/// all of it: the relay keeps [`MAX_ADMITTED`], and this has room for three
+/// times as many, so an agent that has met more guests than the relay will
+/// remember is not turned away for it. The first frame was bounded only by
+/// the 32 MiB any frame may be, and parsed before the quota had seen the
+/// connection — and a list of a million empty strings is far bigger parsed
+/// than sent.
+pub const MAX_HELLO_BYTES: usize = 256 * 1024;
+
+// `"<64 hex>",` is 67 bytes; 4 KiB is more than everything else together.
+const _: () = assert!(MAX_HELLO_BYTES > ajar_proto::HEADER_LEN + 4096 + 3 * MAX_ADMITTED * 67);
 
 /// What decides who may join an owned pad's room: the account store, and who
 /// the socket's cookie says is signed in.
@@ -103,9 +119,16 @@ pub async fn handle(
         }};
     }
 
-    let hello = match tokio::time::timeout(HELLO_TIMEOUT, next_frame(&mut stream)).await {
-        Ok(Some(f)) => f,
-        Ok(None) => {
+    let hello = match tokio::time::timeout(HELLO_TIMEOUT, first_frame(&mut stream)).await {
+        Ok(First::Frame(f)) => f,
+        Ok(First::TooBig(bytes)) => {
+            debug!(%caller, bytes, "a first frame too big to be a hello; refused unread");
+            refuse!(
+                "hello_too_big",
+                "the first frame is far too big to be a hello"
+            )
+        }
+        Ok(First::Gone) => {
             writer.abort();
             return;
         }
@@ -593,6 +616,33 @@ fn kick(registry: &Registry, session_id: &str, participant_id: u32) {
         registry.drop_guest(session_id, participant_id);
     }
     warn!(session = %session_id, participant_id, "kicked");
+}
+
+/// What a socket sent first.
+enum First {
+    Frame(Frame),
+    /// Bigger than [`MAX_HELLO_BYTES`], by this many bytes in all.
+    TooBig(usize),
+    Gone,
+}
+
+/// The socket's first frame, refused by its length before anything reads
+/// it: neither decoded nor parsed. Whatever else arrives first is skipped,
+/// as [`next_frame`] skips it.
+async fn first_frame(stream: &mut futures_util::stream::SplitStream<WebSocket>) -> First {
+    loop {
+        match stream.next().await {
+            Some(Ok(Message::Binary(b))) if b.len() > MAX_HELLO_BYTES => {
+                return First::TooBig(b.len())
+            }
+            Some(Ok(Message::Binary(b))) => match Frame::decode(&b) {
+                Ok(f) => return First::Frame(f),
+                Err(e) => debug!("bad frame: {e}"),
+            },
+            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return First::Gone,
+            Some(Ok(_)) => {}
+        }
+    }
 }
 
 async fn next_frame(stream: &mut futures_util::stream::SplitStream<WebSocket>) -> Option<Frame> {

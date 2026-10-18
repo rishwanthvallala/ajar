@@ -671,3 +671,38 @@ async fn a_lapsed_pad_shows_nothing_of_itself() {
         .await;
     assert_eq!(kept.json()["id"], serde_json::Value::Null);
 }
+
+// ------------------------------------------------------------- the hello
+
+#[tokio::test]
+async fn a_hello_too_big_to_be_one_is_refused_unread() {
+    // The first frame was bounded only by the 32 MiB any frame may be, and
+    // parsed before the quota had seen the connection.
+    let relay = Relay::new("");
+    let addr = relay.serve().await;
+    let mut big = peer_hello("open-pad");
+    if let Control::Hello { code, .. } = &mut big {
+        *code = Some("x".repeat(300 * 1024));
+    }
+    let answer = knock(addr, &[], &encoded(&big)).await;
+    assert_eq!(refused_with(&answer), Some("hello_too_big"), "{answer:?}");
+
+    // The biggest a real one gets: a host vouching for more guests than the
+    // relay will remember, three times over.
+    let hash = |i: usize| format!("{i:064x}");
+    let host = Control::Hello {
+        session: "quiet-ember-1234".into(),
+        role: Role::Host,
+        locked: false,
+        protocol: ajar_proto::PROTOCOL_VERSION,
+        code: None,
+        host_key: Some(hash(0)),
+        resume: None,
+        admitted: (0..3 * crate::session::MAX_ADMITTED).map(hash).collect(),
+    };
+    let answer = knock(addr, &[], &encoded(&host)).await;
+    assert!(welcomed(&answer), "{answer:?}");
+    // And an ordinary one, of course.
+    let answer = knock(addr, &[], &encoded(&peer_hello("open-pad"))).await;
+    assert!(welcomed(&answer), "{answer:?}");
+}
