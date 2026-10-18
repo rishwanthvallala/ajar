@@ -294,7 +294,11 @@ the colour of their dot.
 
 Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for
-everyone once it finishes.
+everyone once it finishes. A file renamed or moved while you type in it takes
+you along, with what you typed. One thing does not merge: typing in a file
+while a program is still writing to it — a log it appends to, say — keeps the
+typing and loses the program's new lines. Watching a file grow is fine; edit
+it once the program is done.
 
 A file whose lines end in a mix of styles — some Windows `\r\n`, some `\n`,
 as a CSV can when a script wrote part of it and something else the rest — is
