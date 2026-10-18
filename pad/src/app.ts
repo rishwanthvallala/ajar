@@ -343,7 +343,13 @@ export class App {
    * the moment it starts until the diff after it has read the sandbox.
    */
   private commandOut = false;
-  private byStream = new Map<number, string>();
+  /**
+   * The files open here on each stream. A set, since 18 October: two paths
+   * can hash to one stream, and the second to open took the first's place,
+   * so its updates went into the wrong file (audit of 17 October, DC-09).
+   * Messages name their file now; this is for those from older pages.
+   */
+  private byStream = new Map<number, Set<string>>();
   private unbind: (() => void) | null = null;
   /** Documents waiting on another browser to send their state. */
   private awaiting = new Map<string, (answered: boolean) => void>();
@@ -451,7 +457,7 @@ export class App {
     (window as unknown as { __pad: unknown }).__pad = {
       active: () => this.active,
       docs: () => [...this.docs.keys()],
-      streams: () => [...this.byStream.entries()],
+      streams: () => [...this.byStream].flatMap(([stream, paths]) => [...paths].map((path) => [stream, path])),
       text: (p: string) => this.docs.get(p)?.contents() ?? this.models.get(p)?.getValue(),
       known: () => [...this.known.keys()],
       counts: () => this.peers?.counts,
@@ -604,13 +610,13 @@ export class App {
         // while their text quietly differs. On the first connect there are no
         // documents yet and this does nothing.
         for (const [path, doc] of this.docs) {
-          this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector());
+          this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector(), path);
         }
         // The peer socket carries nudges, not history. Re-read the durable
         // folder to recover every nudge that may have been missed offline.
         void this.refresh();
       },
-      onDoc: (stream, kind, bytes, from) => this.onDoc(stream, kind, bytes, from),
+      onDoc: (stream, kind, bytes, from, path) => this.onDoc(stream, kind, bytes, from, path),
       onRefused: (code) => this.lose(code === "gone" ? "gone" : "private"),
       // It used to retry in silence, and two people on the name each saw
       // only their own typing with nothing to say why.
@@ -812,7 +818,7 @@ export class App {
         if (kind === "update") queueMicrotask(() => this.detach(path));
         return;
       }
-      if (this.peers && !this.peers.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes)) {
+      if (this.peers && !this.peers.doc(stream, kind === "update" ? DOC_UPDATE : DOC_AWARENESS, bytes, path)) {
         this.say("error", `that change to ${path} is too large to share live; it is saved, and others get it as saved`);
       }
       // Local changes only — the document returns early on anything applied
@@ -824,7 +830,9 @@ export class App {
       }
     });
     this.docs.set(path, doc);
-    this.byStream.set(stream, path);
+    const sharing = this.byStream.get(stream) ?? new Set<string>();
+    sharing.add(path);
+    this.byStream.set(stream, sharing);
 
     // The stored copy, or the model's when there is none — a folder nobody
     // has written to yet holds its starter only on screen. Safe as a seed
@@ -863,7 +871,7 @@ export class App {
     // says DOC_NONE, or leaves, and a browser that never says it — one from
     // before it existed — costs the full wait, which is safe.
     this.unanswered.set(path, new Set(this.peers.otherIds));
-    this.peers.doc(stream, DOC_WANT, doc.stateVector());
+    this.peers.doc(stream, DOC_WANT, doc.stateVector(), path);
     const answered = await new Promise<boolean>((resolve) => {
       this.awaiting.set(path, resolve);
       setTimeout(() => resolve(false), DOC_ANSWER_WAIT);
@@ -897,7 +905,9 @@ export class App {
     this.docReady.delete(path);
     this.shownUnbound.delete(path);
     this.seeds.delete(path);
-    this.byStream.delete(streamFor(path));
+    const sharing = this.byStream.get(streamFor(path));
+    sharing?.delete(path);
+    if (sharing?.size === 0) this.byStream.delete(streamFor(path));
     this.awaiting.delete(path);
     this.unanswered.delete(path);
     clearTimeout(this.stuck.get(path));
@@ -905,8 +915,13 @@ export class App {
     doc.destroy();
   }
 
-  private onDoc(stream: number, kind: number, bytes: Uint8Array, from: number): void {
-    const path = this.byStream.get(stream);
+  private onDoc(stream: number, kind: number, bytes: Uint8Array, from: number, named: string | null): void {
+    // The file the message names, whose stream `Peers` has checked it came
+    // on. From a page that names none, the one open here on its stream —
+    // and when two are, nothing can say which, and it is dropped.
+    const open = this.byStream.get(stream);
+    if (named === null && open && open.size > 1) return;
+    const path = named ?? (open ? [...open][0] : undefined);
     const doc = path ? this.docs.get(path) : undefined;
     // A document nobody here has open — or one this browser is itself still
     // waiting for, which is nothing to give. The folder still converges:
@@ -917,7 +932,7 @@ export class App {
     // drops anything else a viewer sends — and an editor arriving must not
     // wait out the deadline for an answer that cannot come.
     if (!path || !doc || (kind === DOC_WANT && (!doc.hasState || this.viewer))) {
-      if (kind === DOC_WANT) this.peers?.doc(stream, DOC_NONE, new Uint8Array());
+      if (kind === DOC_WANT) this.peers?.doc(stream, DOC_NONE, new Uint8Array(), path);
       return;
     }
 
@@ -955,8 +970,8 @@ export class App {
       // Somebody wants what they are missing. Only what they lack is sent —
       // unless that is more than one message carries, for a file that grew
       // past sharing while it was open. Then they take the stored copy.
-      if (!this.peers?.doc(stream, DOC_UPDATE, doc.diffSince(bytes))) {
-        this.peers?.doc(stream, DOC_NONE, new Uint8Array());
+      if (!this.peers?.doc(stream, DOC_UPDATE, doc.diffSince(bytes), path)) {
+        this.peers?.doc(stream, DOC_NONE, new Uint8Array(), path);
         this.say("error", `${path} has grown too large to share live; others get it as saved`);
       }
     }

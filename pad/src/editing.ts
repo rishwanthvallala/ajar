@@ -95,14 +95,45 @@ const NOT_ASCII = /[^\x00-\x7f]/;
 /**
  * The client id a text is seeded under: FNV-1a of it, never the 0 a seed
  * used before. Two seeds share one only when their text is the same.
+ *
+ * 64-bit FNV-1a, folded to the 53 bits a JavaScript number holds exactly,
+ * since 18 October. It was the 32-bit one, and 32 bits of anything collide
+ * within a few tens of thousands of texts: seeded with `file-1ezsubx.txt` and
+ * `file-6yp6oj.txt`, two documents shared one id, swapped updates and stayed
+ * different, and `foreignRoot` saw nothing foreign (audit of 17 October,
+ * DC-09). Yjs writes a client id as a variable-length integer, which carries
+ * 53 bits as well as 32. A page from before seeds the same text under the
+ * old id, which a page from after takes for a second history and rejoins
+ * from, as it does any other.
+ *
+ * Done in 16-bit pieces rather than with BigInt: a seed hashes the whole
+ * file, and over 20 MB BigInt took 411 ms where this takes 43, about what
+ * the 32-bit hash took (18 October).
  */
 export function seedId(text: string): number {
-  let h = 2166136261;
+  // The offset basis 0xcbf29ce484222325, low piece first.
+  let h0 = 0x2325;
+  let h1 = 0x8422;
+  let h2 = 0x9ce4;
+  let h3 = 0xcbf2;
   for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+    h0 ^= text.charCodeAt(i);
+    // Times the prime 0x100000001b3: 0x1b3, and 1 shifted 40 bits — which
+    // is the low two pieces moved up by two and 8 bits more.
+    const t0 = h0 * 0x1b3;
+    const t1 = h1 * 0x1b3 + (t0 >>> 16);
+    const t2 = h2 * 0x1b3 + (t1 >>> 16) + ((h0 << 8) & 0xffffff);
+    const t3 = h3 * 0x1b3 + (t2 >>> 16) + ((h1 << 8) & 0xffffff);
+    h0 = t0 & 0xffff;
+    h1 = t1 & 0xffff;
+    h2 = t2 & 0xffff;
+    h3 = t3 & 0xffff;
   }
-  return (h >>> 0) || 1;
+  // The top eleven bits folded into the bottom, as FNV's authors suggest for
+  // fewer bits than the hash has.
+  const top = h3 >>> 5;
+  const id = (h3 & 0x1f) * 2 ** 48 + h2 * 2 ** 32 + h1 * 2 ** 16 + (h0 ^ top);
+  return id || 1;
 }
 
 

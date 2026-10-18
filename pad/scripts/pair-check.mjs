@@ -506,6 +506,57 @@ try {
     await a.context().close();
     await b.context().close();
   }
+
+  // ---- two files whose paths share a stream --------------------------------
+  // A document's frames carry 32 bits to say which file, a hash of the path,
+  // and these two names hash alike. The second opened took the first's place,
+  // so typing in one went into the other everywhere it was open (audit of 17
+  // October, DC-09). Each message names its file now.
+  {
+    const name = `pair-collide-${Date.now().toString(36)}`;
+    const one = "file-1ezsubx.txt";
+    const other = "file-6yp6oj.txt";
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: one, content: "first\n" }, { path: other, content: "second\n" }] }) });
+    const [a, b] = await pair(name);
+    const both = async (page) => {
+      for (const path of [one, other]) {
+        await page.locator("#files").getByText(path, { exact: true }).click();
+        await page.waitForFunction((p) => window.__pad.active() === p && window.__pad.docs().includes(p), path, { timeout: 30_000 });
+      }
+    };
+    await both(a);
+    await both(b);
+    await wait(a, 1500);
+    const texts = (page) => page.evaluate(([x, y]) => [window.__pad.text(x), window.__pad.text(y)], [one, other]);
+    const settled = async (want) => {
+      for (let i = 0; i < 40; i++) {
+        const [ta, tb] = [await texts(a), await texts(b)];
+        if (ta.join("|") === want.join("|") && tb.join("|") === want.join("|")) return true;
+        await wait(a, 250);
+      }
+      return false;
+    };
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("B-");
+    const first = await settled(["first\n", "B-second\n"]);
+    await a.locator("#files").getByText(one, { exact: true }).click();
+    await a.waitForFunction((p) => window.__pad.active() === p, one, { timeout: 10_000 });
+    await wait(a, 500);
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("A-");
+    const second = await settled(["A-first\n", "B-second\n"]);
+    let stored = {};
+    for (let i = 0; i < 40; i++) {
+      stored = (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files;
+      if (stored[one]?.content === "A-first\n" && stored[other]?.content === "B-second\n") break;
+      await wait(a, 250);
+    }
+    const storedRight = stored[one]?.content === "A-first\n" && stored[other]?.content === "B-second\n";
+    if (first && second && storedRight) ok("two files whose paths share a stream, open in both places, each take only their own typing, there and in the store");
+    else fail(`two files whose paths share a stream — ${JSON.stringify({ first, second, A: await texts(a), B: await texts(b), stored: [stored[one]?.content, stored[other]?.content], streams: await b.evaluate(() => window.__pad.streams()) })}`);
+    await a.context().close();
+    await b.context().close();
+  }
 } catch (e) {
   fail(e.stack ?? String(e));
 } finally {

@@ -62,6 +62,12 @@ export const DOC_NONE = 0x04;
  * Derived from the path so every browser agrees without being told. A hash
  * rather than a counter: peers arrive in any order and there is nobody to hand
  * out numbers.
+ *
+ * Not which file a message is about. The frame has 32 bits for it, and 32
+ * bits of hash collide — `file-1ezsubx.txt` and `file-6yp6oj.txt` share one —
+ * so each message names its path as well (`docPayload`), and that is what a
+ * page goes by (audit of 17 October, DC-09). The stream stays as it was, so
+ * pages from before still hear pages from after.
  */
 export function streamFor(path: string): number {
   let h = 2166136261;
@@ -71,6 +77,64 @@ export function streamFor(path: string): number {
   }
   // Zero is the channel's own JSON stream, so it can never be a document.
   return (h >>> 0) || 1;
+}
+
+/**
+ * The last byte of a document message that names its path.
+ *
+ * The name goes at the end — the path, its length in two bytes, then this —
+ * because a page from before 18 October reads a message from the front and
+ * stops where Yjs's own encoding ends: an update, a state vector and an
+ * awareness change each end in a variable-length integer, whose last byte is
+ * under 0x80, or in a cursor's JSON, which ends in `}` or `null`, and
+ * `DOC_NONE` carries nothing. So such a page never sees the name, and a
+ * message ending in 0xFF is never one of its own. The kind stays the first
+ * byte, which is what the relay reads to let a viewer ask and answer.
+ */
+const NAMED = 0xff;
+
+/** A document message as it goes on the wire: its kind, its bytes, and the path it is about. */
+export function docPayload(kind: number, bytes: Uint8Array, path?: string): Uint8Array {
+  // A pad's paths are at most 512 bytes; one past what two bytes count goes unnamed.
+  const encoded = path === undefined ? null : encoder.encode(path);
+  const name = encoded && encoded.length <= 0xffff ? encoded : null;
+  const named = name ? name.length + 3 : 0;
+  const payload = new Uint8Array(1 + bytes.length + named);
+  payload[0] = kind;
+  payload.set(bytes, 1);
+  if (name) {
+    const end = 1 + bytes.length;
+    payload.set(name, end);
+    payload[end + name.length] = name.length & 0xff;
+    payload[end + name.length + 1] = name.length >>> 8;
+    payload[end + name.length + 2] = NAMED;
+  }
+  return payload;
+}
+
+/**
+ * A document message as it arrived on `stream`: its kind, its bytes, and the
+ * path it names — null from a page that names none. Null for one to drop:
+ * empty, a name that is not UTF-8 or does not fit, or a path whose stream is
+ * not the one it came on.
+ */
+export function readDoc(stream: number, payload: Uint8Array): { kind: number; bytes: Uint8Array; path: string | null } | null {
+  if (payload.length === 0) return null;
+  const kind = payload[0]!;
+  const end = payload.length;
+  if (payload[end - 1] !== NAMED) return { kind, bytes: payload.subarray(1), path: null };
+  if (end < 4) return null;
+  const length = payload[end - 3]! | (payload[end - 2]! << 8);
+  const start = end - 3 - length;
+  if (start < 1) return null;
+  let path: string;
+  try {
+    path = strict.decode(payload.subarray(start, end - 3));
+  } catch {
+    return null;
+  }
+  if (streamFor(path) !== stream) return null;
+  return { kind, bytes: payload.subarray(1, start), path };
 }
 
 interface Frame {
@@ -108,7 +172,8 @@ export interface PeerEvents {
   onPresence: (others: number, id: number | null) => void;
   /** A document update, awareness change, or request for state. */
   /** `from` is the sender's participant id, which the relay makes it stamp. */
-  onDoc: (stream: number, kind: number, bytes: Uint8Array, from: number) => void;
+  /** `path` is the file it names — null from a page from before 18 October, which names none. */
+  onDoc: (stream: number, kind: number, bytes: Uint8Array, from: number, path: string | null) => void;
   /**
    * The relay turned this browser away — a pad that has become private to
    * it. Nothing reconnects after this.
@@ -300,9 +365,11 @@ export class Peers {
       if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0);
       return;
     }
-    if (f.channel === CH_DOC && f.payload.length > 0) {
+    if (f.channel === CH_DOC) {
+      const doc = readDoc(f.streamId, f.payload);
+      if (!doc) return;
       this.counts.docIn += 1;
-      this.events.onDoc(f.streamId, f.payload[0]!, f.payload.subarray(1), f.target);
+      this.events.onDoc(f.streamId, doc.kind, doc.bytes, f.target, doc.path);
     }
   }
 
@@ -321,13 +388,15 @@ export class Peers {
    * arrives a moment later asks for state, and answering needs the history
    * these updates carry.
    */
-  /** Send a document message, unless it is too big to; false then. */
-  doc(stream: number, kind: number, bytes: Uint8Array): boolean {
+  /**
+   * Send a document message, unless it is too big to; false then. Naming
+   * `path`, which every page since 18 October does whenever it knows it.
+   */
+  doc(stream: number, kind: number, bytes: Uint8Array, path?: string): boolean {
     if (bytes.length + 1 > MAX_DOC_MESSAGE) return false;
+    const payload = docPayload(kind, bytes, path);
+    if (payload.length > MAX_DOC_MESSAGE) return false;
     this.counts.docOut += 1;
-    const payload = new Uint8Array(bytes.length + 1);
-    payload[0] = kind;
-    payload.set(bytes, 1);
     this.send(CH_DOC, payload, stream);
     return true;
   }
@@ -378,5 +447,7 @@ export class Peers {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+/** For a path: refuses what is not UTF-8, and keeps a leading byte-order mark as part of the name. */
+const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const json = (v: unknown) => encoder.encode(JSON.stringify(v));
 const parse = (b: Uint8Array) => JSON.parse(decoder.decode(b)) as unknown;

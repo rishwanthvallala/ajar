@@ -9,10 +9,10 @@ import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { applied, carryOver, merge, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
-import { asEditorHolds, cssString, DocSession, eolOf, participantId, utf8Of } from "./editing";
+import { asEditorHolds, cssString, DocSession, eolOf, participantId, seedId, utf8Of } from "./editing";
 import { RuntimeNotices, Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
-import { DOC_UPDATE, MAX_DOC_MESSAGE, Peers } from "./peers";
+import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, docPayload, MAX_DOC_MESSAGE, Peers, readDoc, streamFor } from "./peers";
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./javac/protocol";
 import { seedFiles } from "./seed";
@@ -1200,6 +1200,94 @@ async function main() {
     is(merge("a👍b", "a🔥b", "a👍bc"), "a🔥bc", "an emoji changed here and a letter added there are both kept, the emoji whole");
     // What putBack writes when the pad already has the change: nothing.
     is(putBack(new Map([["p.txt", { base: "a\n", mine: "b\n" }]]), new Map([["p.txt", "b\n"]])).length, 0, "a file the pad already holds the change in is not written again");
+  }
+
+  // ---- two paths, one stream ----
+  //
+  // A frame has 32 bits to say which document it is, and the page filled them
+  // with a hash of the path; these two names share one. The second file
+  // opened took the first's place, and an update to either went into the
+  // second (audit of 17 October, DC-09). Each message names its path now,
+  // after the bytes, where a page from before never reads.
+  {
+    const one = "file-1ezsubx.txt";
+    const other = "file-6yp6oj.txt";
+    const stream = streamFor(one);
+    is(streamFor(other), stream, "the audit's two names share a stream — the frame's 32 bits cannot tell them apart");
+    const bytes = new Uint8Array([1, 2, 3, 0]);
+    const read = readDoc(stream, docPayload(DOC_UPDATE, bytes, one));
+    is(read?.path, one, "a message names its file");
+    is(read?.kind === DOC_UPDATE && read.bytes.join() === bytes.join(), true, "with its kind and bytes as they were");
+    is(readDoc(stream, docPayload(DOC_UPDATE, bytes, other))?.path, other, "and the other file's names the other, on the same stream");
+    is(readDoc(stream, docPayload(DOC_UPDATE, bytes, "main.py")), null, "a message naming a file not on its stream is dropped");
+    const unnamed = readDoc(stream, docPayload(DOC_WANT, bytes));
+    is(unnamed?.path === null && unnamed.bytes.join() === bytes.join(), true, "one from a page that names nothing reads as it always did");
+    is(readDoc(stream, docPayload(DOC_NONE, new Uint8Array(), one))?.path, one, "an empty answer names its file too");
+    const overlong = docPayload(DOC_UPDATE, bytes, one);
+    overlong[overlong.length - 3] = 200;
+    is(readDoc(stream, overlong), null, "and one whose name does not fit is dropped");
+    is(readDoc(streamFor("é.txt"), docPayload(DOC_UPDATE, bytes, "é.txt"))?.path, "é.txt", "a name beyond ASCII arrives whole");
+
+    // A page from before reads Yjs's own encoding from the front and stops
+    // where it ends; the name after it must change nothing there.
+    const sent: [string, Uint8Array][] = [];
+    const a = new DocSession(stream, one, { id: 1, name: "a" }, (kind, b) => sent.push([kind, b]));
+    const b = new DocSession(stream, one, { id: 2, name: "b" }, () => {});
+    a.seed("same\n");
+    b.applyUpdate(docPayload(DOC_UPDATE, a.diffSince(b.stateVector()), one).subarray(1));
+    is(b.contents(), "same\n", "an older page applies a named update as if it were not named");
+    a.replace("same, typed\n");
+    const update = sent.find(([kind]) => kind === "update")?.[1] ?? new Uint8Array();
+    b.applyUpdate(docPayload(DOC_UPDATE, update, one).subarray(1));
+    is(b.contents(), "same, typed\n", "and a keystroke");
+    const vector = b.stateVector();
+    is(a.diffSince(docPayload(DOC_WANT, vector, one).subarray(1)).join(), a.diffSince(vector).join(), "answers a named request as it would an unnamed one");
+    a.setUser({ id: 1, name: "named" });
+    const awareness = sent.filter(([kind]) => kind === "awareness").at(-1)?.[1] ?? new Uint8Array();
+    b.applyAwareness(docPayload(DOC_AWARENESS, awareness, one).subarray(1));
+    const seen = [...b.awareness.getStates().values()].some((s) => (s as { user?: { name?: string } }).user?.name === "named");
+    is(seen, true, "and takes a named cursor's state");
+    a.destroy();
+    b.destroy();
+
+    const peers = new Peers("ws://127.0.0.1:9/", "nowhere", { onMoved: () => {}, onPresence: () => {}, onDoc: () => {} });
+    is(peers.doc(1, DOC_UPDATE, new Uint8Array(MAX_DOC_MESSAGE - 8), "a-long-enough-name.txt"), false, "a name counts toward the relay's limit");
+    peers.close();
+  }
+
+  // ---- the seed's client id ----
+  //
+  // The 32-bit FNV-1a gave the audit's two names one id as contents: two
+  // documents seeded from different text shared a client, exchanged updates
+  // and stayed different, and nothing noticed (audit of 17 October, DC-09).
+  {
+    const one = "file-1ezsubx.txt";
+    const other = "file-6yp6oj.txt";
+    is(seedId(one) !== seedId(other), true, "two texts the 32-bit hash could not tell apart seed under different ids");
+    is([one, other, ""].every((t) => Number.isSafeInteger(seedId(t)) && seedId(t) > 0), true, "an id is a positive whole number a JavaScript number holds exactly");
+    // 64-bit FNV-1a of the UTF-16 units, done by BigInt, folded to 53 bits.
+    const fnv = (text: string) => {
+      let h = 0xcbf29ce484222325n;
+      for (let i = 0; i < text.length; i++) h = ((h ^ BigInt(text.charCodeAt(i))) * 0x100000001b3n) & 0xffffffffffffffffn;
+      return h;
+    };
+    is(fnv("a"), 0xaf63dc4c8601ec8cn, "the reference gives FNV-1a 64's published value for \"a\"");
+    const folded = (text: string) => Number((fnv(text) >> 53n) ^ (fnv(text) & ((1n << 53n) - 1n))) || 1;
+    const texts = ["", "a", "foobar", one, other, "x = 1\né漢😀\r\n".repeat(50)];
+    is(texts.every((t) => seedId(t) === folded(t)), true, "and the id is that hash, worked in 16-bit pieces");
+    const a = new DocSession(1, "x.txt", { id: 1, name: "a" }, () => {});
+    const b = new DocSession(1, "x.txt", { id: 2, name: "b" }, () => {});
+    a.seed(one);
+    b.seed(other);
+    is(a.rootClient !== b.rootClient, true, "documents seeded with the two texts have different first inserts");
+    is(a.foreignRoot(b.diffSince(new Uint8Array([0]))) !== null, true, "so one sees the other's as a second history, which it rejoins from");
+    const c = new DocSession(1, "x.txt", { id: 3, name: "c" }, () => {});
+    c.seed(one);
+    a.applyUpdate(c.diffSince(new Uint8Array([0])));
+    is(a.contents(), one, "and the same text seeded twice is still one insert");
+    a.destroy();
+    b.destroy();
+    c.destroy();
   }
 
   await sh.close();
