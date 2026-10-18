@@ -1356,3 +1356,26 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 - **No `make`, `ssh`, `vim` or `less`.** `ssh` is impossible rather than
   unbuilt. `curl` is the page's (above), not curl's. `make` is possible now that spawning works
   and is simply not written. `nano` exists; `vim` does not.
+
+## Saving when it goes wrong (audit of 17 October)
+
+- **A 409** — a save of edits against a version the store no longer holds —
+  reads the store's version and merges this page's change onto it
+  (`App.writeOverStale`, `carryOver`), never sends the whole file over it,
+  which lost the newer version while saying "saved" (DC-03).
+- **A 413 or 507** keeps the files unsaved (`dirty`) without retrying on its
+  own — the next edit tries again (DC-04).
+- **While saving fails**, the unsaved text and the stored text it was typed
+  over are kept in `localStorage` (`App.journal`, `pad.unsaved.<name>`),
+  cleared as each file saves, and merged back on the next visit
+  (`App.recoverJournal`); leaving asks first while there is any (DC-05).
+- **A response body** is under the same deadline as its headers, as an idle
+  time, not a total (`request` in store.ts, DC-07).
+- **A zip import** joins the live documents of files it replaces that another
+  place has open, so the import is in their editor, not undone by their next
+  keystroke (DC-01). **A move** never deletes a path another file of the same
+  move arrives at (DC-02). **A zip** is inflated under a running limit and
+  stopped at the entry's declared size (DC-08).
+- **A failed start of the runtime** is forgotten, so the next Run tries again
+  (R6); **a file that cannot be read** is kept as stored, not published as
+  deleted (R8).

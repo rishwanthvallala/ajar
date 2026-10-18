@@ -124,19 +124,103 @@ export const TOOLCHAINS: readonly Toolchain[] = [
 const PREFIXES = new Set(["time", "exec", "command", "nohup", "env", "sudo", "nice", "builtin", "then", "do", "else", "if", "while", "until", "!"]);
 
 /**
- * The commands a line runs: the first word of each part of it, past any
- * `NAME=value` and the words that only run the next one. Good enough for what
- * people type; a command named inside a script it runs is not seen, and says
- * "command not found" as it would anywhere.
+ * The commands a line runs: the first word of each simple command in it,
+ * past any `NAME=value` and the words that only run the next one (with their
+ * options: `env -i node`). Read as a shell reads it — quotes, backslashes
+ * and comments — so `echo 'hello; go run main.go'` runs `echo` and fetches
+ * nothing, where splitting at every `;` fetched 273 MB of Go for it; and
+ * `"node" app.js` is node (audit R5). Not a whole shell: a command named
+ * inside a script it runs is not seen, and says "command not found" as it
+ * would anywhere.
  */
 export function commandsIn(line: string): string[] {
+  const commands: string[][] = [];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: "'" | '"' | null = null;
+  const endWord = () => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
+  };
+  const endCommand = () => {
+    endWord();
+    if (words.length) commands.push(words);
+    words = [];
+  };
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      else word += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "\\" && i + 1 < line.length) word += line[++i];
+      else word += c;
+      continue;
+    }
+    if (c === "\\") {
+      if (i + 1 < line.length) word += line[++i];
+      inWord = true;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      inWord = true;
+      continue;
+    }
+    if (c === "#" && !inWord) {
+      // A comment, to the end of its line.
+      const nl = line.indexOf("\n", i);
+      if (nl < 0) break;
+      i = nl - 1;
+      continue;
+    }
+    if (c === "\n") {
+      endCommand();
+      continue;
+    }
+    if (/\s/.test(c)) {
+      endWord();
+      continue;
+    }
+    if (c === "$" && line[i + 1] === "(") {
+      endCommand();
+      i++;
+      continue;
+    }
+    // A redirect's `&` — `2>&1`, `&>log` — is not a separator.
+    if (c === "&" && (line[i - 1] === ">" || line[i - 1] === "<" || line[i + 1] === ">")) {
+      word += c;
+      inWord = true;
+      continue;
+    }
+    if ("|&;()`".includes(c)) {
+      endCommand();
+      continue;
+    }
+    word += c;
+    inWord = true;
+  }
+  endCommand();
   const out: string[] = [];
-  for (const part of line.split(/\|\|?|&&|;|&|\(|\)|\n|`|\$\(/)) {
-    const words = part.trim().split(/\s+/).filter(Boolean);
+  for (const command of commands) {
     let i = 0;
-    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || PREFIXES.has(words[i]!))) i++;
-    const word = words[i];
-    if (word) out.push(word.replace(/^.*\//, ""));
+    for (;;) {
+      while (i < command.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(command[i]!)) i++;
+      if (i < command.length && PREFIXES.has(command[i]!)) {
+        i++;
+        // The prefix's own options: `env -i`, `nice -n10`.
+        while (i < command.length && command[i]!.startsWith("-")) i++;
+        continue;
+      }
+      break;
+    }
+    const first = command[i];
+    if (first) out.push(first.replace(/^.*\//, ""));
   }
   return out;
 }

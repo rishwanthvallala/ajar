@@ -138,7 +138,8 @@ def to_python(expr):
             j = i + 1
             while j < n and expr[j] != c:
                 j += 2 if expr[j] == "\\" else 1
-            out += expr[i : j + 1]
+            # A string constant: text, which joins with `|` (below).
+            out += "T(" + expr[i : j + 1] + ")"
             i = j + 1
             continue
         if c == "$":
@@ -188,16 +189,26 @@ def to_python(expr):
         i += 1
     # `!~` is turned into a call after the fact, which keeps the scanner simple.
     # awk concatenates adjacent values with no operator between them:
-    # `$1 "-" $3`. Python needs a `+`. Only inserted where both sides are
-    # plainly values — a field, a call, or a quoted string — so the keywords
-    # this translation emits (`and`, `or`, `not`, `is`) are never joined.
+    # `$1 "-" $3`. Python is given `|`, which a field and a string constant
+    # take as joining (`Field.__or__`), and which sits where awk's joining
+    # does: below `+`, so `$1 " " $2+1` adds before it joins, and above the
+    # comparisons. It was `+`, which became addition once fields added as
+    # numbers. Only inserted where both sides are plainly values — a field,
+    # a call, or a string constant — so the keywords this translation emits
+    # (`and`, `or`, `not`, `is`) are never joined.
+    # And the markers `~` and `!~` become, which the lines below rewrite.
+    keyword = r"(?:and|or|not|is|in|None|True|False|MATCHES|NOTMATCH)\b"
     out = re.sub(
-        r"""(?P<left>\)|'[^']*'|"[^"]*")\s+(?=(?:F|M|RE)\(|['"])""",
-        r"\g<left> + ",
+        r"(?P<left>\)|\b(?!" + keyword + r")[A-Za-z_]\w*(?<!\bF)(?<!\bM)(?<!\bRE)(?<!\bT))\s+(?=(?!" + keyword + r")[A-Za-z_]\w*\b(?!\s*=)|(?:F|M|RE|T)\()",
+        r"\g<left> | ",
         out,
     )
     out = re.sub(r"(\S+)\s+NOTMATCH\s+RE\((.+?)\)", r"(RE(\2).search(str(\1)) is None)", out)
     out = re.sub(r"(\S+)\s+MATCHES\s+RE\((.+?)\)", r"(RE(\2).search(str(\1)) is not None)", out)
+    # And against a string, which awk takes as a regular expression too:
+    # `$2 ~ "o"`.
+    out = re.sub(r"(\S+)\s+NOTMATCH\s+T\((.+?)\)", r"(RE(\2).search(str(\1)) is None)", out)
+    out = re.sub(r"(\S+)\s+MATCHES\s+T\((.+?)\)", r"(RE(\2).search(str(\1)) is not None)", out)
     return out
 
 class Runner:
@@ -218,19 +229,22 @@ class Runner:
             if p not in self.cache:
                 self.cache[p] = re.compile(p)
             return self.cache[p]
-        scope = dict(self.vars)
+        # A variable never set is "" (and 0), as in awk: `s = s $1` from the
+        # first line on.
+        scope = Unset(self.vars)
         scope["F"] = F
         scope["RE"] = RE
         # A bare regex: does the whole line match. Left as a pattern object it
         # would simply be truthy and every line would pass.
         scope["M"] = lambda p: RE(p).search(self.fields[0]) is not None
         scope["length"] = len
-        scope["substr"] = lambda s, m, n=None: str(s)[int(m) - 1 : (int(m) - 1 + int(n)) if n is not None else None]
+        scope["substr"] = lambda s, m, n=None: Field(str(s)[int(_awknum(m)) - 1 : (int(_awknum(m)) - 1 + int(_awknum(n))) if n is not None else None])
         scope["index"] = lambda s, t: str(s).find(str(t)) + 1
         scope["split"] = lambda s, _a, sep=None: len(str(s).split(sep))
-        scope["toupper"] = lambda s: str(s).upper()
-        scope["tolower"] = lambda s: str(s).lower()
-        scope["int"] = int
+        scope["toupper"] = lambda s: Field(str(s).upper())
+        scope["tolower"] = lambda s: Field(str(s).lower())
+        scope["int"] = lambda v: int(_awknum(v))
+        scope["T"] = Text
         # The evaluation scope has no builtins, deliberately — but the
         # rewrites above emit `str(...)`, so it has to be handed back in.
         scope["str"] = str
@@ -240,7 +254,19 @@ class Runner:
     def set_line(self, line):
         self.fields = [line]
         fs = str(self.vars["FS"])
-        parts = line.split(fs) if fs != " " else line.split()
+        # awk's rule: a single space is runs of blanks, one other character is
+        # itself, and anything longer is a regular expression — `-F '[,:]'`
+        # split nothing and gave an empty $2 (audit R4).
+        if fs == " ":
+            parts = line.split()
+        elif len(fs) == 1:
+            parts = line.split(fs)
+        else:
+            try:
+                parts = re.split(fs, line)
+            except re.error as e:
+                raise Unsupported("field separator " + fs + " is not a regular expression this awk reads (" + str(e) + ")")
+        parts = [Field(p) for p in parts]
         self.fields += parts
         self.vars["NF"] = len(parts)
 
@@ -267,7 +293,7 @@ class Runner:
             return
         if s.startswith("print "):
             parts = _commas(s[6:])
-            joined = str(self.vars["OFS"]).join(str(self.value(p)) for p in parts)
+            joined = str(self.vars["OFS"]).join(_shown(self.value(p)) for p in parts)
             out.write(joined + "\n")
             return
         if s.startswith("printf "):
@@ -343,6 +369,104 @@ class Field(str):
     def __hash__(self):
         return str.__hash__(self)
 
+    # Arithmetic is on numbers, always, as in awk. Inherited from `str`, `+`
+    # joined and `*` repeated: `$1 + $2` on "3 4" printed 34 and `$1 * 2`
+    # printed 33, both exiting 0 (audit R1). Joining is juxtaposition in awk,
+    # which the translation writes with str() — never with these.
+    def __add__(self, other):
+        return _arith(operator.add, self, other)
+
+    def __radd__(self, other):
+        return _arith(operator.add, other, self)
+
+    def __sub__(self, other):
+        return _arith(operator.sub, self, other)
+
+    def __rsub__(self, other):
+        return _arith(operator.sub, other, self)
+
+    def __mul__(self, other):
+        return _arith(operator.mul, self, other)
+
+    def __rmul__(self, other):
+        return _arith(operator.mul, other, self)
+
+    def __truediv__(self, other):
+        return _arith(operator.truediv, self, other)
+
+    def __rtruediv__(self, other):
+        return _arith(operator.truediv, other, self)
+
+    def __mod__(self, other):
+        return _arith(_fmod, self, other)
+
+    def __rmod__(self, other):
+        return _arith(_fmod, other, self)
+
+    def __pow__(self, other):
+        return _arith(operator.pow, self, other)
+
+    def __rpow__(self, other):
+        return _arith(operator.pow, other, self)
+
+    def __neg__(self):
+        return _tidy(-_awknum(self))
+
+    def __pos__(self):
+        return _tidy(_awknum(self))
+
+    # Joining, awk's juxtaposition, as the translation writes it: a string.
+    def __or__(self, other):
+        return Text(_shown(self) + _shown(other))
+
+    def __ror__(self, other):
+        return Text(_shown(other) + _shown(self))
+
+class Unset(dict):
+    """The evaluation scope: what was never set reads as empty text."""
+
+    def __missing__(self, name):
+        return Text("")
+
+class Text(Field):
+    """A string constant, or what joining made: text, compared as text."""
+
+    def _compare(self, other, op):
+        return op(str(self), _shown(other))
+
+_NUMERIC_PREFIX = re.compile(r"^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
+
+def _awknum(v):
+    """A value as awk reads a number from it: its leading number, or 0."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return v
+    m = _NUMERIC_PREFIX.match(str(v))
+    if not m:
+        return 0
+    f = float(m.group(0))
+    return int(f) if f.is_integer() and "e" not in m.group(0).lower() and "." not in m.group(0) else f
+
+def _tidy(v):
+    return int(v) if isinstance(v, float) and v.is_integer() and abs(v) < 2**53 else v
+
+def _fmod(a, b):
+    import math
+    return math.fmod(a, b)
+
+def _arith(op, a, b):
+    try:
+        return _tidy(op(_awknum(a), _awknum(b)))
+    except ZeroDivisionError:
+        raise Unsupported("division by zero")
+
+def _shown(v):
+    """A value as print shows it: a number as awk's %.6g, an integral one whole."""
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() and abs(v) < 1e16 else "%.6g" % v
+    return str(v)
+
 def _num(v):
     try:
         f = float(v)
@@ -393,7 +517,8 @@ def main(argv):
         elif a == "-v":
             i += 1
             k, _, v = argv[i].partition("=")
-            variables[k] = v
+            # A field's kind of value: a number when it looks like one.
+            variables[k] = Field(v)
         elif a == "--help":
             print(USAGE)
             return 0

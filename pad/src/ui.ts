@@ -274,6 +274,10 @@ export function nameDialog(opts: {
       if (tidy !== input.value) input.value = tidy;
       const name = input.value.trim();
       clearTimeout(timer);
+      // Whatever is asked now, an answer for what was there before is old —
+      // the empty field too, which an answer for the name just cleared put
+      // "taken" under and turned the button off again (audit UX2).
+      const mine = ++asked;
       if (!name) {
         said.textContent = "";
         said.className = "name-dialog-said";
@@ -283,7 +287,6 @@ export function nameDialog(opts: {
       yes.disabled = true;
       said.textContent = "checking…";
       said.className = "name-dialog-said";
-      const mine = ++asked;
       timer = setTimeout(() => {
         void opts.check(name).then(
           (r) => {

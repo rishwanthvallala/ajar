@@ -181,7 +181,12 @@ export async function diff(rt: Runtime, known: Known, binaries: Binaries = new M
     try {
       bytes = await rt.readBytes(entry.path);
     } catch {
-      // Gone between the listing and the read, or not readable at all.
+      // Listed, and not readable just now: kept as the store has it, not
+      // published as deleted — a read that failed is not a file gone (audit
+      // R8). Gone between the listing and the read, the next command's
+      // listing will not have it, and it goes then.
+      if (known.has(entry.path)) next.set(entry.path, known.get(entry.path)!);
+      if (binaries.has(entry.path)) nextBinaries.set(entry.path, binaries.get(entry.path)!);
       continue;
     }
     // Read as bytes and sorted here. It used to be read as text, which does

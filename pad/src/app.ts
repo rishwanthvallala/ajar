@@ -11,7 +11,7 @@ import type { SandboxOptions } from "@wasmer/sdk";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode, size } from "./access";
-import { carryOver, type Edit, putBack } from "./carry";
+import { applied, carryOver, type Edit, putBack } from "./carry";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
@@ -150,6 +150,9 @@ function windowsSafe(name: string): string {
   return /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(name) ? `${name}-pad` : name;
 }
 
+/** The largest file kept in this browser while it cannot be saved (`App.journal`). */
+const JOURNAL_MAX = 512 * 1024;
+
 /** Where this browser remembers the terminal's Screen reader button. */
 const SCREEN_READER_KEY = "pad.screenReader";
 
@@ -267,6 +270,8 @@ export class App {
       return false;
     }
   })();
+  /** Whether saving has been failing, until a save succeeds: what the leave warning asks about. */
+  private saveTrouble = false;
   /** What the status line says of a binary file clicked in the tree, until another file opens. */
   private binaryNote = "";
   /** Files a command made that were not saved, and why, as last said (`tellUnsaved`). */
@@ -510,6 +515,7 @@ export class App {
     this.acceptDrops();
     await this.openTerminal();
     if (this.disposed) return;
+    this.recoverJournal();
     void this.showLastRun();
     this.expose();
     this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
@@ -1611,10 +1617,12 @@ export class App {
           seq = await this.store.write(this.name, sent, leaving);
         } catch (e) {
           if (!(e instanceof StoreError && e.stale) || sent === changes) throw e;
-          seq = await this.store.write(this.name, changes, leaving);
+          seq = await this.writeOverStale(changes, leaving);
         }
         this.storeSeq = Math.max(this.storeSeq, seq);
         for (const c of changes) this.known.set(c.path, c.content);
+        this.saveTrouble = false;
+        this.unjournal(changes.map((c) => c.path));
         // Do not copy an older completed save over text edited while its
         // request was in flight. The later edit remains queued for saving.
         if (this.runtime) {
@@ -1627,7 +1635,15 @@ export class App {
         this.say("", "saved");
       } catch (e) {
         const why = e as StoreError;
+        // Kept here while it cannot be saved, against a closed tab (DC-05).
+        this.saveTrouble = true;
+        this.journal(paths);
         if (why.tooBig) {
+          // Still unsaved, so said and kept as such: the next edit tries
+          // again. Dropped from the unsaved files, freeing room or saving
+          // another file never retried it, and leaving warned of nothing
+          // (audit DC-04).
+          for (const p of paths) this.dirty.add(p);
           this.say("error", `${why.message} — this is not being saved`);
           return;
         }
@@ -1650,6 +1666,107 @@ export class App {
         this.saveSoon();
       }
     });
+  }
+
+  /**
+   * A save the store refused as made against an older version (409): the
+   * store's version read, this page's change merged onto it, and that saved
+   * — never this page's text over it. It was sent whole, unconditionally,
+   * and the newer version that caused the refusal was gone with "saved" said
+   * (audit DC-03). The merged text goes into the editor as well, and into
+   * `changes`, which is what the caller records as known.
+   */
+  private async writeOverStale(changes: Array<{ path: string; content: string }>, leaving: boolean): Promise<number> {
+    const stored = (await this.store.read(this.name)).files;
+    for (const c of changes) {
+      const theirs = stored[c.path];
+      const base = this.known.get(c.path);
+      if (!theirs || theirs.encoding !== "utf8" || base === undefined || theirs.content === base) continue;
+      const merged = applied(theirs.content, carryOver(base, c.content, theirs.content));
+      // Into what the editor holds now, typing since included.
+      const now = this.current(c.path);
+      if (now !== undefined && now !== merged) {
+        const edit = carryOver(c.content, merged, now);
+        const doc = this.docs.get(c.path);
+        if (edit && doc?.ready) this.applyEdit(c.path, doc, edit);
+        else if (edit) this.setFile(c.path, applied(now, edit));
+      }
+      this.known.set(c.path, theirs.content);
+      c.content = merged;
+    }
+    return this.store.write(this.name, changes, leaving);
+  }
+
+  /** Where this browser keeps typing saving could not deliver (`journal`). */
+  private get journalKey(): string {
+    return `pad.unsaved.${this.name}`;
+  }
+
+  private readJournal(): Record<string, { base: string | null; text: string }> {
+    try {
+      return JSON.parse(localStorage.getItem(this.journalKey) ?? "{}") as Record<string, { base: string | null; text: string }>;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Unsaved typing kept in this browser while saving fails — the text, and
+   * the stored text it was typed over — so a closed tab or a crash does not
+   * take the only copy (audit DC-05). Cleared as each file saves; brought
+   * back at the next visit (`recoverJournal`).
+   */
+  private journal(paths: Iterable<string>): void {
+    const kept = this.readJournal();
+    for (const path of paths) {
+      const text = this.current(path);
+      if (text === undefined || text.length > JOURNAL_MAX) continue;
+      kept[path] = { base: kept[path]?.base ?? this.known.get(path) ?? null, text };
+    }
+    try {
+      localStorage.setItem(this.journalKey, JSON.stringify(kept));
+    } catch {
+      // Full or blocked: the leave warning still stands.
+    }
+  }
+
+  private unjournal(paths: Iterable<string>): void {
+    const kept = this.readJournal();
+    let changed = false;
+    for (const path of paths) changed = delete kept[path] || changed;
+    if (!changed) return;
+    try {
+      if (Object.keys(kept).length) localStorage.setItem(this.journalKey, JSON.stringify(kept));
+      else localStorage.removeItem(this.journalKey);
+    } catch {
+      // Nothing to do: it is cleared at the next visit's recovery.
+    }
+  }
+
+  /**
+   * What a last visit could not save, merged into the pad as it stands now —
+   * each file's typing onto whatever was saved since — saved, and said.
+   */
+  private recoverJournal(): void {
+    const kept = this.readJournal();
+    const paths = Object.keys(kept);
+    if (!paths.length || this.viewer) return;
+    const back: string[] = [];
+    for (const path of paths) {
+      const { base, text } = kept[path]!;
+      const now = this.known.get(path);
+      if (now === undefined && base !== null) continue;
+      const merged = now === undefined || base === null || base === now ? text : applied(now, carryOver(base, text, now));
+      if (merged === now) continue;
+      this.setFile(path, merged);
+      this.dirty.add(path);
+      back.push(path);
+    }
+    this.unjournal(paths);
+    if (!back.length) return;
+    this.say("", `brought back what your last visit could not save: ${back.join(", ")}`);
+    this.renderFiles();
+    this.saveSoon();
   }
 
   private queueWrite(work: () => Promise<void>): Promise<void> {
@@ -1758,7 +1875,13 @@ export class App {
       if (PREVIEW_ORIGIN) this.watchForServers(rt);
       await this.catchUp(rt, files, binaries);
       return rt;
-    })();
+    })().catch((e: unknown) => {
+      // Not kept: a download that failed once — a dropped connection, a CDN
+      // that stalled — made every Run after it fail the same way until the
+      // page was reloaded (audit R6). The next Run tries again.
+      this.runtime = null;
+      throw e;
+    });
     return this.runtime;
   }
 
@@ -2675,6 +2798,9 @@ export class App {
     // words on this prompt; the banner has already said what they would lose.
     addEventListener("beforeunload", (e) => {
       if (this.viewer && this.local.size > 0) e.preventDefault();
+      // An editor's typing that saving has been failing to deliver: kept in
+      // this browser too (`journal`), but asked about, as a viewer's is.
+      if (!this.viewer && this.saveTrouble && this.dirty.size > 0) e.preventDefault();
     }, { signal: this.events.signal });
     // Typing still inside its save delay went nowhere when the tab closed —
     // half a second of it, or two seconds in a big file — unless someone else
@@ -3407,6 +3533,15 @@ export class App {
       }
 
       this.say("saving", `adding ${files.length} ${files.length === 1 ? "file" : "files"}…`);
+      // A file this replaces that somebody else has open: its document is the
+      // room's, and their next keystroke saved it back over the import — the
+      // import gone, quietly (audit DC-01). Joined first, so the import goes
+      // into the room's document, as a command's change does in publish().
+      const elsewhere =
+        this.peers && !this.peers.alone
+          ? files.filter((f) => f.encoding === "utf8" && !isMarker(f.path, f.content) && this.known.has(f.path) && !this.docs.has(f.path)).map((f) => f.path)
+          : [];
+      await Promise.all(elsewhere.map((path) => this.readyDoc(path).catch(() => null)));
       await this.queueWrite(async () => {
         const seq = await this.store.write(this.name, files.map((f) => ({ path: f.path, content: f.content, encoding: f.encoding })));
         this.storeSeq = Math.max(this.storeSeq, seq);
@@ -3445,6 +3580,8 @@ export class App {
             } else this.setFile(f.path, f.content);
             await rt?.write(f.path, f.content);
           }
+          // Joined only to put the import in; nothing here shows them.
+          for (const path of elsewhere) if (this.active !== path) this.closeDoc(path);
           // The starter makes way for what was brought in.
           if (starter && !files.some((f) => f.path === "main.py")) {
             if (this.active === "main.py") this.active = "";
@@ -3526,11 +3663,18 @@ export class App {
         const markerPairs = pairs.filter(([p]) => isKeep(p));
         const textPairs = pairs.filter(([p]) => !isBinary(p) && !isKeep(p));
         const text = new Map(textPairs.map(([p]) => [p, this.current(p) ?? ""]));
+        // A path both left and arrived at — `a/a` merged into `a`, where
+        // `a/a/a/x.txt` comes to `a/a/x.txt` as `a/a/x.txt` leaves — is not
+        // deleted after it is written: the deletion won, and a moved file was
+        // gone while the status said moved (audit DC-02). Here and below.
+        const arriving = new Set(pairs.map(([, t]) => t));
+        const gone = (p: string) => !arriving.has(p);
+        const binaryValue = new Map(binaryPairs.map(([p]) => [p, this.binaries.get(p)!]));
         const changes: Change[] = [
           ...textPairs.map(([p, t]) => ({ path: t, content: text.get(p)! })),
-          ...binaryPairs.map(([p, t]): Change => ({ path: t, content: this.binaries.get(p)!, encoding: "base64" })),
+          ...binaryPairs.map(([p, t]): Change => ({ path: t, content: binaryValue.get(p)!, encoding: "base64" })),
           ...markerPairs.map(([, t]) => ({ path: t, content: "" })),
-          ...pairs.map(([p]) => ({ path: p, content: null })),
+          ...pairs.filter(([p]) => gone(p)).map(([p]) => ({ path: p, content: null })),
         ];
         const seq = await this.store.write(this.name, changes);
         this.storeSeq = Math.max(this.storeSeq, seq);
@@ -3542,8 +3686,9 @@ export class App {
         const active = this.active;
         this.applyingRemote = true;
         try {
+          for (const [p] of binaryPairs) if (gone(p)) this.binaries.delete(p);
           for (const [p, t] of binaryPairs) {
-            const base64 = this.binaries.get(p)!;
+            const base64 = binaryValue.get(p)!;
             // Replacing a text file: it is not the editor's any more.
             if (this.models.has(t)) {
               this.closeDoc(t);
@@ -3551,13 +3696,12 @@ export class App {
               this.models.delete(t);
               this.known.delete(t);
             }
-            this.binaries.delete(p);
             this.binaries.set(t, base64);
             await rt?.writeBytes(t, fromBase64(base64));
-            if (!folder) await rt?.removeAndPrune(p);
+            if (!folder && gone(p)) await rt?.removeAndPrune(p);
           }
-          for (const [p, t] of markerPairs) {
-            this.known.delete(p);
+          for (const [p] of markerPairs) if (gone(p)) this.known.delete(p);
+          for (const [, t] of markerPairs) {
             this.known.set(t, "");
             await rt?.write(t, "");
           }
@@ -3581,9 +3725,10 @@ export class App {
           for (const [p, t] of textPairs) {
             const state = this.viewStates.get(p);
             if (state && !this.viewStates.has(t)) this.viewStates.set(t, state);
-            this.viewStates.delete(p);
+            if (gone(p)) this.viewStates.delete(p);
           }
           for (const [p] of textPairs) {
+            if (!gone(p)) continue;
             this.dirty.delete(p);
             this.known.delete(p);
             this.closeDoc(p);
@@ -3592,10 +3737,13 @@ export class App {
           }
           for (const [p, t] of textPairs) {
             await rt?.write(t, later.get(p)!);
-            if (!folder) await rt?.removeAndPrune(p);
+            if (!folder && gone(p)) await rt?.removeAndPrune(p);
           }
-          // A folder goes whole, so nothing of it is left to be published back.
-          if (folder) await rt?.removeTree(from).catch(() => {});
+          // A folder goes whole, so nothing of it is left to be published back
+          // — unless it went into a folder of its own, where what arrived is
+          // in it: then only what left.
+          if (folder && pairs.every(([p]) => gone(p))) await rt?.removeTree(from).catch(() => {});
+          else if (folder) for (const [p] of pairs) if (gone(p)) await rt?.removeAndPrune(p).catch(() => {});
         } finally {
           this.applyingRemote = false;
         }

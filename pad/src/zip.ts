@@ -66,6 +66,35 @@ async function through(data: Uint8Array, stream: CompressionStream | Decompressi
   return new Uint8Array(await out.arrayBuffer());
 }
 
+/**
+ * Inflated a piece at a time, and stopped the moment it passes `limit`
+ * bytes. Inflated whole and measured after, a zip that said one byte and
+ * held sixteen megabytes was all sixteen in memory before it was refused —
+ * and past the pad's 100 MB, a tab with unsaved work in it (audit DC-08).
+ */
+async function inflate(data: Uint8Array, limit: number): Promise<Uint8Array> {
+  const reader = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > limit) {
+      await reader.cancel().catch(() => {});
+      throw new ZipError("that zip's sizes do not add up");
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
 const canDeflate = () => typeof CompressionStream === "function";
 
 // ---------------------------------------------------------------- write
@@ -211,7 +240,7 @@ export async function readZip(blob: Blob, limits: ReadLimits): Promise<ZipEntry[
     const start = f.local + 30 + view.getUint16(f.local + 26, true) + view.getUint16(f.local + 28, true);
     const body = buf.subarray(start, start + f.packed);
     if (body.length !== f.packed) throw new ZipError("that zip is cut short");
-    const data = f.method === 8 ? await through(body, new DecompressionStream("deflate-raw")) : body.slice();
+    const data = f.method === 8 ? await inflate(body, Math.min(f.size, limits.maxBytes - total)) : body.slice();
     // And again after: a zip that lied about its sizes is stopped here.
     total += data.length;
     if (data.length !== f.size || total > limits.maxBytes) throw new ZipError("that zip's sizes do not add up");

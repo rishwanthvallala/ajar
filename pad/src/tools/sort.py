@@ -12,9 +12,11 @@ sort that silently drops `-k` is worse than one that admits it cannot.
 """
 
 import os
+import re
 import sys
+from decimal import Decimal
 
-SUPPORTED = "-n -r -u -f -b -z -t SEP -k KEY -o FILE"
+SUPPORTED = "-n -r -u -f -b -s -z -t SEP -k KEY -o FILE"
 
 
 def die(message, code=2):
@@ -30,6 +32,7 @@ class Options:
         self.fold = False
         self.blanks = False
         self.zero = False
+        self.stable = False
         self.sep = None
         self.key = None
         self.out = None
@@ -47,7 +50,7 @@ def take_value(flag, rest, argv, i):
 def parse(argv):
     opts = Options()
     files = []
-    short = {"n": "numeric", "r": "reverse", "u": "unique", "f": "fold", "b": "blanks", "z": "zero"}
+    short = {"n": "numeric", "r": "reverse", "u": "unique", "f": "fold", "b": "blanks", "z": "zero", "s": "stable"}
     long = {
         "numeric-sort": "numeric",
         "reverse": "reverse",
@@ -55,6 +58,7 @@ def parse(argv):
         "ignore-case": "fold",
         "ignore-leading-blanks": "blanks",
         "zero-terminated": "zero",
+        "stable": "stable",
     }
     valued = {"t": "sep", "k": "key", "o": "out"}
     long_valued = {"field-separator": "sep", "key": "key", "output": "out"}
@@ -116,26 +120,37 @@ def field_of(line, opts):
     end = opts.key.split(",")[1] if "," in opts.key else None
     if end is not None and "." in end:
         die(f"unsupported key '{opts.key}': character offsets are not implemented")
-    fields = line.split(opts.sep) if opts.sep is not None else line.split()
-    last = int(end) if end is not None else first
-    chosen = fields[first - 1 : last]
-    joined = (opts.sep if opts.sep is not None else " ").join(chosen)
+    # Where each field starts, in the line as it is: with -t, after each
+    # separator; without, at each run of blanks before a word, which GNU
+    # counts as part of the field. A key with no end runs to the end of the
+    # line, as GNU's does — `-k2` stopped at field 2, so lines equal there
+    # kept their order whatever followed (audit R3).
+    if opts.sep is not None:
+        starts = [0] + [m.end() for m in re.finditer(re.escape(opts.sep), line)]
+        ends = [m.start() for m in re.finditer(re.escape(opts.sep), line)] + [len(line)]
+    else:
+        words = list(re.finditer(r"\s*\S+", line))
+        starts = [m.start() for m in words]
+        ends = [m.end() for m in words]
+    if first > len(starts):
+        return ""
+    stop = len(line) if end is None or int(end) > len(ends) else ends[int(end) - 1]
+    joined = line[starts[first - 1] : stop]
     return joined.lstrip() if opts.blanks else joined
 
 
 def numeric_value(text):
-    """GNU sorts anything unparseable as less than every number."""
-    text = text.strip()
-    taken = ""
-    for ch in text:
-        if ch.isdigit() or (ch in "+-" and not taken) or (ch == "." and "." not in taken):
-            taken += ch
-        else:
-            break
-    try:
-        return float(taken)
-    except ValueError:
-        return float("-inf")
+    """
+    A key's number as GNU's -n reads it: its leading number, and 0 for a key
+    with none — so `word` sorts between -1 and 2, where this put it below
+    every number. Exact, not a float: 9007199254740993 and 9007199254740992
+    were equal as floats and kept their order (audit R3).
+    """
+    m = re.match(r"\s*(-?)(\d*)(?:\.(\d*))?", text)
+    digits, fraction = m.group(2), m.group(3) or ""
+    if not digits and not fraction:
+        return Decimal(0)
+    return Decimal((m.group(1) or "") + (digits or "0") + "." + (fraction or "0"))
 
 
 def key_for(line, opts):
@@ -145,31 +160,45 @@ def key_for(line, opts):
     return field.lower() if opts.fold else field
 
 
+def order_for(line, opts):
+    """
+    The key, then — as GNU's last resort — the whole line, so lines equal by
+    the key come out in a settled order rather than as they came; `-s` keeps
+    them as they came.
+    """
+    return key_for(line, opts) if opts.stable else (key_for(line, opts), line)
+
+
 def main(argv):
     opts, files = parse(argv)
     terminator = "\0" if opts.zero else "\n"
 
-    text = ""
+    # Each input's own lines: a file that does not end in a newline still ends
+    # its last line. Read as one text, `z` with no newline and then `a` were
+    # one line, `za` (audit R3).
+    def lines_of(text):
+        lines = text.split(terminator)
+        if lines and lines[-1] == "":
+            lines.pop()
+        return lines
+
+    lines = []
     if not files:
-        text = sys.stdin.read()
+        lines = lines_of(sys.stdin.read())
     else:
         for name in files:
             if name == "-":
-                text += sys.stdin.read()
+                lines += lines_of(sys.stdin.read())
                 continue
             try:
                 with open(name, "r", errors="surrogateescape") as handle:
-                    text += handle.read()
+                    lines += lines_of(handle.read())
             except OSError as e:
                 die(f"cannot read: {name}: {e.strerror}", code=2)
 
-    lines = text.split(terminator)
-    if lines and lines[-1] == "":
-        lines.pop()
-
     # Two passes rather than one comparison function: -u removes duplicates by
     # the *key*, which is not the same as removing duplicate lines.
-    lines.sort(key=lambda line: key_for(line, opts), reverse=opts.reverse)
+    lines.sort(key=lambda line: order_for(line, opts), reverse=opts.reverse)
     if opts.unique:
         seen = set()
         kept = []

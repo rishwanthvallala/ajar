@@ -273,14 +273,31 @@ async function refuse(res: Response): Promise<never> {
  */
 async function request(url: string, init: RequestInit, deadline: number): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deadline);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch {
-    throw new StoreError(
+  let timer = setTimeout(() => controller.abort(), deadline);
+  const failed = () =>
+    new StoreError(
       0,
       controller.signal.aborted ? "the server did not answer in time" : "can't reach the server right now — check your connection",
     );
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    // The body under the same deadline, as a pause rather than a total: the
+    // headers alone used to end it, and a server that sent them and then
+    // nothing held every save behind it for good (audit DC-07). A large pad
+    // arriving steadily is never cut off; one that stops is.
+    if (!res.body || res.status === 204 || res.status === 205 || res.status === 304) return res;
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), deadline);
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    return new Response(new Blob(chunks as BlobPart[]), { status: res.status, statusText: res.statusText, headers: res.headers });
+  } catch {
+    throw failed();
   } finally {
     clearTimeout(timer);
   }

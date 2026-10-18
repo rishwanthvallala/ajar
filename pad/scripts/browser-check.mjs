@@ -70,6 +70,13 @@ const server = createServer(async (req, res) => {
   const path = normalize(new URL(req.url, "http://x").pathname).replace(/^(\.\.[/\\])+/, "");
   // A server that takes a request and never answers it, for the store's deadline.
   if (path === "/api/pad/never-answers") return;
+  // And one that answers, starts the body, and never finishes it (audit DC-07).
+  if (path === "/api/pad/stalls-its-body") {
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(200);
+    res.write('{"exists":true,');
+    return;
+  }
   if (path.startsWith("/api/")) return proxy(req, res);
   try {
     const file = join(ROOT, path === "/" ? "index.html" : path);

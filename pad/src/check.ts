@@ -183,6 +183,13 @@ async function main() {
     is(Object.keys(seeded).join(), "main.py", "and never reach the sandbox, even where an old pad stored them");
   }
 
+  // ---- a file that cannot be read is not a file gone (audit R8) ----
+  {
+    const unreadable = { list: async () => [{ path: "data.txt" }], readBytes: async () => { throw new Error("EIO"); } } as unknown as Runtime;
+    const found = await diff(unreadable, new Map([["data.txt", "kept"]]), new Map());
+    is(found.changes.length === 0 && found.next.get("data.txt") === "kept", true, "a listed file that cannot be read just now is kept as stored, not published as deleted");
+  }
+
   // ---- where output points into the pad (problems.ts) ----
   // Real output of each, as it prints it here. Links come from `placesIn`,
   // squiggles from `problemsIn`; a frame outside the pad is neither.
@@ -840,6 +847,8 @@ async function main() {
   {
     is(commandsIn("FOO=1 time go build ./... && ./app | grep x; sudo node a.js").join(","), "go,app,grep,node", "the commands a line runs, past assignments and the words that run the next");
     is(commandsIn("echo $(php -v) `clang --version`").join(","), "echo,php,clang", "including inside $( ) and backticks");
+    is(commandsIn("echo 'hello; go run main.go' \"and; node app.js\" # go run x").join(","), "echo", "but not what is quoted, or a comment (audit R5)");
+    is(commandsIn('"node" app.js; env -i FOO=1 go run m.go; e\\cho hi').join(","), "node,go,echo", "and a quoted command, a prefix with its options, an escaped one");
     const none = new Set<string>();
     is(neededBy("go run m.go | node x.js && go vet", none).map((t) => t.name).join(","), "Go,Node.js", "a line needs each language it names, once, in order");
     is(neededBy("ls -la; python x.py && clangs", none).length, 0, "and none for commands already here, or ones only like a language's");
@@ -1020,6 +1029,16 @@ async function main() {
       err instanceof StoreError && /did not answer in time/.test(err.message) && performance.now() - began < 3000,
       true,
       `a store request the server never answers fails in time (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  {
+    const impatient = new Store("", () => null, 400);
+    const began = performance.now();
+    const err = await impatient.read("stalls-its-body").then(() => null, (e: unknown) => e);
+    is(
+      err instanceof StoreError && /did not answer in time/.test(err.message) && performance.now() - began < 3000,
+      true,
+      `and so does one that answers and then stops sending (${err instanceof Error ? err.message : String(err)})`,
     );
   }
   const store = new Store();

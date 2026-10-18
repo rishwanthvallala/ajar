@@ -797,6 +797,23 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   expect("a folder moves with everything in it, and the open file follows it",
     folderMoved && followed === "docs/src/util.py" && (await editorText("docs/src/util.py")) === "def f():\n    return 42\n", `${followed} ${JSON.stringify(await paths())}`);
 
+  // A folder merged into the folder it is in: a path that leaves is one
+  // another arrives at, and the deletion used to win (audit DC-02).
+  await clear();
+  await typed("mkdir -p mv/mv/mv && printf first > mv/mv/x.txt && printf second > mv/mv/mv/x.txt");
+  await treeHas(["mv/mv/x.txt", "mv/mv/mv/x.txt"]);
+  // Dragged beside a file at the top, as the audit did: F2 refuses a name a
+  // folder has, and the drag merges into it.
+  if (!((await row("mv", true).getAttribute("class")) ?? "").includes("open")) await row("mv", true).click();
+  await row("mv/mv", true).dragTo(row("main.py"));
+  const merged = await treeHas(["mv/x.txt", "mv/mv/x.txt"], ["mv/mv/mv/x.txt"]);
+  await clear();
+  await typed("cat mv/x.txt; echo; cat mv/mv/x.txt; echo");
+  const mergedKept = merged && (await shows(/first\s*\n\s*second/)) && (await editorText("mv/mv/x.txt").catch(() => null)) !== null;
+  const stored = puts.flat().filter((c) => c.path === "mv/mv/x.txt").map((c) => c.content);
+  expect("a folder moved into the folder it is in keeps every file — none deleted after it arrived", mergedKept && !stored.includes(null), `${JSON.stringify(await paths())} | ${JSON.stringify(stored)} | ${await tail(3)}`);
+  await typed("rm -r mv");
+
   const treeBefore = JSON.stringify(await paths());
   await row("docs", true).dragTo(row("docs/src/util.py"));
   await wait(500);

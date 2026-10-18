@@ -300,6 +300,14 @@ while a program is still writing to it — a log it appends to, say — keeps th
 typing and loses the program's new lines. Watching a file grow is fine; edit
 it once the program is done.
 
+**If saving fails** — the connection drops, the pad is full — the status line
+says so, and what you typed is kept in this browser until it can be saved.
+Leaving the page then asks first. If the tab closes anyway, the next time you
+open the pad in this browser your typing comes back, merged into whatever was
+saved since, and the status line says which files. A save made from an older
+copy than the store has — two places editing without the live connection — is
+merged into the newer one, never written over it.
+
 A file whose lines end in a mix of styles — some Windows `\r\n`, some `\n`,
 as a CSV can when a script wrote part of it and something else the rest — is
 given one style when it is opened, the one most of its lines already have,

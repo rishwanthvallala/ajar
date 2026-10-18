@@ -124,9 +124,13 @@ let loading: Promise<{ Wasmer: typeof WasmerClass }> | null = null;
 export function sdk() {
   // `@vite-ignore` keeps the bundler out of this path so the browser resolves
   // it against the vendored copy, where the SDK's own relative imports line up.
-  loading ??= import(/* @vite-ignore */ `${__SDK_URL__}/dist/index.js`) as Promise<{
+  loading ??= (import(/* @vite-ignore */ `${__SDK_URL__}/dist/index.js`) as Promise<{
     Wasmer: typeof WasmerClass;
-  }>;
+  }>).catch((e: unknown) => {
+    // Forgotten, so a failed fetch is tried again by the next caller.
+    loading = null;
+    throw e;
+  });
   return loading;
 }
 

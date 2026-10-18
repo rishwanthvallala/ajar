@@ -415,6 +415,12 @@ try {
   await tab.evaluate(() => {
     for (const s of window.__sockets) s.onclose = null;
   });
+  // A page left with a request still on its way is not kept — Chrome's
+  // reason "outstanding-network-request", on CI on 18 October, the page's
+  // reads at load (the last run, the runtime) still going. People leaving a
+  // page that soon get a fresh load on Back, which is fine; this checks the
+  // cached page, so it lets the page settle first.
+  await tab.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
   await tab.click("#your-pads");
   await tab.waitForSelector("text=Your pads", { timeout: 15_000 });
   const fromCacheA = await backFromCache(tab, "Back to the pad");
@@ -436,6 +442,7 @@ try {
   await tab.waitForURL(/\/[a-z]+-[a-z]+-[a-z]+$/, { timeout: 15_000 });
   const madeHere = new URL(tab.url()).pathname.slice(1);
   await tab.waitForSelector(".monaco-editor", { timeout: 30_000 });
+  await tab.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
   const fromCacheB = await backFromCache(tab, "Back to the dashboard");
   await tab.waitForSelector("#new-pad", { timeout: 15_000 }).catch(() => {});
   const newPadFree = await tab.locator("#new-pad").getAttribute("aria-busy");
