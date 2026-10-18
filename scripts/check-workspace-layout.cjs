@@ -60,6 +60,14 @@ async function main() {
   await page.locator('.tree-row[data-path=\"src/greet.ts\"]').click();
   await page.waitForFunction(() => document.querySelector('#viewer-title')?.textContent === 'src/greet.ts');
 
+  // Everything a keyboard reaches is inside a landmark (review M6: the
+  // sidebar's separator sat between the Files aside and main, in neither) —
+  // but this fixture's own example picker, which ships in no build.
+  const outside = await page.evaluate(() => [...document.querySelectorAll('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => el.id !== 'preview-scenario')
+    .filter((el) => el.getClientRects().length && !el.closest('header, nav, main, aside, footer, section[aria-label], [role="region"], [role="dialog"], dialog'))
+    .map((el) => el.id || el.className || el.tagName));
+  assert.deepEqual(outside, [], 'nothing focusable outside a landmark');
   const separator = page.locator('#sidebar-splitter');
   await separator.focus(); const before = await box('#sidebar');
   await page.keyboard.press('ArrowRight'); await settled();

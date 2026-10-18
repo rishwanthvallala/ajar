@@ -63,8 +63,8 @@ export class WorkspaceShell {
           <aside id="sidebar" aria-label="Files">
             <div class="side-head"><strong>Files</strong><span id="filecount">Loading…</span><div class="sidebar-actions" id="sidebar-actions"></div><button id="drawer-close" aria-label="Close files" hidden>Close</button></div>
             <div id="tree"></div>
+            <div class="sidebar-splitter" id="sidebar-splitter" role="separator" aria-orientation="vertical" aria-label="Resize file sidebar" tabindex="0"></div>
           </aside>
-          <div class="sidebar-splitter" id="sidebar-splitter" role="separator" aria-orientation="vertical" aria-label="Resize file sidebar" tabindex="0"></div>
           <main class="main">
             <section class="viewer" id="viewer-pane" aria-label="Editor">
               <div class="viewer-head"><span class="region-label">Editor</span><span id="viewer-title">No file selected</span><div class="editor-actions" id="editor-actions"></div><button class="highlight-toggle" id="highlight-toggle"></button><button class="close-file" id="close-file" aria-label="Close file" hidden>Close</button></div>

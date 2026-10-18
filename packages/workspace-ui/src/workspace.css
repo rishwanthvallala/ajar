@@ -37,7 +37,7 @@
 .shell .away { min-width: 0; max-height: 5rem; overflow: auto; overflow-wrap: anywhere; }
 .shell .body { position: relative; display: grid; grid-template-columns: var(--sidebar-width) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
 .shell.no-sidebar .body, .shell.narrow .body { grid-template-columns: minmax(0, 1fr); }
-.shell #sidebar { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--surface); border: 0; }
+.shell #sidebar { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--surface); border: 0; }
 .shell .side-head { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--rule); color: var(--ink-2); font-size: 0.75rem; }
 .shell #filecount { margin-left: auto; font-size: 0.6875rem; color: var(--muted); }
 .shell .sidebar-actions, .shell .workspace-actions, .shell .editor-actions { display: flex; align-items: center; gap: 0.4rem; }
@@ -46,7 +46,10 @@
 .shell .tree-row { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 0 0.75rem; height: var(--tree-row); font-size: 0.8125rem; font-weight: 400; color: var(--ink-2); }
 .shell .tree-row:hover { background: var(--surface-2); }
 .shell .tree-row.active { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); box-shadow: inset 2px 0 var(--accent); }
-.shell .main { display: grid; grid-template-rows: minmax(0, var(--editor-height)) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
+/* The last column, by line: past the sidebar and its separator's track when
+   there are three, the only one when there is one. The separator is inside
+   the sidebar now and no longer takes the middle one by its place. */
+.shell .main { grid-column: -2 / -1; display: grid; grid-template-rows: minmax(0, var(--editor-height)) 8px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
 .shell .viewer { grid-row: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border: 0; }
 .shell .viewer-head, .shell .terminal-head { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; padding: 0.4rem 0.875rem; border-bottom: 1px solid var(--rule); min-width: 0; background: var(--surface); }
 .shell .region-label { font-size: 0.75rem; font-weight: 600; color: var(--ink-2); flex: none; }
@@ -60,7 +63,9 @@
 .shell .empty-symbol { font: 1.75rem var(--mono); color: var(--muted); opacity: 0.6; margin-bottom: 0.25rem; }
 .shell .splitter, .shell .sidebar-splitter { position: relative; background: var(--surface-2); border: 0; touch-action: none; }
 .shell .splitter { grid-row: 2; height: 8px; cursor: row-resize; }
-.shell .sidebar-splitter { width: 8px; cursor: col-resize; }
+/* Inside the Files landmark, so nothing on the page is outside one (review
+   M6), and drawn over the 8px track beside it, which stays the grid's. */
+.shell .sidebar-splitter { position: absolute; top: 0; bottom: 0; left: 100%; width: 8px; cursor: col-resize; }
 .shell .splitter::after, .shell .sidebar-splitter::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border-radius: 2px; background: var(--muted); opacity: 0.45; }
 .shell .splitter::after { width: 2rem; height: 2px; }
 .shell .sidebar-splitter::after { width: 2px; height: 2rem; }

@@ -124,6 +124,14 @@ reads "terminal 1, also here: bob". What fills those regions is each product's
 own: ajar's file tree is an ARIA tree with one roving stop
 (`web/src/tree.ts`); the pad's rows are still buttons (`pad/src/files.ts`).
 
+The sidebar's separator is inside the Files `<aside>` since 18 October: it sat
+between the aside and `<main>`, in no landmark (review M6). It is drawn over
+the grid's 8px track beside the aside (`left: 100%`), and `<main>` takes the
+last column by line, `-2 / -1`, rather than the third by its place, so the
+track and the one-column layouts are as they were.
+`check-workspace-layout.cjs` asserts nothing a keyboard reaches is outside a
+landmark.
+
 ## Final bundle comparison — 19 September 2026
 
 The comparable entry/controller assets from the locked production build are:
