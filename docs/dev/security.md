@@ -662,6 +662,10 @@ the code.
   before the sweep, and dropped, not inherited, when a new pad takes the name.
 - **A first frame too big to be a hello is refused unread** — 256 KiB, above
   three times the admitted-guest hashes a host's hello can carry.
+- **A broadcast is one frame, not one per person** (review M10). Each
+  recipient's queue was handed its own copy of every frame, so a room of
+  twenty held twenty copies of a megabyte update. Queues now share one
+  (`Bytes`); each still counts it against its own 8 MB of falling behind.
 - **A link is a view link or an edit link**: asking for `owner` or `none`
   is a 400, where it minted a view link.
 - **What a pad stores, it can show.** Names with control characters or

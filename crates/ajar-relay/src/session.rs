@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ajar_proto::{Participant, Role};
+use axum::body::Bytes;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 
@@ -142,25 +143,27 @@ impl Session {
             .collect()
     }
 
-    pub fn send_all_guests(&self, bytes: &[u8]) {
+    /// One frame to every guest, shared among their queues, not copied into
+    /// each (review M10).
+    pub fn send_all_guests(&self, bytes: &Bytes) {
         for c in self.guests.values() {
-            let _ = c.tx.send(bytes.to_vec());
+            let _ = c.tx.send(bytes.clone());
         }
     }
 
-    pub fn send_host(&self, bytes: &[u8]) {
+    pub fn send_host(&self, bytes: &Bytes) {
         if let Some(h) = &self.host {
-            let _ = h.tx.send(bytes.to_vec());
+            let _ = h.tx.send(bytes.clone());
         }
     }
 
     /// Everyone except one participant. The sender of a broadcast does not
     /// need their own frame back, and echoing it would make a CRDT update
     /// look like a second edit.
-    pub fn send_others(&self, except: u32, bytes: &[u8]) {
+    pub fn send_others(&self, except: u32, bytes: &Bytes) {
         for (id, c) in &self.guests {
             if *id != except {
-                let _ = c.tx.send(bytes.to_vec());
+                let _ = c.tx.send(bytes.clone());
             }
         }
     }
@@ -169,12 +172,12 @@ impl Session {
         self.host.is_none() && self.guests.is_empty()
     }
 
-    pub fn send_one(&self, id: u32, bytes: &[u8]) {
+    pub fn send_one(&self, id: u32, bytes: &Bytes) {
         if let Some(c) = self.guests.get(&id) {
-            let _ = c.tx.send(bytes.to_vec());
+            let _ = c.tx.send(bytes.clone());
         } else if let Some(h) = &self.host {
             if h.participant.id == id {
-                let _ = h.tx.send(bytes.to_vec());
+                let _ = h.tx.send(bytes.clone());
             }
         }
     }
@@ -490,6 +493,7 @@ impl Registry {
     /// a link that was revoked, or a setting that changed, takes effect for
     /// people already inside rather than only for the next to arrive.
     pub fn evict_peers(&self, id: &str, everyone: bool, notice: Vec<u8>) -> usize {
+        let notice = Bytes::from(notice);
         let Some(mut s) = self.sessions.get_mut(id) else {
             return 0;
         };
@@ -514,6 +518,7 @@ impl Registry {
     /// telling them why: signed out, the role it gave is over. They reconnect
     /// and are let in on what they hold without it.
     pub fn evict_session(&self, key: &[u8], notice: Vec<u8>) -> usize {
+        let notice = Bytes::from(notice);
         let mut closed = 0;
         for mut s in self.sessions.iter_mut() {
             let leaving: Vec<u32> = s
@@ -676,6 +681,7 @@ impl Registry {
     /// The host's socket ended. `Deliberate` tears the session down now;
     /// `Dropped` starts the grace period and tells guests to hold on.
     pub fn host_gone(&self, id: &str, why: HostExit, notice: &[u8]) {
+        let notice = &Bytes::copy_from_slice(notice);
         match why {
             HostExit::Deliberate => {
                 if let Some((_, session)) = self.sessions.remove(id) {
@@ -695,6 +701,7 @@ impl Registry {
     /// Removes sessions whose host never came back. Returns the ids reaped so
     /// the caller can log them.
     pub fn reap(&self, grace: Duration, notice: &[u8]) -> Vec<String> {
+        let notice = &Bytes::copy_from_slice(notice);
         let expired: Vec<String> = self
             .sessions
             .iter()
@@ -1034,6 +1041,24 @@ mod tests {
     }
 
     #[test]
+    fn a_broadcast_is_one_frame_in_everyone_s_queue_not_a_copy_each() {
+        // Review M10: a room of twenty held twenty copies of every frame.
+        let r = Registry::new();
+        let (a, mut ra) = tx();
+        let (b, mut rb) = tx();
+        let (c, mut rc) = tx();
+        let (me, _) = r.join_peer("s", a, None).unwrap();
+        r.join_peer("s", b, None).unwrap();
+        r.join_peer("s", c, None).unwrap();
+        let frame = Bytes::from(vec![7u8; 64 * 1024]);
+        r.with("s", |s| s.send_others(me.id, &frame)).unwrap();
+        let (got_b, got_c) = (rb.try_next().unwrap(), rc.try_next().unwrap());
+        assert_eq!(got_b.as_ptr(), frame.as_ptr(), "a copy was queued");
+        assert_eq!(got_c.as_ptr(), frame.as_ptr(), "a copy was queued");
+        assert!(ra.try_next().is_none());
+    }
+
+    #[test]
     fn a_broadcast_skips_its_own_sender() {
         // Echoing an update back to whoever made it would read as a second
         // edit to the CRDT layer.
@@ -1043,7 +1068,10 @@ mod tests {
         let (me, _) = r.join_peer("s", a, None).unwrap();
         r.join_peer("s", b, None).unwrap();
 
-        r.with("s", |s| s.send_others(me.id, b"update")).unwrap();
+        r.with("s", |s| {
+            s.send_others(me.id, &Bytes::from_static(b"update"))
+        })
+        .unwrap();
         assert!(rb.try_next().is_some(), "the other peer heard nothing");
         assert!(ra.try_next().is_none(), "the sender got its own frame back");
     }

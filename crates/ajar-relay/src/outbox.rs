@@ -11,10 +11,17 @@
 //! than a clean disconnect: the client would render a corrupted screen and
 //! have no way to know. Dropping the socket makes the agent's reconnect and
 //! replay path handle it, which is already tested.
+//!
+//! A frame is [`Bytes`], shared rather than copied: a broadcast to a room of
+//! twenty held twenty copies of every frame until 18 October (review M10),
+//! and now holds one, however many queues it sits in. Each queue still counts
+//! the frame's whole length against its own allowance — what a socket has
+//! fallen behind by is the same whether the bytes are shared or not.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use tokio::sync::{mpsc, Notify};
 
 /// How far behind a socket may fall before it is disconnected.
@@ -36,7 +43,7 @@ pub struct Overflowed;
 /// The sending half of one socket's queue.
 #[derive(Clone)]
 pub struct Outbox {
-    inner: mpsc::Sender<Vec<u8>>,
+    inner: mpsc::Sender<Bytes>,
     queued: Arc<AtomicUsize>,
     /// Latched when a send is refused, so the writer task exits and takes the
     /// socket down with it.
@@ -53,7 +60,7 @@ pub struct Outbox {
 
 /// The receiving half, held by the one task that writes to the socket.
 pub struct Drain {
-    inner: mpsc::Receiver<Vec<u8>>,
+    inner: mpsc::Receiver<Bytes>,
     queued: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
     draining: Arc<AtomicBool>,
@@ -93,7 +100,8 @@ impl Outbox {
     /// refusing it would break a working feature to defend against a problem
     /// it does not cause. What is refused is *accumulation* behind a reader
     /// that has stopped draining.
-    pub fn send(&self, bytes: Vec<u8>) -> Result<(), Overflowed> {
+    pub fn send(&self, bytes: impl Into<Bytes>) -> Result<(), Overflowed> {
+        let bytes = bytes.into();
         if self.closed.load(Ordering::Acquire) || self.draining.load(Ordering::Acquire) {
             return Err(Overflowed);
         }
@@ -123,11 +131,12 @@ impl Outbox {
     /// copy over about 8 MB was refused and the guest asking for it was cut
     /// off. As a unit they get the same allowance one frame does: whatever its
     /// size, onto an empty queue.
-    pub fn send_all(&self, frames: Vec<Vec<u8>>) -> Result<(), Overflowed> {
+    pub fn send_all<B: Into<Bytes>>(&self, frames: Vec<B>) -> Result<(), Overflowed> {
         if self.closed.load(Ordering::Acquire) || self.draining.load(Ordering::Acquire) {
             return Err(Overflowed);
         }
-        let total = frames.iter().map(Vec::len).sum::<usize>();
+        let frames: Vec<Bytes> = frames.into_iter().map(Into::into).collect();
+        let total = frames.iter().map(Bytes::len).sum::<usize>();
         let queued = self.queued.load(Ordering::Relaxed);
         if queued > 0 && queued.saturating_add(total) > MAX_QUEUED_BYTES {
             self.shut();
@@ -161,7 +170,7 @@ impl Outbox {
     }
 
     /// Queue one final frame and close once everything ahead of it is sent.
-    pub fn finish(&self, bytes: Vec<u8>) {
+    pub fn finish(&self, bytes: impl Into<Bytes>) {
         if self.send(bytes).is_ok() {
             self.draining.store(true, Ordering::Release);
             self.wake.notify_waiters();
@@ -181,7 +190,7 @@ impl Drain {
     /// that a frame did *not* arrive, which `next` cannot express — it would
     /// park forever waiting for one.
     #[cfg(test)]
-    pub fn try_next(&mut self) -> Option<Vec<u8>> {
+    pub fn try_next(&mut self) -> Option<Bytes> {
         self.inner.try_recv().ok()
     }
 
@@ -192,7 +201,7 @@ impl Drain {
         self.closed.load(Ordering::Acquire)
     }
 
-    pub async fn next(&mut self) -> Option<Vec<u8>> {
+    pub async fn next(&mut self) -> Option<Bytes> {
         // Checked before parking, so an overflow that happened while this
         // task was busy is still seen.
         if self.closed.load(Ordering::Acquire) {
@@ -222,7 +231,7 @@ impl Drain {
         }
     }
 
-    fn take_now(&mut self) -> Option<Vec<u8>> {
+    fn take_now(&mut self) -> Option<Bytes> {
         let frame = self.inner.try_recv().ok()?;
         self.queued.fetch_sub(frame.len(), Ordering::Relaxed);
         Some(frame)

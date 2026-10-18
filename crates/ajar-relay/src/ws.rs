@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use ajar_proto::{Channel, Control, Frame, Participant, Role, Store, SNAPSHOT_STREAM, TARGET_ALL};
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tracing::{debug, info, warn};
@@ -87,7 +88,7 @@ pub async fn handle(
             tokio::select! {
                 bytes = rx.next() => {
                     let Some(bytes) = bytes else { break };
-                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                    if sink.send(Message::Binary(bytes)).await.is_err() {
                         break;
                     }
                 }
@@ -343,7 +344,7 @@ pub async fn handle(
                 participant: me.clone(),
             };
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &joined) {
-                let bytes = f.encode();
+                let bytes = Bytes::from(f.encode());
                 registry.with(&session_id, |s| {
                     s.send_host(&bytes);
                     for (id, c) in &s.guests {
@@ -377,14 +378,14 @@ pub async fn handle(
                 participant: me.clone(),
             };
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &joined) {
-                let bytes = f.encode();
+                let bytes = Bytes::from(f.encode());
                 registry.with(&session_id, |s| s.send_others(me.id, &bytes));
             }
         }
         Role::Host if resumed => {
             info!(session = %session_id, "host resumed inside its grace period");
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &Control::HostBack) {
-                let bytes = f.encode();
+                let bytes = Bytes::from(f.encode());
                 registry.with(&session_id, |s| s.send_all_guests(&bytes));
             }
         }
@@ -498,7 +499,7 @@ pub async fn handle(
                 // Nothing reads it there today — every `frame.target` on the
                 // host sits on pty, fs, doc or presence — but a handler added
                 // later will get 0 and no hint as to why.
-                registry.with(&session_id, |s| s.send_host(&frame.encode()));
+                registry.with(&session_id, |s| s.send_host(&Bytes::from(frame.encode())));
             }
             Role::Peer => {
                 if frame.channel == Channel::Control {
@@ -525,7 +526,7 @@ pub async fn handle(
                     debug!("peer frame not stamped with its own id; dropped");
                     continue;
                 }
-                let bytes = frame.encode();
+                let bytes = Bytes::from(frame.encode());
                 registry.with(&session_id, |s| s.send_others(me.id, &bytes));
             }
             Role::Host if frame.channel == Channel::Store => {
@@ -587,7 +588,7 @@ pub async fn handle(
                                 TARGET_ALL,
                                 &Control::Locked { locked },
                             ) {
-                                let bytes = f.encode();
+                                let bytes = Bytes::from(f.encode());
                                 registry.with(&session_id, |s| s.send_all_guests(&bytes));
                             }
                             continue;
@@ -595,7 +596,7 @@ pub async fn handle(
                         _ => {}
                     }
                 }
-                let bytes = frame.encode();
+                let bytes = Bytes::from(frame.encode());
                 registry.with(&session_id, |s| {
                     if frame.target == TARGET_ALL {
                         s.send_all_guests(&bytes);
@@ -635,7 +636,7 @@ pub async fn handle(
                 participant_id: me.id,
             };
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &left) {
-                let bytes = f.encode();
+                let bytes = Bytes::from(f.encode());
                 registry.with(&session_id, |s| {
                     s.send_host(&bytes);
                     s.send_all_guests(&bytes);
@@ -649,7 +650,7 @@ pub async fn handle(
                 participant_id: me.id,
             };
             if let Ok(f) = Frame::json(Channel::Control, TARGET_ALL, &left) {
-                let bytes = f.encode();
+                let bytes = Bytes::from(f.encode());
                 registry.with(&session_id, |s| s.send_others(me.id, &bytes));
             }
             registry.drop_peer(&session_id, me.id);
