@@ -13,7 +13,7 @@ use std::sync::Arc;
 use ajar_proto::{Channel, Control, Frame, Role, TARGET_ALL};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{Request, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -59,6 +59,7 @@ pub struct Relay {
 /// What a request was answered with.
 pub struct Answer {
     pub status: StatusCode,
+    pub headers: HeaderMap,
     pub body: String,
 }
 
@@ -109,11 +110,13 @@ impl Relay {
             .await
             .unwrap();
         let status = response.status();
+        let headers = response.headers().clone();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         Answer {
             status,
+            headers,
             body: String::from_utf8_lossy(&bytes).into_owned(),
         }
     }
@@ -465,4 +468,91 @@ async fn a_request_from_another_page_is_answered_as_nobody() {
     assert!(hidden.status.is_success(), "{}", hidden.body);
     let me = relay.call(get("/api/me", preview)).await;
     assert_eq!(me.json()["user"], serde_json::Value::Null);
+}
+
+// ------------------------------------------------ CORS, and /api/ answering
+
+#[tokio::test]
+async fn no_other_site_is_told_it_may_call_the_api() {
+    // Every page that calls the API is served from the origin it calls, so
+    // nothing here says any other may — `CorsLayer::permissive()` said every
+    // site might read every answer and send any header it liked.
+    let relay = Relay::new("https://code.rishwanth.dev");
+    let preflight = relay
+        .call(request(
+            "OPTIONS",
+            "/api/pad/some-pad",
+            &[
+                ("origin", "https://evil.example"),
+                ("access-control-request-method", "PUT"),
+                ("access-control-request-headers", "content-type,x-pad-code"),
+            ],
+            Body::empty(),
+        ))
+        .await;
+    let read = relay
+        .call(get(
+            "/api/pad/some-pad",
+            &[("origin", "https://evil.example")],
+        ))
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    for answer in [&preflight, &read] {
+        for name in [
+            "access-control-allow-origin",
+            "access-control-allow-methods",
+            "access-control-allow-headers",
+        ] {
+            assert!(
+                !answer.headers.contains_key(name),
+                "{name}: {:?}",
+                answer.headers.get(name)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_path_under_api_that_names_nothing_is_not_found() {
+    // It fell through to the web client and answered 200 with index.html,
+    // which a script reads as success and a browser shows as a page.
+    let relay = Relay::new("");
+    let web = Dir::new();
+    std::fs::write(web.0.join("index.html"), "<!doctype html>the page").unwrap();
+    let web = web.0.to_str().unwrap().to_string();
+    for path in [
+        "/api",
+        "/api/",
+        "/api/nope",
+        "/api/pad",
+        "/api/pad/a/b/c",
+        "/api/my/nothing",
+    ] {
+        let answer = relay.call_with(Some(&web), &mut get(path, &[])).await;
+        assert_eq!(
+            answer.status,
+            StatusCode::NOT_FOUND,
+            "{path}: {}",
+            answer.body
+        );
+        assert!(!answer.body.contains("the page"), "{path}");
+        assert!(
+            answer.headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain"),
+            "{path}: {:?}",
+            answer.headers.get(header::CONTENT_TYPE)
+        );
+    }
+    // Routes that are there still answer, and a page is still the page.
+    let me = relay.call_with(Some(&web), &mut get("/api/me", &[])).await;
+    assert_eq!(me.status, StatusCode::OK);
+    let page = relay
+        .call_with(Some(&web), &mut get("/amber-falcon-river", &[]))
+        .await;
+    assert_eq!(
+        (page.status, page.body.as_str()),
+        (StatusCode::OK, "<!doctype html>the page")
+    );
 }

@@ -22,10 +22,9 @@ use std::sync::Arc;
 use axum::extract::{ws::WebSocketUpgrade, ConnectInfo, DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::{Json, Router};
 use clap::Parser;
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 
@@ -423,7 +422,20 @@ fn router(state: AppState, web: Option<&str>) -> Router {
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
         .merge(usage::routes())
-        .layer(CorsLayer::permissive())
+        // A path under /api/ that names nothing is not found. It fell
+        // through to the web client and answered 200 with its index.html,
+        // which a script reads as success and a browser shows as a page.
+        // The more specific routes above win; this is what is left.
+        .route("/api", any(no_such_route))
+        .route("/api/", any(no_such_route))
+        .route("/api/{*rest}", any(no_such_route))
+        // No CORS layer, so no other origin may call this API from a page.
+        // None needs to: the pad is served from the origin it calls, and in
+        // development through Vite's proxy (pad/vite.config.ts); the session
+        // client speaks only over the socket, which CORS does not govern;
+        // and the checks and agents are programs, which it does not bind.
+        // `CorsLayer::permissive()` was here, and told every site it might
+        // read any answer and send any header — `X-Pad-Code` among them.
         .with_state(state);
 
     // In development the client is served by Vite; in a release build we can
@@ -437,6 +449,10 @@ fn router(state: AppState, web: Option<&str>) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn no_such_route() -> (StatusCode, &'static str) {
+    (StatusCode::NOT_FOUND, "no such API route")
 }
 
 /// Have the kernel close a connection whose peer has stopped reading.
