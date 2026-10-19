@@ -74,7 +74,12 @@ prefix: `ajar.theme` / `pad.theme` (`system`, `light` or `dark`) and
   since 7 October, an editor and gutter background of the shell's `--surface`
   (`#ffffff`, `#161a22`), so the editor sits in the page rather than on
   Monaco's own grey. Those two are written out in `defineEditorThemes`, not
-  read from `theme.css`: a change to `--surface` has to be made in both. Each
+  read from `theme.css`: a change to `--surface` has to be made in both. The
+  same two themes set the line numbers and a CSV's delimiters at WCAG AA
+  against that surface since 18 October (review M6): line numbers `#5d6673`
+  light and `#9aa3b0` dark, the current line's `#1f2937` and `#e6e9ee`, and
+  the final empty line's dimmed number `#6e7681` and `#7d8592` (4.6:1 and
+  4.7:1), where Monaco's own dim was 1.8:1 and 2.2:1. Each
   product's terminal takes `--surface` from the stylesheet — the pad's since
   September, ajar's since 7 October. ajar's landing page has its own theme
   switch since 7 October, writing the same `ajar.theme`. The
@@ -133,7 +138,7 @@ track and the one-column layouts are as they were.
 landmark.
 
 Narrow — the files a drawer — is under 48 rem wide, and since 18 October also
-a touch screen on its side under 30 rem tall, where the width is better spent
+a touch screen on its side 30 rem tall or less, where the width is better spent
 on the editor and the terminal (the pad puts those side by side there).
 
 ## Final bundle comparison — 19 September 2026

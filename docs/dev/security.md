@@ -398,7 +398,8 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   it, closes everyone. Signing out closes every room connection that sign-in
   made owner — the room keeps each by its session's hash — so a signed-out tab
   does not go on editing as owner; until 4 October it did, until its socket
-  dropped.
+  dropped. Since 18 October a sign-in that runs out lets its owners go the
+  same way (B06, below).
 - **Codes travel after the `#`**, which browsers never send: no server log,
   `Referer` or link-unfurler sees one. The page moves the code into local
   storage and out of the address bar, so copying the address bar shares the
@@ -430,7 +431,9 @@ Built 4 October 2026; the design is [accounts](accounts.md). What holds:
   sends it, and every state-changing account request must also carry
   `X-Ajar: 1`, which a form cannot set. Store writes are `PUT` with JSON,
   which another origin cannot send without a preflight this server never
-  answers.
+  answers. A page on the same *site* that is not ours — the preview's — sends
+  the cookie too, and since 18 October it speaks for nobody there (B02,
+  below).
 - **A deleted pad's name is never reused**, and stays closed to everyone —
   including anonymous writers, who would otherwise take it over. It answers
   410, not 403, so a page can say *deleted* rather than *private*.
@@ -488,9 +491,13 @@ meets it.
 | What one address may add to the store | 512 MiB a day, growth only; `--pad-growth-per-address` | `quota.rs` `MAX_PAD_GROWTH_PER_IP` |
 | One pad write, off the wire | 33 MiB; a browser sends a larger write in parts of 24 | `main.rs` `MAX_PAD_HTTP_BODY` |
 | Memory one pad save costs | Its request; the files it changes are streamed to disk, an edit from one blob to the next | `pad.rs` `write_within`, `pad/splice.rs` |
-| Pad writes being read at once | 2 | `main.rs` `MAX_CONCURRENT_PAD_WRITES` |
+| Request bodies being read at once | 66 MiB between them, taken as bytes arrive; 408 after 20 s with nothing, or 10 minutes in all; a 20 s wait for room, then 503 | `main.rs` `PAD_BODY_BUDGET`, `BODY_IDLE`, `BODY_LONGEST` |
+| Pad writes parsed and stored at once | 2, taken once the body is in; a 20 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_WRITES`, `PAD_WRITE_WAIT` |
+| Changes in one write | 2,000, 1,000 edits in one change and 10,000 in all; 413 | `pad.rs` `MAX_WRITES`, `MAX_EDITS`, `MAX_EDITS_PER_REQUEST` |
+| A kept run's body | 256 KiB | `main.rs` `MAX_RUN_HTTP_BODY` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |
-| Pad reads in flight | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
+| Pad reads in flight, a version's included | 64 total, 32 per address, no rate limit; a 10 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_READS`, `quota.rs` `MAX_READS_PER_IP` |
+| A socket's first frame | 256 KiB, refused unread; no hello in 10 s and it is closed | `ws.rs` `MAX_HELLO_BYTES`, `HELLO_TIMEOUT` |
 | A peer that stops reading | Closed by the kernel after 60 s of sent data going unacknowledged (`TCP_USER_TIMEOUT`, Linux), which ends the stream and frees its read slots | `main.rs` `STALLED_PEER` |
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
 | Egress tunnels opened | 30 a minute per address | `deploy/Caddyfile` `pad_wisp` |
@@ -520,12 +527,16 @@ the unit's `MemoryMax=512M`. It was 51 MiB × 4 while a pad held 25 MiB, and
 121 MiB × 2 at 60 — when one request could carry a whole pad, and a 60 MB file
 took the relay to 268 MB. Since 11 October a request carries part of a large
 write rather than all of it, so the limit no longer follows the pad cap.
-Raising either alone fails to compile — there is a `const` assertion on the
-product, because the ceiling that applied before was the OOM killer.
+Raising either past that bound fails to compile — there is a `const` assertion
+on the product (`PAD_BODY_BUDGET`, the two multiplied), because the ceiling
+that applied before was the OOM killer.
 
-The permit for a pad write is taken in an **extractor, not the handler**.
-Extractors that do not touch the body run first, so a request waits before
-its body is pulled off the wire; taken in the handler it would bound nothing.
+Until 18 October the permit for a pad write was taken in an extractor, before
+the body was pulled off the wire, and held while it arrived — so two uploads
+that stopped part-way held up every save (B04, below). Now the body is read
+first (`receive` in `main.rs`), taking room in `PAD_BODY_BUDGET` as its bytes
+arrive, and the permit is taken once it is in, for parsing and storing only.
+What bounds the bodies' memory is the budget, not the permits.
 
 **The store allowance counts bytes added, not pads created.** A cap on
 creations does not protect a disk: sixty pads an hour at 100 MiB each fills the
@@ -693,10 +704,11 @@ the code.
 - **The access logs keep no codes** (B05). A link's code travels in
   `X-Pad-Code`, which Caddy does not blank as it does `Cookie` and
   `Authorization`, so both sites that answer the pad API logged every coded
-  request's code. The logs now delete it, those two, `Set-Cookie`, and an
-  OAuth callback's `code` — checked by a test that reads the Caddyfile that
-  ships, and once by hand against Caddy 2.11.4, whose logs then held none of
-  them. Logs written before the change may still hold codes: see
+  request's code. The logs now delete it, those two, `Set-Cookie`, and on
+  those two sites an OAuth callback's `code`. A test that reads the Caddyfile
+  that ships checks that every site's log deletes the three request headers;
+  all of it was checked once by hand against Caddy 2.11.4, whose logs then
+  held none of them. Logs written before the change may still hold codes: see
   [operations](operations.md#what-is-on-disk).
 - **An owner is one for as long as the sign-in** (B06). The cookie is read
   at the socket's upgrade only, so an owner's socket kept its place in a
@@ -843,14 +855,16 @@ address, so they are not a proxy run by us, and need no allowlist of ours.
 
 `wss://code.rishwanth.dev/wisp` takes a request from an anonymous browser and
 makes a TCP connection from our address. That is a different shape of risk from
-everything else here: the relay only ever talks to itself and the sandbox only
-ever talks to the tab, but this reaches outward on somebody else's say-so, and
-whatever it does is attributed to our IP.
+everything else here: the relay only ever talks to its own clients and, for a
+sign-in, the provider's fixed endpoints, and the sandbox only ever talks to the
+tab, but this reaches outward on somebody else's say-so, and whatever it does
+is attributed to our IP.
 
 **It is an allowlist, not a proxy.** `pypi.org` and `files.pythonhosted.org`,
 and since 16 October `python-registry.wasmer.app` — Wasmer's index of numpy,
 pandas, matplotlib and the like, built for this runtime — port 443, TCP only.
-That is the whole reachable internet from a pad. The third is a package index
+That is the whole internet a pad reaches with a socket; HTTP made by the page
+is [above](#http-through-the-browser). The third is a package index
 like the first two: it serves wheels to pip, and holds nothing a program could
 use to reach anywhere else. The
 alternative — an open WISP endpoint — is an open TCP proxy, and the first thing

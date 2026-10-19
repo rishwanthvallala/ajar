@@ -1,10 +1,11 @@
 # Where each finding stands
 
 What was done about each finding in [README.md](README.md), as of
-18 October 2026. "Closed" means fixed, with a check that fails without the fix;
-*still open* is what the fix leaves, said as plainly as the finding was. The
-details of each are in the docs named, mostly
-[security.md](../dev/security.md) under what was closed on 17 and 18 October.
+18 October 2026, checked again against the code on 19 October. "Closed" means
+fixed, with a check that fails without the fix; *still open* is what the fix
+leaves, said as plainly as the finding was. The details of each are in the
+docs named, mostly [security.md](../dev/security.md) under what was closed on
+17 and 18 October.
 
 | ID | State | Commit | Still open |
 |---|---|---|---|
@@ -24,14 +25,14 @@ details of each are in the docs named, mostly
 | B02 | Closed | 556b8df, 3f16c46 | |
 | B03 | Closed | f0093ed | |
 | B04 | Closed | ed85b72 | Room is taken as bytes arrive, so a fast upload of nearly two bodies and then a trickle can hold the budget for up to ten minutes at a time. |
-| B05 | Closed | 8f1cc11 | Logs written before it may hold codes: delete them on the server ([operations](../dev/operations.md#what-is-on-disk)). |
+| B05 | Closed | 8f1cc11, ea41882 | Logs written before it may hold codes: delete them on the server ([operations](../dev/operations.md#what-is-on-disk)). |
 | B06 | Closed | c30c534 | Only an owner's place comes from a sign-in; a link's viewer or editor keeps its place until the link is revoked. |
-| B07 | Closed | 7a55d0e | No real power cut was made; a test holds the setting and the order. |
+| B07 | Closed | 7a55d0e | No real power cut was made; a test holds the setting and that a save leaves no blob half-placed, not the order of the syncs. |
 | B08 | **Open** | — | Options, costs and what to keep are in [durability.md](../dev/durability.md); waiting on choosing where the copies go. |
-| B09 | Closed | 6c551f3 | The databases' own rows and WAL are outside the ceiling. |
+| B09 | Closed | 6c551f3 | The databases' own rows and WAL are outside the ceiling, and a pad made with `writes: []` costs nothing but the per-address limits. |
 | B10 | Closed | ed85b72 | |
 | B11 | Closed | f0093ed | |
-| B12 | Partly | 6bcde2d, c060908 | `/healthz?deep=1` exists and the deploy waits for it; the deploy still copies into the live directories, with no release swap or rollback. |
+| B12 | Partly | 6bcde2d, c060908 | `/healthz?deep=1` exists and the deploy waits for it; the deploy still copies into the live directories, with no release swap or rollback, and records the commit as deployed before that check. |
 | R1 | Closed | 6778287 | |
 | R2 | Closed | 8108765 | |
 | R3 | Closed | 6778287 | |

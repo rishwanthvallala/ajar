@@ -9,7 +9,8 @@ Every finding below cost real time and none of it is documented upstream.
 
 ```sh
 npm ci
-node pad/scripts/fetch-packages.mjs   # mirrors ~66 MB of wasm, with .zst and .gz copies beside it; needed once
+npm run build:pad && node pad/scripts/fetch-packages.mjs   # mirrors ~605 MB of wasm — 66.5 MB every visit runs, the rest the languages — with .zst and .gz copies beside it; needs cargo; once
+node pad/scripts/build-java.mjs && node pad/scripts/build-cxx.mjs   # Java and C++, packages of our own; once, and only for those
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -71,9 +72,11 @@ Twenty-eight aliases, covering twenty-eight names, all of them in
 live in `src/tools/box.py` and dispatch on their first argument — the same
 multi-call shape as the coreutils binary, and unlike that one everything listed
 is present. One file rather than twenty-three because the shell writes and
-aliases these before the first prompt; all twenty-eight aliases go out in a
-single `run` for the same reason, along with `clear` and the shell's exports —
-the two below among them. A warm
+aliases these before the first prompt; all the shell's aliases go out in a
+single `run` for the same reason — these twenty-eight, `curl` and `wget` (python
+too, [networking.md](networking.md)), `flask`, and the compilers' `go`, `gofmt`,
+`gcc`, `cc`, `clang++`, `g++` and `c++` — along with `clear` and the shell's
+exports, the two below among them. A warm
 command costs **142 ms**.
 
 Those exports are `PIP_TARGET` and `PYTHONPATH`, both pointing at
@@ -180,12 +183,15 @@ Two namespaces now list packages the SDK cannot fetch — `kilyanni/*` and
 
 ## Things about this runtime that are not obvious
 
-**The JavaScript filesystem and the process filesystem are different
-namespaces.** The JS root *is* the process's working directory: a file written
-to `/out.csv` from the page is `out.csv` to the program. A path that looks
-absolute to a process — `/app/main.py` — lands at `/workspace/app/main.py`
-instead, so Python reports `[Errno 44]` for a file `readDir` can plainly see.
-Every path in this application is root-relative in the JS view.
+**The JavaScript filesystem and the process filesystem were different
+namespaces** under SDK 0.11. The JS root *was* the process's working
+directory: a file written to `/out.csv` from the page was `out.csv` to the
+program. A path that looks absolute to a process — `/app/main.py` — landed at
+`/workspace/app/main.py` instead, so Python reported `[Errno 44]` for a file
+`readDir` could plainly see. Since 0.18 (16 October) the JS view takes the
+process's own paths, and only those inside `/workspace`; every path in this
+application is still relative to the folder, and `at()` in `runtime.ts` makes
+the sandbox's from it.
 
 **The SDK cannot be bundled.** It resolves its worker with `new URL(…,
 import.meta.url)`, and that worker statically imports two siblings. A bundler
@@ -287,12 +293,14 @@ tracker — what it would clean up goes with the sandbox — and when an interru
 has to end the shell the console says the program may still be running. A
 program with a real child is still unreachable; only a reload ends it.
 
-**There is no home directory.** `~` is not expanded, so a tool that keeps
-something under it — pip's cache, for one — makes a directory called `~` in
-the folder. pip's went into every pad that installed anything,
+**There was no home directory until 18 October.** `~` was not expanded, so a
+tool that kept something under it — pip's cache, for one — made a directory
+called `~` in the folder. pip's went into every pad that installed anything,
 fifty files for Flask, saved for everyone, until 16 October: the shell sets
 `PIP_NO_CACHE_DIR=1`, and `~/` is ignored by the sync like `__pycache__`, which
-also deletes what a pad had stored there at its next command.
+also deletes what a pad had stored there at its next command. Since 18
+October the shell makes `/tmp/home` and exports it as `HOME`, so what a tool
+keeps there is the sandbox's and never the pad's.
 
 **bash prints no prompt and echoes nothing of its own input**, even with a real
 pty attached — but it *does* restore the terminal around each foreground job,
@@ -420,26 +428,27 @@ likely name was then looked up too). So Java is a package of our own — see
 | Ruby | `katei/ruby` | — | `-e` only; a script file exits 1, and `-e "$(cat f.rb)"` prints nothing. Not offered |
 | Zig | `fschuett/zig` | — | `zig version` only; `zig run` and `zig cc` fail with FileNotFound. Not offered |
 
-None of them is installed on a visit. Every one is heavier than everything the
-pad does ship, so each is fetched into the sandbox the first time a line names
-one of its commands, or Run is pressed on a file it runs (`toolchains.ts`): the
-terminal says what is being fetched and how big it is, and the line then runs.
+None of them is installed on a visit. All but clisp are heavier than
+everything the pad does ship, so each is fetched into the sandbox the first
+time a line names one of its commands, or Run is pressed on a file it runs
+(`toolchains.ts`): the terminal says what is being fetched and how big it is,
+and the line then runs.
 
 **A package installed into a running sandbox is seen only by processes it
 starts afterwards** (`sandbox.installPackage`, measured 12 October): not the
 shell already open, not a `bash -c` from it, and nothing under `/bin`. So after
 fetching, the page opens a fresh shell where the old one was, with what it had
-exported (`App.replaceShell`), and the line runs there. Variables that were not
-exported, and the person's own aliases, stay with the old shell.
+exported (`TerminalSession.replaceShell`, terminals.ts), and the line runs
+there. Variables that were not exported, and the person's own aliases, stay
+with the old shell.
 
 **Go cannot open a relative path, or learn its working directory.** `go run
 main.go` answers `stat main.go: Bad file number`; in a module, `getwd: File name
 too long`. With an absolute path a single-file program runs and builds, so `go`
 and `gofmt` are aliases to `tools/go.py`, which makes every `.go` argument and
 the path after `-o` absolute and runs the real command from the folder root,
-where Go can tell where it is — an alias rather than a shell function because
-calling a function hangs in this bash. Modules, and so anything with more than
-one package, do not work. Inside a Go program a relative path fails the same
+where Go can tell where it is — an alias, as every shim here is. Modules, and
+so anything with more than one package, do not work. Inside a Go program a relative path fails the same
 way (`open data.txt: Math result not representable`), so a program opens files
 by absolute path. And a binary `go build` makes runs once: the second time,
 `cannot execute binary file: Exec format error` — so `go run`, which builds
@@ -474,8 +483,9 @@ registry.wasmer.io would give for `ajar/java`, and where its file is. The
 service worker answers from it as it does from `registry.json`, and serves the
 download for `packages.ajar.invalid` — a host nothing else answers for — from
 the mirror. Nothing is published anywhere. `fetch-packages.mjs` serves both
-while it records and keeps them when it prunes; deploy refuses without
-`own.json`.
+while it records and keeps them when it prunes; deploy refuses an `own.json`
+without `ajar/java` in it — and, since 18 October, without `ajar/cxx`, which
+`build-cxx.mjs` writes beside it ([C++](#c)).
 
 The alternatives, looked at that day: TeaVM compiles Java ahead of time to wasm
 with a class library of its own, which lacks `Scanner` on `System.in`,
@@ -673,18 +683,21 @@ static in it.
 
 ## The shell, and detecting when a command ends
 
-One shell per session. A sentinel is appended to the command **on the same
+One shell per terminal. A sentinel is appended to the command **on the same
 line**:
 
 ```ts
 const quoted = `'${command.trimEnd().replaceAll("'", `'\\''`)}'`;
-const line = `eval ${quoted} 2>&1; printf '\\001%s\\001' "$?"`;
+const line = `eval ${quoted} 2>&1; printf '\\001${this.token}:%s\\001' "$?"`;
 ```
 
 The command goes through `eval` as one single-quoted word, so a `#`, an
 unclosed quote or an unfinished `if` cannot swallow the sentinel; `eval` runs
 in this shell, so `cd`, variables and a trailing `&` behave as typed. `2>&1`
-puts errors in the same stream as the output and the sentinel, in order.
+puts errors in the same stream as the output and the sentinel, in order. The
+token is random, one per shell, since 18 October: a program that printed
+`\x01130\x01` ended its own command as far as the page could tell, and the
+folder was saved half written while it went on running.
 
 As a *second* line it gets eaten by anything reading stdin — which is how
 `cat` with no arguments appeared to hang. `dropEcho()` searches for the echo
@@ -943,6 +956,10 @@ yourself edited did nothing at all, and said nothing about why.
 
 An empty model is taken only for a path the store has never heard of, which is
 the one case where empty is the truth rather than a file that has not loaded.
+And since 18 October the store's layer leaves out what the pad never keeps —
+`.deps`, `.ajar`, `.git` — even where an old pad stored some: a
+`sitecustomize.py` under `.deps` ran for the next visitor before anything was
+on screen.
 
 It lives in its own module because the moment it runs is a race, and a race is
 untestable from the outside: three separate attempts to catch the bug through
@@ -1073,7 +1090,7 @@ joins or leaves. For the 78 MB pad on the slow link the welcome's was a second
 14.8 s without that read, on the code before, against 17.4 s. Now the read
 says how far the page has the pad (`x-pad-seq`), and a pad no further on is
 answered with that and who the page is to it, about 100 bytes
-(`Store.unchanged_since` in the relay, `Pad.unchanged` here). `pair-check.mjs`
+(`Store::unchanged_since` in the relay, `Pad.unchanged` here). `pair-check.mjs`
 has a second place join and wants the first's read again to be that.
 
 **A save's number is no longer taken as how far the page has read.** Each
@@ -1141,7 +1158,8 @@ The bytes were never all of it. On every start the runtime asks
 about three seconds of a cold Run — and when one failed, as it did from one
 network in three local runs of eight on 2 October, the terminal said so and Run
 never answered. Since 12 October `fetch-packages.mjs` records the answers the
-page received into `packages/registry.json` (59 KB, coreutils already pinned),
+page received into `packages/registry.json` (59 KB for the shipped set; 145 KB
+once the languages' answers joined it later that day; coreutils already pinned),
 and the service worker answers each lookup from it; a package it has no answer
 for still asks the registry. `--registry-only` records them again through the
 mirror already on disk, without the downloads. `app-check` runs a browser that
@@ -1153,7 +1171,8 @@ without the file.
 The two lists, `manifest.json` and `registry.json`, are not cached as
 immutable with the packages: they change when a package does, and a returning
 browser holding a year-old list was pointed at files a later deploy removed.
-They revalidate each visit (`deploy/caddy/check.sh` asserts both headers).
+They revalidate each visit, as does `own.json`, Java's and C++'s, beside them
+(every `/packages/*.json`; `deploy/caddy/check.sh` asserts the first two).
 
 The URL list is **observed, not derived**: `pad/scripts/fetch-packages.mjs`
 runs the app once and records what it asks for. Asking the registry for each
@@ -1404,8 +1423,8 @@ Drag and drop in the tree (`files.ts`), and F2 with a new name for the
 keyboard; both end in `App.move`. A move is **one store write** holding the
 new paths and `null` for the old ones, so nobody can read the pad between the
 two and see the file in both places or in neither. Then this page catches up
-the way an import does — the new paths' models, the editor following the open
-file, the old documents closed and their models disposed, the sandbox written
+the way an import does — the new paths' text, the editor following the open
+file, the old documents closed and any models disposed, the sandbox written
 if it is up — and the `moved` nudge sends everyone else to re-read, where the
 old path goes and the new one arrives like any other change. It never waits
 for the sandbox, so a move on a first visit is immediate.
@@ -1419,10 +1438,12 @@ instead: a rename that replaced a file would do it by a typo.
 
 The tree is not redrawn while a drag is under way: the row being dragged has to
 outlive it, so a collapsed folder does not open on hover as it would in an
-editor — drop on it, and it opens after. Two things a move does not do for
-someone else on the pad: a person who had the old file open is moved to
-another file rather than following it, and typing they did in the old file in
-the moment between the move and their re-read is lost with it.
+editor — drop on it, and it opens after. Someone else on the pad who had the
+old file open follows it, since 18 October: their re-read sees one file go and
+one arrive with its text, or with its name in another folder, takes them to
+the new name, where they were in it, and puts typing of theirs not yet saved
+onto it (`refresh`; review of 17 October, M1). Until then they were moved to
+another file, and that typing was lost with the old one.
 
 ## Naming in the tree
 
@@ -1515,10 +1536,11 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
   through its view and edit links; see [accounts.md](accounts.md). **Neither
   kind is encrypted:** the server can read every pad. See
   [security.md](security.md#what-the-pad-does-not-have).
-- **A socket reaches PyPI and nowhere else.** `pip install` works, through
-  an endpoint we run that allows those two hostnames on 443 and refuses the
-  rest. `curl`, `wget`, `urllib` and `requests` go through the page's fetch
-  instead, to sites that let a web page read them. No `git clone`, no `ssh`,
+- **A socket reaches PyPI, and Wasmer's index of wheels, and nowhere else.**
+  `pip install` works, through an endpoint we run that allows `pypi.org`,
+  `files.pythonhosted.org` and `python-registry.wasmer.app` on 443 and
+  refuses the rest. `curl`, `wget`, `urllib` and `requests` go through the
+  page's fetch instead, to sites that let a web page read them. No `git clone`, no `ssh`,
   no reaching your own machines. See [networking.md](networking.md).
 - **A process that never exits never syncs.** The folder is published at
   command exit, which is a real transaction boundary — it either ran or it did

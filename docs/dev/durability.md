@@ -11,8 +11,8 @@ link lives on one EBS volume in Mumbai.
 ## In short
 
 - **What to keep:** `accounts.db`, `pads/store.db` and `pads/blobs/` —
-  everything; `usage.db` if the charts matter; `accounts.key` and the env
-  files once, by hand, in a password manager; one copy of the 1 GB of
+  everything; `usage.db` if the charts matter; `accounts.key` and
+  `/etc/ajar/relay.env` once, by hand, in a password manager; one copy of the 1 GB of
   runtime packages. The store cannot pass 4 GiB, so all of it fits a 10 GB
   free tier.
 - **How:** continuously, not daily — losing a day is not acceptable.
@@ -52,11 +52,11 @@ All of it is under `/var/lib/ajar` on the relay, plus a few secrets in
 | The pads: which exist, their files, leases, history, last runs | `pads/store.db` (SQLite, WAL) | on every save — half a second after typing stops | every pad | as SQLite |
 | The files' contents | `pads/blobs/ab/<sha-256>` | added on save; never changed; deleted when nothing holds them | the pads' text | as files: content-addressed and immutable, so copying only new ones is enough |
 | Pads from before 11 October, as imported | `pads/legacy/` | never | nothing current | once |
-| Usage counts for `/admin` | `usage.db` (SQLite) | every 30 s | the history of the charts | as SQLite; optional |
-| Secrets: OAuth client ids and secrets, `AJAR_ADMINS`, `AJAR_PUBLIC_ORIGIN` | `/etc/ajar/relay.env`, the wisp unit's env | when a secret is rotated | sign-in stops until re-entered | once, by hand, into a password manager |
+| Usage counts for `/admin` | `usage.db` (SQLite, WAL) | every 30 s | the history of the charts | as SQLite; optional |
+| Secrets: OAuth client ids and secrets, `AJAR_ADMINS`, `AJAR_PUBLIC_ORIGIN` | `/etc/ajar/relay.env` (the wisp unit has no env file; its two settings are in the unit, in git) | when a secret is rotated | sign-in stops until re-entered | once, by hand, into a password manager |
 
 How big: the store has a ceiling of **4 GiB** (`pad::MAX_STORE_BYTES`),
-history included, so a full copy of everything is under 5 GB however busy
+history and last runs included, so a full copy of everything is under 5 GB however busy
 pad gets. The real figure is on `/admin` (Storage) or:
 
 ```sh
@@ -66,8 +66,10 @@ pad gets. The real figure is on `/admin` (Storage) or:
 **Not worth keeping:** Caddy's certificates (Let's Encrypt issues new ones on
 the first start), logs, the deployed binaries and the site (all built from
 git). **Worth one copy:** the pad's runtime packages, `/srv/ajar/pad/packages`,
-1 GB — rebuildable, but the Java one takes containers and most of an hour, and
-today it exists only on the relay, the laptop and CI's evictable cache.
+1 GB — rebuildable, but two are our own builds: the Java one takes containers
+and about ten minutes the first time, two after, and the C++ one (since 18 October) downloads about
+230 MB to make. Today it exists only on the relay, the laptop and CI's
+evictable cache.
 
 ### Why "as SQLite"
 
@@ -80,8 +82,9 @@ SQLite does (Litestream).
 ### Why the blobs need care too
 
 `store.db` names blobs; the blobs are files beside it. A copy of the database
-from 12:00:00 needs every blob it names, so the blobs must be copied *no later*
-than the database, and a blob the live store has since deleted must still be
+from 12:00:00 needs every blob it names, so the blobs must be copied *no earlier*
+than the database — a blob is on the disk before the row naming it commits, so
+a blob copy taken after the database copy has every blob it names — and a blob the live store has since deleted must still be
 in the copy. Two rules make that hold: copy blobs without ever deleting in the
 copy at the same moment, and keep deleted ones for as long as the oldest
 database copy you might restore.
@@ -98,7 +101,14 @@ database copy you might restore.
 | The backup quietly stops | an expired key, a full bucket, a changed free tier | **an alarm when it stops**, and a restore that is tested |
 | One backup provider goes | free tier withdrawn, account closed | a second, independent copy |
 
-The last two are what decide whether "unattended for years" is real. Every
+The first row is the one already built. Since 18 October `store.db` runs with
+`synchronous = FULL`, and a new blob's bytes are synced before it is renamed
+into `blobs/ab/`, then its directory — and `blobs/` too when that directory is
+new — before the row naming it commits (`settle` and `sync_dir` in
+`crates/ajar-relay/src/pad.rs`). So a save that was answered survives a power
+cut; it is no help against any other row.
+
+The table's last two rows are what decide whether "unattended for years" is real. Every
 backup works the day it is set up; the ones that fail are the ones nobody
 noticed stopping.
 
@@ -119,8 +129,9 @@ the blobs consistent with each other for free.
 
 ### B. Periodic copies (every few minutes)
 
-A timer on the server: copy new blobs, then `VACUUM INTO` each database, then
-upload the snapshot — to any storage, with rclone.
+A timer on the server: `VACUUM INTO` each database, then copy new blobs, then
+upload the snapshot — to any storage, with rclone. In that order, for the
+reason [above](#why-the-blobs-need-care-too).
 
 - **Loses at most:** the interval, 5–15 minutes.
 - **Good:** two well-known tools (sqlite3, rclone), easy to read, easy to
@@ -219,7 +230,7 @@ What turns "a backup" into "a backup that is still working in 2030":
 5. **Bounded size by itself.** Retention in the tools and lifecycle rules in
    the bucket: 30 days of history, then gone, so the free tier is never
    outgrown by accumulation.
-6. **The secrets once, by hand.** `accounts.key` and the env files in a
+6. **The secrets once, by hand.** `accounts.key` and `relay.env` in a
    password manager. They do not change, so they need no job.
 7. **One page that says how to restore** — the runbook, in this repository,
    with the commands; and once a year, ten minutes reading the alarm's
@@ -238,7 +249,7 @@ For a loss of seconds, two providers, nothing paid and nothing to tend:
    your NixOS machine over Tailscale, which pulls it — or to Cloudflare R2 if
    a card is acceptable there. Different provider, different failure.
 4. **The alarm and the weekly restore test** (healthchecks.io), for both.
-5. **The key and the env files** into a password manager, once.
+5. **The key and `relay.env`** into a password manager, once.
 6. **While on AWS**, daily EBS snapshots kept a week as a free extra — dropped
    on leaving.
 

@@ -15,15 +15,18 @@ are touching.
 | [security.md](security.md) | The sandbox, end-to-end encryption, resource limits, rate limits |
 | [agent.md](agent.md) | The agent: terminals, the file tree, editing, the offline copy |
 | [relay.md](relay.md) | The relay: sessions, backpressure, the durable pad store, accounts |
+| [pad-store.md](pad-store.md) | How the relay keeps pads on disk since 11 October: rows in SQLite, contents by hash, saves that send only what changed, history, the last run |
+| [durability.md](durability.md) | What the server holds, what can lose it, and the ways to keep copies of it, for free — a proposal, not yet built |
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
-| [accounts.md](accounts.md) | Accounts and pad links, as designed and as built: three-word names, view and edit links, roles, the dashboard, Google and GitHub sign-in, deleting an account, the operator's view |
+| [accounts.md](accounts.md) | Accounts and pad links, as designed and as built: three-word names, view and edit links, roles, the dashboard, Google and GitHub sign-in, deleting an account, the operator's view and the usage counts it shows |
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share — layout, theme, languages and landmarks — the bundle measurements behind it, and what each product keeps for itself |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [operations.md](operations.md) | Deploying, signing in and its secrets, reaching the server, setting up a new machine, the AWS account, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
-| [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A 22-finding review of the whole tree, and [what was done about each](../code-review-fixes-2026-09-16.md) |
+| [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A review of the whole tree on 16 September, refreshed on 28 September to the 21 findings then open, and [what was done about the first 22](../code-review-fixes-2026-09-16.md) |
 | [../ajar-review-2026-10-07.md](../ajar-review-2026-10-07.md) | Four reviews of ajar on 7 October — security, parity with the pad, the guest's page, end-to-end flows — and what was done about each finding, with the check that holds it |
+| [../audit-2026-10-17/](../audit-2026-10-17/README.md) | An audit of the pad on 17 October — data and collaboration, the backend, the runtime, the live site — with its evidence, and [where each finding stands](../audit-2026-10-17/STATUS.md) |
 | [../history/](../history/) | Design records. Superseded, kept because the reasoning is still useful |
 
 ## The one thing to read if you read nothing else

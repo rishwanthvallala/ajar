@@ -39,6 +39,14 @@ pad's runtime stopped needing registry.wasmer.io to start, and two typing
 losses on the guest's page were closed — [those days' lists](#closed-on-12-october).
 The relay and both pages are live; nothing of it needs an agent release.*
 
+*On 17 October an audit of the pad ([audit-2026-10-17](audit-2026-10-17/README.md))
+found faults in saving, isolation and recovery; by 18 October every finding
+but two was closed — each, with its commit and what it leaves, is in
+[STATUS.md](audit-2026-10-17/STATUS.md). The two are here: nothing is backed
+up (B08), and a deploy has no release swap or rollback (the rest of B12). The
+agent's share — waiting out a relay that cannot check its accounts — is in no
+release yet; v0.0.8 ends the session on it.*
+
 Things known to be unfinished, unfixed or undecided. Written down so they stay
 visible rather than being rediscovered. Each one says what is actually true,
 not what would be nice.
@@ -139,8 +147,12 @@ original bug.
 *stops* is closed by the kernel after a minute now (`TCP_USER_TIMEOUT`), which
 frees its slots. Two addresses that open 32 large reads each and re-open them as
 they are closed can still keep the 64 busy; that is a rate problem the per-address
-limit bounds rather than a stall, and the same shape a slow uploader has against
-the two write permits (four until 7 October).
+limit bounds rather than a stall. A slow uploader no longer holds the two
+write permits (four until 7 October): since 18 October a body is read first,
+taking room in a 66 MiB budget as it arrives, and is let go after 20 s of
+nothing or ten minutes in all (audit B04). One that sends nearly two whole
+bodies at speed and then a byte every few seconds can still hold that budget,
+and every save behind it, for the ten minutes.
 
 ### On Linux the sandbox still lets a guest reach key-holding sockets
 
@@ -182,15 +194,16 @@ exercises its capabilities.
 |---|---|
 | `lua` | Does not start; even `lua -v` exits 45. The only published build |
 | `go` (fetched on first use) | Single files only: Go cannot open a relative path or learn its working directory, so `go.py` hands it absolute ones, and a module (`go mod init`, `go run .`) fails with `getwd: File name too long`. A Go program opening a file by a relative path fails too, and a binary `go build` makes runs once — the second exec is `Exec format error` — so `go run` is the way |
-| C++ (clang, on first use) | `#include <iostream>` does not finish compiling — fifteen minutes on a three-line program — where `<cstdio>` takes seconds. Run on a file that includes it says so first |
+| C++ (`clang++`, `g++`, `c++`, on first use) | Since 18 October clang 22 with wasi-sdk's libc++, a package of our own (`ajar/cxx`): the standard library and exceptions work. What it builds is a WASI program with no threads, and an exit status past a few dozen comes back as 79. Until then it was the registry's clang, on which `<iostream>` did not finish compiling in fifteen minutes and `<vector>` crashed it |
 | `repl`, Common Lisp (on first use) | Expressions and the REPL; a file passed to it crashes, exit 11 |
 | `java`, `javac` (on first use) | Storing an `Integer` in a `String[]` does not throw `ArrayStoreException`; two exception messages are less detailed than HotSpot's; `Thread.getAllStackTraces` and `jshell` do not exist. The fast javac has no annotation processing or doclint, takes `--release 25` only, and needs a browser with WebAssembly GC and exception references, falling back to the slow one elsewhere. `FilesIO` in the fidelity set hung once in about ten runs on 15 October, not seen since. The patches to Ristretto and teavm-javac are ours alone, not offered upstream |
 | `ruby` | `-e` only; a script file exits 1, and `-e "$(cat f.rb)"` prints nothing. Not offered |
 | `zig` | `zig version` only; `zig run` and `zig cc` fail with FileNotFound. Not offered |
 
-That is the whole list, and it is now one line long. `sort`, `tail`, `split`,
-`stat`, `du`, `sha256sum` and `md5sum` were on it until they became python
-shims, along with twenty more commands that had no port at all.
+On 15 September that was the whole list, one line long — `lua`'s; the rows
+after it came with the languages tried since 12 October. `sort`, `tail`,
+`split`, `stat`, `du`, `sha256sum` and `md5sum` were on it until they became
+python shims, along with twenty more commands that had no port at all.
 
 **`find` is a shim as of 15 September**, which closed the last entry above. The
 shipped findutils binary had two faults it could not be talked out of: `-exec`
@@ -216,8 +229,9 @@ does not exist and exits 79 with no output, which is indistinguishable from a
 commit that never happened and was reported that way here before being
 diagnosed. Shipping git means setting `GIT_PAGER=cat` in `shell.ts`.
 
-**Fetched the first time they are used, since 12 October:** C and C++
-(`clang`, with `gcc`, `g++`, `cc` and `c++` as aliases to it), `node`, `npm`
+**Fetched the first time they are used, since 12 October:** C (`clang`, with
+`gcc` and `cc` as aliases to it), C++ (`clang++`, `g++` and `c++`, a package
+of our own since 18 October), `node`, `npm`
 and `pnpm`, `php`, `go`, Common Lisp as `repl`, and Java — `java` and `javac`,
 a package of our own — none on a visit, each when a line names it or Run is
 pressed on a file it runs. See
@@ -328,6 +342,21 @@ From the measurements of 11 October ([pad-store.md](dev/pad-store.md#old-against
   document scans the whole text for them (`eolOf`): about 30 ms each time at
   20 MB, the largest cost of the switch. Old, and not made worse.
 
+And from the audit of 17 October (B09): **the store's ceiling counts blobs and,
+since 18 October, last runs, but not the databases' own rows** — paths,
+hashes, versions, SQLite's WAL — and a pad made with no files costs nothing but
+the per-address limits. `--max-store-bytes` should stay well under the disk's
+free space for that reason.
+
+### Deploys
+
+A deploy, from a laptop or from CI, waits for `/healthz?deep=1` since 18
+October (`c060908`): the relay answering, and both its databases. The rest of
+the audit's B12 is open: `deploy.sh` rsyncs straight into the live
+directories, so while it copies a page can be served old and new files
+together; it records the commit as deployed before that check; and there is
+no release swap and no rollback.
+
 ### `playwright` is declared in the wrong workspace
 
 `web/package.json` declares it and nothing in `web/` uses it; the root
@@ -394,7 +423,8 @@ it took to get there.
 Built on 4 October — [dev/accounts.md](dev/accounts.md#as-built). What is
 still open in it:
 
-- **Nothing is backed up.** Accounts, pads and blobs live on one volume.
+- **Nothing is backed up** (audit B08). Accounts, pads and blobs live on one
+  volume.
   The options and the proposal — Litestream and the blobs to Backblaze B2, a
   second nightly copy elsewhere, an alarm and a weekly restore test, the key
   kept apart — are in [durability](dev/durability.md).

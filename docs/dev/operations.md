@@ -2,9 +2,9 @@
 
 One small ARM box in `ap-south-1` serves all three origins —
 `ajar.rishwanth.dev`, `code.rishwanth.dev` and `preview.rishwanth.dev`
-([below](#the-three-origins)). ajar sessions live in memory and die with the relay. Two
-things are durable: the pad store, and the accounts database with its key
-([what is on disk](#what-is-on-disk)).
+([below](#the-three-origins)). ajar sessions live in memory and die with the relay. Three
+things are durable: the pad store, the accounts database with its key, and the
+usage counts the admin page shows ([what is on disk](#what-is-on-disk)).
 
 ## Deploying
 
@@ -17,14 +17,20 @@ things are durable: the pad store, and the accounts database with its key
 It builds from the working tree, not from a commit — the relay, the web client
 and the pad are all built by `deploy.sh` from whatever is on disk — so deploy
 from a clean tree at a commit CI passed, and do not edit while a deploy is
-waiting to run. Nothing in the script checks either: an uncommitted edit ships
-as if it had been tested.
+waiting to run. Nothing in the script refuses either: an uncommitted edit
+ships as if it had been tested, marked only by `-dirty` in
+`/srv/ajar/deployed`, and an untracked file not even by that.
 
 Cross-compiles the relay for `aarch64-unknown-linux-gnu`, builds both browser
-clients, ships everything, and restarts the service. Idempotent. It ends by
-writing the commit it shipped to `/srv/ajar/deployed` — `-dirty` from a tree
-with changes git does not have — which a deploy from CI measures itself
-against.
+clients, ships everything, and restarts the service. Idempotent. Before it
+builds the pad it stops on a wasm mirror with no `manifest.json`, no
+`registry.json`, or an `own.json` that does not name both `ajar/java` and
+`ajar/cxx`, and says which script makes what is missing. Once the files are
+swapped in it writes the commit it shipped to `/srv/ajar/deployed` — `-dirty`
+when a tracked file differs from that commit — which a deploy from CI measures
+itself against; then it updates Caddy, and it ends by waiting, twenty tries a
+second apart, for `/healthz?deep=1` to answer 200
+([verifying a deploy](#verifying-a-deploy)).
 
 ### Deploying from CI
 
@@ -38,7 +44,7 @@ relay's host key against `deploy/known_hosts`.
 
 The pad's runtime packages are the one thing a runner cannot make — 1 GB, not
 in git, and partly our own builds' — Java's (`pad/scripts/build-java.mjs`,
-which takes containers and most of an hour) and C++'s (`build-cxx.mjs`). So the job takes them from the relay, which
+which takes containers and about ten minutes the first time, two after) and C++'s (`build-cxx.mjs`). So the job takes them from the relay, which
 serves exactly the ones deployed, cached between runs. That is right only while
 nothing has changed what they would be, so it deploys only when:
 
@@ -69,7 +75,8 @@ match, and running the script again rewrites the trust.
 
 `deploy/` holds a Caddyfile (TLS, routing, the headers the pad needs and the
 per-address rate limits), two hardened systemd units — `ajar-relay.service` and
-`ajar-wisp.service` — the egress endpoint they run, and the script.
+`ajar-wisp.service` — the egress endpoint they run, `deploy.sh`, and for CI
+`from-ci.sh`, `ci-aws-setup.sh` and the two files that writes.
 `deploy/caddy` is the Caddy the server runs, built with the rate-limit plugin
 ([below](#caddy-built-with-the-rate-limit-plugin)). Caddy handles WebSocket
 upgrades without configuration, which is most of why it is there rather than
@@ -91,7 +98,9 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 
 Built against Ubuntu 24.04's cross libc, which is what the box runs. The pad
 also needs its wasm mirror before a deploy will proceed: `npm run build:pad &&
-node pad/scripts/fetch-packages.mjs` (it compresses with `zstd`).
+node pad/scripts/fetch-packages.mjs` (it compresses with `zstd`), and our own
+packages beside it, `node pad/scripts/build-java.mjs` and `node
+pad/scripts/build-cxx.mjs`, which write `own.json`.
 
 Caddy is built on every deploy too, which needs **Go** — any release at or
 above the `go` line in `deploy/caddy/go.mod`; an older one fetches the right
@@ -124,7 +133,8 @@ gzip`.
 
 **A stale wasm mirror shipped without complaint.** `pad/public/packages` is
 not in git, so each machine has its own, and the deploy checks only that one
-exists. On 2 October one from 14 September went out: python untrimmed and
+is there — `manifest.json`, `registry.json`, and `own.json` with Java and C++
+in it — not that it is current. On 2 October one from 14 September went out: python untrimmed and
 bash's coreutils missing, so every visitor fetched that from Wasmer's CDN.
 After a package or trim change, or on a machine that has not deployed for a
 while, refresh it before deploying — `npm run build:pad && node
@@ -150,7 +160,7 @@ AJAR_CADDY_RESTART=1 ./deploy/deploy.sh ajar-relay --config-only
 
 `--config-only` pushes, validates and loads the Caddyfile and does nothing
 else — unless the file on the box already matches, in which case it leaves
-Caddy alone (and still says "caddy reloaded", which is not true then).
+Caddy alone and says so ("the Caddyfile is unchanged; caddy left as it is").
 `AJAR_CADDY_RESTART=1` forces a restart either way. **Check a Caddyfile change from outside after every deploy** — a route
 answering as the relay rather than with `index.html`, a header that changed —
 because a deploy that ends without one says nothing about whether it loaded.
@@ -217,10 +227,12 @@ session client. And the preview origin exists because the sandbox's HTTP
 responses are **somebody else's code** — served from the pad's origin they
 could script it, read its storage and reach its service worker.
 
-The preview origin serves two files taken from the vendored SDK the pad
-already ships, so they can never be a different version from the client
-talking to them, plus a one-line control page written inline in the
-Caddyfile, and 404 for everything else. Nothing is stored there and
+The preview origin serves the SDK's host script, taken from the vendored SDK
+the pad already ships so it can never be a different version from the client
+talking to it; since 16 October the pad's own control-page script and service
+worker, `pad/preview/` copied by the build, the worker in place of the SDK's;
+a one-line control page written inline in the Caddyfile; and 404 for
+everything else. Nothing is stored there and
 nothing is proxied.
 
 **`preview.rishwanth.dev` needs an A record to `13.207.222.42`.** DNS for the
@@ -317,19 +329,23 @@ See [accounts](accounts.md#as-built), "Usage, counted as it happens".
 `/var/lib/ajar/accounts.db` (SQLite, WAL) holds users, sessions, pads and
 links, and `/var/lib/ajar/accounts.key` beside it seals link codes so the
 dashboard can show a link again. **The two together are every edit link**;
-either alone is not. Neither is backed up yet — Litestream to S3 is the plan
-(see [open points](../open-points.md)), and the key must never go with it.
+either alone is not. Neither is backed up yet — Litestream to Backblaze B2 is
+the proposal (see [durability](durability.md)), and the key must never go with
+it.
 Losing the key costs only the dashboard's copies of existing links: owners
 reset them and share again.
 
 The limits — 20 pads and 250 MB per account — are the defaults of two relay
 flags, `--account-max-pads` and `--account-max-bytes`; to change them, add the
-flags to `ExecStart` in the unit.
+flags to `ExecStart` in the unit. Three of those pads may have names the
+account chose (`MAX_NAMED_PER_ACCOUNT`), which is not a flag.
 
 `/var/lib/ajar/pads/` is the pad store, since 11 October 2026
-([pad-store.md](pad-store.md)): `store.db` (SQLite, WAL) lists the pads and
-their files and leases, and `blobs/` holds each file's text once, named by its
-hash. Back them up together, the database first: a blob nothing lists is
+([pad-store.md](pad-store.md)): `store.db` (SQLite, WAL, `synchronous =
+FULL`) lists the pads and their files and leases, their versions and each
+one's last run (`last_runs`), and `blobs/` holds each file's text once, named
+by its hash, in a folder named by the hash's first two characters. Back them
+up together, the database first: a blob nothing lists is
 harmless, a listed blob that is missing is a file that will not load. The
 first start of a relay with this store brought every `<name>.json` the old one
 kept into it, and moved those files into `pads/legacy/`, where they stay until
@@ -615,12 +631,14 @@ PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs
 ```
 
 `/healthz` says `ok` from a relay that is running, whatever state its
-databases are in — it is what `deploy.sh` waits for, and it should stay that
-cheap. `/healthz?deep=1` says `ready` only when the accounts database and the
-pad store's both answer a query on the table every request reads, within five
-seconds, and otherwise 503 with which did not and why (audit B12). It proves
-the relay can serve pads, not that the page, the preview or the runtime
-packages are right — `app-check.mjs` is for those.
+databases are in — it is what the local checks wait for, and it should stay
+that cheap. `/healthz?deep=1` says `ready` only when the accounts database and
+the pad store's both answer a query on the table every request reads, within
+five seconds, and otherwise 503 with which did not and why (audit B12). Since
+18 October it is what `deploy.sh` waits for, and on a failure the deploy prints
+its answer and the end of `systemctl status ajar-relay`. It proves the relay
+can serve pads, not that the page, the preview or the runtime packages are
+right — `app-check.mjs` is for those.
 
 Comparing the live asset hash against a fresh local build is the strongest
 cheap check available: Vite hashes filenames by content, so a matching sha

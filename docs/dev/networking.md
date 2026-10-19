@@ -4,8 +4,9 @@
 September 2026; the measurements that led there are kept because they are what
 the next change to it has to start from.*
 
-The pad's sandbox reaches exactly one place on the internet with a socket:
-PyPI, through an endpoint we run. Everything else is refused. Since 15
+The pad's sandbox reaches exactly two places on the internet with a socket:
+PyPI and, since 16 October, Wasmer's index of Python packages built for this
+runtime, through an endpoint we run. Everything else is refused. Since 15
 October an HTTP request can also go the other way round — handed to the page,
 which makes it with the browser's fetch — and that reaches any site that lets
 a web page read it; see [HTTP through the page](#http-through-the-page).
@@ -256,9 +257,9 @@ A genuinely public URL needs a **reverse tunnel**: the pad opens an outbound
 connection to a server the user runs, and that server holds a public port and
 forwards inbound requests back down it. That is how ngrok works, and it is
 buildable now that egress exists — a few hundred lines on each side. What
-stands in the way is the allowlist: egress reaches PyPI and nothing else, so a
-tunnel would need the endpoint to reach the user's own server — the third row
-below, not a longer allowlist.
+stands in the way is the allowlist: egress reaches the package indexes and
+nothing else, so a tunnel would need the endpoint to reach the user's own
+server — the third row below, not a longer allowlist.
 
 ## Whose network it is
 
@@ -278,18 +279,18 @@ tunnel **cannot be shared**, because the second visitor would egress through
 the first person's network. Network mode would have to become per-tab and
 per-session, which cuts against "send someone the link".
 
-The allowlist is what makes the middle row survivable. Bounded to two
-hostnames, the abuse surface is "somebody downloads a lot of packages", not
-"somebody scans the internet from our address". It is the narrow version of a
-bad idea, and it stays defensible only while the list stays short — which is
-why widening it is an edit to `deploy/wisp-server.mjs` in the repository rather
-than a setting on the box.
+The allowlist is what makes the middle row survivable. Bounded to three
+hostnames, all package indexes, the abuse surface is "somebody downloads a lot
+of packages", not "somebody scans the internet from our address". It is the
+narrow version of a bad idea, and it stays defensible only while the list
+stays short — which is why widening it is an edit to `deploy/wisp-server.mjs`
+in the repository rather than a setting on the box.
 
-The third row is still the answer for anything wider than PyPI. If `git clone`
-or arbitrary egress is ever wanted, it is that, not a longer allowlist — and
-such a URL would be a credential: a pad is plaintext on the server and readable
-by anyone holding a link to it, so the URL must live in the tab and never in a
-file.
+The third row is still the answer for anything wider than the package
+indexes. If `git clone` or arbitrary egress is ever wanted, it is that, not a
+longer allowlist — and such a URL would be a credential: a pad is plaintext on
+the server and readable by anyone holding a link to it, so the URL must live in
+the tab and never in a file.
 
 ## Order to do it in
 
@@ -552,9 +553,9 @@ has no business asking our API anything in the name of whoever ran it. See
 allow it: `connect-src` is now `https:`.
 
 Not through it: `http.client` used directly, `httpx`, `aiohttp`, node's `fetch`,
-`git`, anything that opens its own socket. Those still reach PyPI alone. And a
-response comes whole, not as a stream: a download is held in the page until it
-is complete, then written.
+`git`, anything that opens its own socket. Those still reach the package
+indexes alone. And a response comes whole, not as a stream: a download is held
+in the page until it is complete, then written.
 
 ### localhost is the folder's servers
 

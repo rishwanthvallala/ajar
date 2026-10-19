@@ -52,7 +52,7 @@
       <header><a href="/"><svg class="mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect width="24" height="24" rx="6.5"/><path d="M6.5 8h8.5M9 12h8.5M9 16h5" stroke-width="2" stroke-linecap="round" fill="none"/></svg>pad</a><span class="meta">code.rishwanth.dev</span></header>
 
       <h1>Privacy</h1>
-      <p class="meta">Effective 17 October 2026</p>
+      <p class="meta">Effective 19 October 2026</p>
 
       <p>
         pad is a code scratchpad at <code>code.rishwanth.dev</code>: open it, type, run, and send the link.
@@ -94,10 +94,10 @@
 
       <h2>Your pads</h2>
       <ul>
-        <li>The files in a pad are stored on our server so that whoever has the link can open them, and so is what the pad's last Run printed, shown to whoever opens it next. <strong>They are not encrypted</strong>, and the person who runs pad can read them. Do not put passwords, keys or anything sensitive in a pad.</li>
+        <li>The files in a pad are stored on our server so that whoever has the link can open them, and so are its earlier versions — up to 30, for up to 30 days, so that a pad can be restored — and what the pad's last Run printed (at most 32 KB), shown to whoever opens it next. <strong>They are not encrypted</strong>, and the person who runs pad can read them. Do not put passwords, keys or anything sensitive in a pad.</li>
         <li><strong>A pad anyone can open</strong> can be read and changed by anyone with its link, and is deleted after 90 days in which nobody opens it.</li>
-        <li><strong>A pad you own</strong> is kept until you delete it, and who can view or edit it is your choice. Deleting it from Your pads deletes its files straight away.</li>
-        <li>The links you share carry a code after the <code>#</code>. Browsers never send that part to a server, so it does not appear in our logs. We keep each code only as a one-way hash, plus an encrypted copy so that you can copy the link again from Your pads.</li>
+        <li><strong>A pad you own</strong> is kept until you delete it, and who can view or edit it is your choice. Deleting it from Your pads deletes its files, their earlier versions and its last run straight away.</li>
+        <li>The links you share carry a code after the <code>#</code>. Browsers do not send that part of an address to a server; the page sends the code to ours only so that it can check what the link allows, and since 18 October our logs leave it out. We keep each code only as a one-way hash, plus an encrypted copy so that you can copy the link again from Your pads.</li>
       </ul>
 
       <h2>When you run code</h2>
@@ -108,13 +108,17 @@
         connection goes through our server to the Python Package Index (<code>pypi.org</code> and
         <code>files.pythonhosted.org</code>), and nowhere else; its name lookups go through our server to Cloudflare's
         DNS service. The connection is encrypted end to end, so we see which of those hosts it reached, not what was
-        sent.
+        sent. When a program fetches a web address — <code>curl</code>, <code>wget</code>, or Python's
+        <code>urllib</code> and <code>requests</code> — your browser makes the request itself, straight to that
+        site, as any web page does: not through our server, and without your cookies.
       </p>
 
       <h2>Logs</h2>
       <p>
         Our web server records each request — the IP address it came from, the address requested, the time, and the
-        browser's description of itself — to keep the service secure, to limit abuse, and to fix problems. Older
+        headers the browser sent with it, such as its description of itself — to keep the service secure, to limit
+        abuse, and to fix problems. Since 18 October it leaves out the code of a pad link, cookies, and the one-time
+        code a sign-in brings back from Google or GitHub. Older
         entries are deleted automatically as the logs fill. IP addresses are also held in memory for up to a day to
         apply rate limits.
       </p>
@@ -124,7 +128,9 @@
         The server counts how pad is used, to know whether it is and how to look after it. Each day: how many times
         pads are opened, and how many different pads that was; how many programs are run, in which language
         (Python, JavaScript, C, C++, Go, Java, PHP or Common Lisp), and whether the Run button or the terminal started
-        them. And every five minutes, the most people in pads at once. When you run a program, your browser tells
+        them. And every five minutes, the most people online at once — in pads, and in sessions of ajar
+        (<code>ajar.rishwanth.dev</code>, which runs on the same server) — and how many pads and sessions they were
+        in. When you run a program, your browser tells
         the server only its language and how it started — nothing of the program, its files or its output.
       </p>
       <p>
@@ -136,9 +142,10 @@
 
       <h2>On your device</h2>
       <p>
-        Your browser keeps your settings — theme, layout, colours — and the codes of pad links you have opened, in its
-        own storage on your device. They stay there until you clear your browser's data; signing out, or deleting
-        your account, forgets the link codes.
+        Your browser keeps your settings — theme, layout, colours, indent, screen reader — and the codes of pad links
+        you have opened, in its own storage on your device. They stay there until you clear your browser's data;
+        signing out, or deleting your account, forgets the link codes. While a save is failing, what you typed is
+        kept there too, until it is saved.
       </p>
 
       <h2>What the person who runs pad sees</h2>

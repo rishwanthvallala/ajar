@@ -6,9 +6,9 @@ build went further than the design, or stopped short of it.*
 
 ## What it is
 
-Signing in gives you pads you own. Each has a three-word name, a dashboard
-entry, and two kinds of link: one to view and one to edit. You decide who
-gets which.
+Signing in gives you pads you own. Each has a three-word name — or, for up to
+three, a name of the owner's own — a dashboard entry, and two kinds of link:
+one to view and one to edit. You decide who gets which.
 
 Anonymous pads do not change, and neither does the north star: open the site
 and you are typing.
@@ -27,7 +27,9 @@ Three words from the EFF large wordlist (7,775 words as vendored in `words.txt`)
 against about 22 for today's `adjective-noun-1234` — 24 adjectives, 24 nouns
 and 9,000 numbers. Minted server-side, checked against every account pad ever
 made — deleted ones included, since their names stay retired — and against
-every pad in the store now, and immutable once minted.
+every pad in the store now, and immutable once minted. A store that cannot
+say whether a name is taken counts it as taken, and minting gives up after 64
+tries rather than looping (18 October).
 
 **Or a name of the owner's own, for three pads** (16 October). New pad,
 Start from a zip, Copy a pad and Make a copy ask for one first, and blank is
@@ -111,7 +113,10 @@ suggestion. Both places a pad can change must check the role.
 
 1. **The store API** (`pad.rs`, behind `/api/pad/{name}`). Reads need viewer
    or better; writes need editor or owner. The owner is recognised by the
-   session cookie, everyone else by `X-Pad-Code`.
+   session cookie, everyone else by `X-Pad-Code`. A lookup that fails is
+   refused with 503, which the page tries again after; until 18 October it
+   read as no row, which is the anonymous pad anyone may edit, so a broken
+   database opened every private pad (audit B01).
 2. **The relay's peer room** (`ws.rs`, `session.rs`). Before accounts every
    peer was equal, and a browser applied whatever another sent. The `hello` carries the
    code, and the WebSocket upgrade carries the cookie; the relay resolves a role
@@ -119,7 +124,9 @@ suggestion. Both places a pad can change must check the role.
    the first byte of a doc payload. From a **viewer** it forwards requests for
    state (`DOC_WANT`) and nothing that changes anything: no `DOC_UPDATE`, no
    `moved`. Viewers answer `DOC_NONE` to requests, so a newcomer never takes a
-   document from someone who could not have written it.
+   document from someone who could not have written it. When the lookup
+   fails the door refuses with `unavailable`, and an owner's sign-in is asked
+   about again as the room takes it in (see [as built](#as-built)).
 
 **Revoking a link or rotating a code** closes everyone in the room but the
 owner, as changing a setting does; they rejoin with what they hold now. (The
@@ -192,6 +199,12 @@ generic tags from `index.html` itself.
 - The session is a `__Host-` cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
   30 days, stored hashed. State-changing requests also need a custom header,
   which a cross-site form cannot send.
+- **The cookie counts only from a page of ours** (18 October, audit B02): a
+  request with no `Origin`, an `Origin` that is `AJAR_PUBLIC_ORIGIN` or one of
+  `AJAR_TRUSTED_ORIGINS`, or `Sec-Fetch-Site: same-origin`
+  (`Auth::trusts_cookie_from`). Anything else — `preview.rishwanth.dev` is
+  the same site — is answered as nobody, on every HTTP route and at the
+  socket's upgrade. With no public origin set, nothing is compared.
 - `Cross-Origin-Embedder-Policy: require-corp` blocks cross-origin images, so
   avatars from Google or GitHub need to be served from our origin, or left out.
 
@@ -305,6 +318,9 @@ What the design left open, settled in the build:
 - **Rotating** is *Reset* — a new link, the old ones of that kind revoked, in
   one press. The data model holds any number of links per kind; the interface
   shows one.
+- **A link is a view link or an edit link.** Asked for any other role,
+  `POST /api/my/pads/<name>/links` is refused with 400 (18 October); it made
+  a view link and answered 201, and with `replace` revoked every view link.
 - **The plain address is the view link** while anyone with the link can view,
   which is what people expect a bare URL to be. Once viewing needs a view
   link, the dialog hands out the coded one.
@@ -396,8 +412,9 @@ editing.
 
 **The operator's view**, `/admin` (added 4 October): totals of how the pad is
 used, built from what the relay already keeps — accounts and sign-ups per day
-from the database, pads and when each was last opened from the store's files
-(their lease timestamps), who is in a room right now from the registry, and
+from the database, pads and when each was last opened or written from the
+store (each pad's lease, `touched_ms`), who is in a room right now from the
+registry, and
 the relay's uptime and memory. Only `AJAR_ADMINS` may open it
 (`http_admin.rs` serves the figures, `pad/src/admin.ts` draws them), and to
 anyone else it is what it was — not a pad address.
@@ -441,6 +458,17 @@ and `/auth/logout` closes those connections with `closed: signed out`. They
 rejoin, the page re-reads the pad, and drops to whatever the bare name or its
 link gives. The same person's other sign-ins — another browser, another device
 — are left alone.
+
+**An owner's place lasts as long as the sign-in** (18 October, audit B06). The
+cookie is read at the socket's upgrade only, so an owner's socket kept its
+place after its sign-in expired, and one that signed out between its upgrade
+and its hello came in as owner. The room now asks whether the sign-in is live
+as it takes an owner in (`Accounts::session_left`), under the lock signing out
+closes owners under, and signing out ends the sign-in before it closes them:
+a socket on its way in is refused `signed_out`, and knocks again as what it is
+without it. When the sign-in runs out the room lets the owner go with
+`closed: your sign-in has expired`. A lookup that fails lets nobody in as
+owner.
 
 **Deleting an account** (4 October), at the foot of the dashboard, behind a
 dialog and a typed `delete`: `DELETE /api/me`. In one transaction the person's

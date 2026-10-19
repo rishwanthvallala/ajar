@@ -70,7 +70,8 @@ that; nothing has needed it yet.
 
 ```
 pads/
-  store.db        SQLite: which pads exist, their files, their leases
+  store.db        SQLite: which pads exist, their files, their leases, their
+                  history and their last runs
   blobs/ab/<hash> each file's text, stored once, as the JSON string it is sent as
   legacy/         the one-document-per-pad files, kept after they were imported
 ```
@@ -81,6 +82,8 @@ pads/
   changed at, its size.
 - **`blobs`**: hash, size on disk, how many files hold it, and since when none
   has.
+- **`versions`** and **`version_files`**, a pad's [history](#history), and
+  **`last_runs`**, [the last run](#the-last-run): below.
 
 A blob is named by the SHA-256 of its encoding and contents, so the same text
 is stored once however many pads hold it — a starter file, a copied pad, an
@@ -99,7 +102,8 @@ changed after.
    deleted.
 
    On the disk in that order, since 18 October (audit B07): a blob's bytes
-   are synced before its rename and its directory after, and the database
+   are synced before its rename and its directory after (and `blobs/` when
+   that directory is new, `settle`), and the database
    is `synchronous = FULL`, so a save that was answered is there after a power
    cut, and never as a row naming a blob that is not.
 3. A blob nothing refers to any more is deleted then, unless something is
@@ -108,6 +112,19 @@ changed after.
    hourly sweep.
 
 What a save costs is the files it changes. The rest of the pad is not read.
+
+Before any of that, since 18 October, a request is counted (audit B10): at
+most `MAX_WRITES`, 2,000 changes, `MAX_EDITS`, 1,000 edits to a file, and
+10,000 edits in all, kept to one past the cap as the body is parsed and
+refused with 413; and no more files kept by the request alone than a pad
+holds, before any blob is staged. Which write of a path is its last is found
+in one pass. A file is refused by name when its path has a backslash or a
+control character, or is under `.ajar/` or `.deps/` or in a `.git` folder
+(`check_storable`: the page's own machinery, installed packages and a
+repository's, which the page never saves or shows), or when it is sent as
+base64 and is not base64 — an edit is held to what it leaves. Deleting at
+such a path still works, the backslash apart, so a pad holding one from
+before can be cleaned.
 
 ## A read
 
@@ -119,10 +136,10 @@ sizes. Memory is a chunk, whatever the pad's size.
 A reader that has the pad already says at which sequence, `x-pad-seq`, and if
 the pad is no further on it is answered with `"unchanged": true`, the sequence,
 who it is to the pad, and no files — the lease renewed all the same, and access
-checked first, as for any read (18 October). Pages read again on every welcome
-to the room and whenever anybody joins or leaves it; for a large pad each of
-those was the whole pad again. Opening a pad (`x-pad-open`) is always read
-whole.
+checked first, as for any read (18 October, `Store::unchanged_since`). Pages
+read again on every welcome to the room and whenever anybody joins or leaves
+it; for a large pad each of those was the whole pad again. Opening a pad
+(`x-pad-open`) is always read whole.
 
 ## A save that sends only what changed
 
@@ -146,6 +163,13 @@ Small changes go together while they fit. A file bigger than that goes as its
 first part, then each next part as an edit adding it to the end, against the
 hash the answer before gave for it; a paste bigger than that, the same way from
 where it was made. An upload of a full 100 MB pad is five requests or so.
+
+A body is read before the write takes one of the relay's two write permits,
+since 18 October (audit B04): it takes room in a budget of two whole bodies,
+66 MiB, as its bytes arrive, and one that sends nothing for 20 seconds, or is
+not all in after ten minutes, is refused with 408 and lets go. The permit is
+then held for parsing and storing only. Waiting more than 20 seconds for room
+or for a permit is a 503, which the page tries again after.
 
 The parts are separate writes. If one fails, the ones before it have landed,
 and a file sent in parts holds only those until it is saved again.
@@ -251,15 +275,19 @@ undone the same way.
 **How many.** At most `VERSIONS_KEPT`, 30, naming at most `HISTORY_BYTES`,
 200 MB, between them, and nothing older than `VERSION_AGE`, 30 days. The
 oldest go first, and the newest always stays. Deleting a pad, or its lease
-lapsing, lets go of its history with it. The tests of how blobs are let go
-run on a store with history off, because a version would hold the very blob
-they watch go.
+lapsing, lets go of its history with it: a lapsed pad's history is not
+listed, read or added to before the sweep, and a pad started at its name drops
+it rather than inheriting it (audit B11, 18 October). The tests of how blobs
+are let go run on a store with history off, because a version would hold the
+very blob they watch go.
 
 **Reading.**
 - `GET /api/pad/<name>/history` lists the versions, for anyone who may read
   the pad.
 - `GET …/history/<id>` gives one version's files, in the shape a read gives a
-  pad's.
+  pad's. Since 18 October (audit B03) it is let in as a read is, with the
+  address's read slot and a global permit, and streamed from the blobs
+  (`Store::open_version`); it was built whole in memory.
 - Keeping one with `POST` needs edit.
 
 **Restoring is the page's, not the store's.** Open documents hold the live
@@ -283,3 +311,10 @@ and a lapsed pad's is not given to the next pad of that name.
 none), `PUT` for whoever may edit it, charged to the writer's address the way
 a save is — only what it adds to the one before, since it replaces it. A link
 preview quotes its first lines after the main file's (`describe`, main.rs).
+
+Since 18 October (audit B09) a run's output, command and path count in `used`
+against the store's ceiling, as a blob does — kept up by one row's length as
+runs are kept, replaced and dropped — and one that would take the store past
+it is refused with 507. It is not charged to an owning account. Its body is
+read as a write's is, within 256 KiB (`MAX_RUN_HTTP_BODY`), and a command or
+path is at most 1 KiB.

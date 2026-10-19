@@ -39,6 +39,17 @@ joining what, and pretending otherwise would mean the relay could not route.
 In a hosted session everything with content in it is sealed; a pad's peer
 frames are not, since a pad has no key — the server holds its files anyway.
 
+A pad's `Doc` payload starts with its kind — update, awareness, a request for
+a document's state (`DOC_WANT`, 0x03) or the answer that there is none
+(`DOC_NONE`, 0x04) — and then the Yjs bytes. Its stream id is a 32-bit hash
+of the file's path, and two paths can share one, so since 18 October the
+message also names its file at the end: the path, its length in two bytes
+little-endian, then `0xFF` (`docPayload` and `readDoc` in `pad/src/peers.ts`).
+A page goes by that name, and drops a message whose name does not hash to the
+stream it came on. A page from before reads from the front and stops where
+the Yjs bytes end, so it never sees the name; the kind stays first, which is
+the byte the relay reads.
+
 ## Routing
 
 Hosted sessions are four cells and stay four cells:
@@ -71,7 +82,12 @@ A join whose role does not match the session's shape is refused with
 `wrong_shape`. This is enforced in both directions and tested against the
 deployed relay, not just locally. A host or guest naming a pad that belongs
 to an account, or one whose owner deleted it, is refused with `wrong_shape`
-too, before any session exists.
+too, before any session exists — or with `unavailable` when the relay cannot
+look the name up, which the agent waits out (since 18 October).
+
+The first frame on a socket must be a `hello`, within 10 seconds, and at most
+256 KiB (`MAX_HELLO_BYTES`): a bigger one is refused unread with
+`hello_too_big`, since 18 October.
 
 A host's `hello` carries `host_key`, a secret the agent made at startup: the
 relay keeps its hash from the hello that opened the session and lets only that
@@ -91,8 +107,11 @@ secrets cannot grow it for ever. See
 
 A peer's `hello` may carry `code`, the part of a pad link after the `#`, left
 off the wire when there is none. The relay refuses a peer with `private` when
-the pad's settings and that code give it nothing, and with `gone` when the
-pad was deleted.
+the pad's settings and that code give it nothing, with `gone` when the
+pad was deleted, with `unavailable` when who may open it could not be looked
+up, and with `signed_out` when the sign-in that would make it the owner has
+ended since the socket opened — knocking again, it is let in on what it holds
+without it.
 
 ## What survives what
 
@@ -107,8 +126,8 @@ pad was deleted.
 | Host never returns | The relay reaps the session and tells guests why |
 | Host presses ctrl-c | `Control::Close` — immediate, no grace |
 | Relay process dies | The agent dials back in and re-opens the same session id. Guests who get back first are refused `no_such_session`; a page that has been in the session waits that out, and `rate_limited`, rather than giving up |
-| The agent is refused `host_taken` or `rate_limited` | It waits — at least two seconds, since a relay holding a stale socket takes that long to let it go — and tries again: both are about the moment. Every other refusal ends it. A host coming back to a session the relay still has is metered as joining, not as starting a session |
-| Who may open a pad changes | Everyone in its room but its owners gets `Closed`, rejoins, and is let in on what they hold now; deleting the pad closes everyone. Signing out closes the room connections that sign-in made owner |
+| The agent is refused `host_taken`, `rate_limited` or `unavailable` | It waits — at least two seconds, since a relay holding a stale socket takes that long to let it go — and tries again: all three are about the moment (`unavailable`, the relay unable to check its accounts, since 18 October). Every other refusal ends it. A host coming back to a session the relay still has is metered as joining, not as starting a session |
+| Who may open a pad changes | Everyone in its room but its owners gets `Closed`, rejoins, and is let in on what they hold now; deleting the pad closes everyone. Signing out closes the room connections that sign-in made owner, and since 18 October so does that sign-in running out |
 
 Frames the agent tries to send while disconnected are **dropped, not queued**.
 The ring buffers already hold the terminal output a guest needs, and queueing

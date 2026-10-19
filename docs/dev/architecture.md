@@ -18,9 +18,14 @@ rather than merely tolerable.
 The pad has no agent. Nobody lends a machine, so the compute moved into each
 visitor's tab — and everything the agent used to own had to go somewhere. The
 files went to the server, which means the relay grew durable state — the pad
-store, and since 4 October the accounts database that says who owns which
-pad — plus an origin, cross-origin isolation headers, and 66.5 MB of mirrored
-WebAssembly (15.1 MB compressed) for the web server in front of it to serve.
+store, which since 16 October keeps a pad's earlier versions and since 17
+October what its last Run printed ([pad-store.md](pad-store.md)); since 4
+October the accounts database that says who owns which pad; and since 17
+October a third database, of usage counts, which says nothing about who — plus an
+origin, cross-origin isolation headers, and mirrored WebAssembly for the web
+server in front of it (Caddy) to serve: 66.5 MB (15.1 MB compressed) that
+every visitor needs, and about 1 GB with the languages fetched the first time
+they are used.
 
 That is the trade, stated plainly: the pad is easier to use and the server
 does more work and can read your files.
@@ -42,7 +47,8 @@ The agent holds every authority. It made the key, and only it and whoever
 holds the link can decrypt — never the relay. It is the only one that knows
 anyone's name, the only one that can write to the folder,
 and the only one that decides what a guest is allowed to do. The relay routes
-on nine bytes of header and forwards the rest untouched.
+on nine bytes of header and forwards every sealed payload untouched; all it
+reads is the hello and the control and store messages addressed to it.
 
 That constraint was there from the first commit and it paid: **turning on
 end-to-end encryption required zero changes to the relay.** It holds no
@@ -50,7 +56,9 @@ session key and has no code that opens a frame. The cryptography it does
 carry is hashing: since 4 October, for accounts — sealed link codes and hashed
 session tokens; since 7 October, the SHA-256 of the host's key, to know which
 agent opened a session, and of each guest's resume secret, to know whom a
-locked session already let in.
+locked session already let in; since 17 October, the hash of each pad opened
+that day, under a key kept for that day alone, to count a pad opened twice
+once (`usage.rs`).
 
 ## pad: sharing a folder
 
@@ -93,6 +101,8 @@ participant id on what it sends, and the relay checks it: a guest's frame goes
 to the host, a peer's to everyone else. A pad that belongs to an account is the exception: the relay
 asks the accounts database who may come in and as what, and drops everything
 a viewer sends except asking for a document's state, or saying it has none.
+When the database cannot answer, the door refuses rather than guesses, and
+an owner's place in the room lasts only as long as the sign-in it came with.
 
 ## Three origins, and why none of them can merge
 
@@ -117,11 +127,15 @@ load-bearing. See [operations.md](operations.md#the-three-origins).
 
 Two paths on the pad's origin are not the pad. `/wisp` is the egress endpoint
 and `/dns-query` forwards DNS, both proxied by Caddy to processes on loopback.
-(`/api` and `/auth` go to the relay — the store and signing in — and
-`/privacy` is a static page; those are the pad's own.)
-They live on this origin rather than a fourth one for the same reason the
-preview cannot: the page's own `connect-src 'self'` has to reach them, and
-widening that policy to admit somebody else's host is the thing being avoided.
+(`/api`, `/auth` and `/ws` go to the relay — the store, signing in and the
+pad's room — as does a link-preview bot, which Caddy sends to the relay's card
+for the pad rather than to a page it cannot run; `/privacy` is a static page.
+Those are the pad's own.)
+They live on this origin rather than a fourth one so that the page's own
+`connect-src` reaches them as `'self'`. That policy has admitted any `https:`
+site since 15 October, for the `curl` the page makes with fetch
+([security.md](security.md#http-through-the-browser)), but no WebSocket host
+other than the pad's own, and `/wisp` is a WebSocket.
 Neither serves the pad's content and neither can be reached by what a visitor
 runs — the sandbox talks to them through the SDK, not through the folder.
 
@@ -153,7 +167,7 @@ would leave a browser confidently out of step with no way to notice.
 |---|---|
 | `crates/ajar-proto` | Frame codec, channels, roles, sealing. Shared by agent and relay |
 | `crates/ajar` | The agent. Terminals, workspace scanning, documents, downloads, the checkpoint and credential scan, sandbox, panel |
-| `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store, accounts and sign-in, the operator's view |
+| `crates/ajar-relay` | Routing, session lifecycle, rate limits, backpressure, the pad store, accounts and sign-in, usage counts, the operator's view |
 | `web/src` | The session client |
 | `pad/src` | The browser tier, including the WASIX runtime and the shell |
 | `packages/workspace-ui` | `WorkspaceShell` and the theme both products' layouts are built from |
@@ -162,8 +176,8 @@ would leave a browser confidently out of step with no way to notice.
 `WorkspaceShell` — the panel arrangement, the resizing, the drawer, the theme
 tokens — plus the theme switch, the one `languageFor`, and CSV/TSV
 highlighting. Both `web/src/workspace.ts` and `pad/src/workspace.ts` build on
-it: `web/src/workspace.ts` went from 262 lines to 84 (88 now), and the pad's
-equivalent is 159 where it previously had none of its own.
+it: `web/src/workspace.ts` went from 262 lines to 84 (91 now), and the pad's
+equivalent was 159 (224 now) where it previously had none of its own.
 
 It is worth being precise about how this differs from the shared package that
 was tried and reverted, because the earlier attempt is still on record in

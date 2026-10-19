@@ -70,7 +70,7 @@ YAML, SQL, shell, Java, C and C++, Go, Rust and more), with each column of a
 CSV or TSV in its own colour, and Ctrl-F finds and replaces.
 
 **Errors point at your code.** When a program fails, the file and line in its
-error — a Python traceback, a C, Go or Java compiler's error, a Java or Node
+error — a Python traceback, a C, C++, Go or Java compiler's error, a Java or Node
 stack, PHP's — are links in the terminal: click one and the file opens at that
 line. And the run's errors are marked in the editor, a squiggle under each line
 with what it said on hover (F8 steps through them). The marks follow the text
@@ -176,7 +176,7 @@ The terminal's keys are bash's:
 | Ctrl-L, `clear` | clear the screen |
 | Ctrl-C | abandon the line, or stop a running command — so does **Stop**, which Run becomes while anything runs |
 | Ctrl-Enter (⌘⏎ on a Mac) | Run, from anywhere on the page — the editor and the terminal too |
-| F6, Shift-F6 | to the next part of the page and back — the header, the files, the editor, the terminal: the way out of the terminal by keyboard, where Tab completes |
+| F6, Shift-F6 | to the next part of the page and back — the header, the files, the editor, the terminal: the way out of the terminal by keyboard, where Tab completes; the terminal says so under the first command you type |
 | Ctrl-D | end the input a program is waiting for: `input()` raises `EOFError`, `cat > notes.txt` finishes |
 | Ctrl-S | nothing to do: every change is saved as you type |
 
@@ -184,7 +184,13 @@ Pasting several lines runs them one after another, as if typed.
 
 On a phone or a tablet, whose keyboard has none of Tab, Ctrl or the arrows,
 a row of them sits under the terminal's header: Tab, Ctrl-C, ↑ ↓ ← →, Esc and
-Ctrl-D. Pressing one leaves the keyboard up.
+Ctrl-D. Pressing one leaves the keyboard up. On a phone the files are behind
+**Files**, at the start of the top bar, and the editor sits above the
+terminal; turned on its side, the editor and the terminal are side by side,
+each the height of the screen.
+
+**Screen reader**, beside New terminal, lets a screen reader read what the
+terminals print. Your browser remembers it, as it does the theme.
 
 What does not run here is anything that takes over the whole screen — vim,
 less, top. `python3` on its own gives you its prompt, and `nano` is below.
@@ -286,7 +292,8 @@ it, and anything it had not saved.
 
 Send the link and you are both in the same folder. Pasted into Slack,
 WhatsApp, iMessage, Discord and the like, it unfurls into a card with the
-pad's name, its files and the first lines of its main file. A pad only people
+pad's name, its files, the first lines of its main file and the first lines
+of what Run last printed. A pad only people
 with a link code may view shows only that it is private.
 
 The top right shows a dot
@@ -466,10 +473,11 @@ says what it was and ends the program, as it would anywhere. What it builds
 is a WASI program, run as `./a.out`; there are no threads in it, and a large
 exit status (100, say) comes back as 79. JavaScript errors show
 your program's frames as `<anonymous>:line:column`, without a file name, which
-this runtime's node does not give. Go runs with `go run`; `go mod init` works,
-but a Go program opens files by their full path (`/workspace/data.txt`) — a
-relative one fails with "Math result not representable" — and a program
-`go build` makes runs only once, so use `go run`. The first `go run` fetches
+this runtime's node does not give. Go runs a single file with `go run`;
+`go mod init` works, but a module does not run (`go run .` fails). A Go
+program opens files by their full path (`/workspace/data.txt`) — a relative
+one fails with "Math result not representable" — and a program `go build`
+makes runs only once, so use `go run`. The first `go run` fetches
 273 MB and takes about 24 seconds. Lisp runs expressions and its REPL, not
 files.
 
@@ -492,7 +500,9 @@ of names, not names; `ls -1` gives one a line.
 that the pad cannot keep — past the 500, or with a name it cannot hold, a
 backslash in it (what a script written for Windows makes) or a tab — is named
 in the status line and above the prompt, and left out; everything else the
-command made is saved as usual. Links made with `ln` are not kept. `~` is a
+command made is saved as usual. Links made with `ln` are not kept, and nor is
+what tools leave behind: `__pycache__` and `.pyc` files, `node_modules`, a
+`.git` folder, and `.deps`, where pip installs. `~` is a
 folder under `/tmp`, `$HOME`, which is the sandbox's and gone after a reload;
 so is `/tmp`.
 
@@ -543,4 +553,6 @@ added to `requirements.txt` as a plain one is; joined with `;` or a pipe it is
 not, because the line's result is then `tail`'s, not pip's.
 
 The first command is slow — that is the 19 MB arriving. After that it is
-instant, and a later visit is free.
+instant, and a later visit is free. Run pressed while the pad is still
+opening is not lost: the status line says so, and the file runs once the pad
+is open.

@@ -9,7 +9,8 @@ workspace shell (`packages/workspace-ui`) with the first.
 
 ```sh
 npm ci                                 # from the repository root
-npm run build:pad && node pad/scripts/fetch-packages.mjs   # mirrors ~66 MB of wasm, with .zst and .gz copies; needs cargo, for the trimmer it builds; once
+npm run build:pad && node pad/scripts/fetch-packages.mjs   # mirrors the wasm, ~66 MB every visit needs and about 1 GB with the languages, with .zst and .gz copies; needs cargo, for the trimmer it builds; once
+node pad/scripts/build-java.mjs && node pad/scripts/build-cxx.mjs   # Java and C++, packages of our own that no registry has; Java's needs podman; once
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -33,9 +34,15 @@ npm run check --workspace=ajar-pad
 | `src/store.ts` | The durable folder over HTTP |
 | `src/sync.ts` | What a command changed, and what never gets published |
 | `src/seed.ts` | What the sandbox starts with — store, model, document, in that order |
+| `src/texts.ts` | Each file as its text, and as an editor model only once the editor needs it |
 | `src/files.ts` | The file tree, with folders derived from paths |
 | `src/zip.ts` | Zips in and out — read, written and checked in the browser |
 | `src/monaco-languages.ts` | The formats the editor colours, each tokenizer fetched on first use |
+| `src/toolchains.ts` | C, C++, Go, Java, Node, PHP and Lisp, fetched the first time a line names one or Run runs its file |
+| `src/format.ts`, `src/starters.ts`, `src/markdown.ts` | Format, the starter an empty file offers, and a Markdown file shown formatted |
+| `src/problems.ts` | The files and lines a run's errors point at: links in the terminal, marks in the editor |
+| `src/requirements.ts` | What a typed `pip install` adds to `requirements.txt` |
+| `src/usage.ts` | A run's language, sent for the usage counts |
 | `src/app.ts` | Everything wired together |
 | `src/main.ts` | The page's entry: the stored theme first, then the layout preview or `bootstrap.ts` |
 | `src/bootstrap.ts` | Sends `/dashboard` (and `/login`, `/signup`, `/account`, `/settings`, which go there) and `/admin` to their pages, takes a link's code out of the address bar, mints or reads the name, then starts the app |
@@ -51,6 +58,8 @@ npm run check --workspace=ajar-pad
 | `src/tools/sort.py`, `tail.py` | Advertised by the shipped coreutils and not compiled into it |
 | `src/tools/box.py` | Twenty-three more, dispatched on the first argument — including `find`, which shadows the shipped one |
 | `src/tools/edit.py` | A terminal editor, aliased as `nano` — curses cannot start here |
+| `src/tools/go.py`, `cxx.py` | `go` given the absolute paths it needs, and `clang++`/`g++`/`c++` run one compiler step at a time |
+| `src/tools/curl.py`, `_padfetch.py` | `curl` and `wget`, and Python's HTTP, through the browser (`src/fetch-bridge.ts`) |
 | `src/tools/sitecustomize.py` | Loaded before every python: starting a thread is an error, not a silent hang |
 | `src/probe.ts`, `src/packages/catalogue.ts` | The candidate packages and what each has to do, run by `scripts/probe-packages.mjs` |
 | `src/net-probe.ts` | Whether a process in the sandbox can serve HTTP. See [`docs/dev/networking.md`](../docs/dev/networking.md) |
@@ -61,7 +70,10 @@ npm run check --workspace=ajar-pad
 | `scripts/terminal-check.mjs` | The terminal by real key presses |
 | `scripts/user-check.mjs` | Mistakes, ctrl-c, Stop, `nano`, the editor, zips — the pad as a person uses it |
 | `scripts/accounts-check.mjs` | Owner, editor and viewer in three browsers, against a real relay and a stand-in OAuth provider |
+| `scripts/pair-check.mjs` | Two places in one pad, through a real relay, their text compared after each thing a person does |
 | `scripts/typing-perf.mjs` | Two people in one long file: a measurement, not a check |
+| `scripts/open-perf.mjs` | A 500-file pad opening, timed through a real relay: a measurement too |
+| `scripts/build-java.mjs`, `build-cxx.mjs` | Java and C++, packed as packages of our own and answered for by `public/sw.js` |
 | `scripts/preview-check.mjs` | The Preview button, end to end — locally, or against live with `PAD_ORIGIN` |
 | `src/wisp-probe.ts` | Egress, and the limits on it, measured inside the sandbox |
 | `scripts/wisp-check.mjs` | Drives that against a local or deployed WISP endpoint |
@@ -69,5 +81,6 @@ npm run check --workspace=ajar-pad
 | [`../deploy/wisp-server.mjs`](../deploy/wisp-server.mjs) | The endpoint itself, and the allowlist that keeps it from being an open proxy |
 | `scripts/probe-packages.mjs` | Installs each candidate package and exercises it |
 | `public/sw.js` | Serves the wasm packages from this origin instead of Wasmer's CDN |
-| [`../crates/ajar-relay/src/pad.rs`](../crates/ajar-relay/src/pad.rs) | The durable store, on the server |
-| `../crates/ajar-relay/src/accounts.rs`, `auth.rs`, `http_accounts.rs`, `http_admin.rs` | Accounts, sign-in, their routes, and the operator's figures |
+| `src/preview.ts`, `preview/sw.js` | The Preview: a small browser onto the folder's servers, and the worker on the preview origin that routes each port |
+| [`../crates/ajar-relay/src/pad.rs`](../crates/ajar-relay/src/pad.rs) | The durable store, on the server: files, earlier versions, the last run |
+| `../crates/ajar-relay/src/accounts.rs`, `auth.rs`, `http_accounts.rs`, `http_admin.rs`, `usage.rs` | Accounts, sign-in, their routes, the operator's figures, and the usage counts among them |
