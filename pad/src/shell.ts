@@ -354,8 +354,9 @@ export class Shell {
     //   /workspace/bin/awk prints correctly and never returns
     //   alias aw=…         works
     //
-    // Calling a bash function in this build hangs — the output arrives and the
-    // shell never comes back — and so does a script on PATH. An alias is plain
+    // Calling a bash function hung in the bash this replaced, sharrattj/bash —
+    // the output arrived and the shell never came back; wasmer/bash 1.0.25
+    // runs one (packages/catalogue.ts) — and so does a script on PATH. An alias is plain
     // textual substitution with nothing to fork, so it survives. It needs
     // `expand_aliases` because this shell is not interactive in bash's sense.
     //
@@ -399,8 +400,10 @@ export class Shell {
       // read-only /nix/store path: a plain `pip install` reports success and
       // the package is then not importable, because the write landed in a
       // layer that does not outlive the process. PIP_TARGET sends it to the
-      // folder instead, which is somewhere real — so it survives a reload,
-      // it syncs, and whoever opens the link has it too.
+      // folder instead, which is somewhere real. Not saved with the pad since
+      // 18 October — numpy alone is over a thousand files — so what reaches
+      // whoever opens the link is requirements.txt, which a typed install adds
+      // to (App.recordInstalled) and Run installs from.
       `export PIP_TARGET=/workspace/${DEPS}`,
       `export PYTHONPATH=/workspace/${DEPS}:/workspace/${SITE.slice(0, SITE.lastIndexOf("/"))}`,
       // No progress bar, because drawing one starts a thread — see

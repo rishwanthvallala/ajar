@@ -1,8 +1,10 @@
 //! Socket handling and the whole of the routing layer.
 //!
-//! The relay parses the 9-byte header and nothing else. Payloads are opaque
-//! bytes it forwards without inspection — the one exception is the `Hello`
-//! handshake, which it must read to know where a socket belongs.
+//! The relay parses the 9-byte header and, of payloads, only what it must:
+//! the `Hello` handshake, to know where a socket belongs; the control channel;
+//! the stored copy's envelope; and the first byte of a pad document message,
+//! which says whether a viewer may send it. Everything else is opaque bytes
+//! forwarded without inspection.
 
 use std::sync::Arc;
 

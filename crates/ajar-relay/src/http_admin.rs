@@ -1,8 +1,8 @@
 //! The operator's view: totals of how the pad is used, at /admin.
 //!
 //! Everything here is read from what the relay already keeps — the accounts
-//! database, the pad store's files, the rooms in memory. Nothing is collected
-//! for it. Only the people named in `AJAR_ADMINS` may ask; anyone else is told
+//! database, the pad store's database, the rooms in memory — and the usage
+//! counts (usage.rs), which are counts and nothing more. Only the people named in `AJAR_ADMINS` may ask; anyone else is told
 //! there is nothing here, so the page's existence is not given away.
 
 use axum::extract::State;

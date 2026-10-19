@@ -22,7 +22,7 @@
  * The convention, therefore: **every path in this application is relative to
  * the folder, and every command is given a bare relative path.**
  *
- * That was SDK 0.11. From 0.19 the JS view takes the process's own absolute
+ * That was SDK 0.11. From 0.18 the JS view takes the process's own absolute
  * paths, and only ones inside `/workspace` — anything else is refused with
  * "sandbox filesystem paths must be inside `/workspace`". So the convention
  * stands and `at()` turns a folder path into the guest's: every call into

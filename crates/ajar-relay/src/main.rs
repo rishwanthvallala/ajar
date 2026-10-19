@@ -507,8 +507,8 @@ struct HealthQuery {
     deep: Option<String>,
 }
 
-/// `ok`, from a process that is up: what the deploy and the checks wait for,
-/// and what it always said.
+/// `ok`, from a process that is up: what the checks wait for, and what it
+/// always said. The deploy waits for `?deep=1`.
 ///
 /// With `?deep=1`, whether the pad can be used: the accounts database and
 /// the pad store's each asked for a row of the table every request reads,

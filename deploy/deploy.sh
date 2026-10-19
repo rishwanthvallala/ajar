@@ -134,7 +134,7 @@ say "building the web client"
 npm run build:ajar --silent >/dev/null
 
 say "building the pad"
-# The mirrored wasm packages are 70 MB of binaries, so they are not in git.
+# The mirrored wasm packages are about 1.1 GB of binaries, so they are not in git.
 # Refusing here beats shipping a build that silently falls back to Wasmer's
 # CDN — which works, but at four times the download and with the CSP's
 # connect-src doing the only complaining.

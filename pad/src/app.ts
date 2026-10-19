@@ -2817,12 +2817,13 @@ export class App {
    * and again whenever it changes: a Flask app shared as a link runs on Run,
    * without a `pip install` its author knew to type.
    *
-   * pip installs into `.deps`, which is saved with the pad, so what was
-   * installed for which text is kept there too (`INSTALLED_FOR`) and travels
-   * with it: the next person to open the link, or this one tomorrow, finds it
-   * installed and nothing is fetched again. Keyed on the file's text, so a
-   * package that will not install is tried once per change rather than
-   * before every command.
+   * pip installs into `.deps`, and what was installed for which text is kept
+   * there too (`INSTALLED_FOR`). `.deps` is not saved with the pad since
+   * 18 October, so this holds for the sandbox it is in: a page's later
+   * commands find it installed and nothing is fetched again, and a reload or
+   * the next person installs afresh. Keyed on the file's text, so a package
+   * that will not install is tried once per change rather than before every
+   * command.
    *
    * Stopped with Ctrl-C, the line it was installing for does not run either:
    * that was the person asking for nothing to happen.

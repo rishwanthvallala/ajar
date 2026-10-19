@@ -1854,12 +1854,6 @@ impl Store {
             .optional()?)
     }
 
-    /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
-    /// means the name is free.
-    ///
-    /// Opening counts as touching it, so its lease starts again — at most once
-    /// a day, as renewing is a write. What is sent is the version this looked
-    /// at: its blobs never change, and none is deleted while it is in use.
     /// The pad's sequence, when a reader that has it at `since` has it as it
     /// is — the pad no further on — and nothing when it has moved on, or is
     /// not there, or has lapsed: then the reader is sent it whole. The lease
@@ -1891,6 +1885,12 @@ impl Store {
         Ok(())
     }
 
+    /// Open a pad to be streamed to a reader, without loading it. `Ok(None)`
+    /// means the name is free.
+    ///
+    /// Opening counts as touching it, so its lease starts again — at most once
+    /// a day, as renewing is a write. What is sent is the version this looked
+    /// at: its blobs never change, and none is deleted while it is in use.
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
         check_name(name)?;
         let (head, rows, reading) = {

@@ -67,7 +67,8 @@ const TYPES = {
 };
 
 const padDir = await mkdtemp(join(tmpdir(), "ajar-preview-"));
-const relay = LIVE ? null : spawn("../target/debug/ajar-relay",
+// From the repository, wherever this is started from: it ran only from pad/.
+const relay = LIVE ? null : spawn(fileURLToPath(new URL("../../target/debug/ajar-relay", import.meta.url)),
   ["--bind", `127.0.0.1:${RELAY_PORT}`, "--pad-dir", padDir],
   { stdio: "ignore" });
 if (!LIVE) {
