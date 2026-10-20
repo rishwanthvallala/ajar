@@ -14,12 +14,11 @@ That was not always so. Until 20 October only the last -k was used, a key's
 own `n` was a traceback, -f lower-cased where GNU upper-cases, -u kept the
 smallest of equal lines rather than the first, and a file's CRs were dropped.
 
-What it does not do — -g, -h, -M, -V, -R, -c, -C, -m, --debug,
---files0-from, --random-source — is refused rather than quietly ignored,
-because a sort that silently drops an option is worse than one that admits it
-cannot. -S, -T, --parallel, --batch-size and --compress-program are accepted:
-they tune GNU's memory, temporary files and threads, and change nothing about
-what comes out.
+What it does not do — -c, -C, -m, --debug, --files0-from, --random-source —
+is refused rather than quietly ignored, because a sort that silently drops an
+option is worse than one that admits it cannot. -S, -T, --parallel,
+--batch-size and --compress-program are accepted: they tune GNU's memory,
+temporary files and threads, and change nothing about what comes out.
 """
 
 import os
@@ -29,7 +28,7 @@ from decimal import Decimal
 from operator import itemgetter
 
 SUPPORTED = (
-    "-b -d -f -i -n -r -k KEYDEF -t SEP -s -u -z "
+    "-b -d -f -g -h -i -M -n -R -r -V --sort=WORD -k KEYDEF -t SEP -s -u -z "
     "-o FILE, and -S -T --parallel --batch-size --compress-program, which change nothing here"
 )
 
@@ -62,31 +61,32 @@ LONG = {
     "dictionary-order": (False, "d"),
     "field-separator": (True, "t"),
     "files0-from": (True, None),
-    "general-numeric-sort": (False, None),
+    "general-numeric-sort": (False, "g"),
     "help": (False, "help"),
-    "human-numeric-sort": (False, None),
+    "human-numeric-sort": (False, "h"),
     "ignore-case": (False, "f"),
     "ignore-leading-blanks": (False, "b"),
     "ignore-nonprinting": (False, "i"),
     "key": (True, "k"),
     "merge": (False, None),
-    "month-sort": (False, None),
+    "month-sort": (False, "M"),
     "numeric-sort": (False, "n"),
     "output": (True, "o"),
     "parallel": (True, "parallel"),
-    "random-sort": (False, None),
+    "random-sort": (False, "R"),
     "random-source": (True, None),
     "reverse": (False, "r"),
-    "sort": (True, None),
+    "sort": (True, "sort"),
     "stable": (False, "s"),
     "temporary-directory": (True, "T"),
     "unique": (False, "u"),
     "version": (False, None),
-    "version-sort": (False, None),
+    "version-sort": (False, "V"),
     "zero-terminated": (False, "z"),
 }
-FLAGS = set("bdfinrsuz")
+FLAGS = set("bdfghiMnrRsuVz")
 VALUED = set("koStT")
+SORT_WORDS = {"general-numeric": "g", "human-numeric": "h", "month": "M", "numeric": "n", "random": "R", "version": "V"}
 
 
 def resolve(word, choices, ambiguous):
@@ -113,7 +113,7 @@ class Key:
         self.skipeblanks = False
         self.fold = False
         self.ignore = None      # "d" or "i"
-        self.kinds = set()      # "n", or none
+        self.kinds = set()      # of "nghMRV"
         self.reverse = False
 
     def plain(self):
@@ -140,7 +140,7 @@ def set_ordering(spec, key, blanks):
             key.fold = True
         elif c == "r":
             key.reverse = True
-        elif c == "n":
+        elif c in "ghMnRV":
             key.kinds.add(c)
         else:
             break
@@ -175,8 +175,6 @@ def parse_key(spec):
         if rest.startswith("."):
             key.echar, rest = field_count(rest[1:], "invalid number after '.'", spec)
         rest = set_ordering(rest, key, "end")
-    if rest[:1] in tuple("ghMRV"):
-        die(f"unsupported key '{spec}': -{rest[0]} is not implemented. This shim supports: {SUPPORTED}")
     if rest:
         die(f"stray character in field spec: invalid field specification '{spec}'")
     return key
@@ -194,7 +192,7 @@ class Options:
 
 
 def apply(opts, name, value):
-    if name in "bdfinr" and len(name) == 1:
+    if name in "bdfghiMnRrV" and len(name) == 1:
         set_ordering(name, opts.whole, "both")
     elif name == "s":
         opts.stable = True
@@ -217,6 +215,15 @@ def apply(opts, name, value):
         if opts.out is not None and opts.out != value:
             die("multiple output files specified")
         opts.out = value
+    elif name == "sort":
+        word = resolve(value, SORT_WORDS, lambda _: f"ambiguous argument '{value}' for '--sort'")
+        if word is None:
+            sys.stderr.write(
+                f"sort: invalid argument '{value}' for '--sort'\nValid arguments are:\n"
+                + "".join(f"  - '{w}'\n" for w in SORT_WORDS)
+            )
+            raise SystemExit(1)
+        set_ordering(SORT_WORDS[word], opts.whole, "both")
     elif name == "S":
         if not re.fullmatch(r"[0-9]+[%bkKmMgGtTpPeEzZyYrRqQ]?", value):
             die(f"invalid -S argument '{value}'")
@@ -309,9 +316,11 @@ def settle_keys(opts):
     if not keys and not g.plain():
         keys = [g]
     for key in keys:
-        if "n" in key.kinds and key.ignore:
-            letters = ("d" if key.ignore == "d" else "") + ("f" if key.fold else "") + ("i" if key.ignore == "i" else "")
-            die(f"options '-{letters}n' are incompatible")
+        if sum((c in key.kinds) for c in "nghM") + bool(key.kinds & set("RV") or key.ignore) > 1:
+            letters = ("d" if key.ignore == "d" else "") + ("f" if key.fold else "")
+            letters += "".join(c for c in "gh" if c in key.kinds) + ("i" if key.ignore == "i" else "")
+            letters += "".join(c for c in "MnRV" if c in key.kinds)
+            die(f"options '-{letters}' are incompatible")
     return keys
 
 
@@ -417,14 +426,150 @@ def numeric(text):
     return -value if sign else value
 
 
+UNITS = {ord(c): n for n, c in enumerate("KMGTPEZYRQ", 1)}
+UNITS[ord("k")] = 1
+HUMAN = re.compile(rb"[ \t\n]*(-?)([0-9]*(?:\.[0-9]*)*)(.?)", re.S)
+
+
+def human(text):
+    """-h: a number's SI or IEC unit first (none < K < M < ... < Q), then the number."""
+    m = HUMAN.match(text)
+    order = UNITS.get(m.group(3)[0], 0) if m.group(3) else 0
+    if not m.group(2).strip(b"0."):
+        order = 0           # 0K, like 0, has no magnitude
+    return (-order if m.group(1) else order, numeric(text))
+
+
+GENERAL = re.compile(
+    rb"[ \t\n\v\f\r]*([+-]?)(?:"
+    rb"(0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP][+-]?[0-9]+)?)"
+    rb"|((?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+    rb"|(?i:(inf(?:inity)?)|(nan(?:\([0-9A-Za-z_]*\))?)))"
+)
+# A long double's reach: past it strtold says inf, below it 0.
+HUGE = Decimal("1.18973149535723176508575932662800702e4932")
+TINY = Decimal("3.2e-4966")
+INF = Decimal("Infinity")
+
+
+def general(text):
+    """
+    -g: what strtold reads. A key that is no number sorts first, then NaN,
+    -nan before nan, then the numbers from -inf to inf. Compared exactly where
+    GNU compares long doubles; the two part only past 33 significant digits.
+    """
+    m = GENERAL.match(text)
+    if not m:
+        return (0,)
+    sign, hexa, decimal, inf, nan = m.groups()
+    if nan is not None:
+        return (1, sign != b"-")
+    if inf is not None:
+        value = INF
+    else:
+        try:
+            value = Decimal(decimal.decode()) if decimal is not None else Decimal(float.fromhex(hexa.decode()))
+        except (ArithmeticError, ValueError):
+            value = INF if b"-" not in (decimal or b"")[1:] else Decimal(0)
+        size = value.copy_abs()
+        if size > HUGE:
+            value = INF
+        elif size < TINY:
+            value = Decimal(0)
+    return (2, -value if sign == b"-" else value)
+
+
+MONTHS = {m.encode(): n for n, m in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split(), 1)}
+
+
+def month(text):
+    """-M: JAN to DEC by their first three letters, any case; anything else is 0, first."""
+    return MONTHS.get(text.lstrip(BLANKS)[:3].upper(), 0)
+
+
+# -V, as gnulib's filevercmp: runs of non-digits compared a byte at a time —
+# `~` before the end, the end before letters, letters before everything else —
+# and runs of digits compared as numbers. Each run of non-digits is turned into
+# bytes that order the same way, ending in 2, the rank of its end.
+VRANK = bytearray(256)
+VRANK[ord("~")] = 1
+_rank = 3
+for _c in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz":
+    VRANK[_c] = _rank
+    _rank += 1
+for _c in range(256):
+    if _c not in ALNUM and _c != ord("~"):
+        VRANK[_c] = _rank
+        _rank += 1
+VRANK = bytes(VRANK)
+DIGITS = re.compile(rb"([0-9]+)")
+SUFFIX_GROUPS = re.compile(rb"(?:\.[A-Za-z~][A-Za-z0-9~]*)*")
+ZERO = (0, b"")
+
+
+def version_parts(text):
+    parts = DIGITS.split(text)
+    key = []
+    for i in range(0, len(parts), 2):
+        key.append(parts[i].translate(VRANK) + b"\x02")
+        digits = parts[i + 1].lstrip(b"0") if i + 1 < len(parts) else b""
+        key.append((len(digits), digits))
+    # Trailing empty runs and zeros are nothing: `a`, `a0` and `a00` are equal.
+    while len(key) > 1 and key[-2] == b"\x02" and key[-1] == ZERO:
+        del key[-2:]
+    key.append(b"\x02")
+    return tuple(key)
+
+
+def prefix_length(text):
+    """Where a name's suffix starts: the longest run of `.ext` parts at its end, not at its start."""
+    n = len(text)
+    i = 0
+    while True:
+        dot = text.find(b".", i + 1)
+        if dot < 0:
+            return n
+        after = SUFFIX_GROUPS.match(text, dot).end()
+        if after == n:
+            return dot
+        i = after if after > dot else dot
+
+
+def version(text):
+    if not text:
+        return (0,)
+    if text[:1] == b".":
+        if text == b".":
+            return (1,)
+        if text == b"..":
+            return (2,)
+        rank = 3
+    else:
+        rank = 4
+    whole = version_parts(text)
+    cut = prefix_length(text)
+    return (rank, whole if cut == len(text) else version_parts(text[:cut]), whole)
+
+
+def random_order():
+    """-R: lines in an order of their key's hash, so equal keys still come together."""
+    import hashlib
+
+    salt = os.urandom(16)
+    return lambda text: (hashlib.md5(salt + text).digest(), text)
+
+
 def value_of(key, tab):
     """A function from a line to what this key compares, in Python's order."""
     steps = [field_of(key, tab)]
     if key.fold or key.ignore:
         table, delete = UPPER if key.fold else None, IGNORED.get(key.ignore, b"")
         steps.append(lambda text: text.translate(table, delete))
-    if "n" in key.kinds:
-        steps.append(numeric)
+    # As GNU's keycompare picks, when a key has more than one.
+    for kind, how in (("n", numeric), ("g", general), ("h", human), ("M", month), ("R", None), ("V", version)):
+        if kind in key.kinds:
+            steps.append(how or random_order())
+            break
     steps = [s for s in steps if s]
     if not steps:
         return lambda line: line
