@@ -115,12 +115,41 @@ def _getopt_long(tool, argv, shortopts, longopts, code=2, prefix_try=True):
     return options, operands, words
 
 
-def _shell_quote(word):
-    """A word as a shell would need it typed: bare when that is safe."""
-    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789%+,-./:=@_"
-    if word and all(c in safe for c in word):
+def _shell_quote(word, escape=False):
+    """A word as a shell would need it typed, the way gnulib's quotearg does it.
+
+    Bare when nothing in it is special; "it's" in double quotes when an
+    apostrophe is all that forces quoting; otherwise single quotes, with
+    control characters as $'\\n' when `escape` (xargs -t's shell-escape style).
+    """
+    raw = os.fsencode(word).decode("latin-1")
+
+    def special(i, c):
+        o = ord(c)
+        return (c in " !\"$&()*;<=>[^`|'?\\" or (c in "#~" and i == 0) or (c in "{}" and len(raw) == 1)
+                or o < 32 or o == 127 or (escape and o >= 128))
+
+    if raw and not any(special(i, c) for i, c in enumerate(raw)):
         return word
-    return "'" + word.replace("'", "'\\''") + "'"
+    awkward = any(ord(c) < 32 or ord(c) == 127 or (escape and ord(c) >= 128) for c in raw)
+    if "'" in raw and not awkward:
+        return os.fsdecode(('"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"').encode("latin-1"))
+    out, escaped = ["'"], False
+    letters = {"\a": "a", "\b": "b", "\f": "f", "\n": "n", "\r": "r", "\t": "t", "\v": "v"}
+    for c in raw:
+        o = ord(c)
+        if escape and (o < 32 or o == 127 or o >= 128):
+            if not escaped:
+                out.append("'$'")
+                escaped = True
+            out.append("\\" + letters[c] if c in letters else "\\%03o" % o)
+            continue
+        if escaped:
+            out.append("''")
+            escaped = False
+        out.append("'\\''" if c == "'" else c)
+    out.append("'")
+    return os.fsdecode("".join(out).encode("latin-1"))
 
 
 def _c_locale(category):
@@ -2801,51 +2830,377 @@ def split_line_chunks(data, k, n, sep, cwrite, to_stdout):
 
 
 # ---------------------------------------------------------------- xargs
+#
+# GNU findutils 4.9's xargs: how it reads its input — blanks and newlines
+# separate items, quotes and backslashes protect them, -I takes whole lines,
+# -0 and -d split on one byte — how it packs command lines (-n, -L, -s), and
+# its exit statuses 123 to 127, which scripts test. Splitting on whitespace,
+# as this did, turned "with space.txt" into two files under -I.
 def cmd_xargs(argv):
-    max_args, replace, null, trace = None, None, False, False
-    command = []
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a.startswith("-n"):
-            max_args = int(a[2:] or argv[(i := i + 1)])
-        elif a.startswith("-I"):
-            replace = a[2:] or argv[(i := i + 1)]
-        elif a in ("-0", "--null"):
-            null = True
-        elif a == "-t":
+    L = {"null": (0, "0"), "arg-file": (1, "a"), "delimiter": (1, "d"), "eof": (2, "e"), "replace": (2, "i"),
+         "max-lines": (2, "l"), "max-args": (1, "n"), "open-tty": (0, "o"), "interactive": (0, "p"),
+         "no-run-if-empty": (0, "r"), "max-chars": (1, "s"), "verbose": (0, "t"), "show-limits": (0, "S"),
+         "exit": (0, "x"), "max-procs": (1, "P"), "process-slot-var": (1, "slot"), "version": (0, "v"),
+         "help": (0, "h")}
+    options, command, _ = _getopt_long("xargs", argv, "+0a:E:e::i::I:l::L:n:oprs:txP:d:", L, code=1,
+                                       prefix_try=False)
+
+    def fail(message):
+        sys.stdout.flush()
+        sys.stderr.write(f"xargs: {message}\n")
+        raise SystemExit(1)
+
+    def usage_error(message):
+        sys.stderr.write(f"xargs: {message}\nTry 'xargs --help' for more information.\n")
+        raise SystemExit(1)
+
+    def number(value, opt, low, high=None):
+        try:
+            n = int(value.strip())
+        except (ValueError, AttributeError):
+            usage_error(f'invalid number "{value}" for -{opt} option')
+        if n < low:
+            usage_error(f"value {n} for -{opt} option should be >= {low}")
+        if high is not None and n > high:
+            usage_error(f"value {n} for -{opt} option should be <= {high}")
+        return n
+
+    def warn_exclusive(this, previous):
+        sys.stderr.write(f"xargs: warning: options {this} and {previous} are mutually exclusive, "
+                         f"ignoring previous {previous} value\n")
+
+    ARG_MAX, SYSTEM_MAX = 131072, 2097152 - 2048   # GNU's default buffer, and the most -s may ask
+    delimiter = None          # None: read_line's quoting rules; else read_string on this byte
+    eof_str = replace = input_file = slot_var = None
+    args_per_exec = lines_per_exec = 0
+    arg_max, trace, query, always_run, exit_if_size, open_tty, show_limits = ARG_MAX, False, False, True, False, False, False
+    for key, value in options:
+        if key == "0":
+            delimiter = 0
+        elif key == "d":
+            if len(os.fsencode(value)) == 1:
+                delimiter = os.fsencode(value)[0]
+            elif value.startswith("\\") and len(value) >= 2:
+                simple = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92}
+                if value[1] in simple and len(value) == 2:
+                    delimiter = simple[value[1]]
+                else:
+                    try:
+                        delimiter = int(value[2:], 16) if value[1] == "x" else int(value[1:], 8)
+                    except ValueError:
+                        delimiter = None
+                    if delimiter is None or not 0 <= delimiter <= 255:
+                        fail(f"Invalid escape sequence {value} in input delimiter specification.")
+            else:
+                fail(f"Invalid input delimiter specification {value}: the delimiter must be either a single "
+                     "character or an escape sequence starting with \\.")
+        elif key in ("E", "e"):
+            eof_str = value or None
+        elif key in ("I", "i"):
+            replace = value if value is not None else "{}"
+            if args_per_exec:
+                warn_exclusive("--replace/-I/-i", "--max-args")
+                args_per_exec = 0
+            if lines_per_exec:
+                warn_exclusive("--replace/-I/-i", "--max-lines")
+                lines_per_exec = 0
+        elif key in ("L", "l"):
+            lines_per_exec = number(value, key, 1) if value is not None else 1
+            name = "-L" if key == "L" else "--max-lines/-l"
+            if args_per_exec:
+                warn_exclusive(name, "--max-args")
+                args_per_exec = 0
+            if replace is not None:
+                warn_exclusive(name, "--replace")
+                replace = None
+        elif key == "n":
+            args_per_exec = number(value, "n", 1)
+            if lines_per_exec:
+                warn_exclusive("--max-args/-n", "--max-lines")
+                lines_per_exec = 0
+            if replace is not None:
+                if args_per_exec == 1:
+                    args_per_exec = 0   # -i -n1 is GNU's special case
+                else:
+                    warn_exclusive("--max-args/-n", "--replace")
+                    replace = None
+        elif key == "s":
+            arg_max = number(value, "s", 1)
+            if arg_max > SYSTEM_MAX:
+                sys.stderr.write(f"xargs: warning: value {arg_max} for -s option is too large, "
+                                 f"using {SYSTEM_MAX} instead\n")
+                arg_max = SYSTEM_MAX
+        elif key == "S":
+            show_limits = True
+        elif key == "t":
             trace = True
-        elif a.startswith("-") and a != "-" and not command:
-            die("xargs", f"unsupported option '{a}'. Supported: -n N -I STR -0 -t")
-        else:
-            command = argv[i:]
-            break
-        i += 1
+        elif key == "x":
+            exit_if_size = True
+        elif key == "o":
+            open_tty = True
+        elif key == "p":
+            query = trace = True
+        elif key == "r":
+            always_run = False
+        elif key == "P":
+            # Commands run one at a time here, which -P N permits: it is a
+            # most-at-once, and one is within it.
+            number(value, "P", 0, 2 ** 31 - 1)
+        elif key == "a":
+            input_file = value
+        elif key == "slot":
+            if "=" in value:
+                fail("option --process-slot-var may not be set to a value which includes `='")
+            slot_var = value
+        elif key == "v":
+            print("xargs (pad, following GNU findutils) 4.9.0")
+            return 0
+        elif key == "h":
+            print("Usage: xargs [OPTION]... COMMAND [INITIAL-ARGS]...\n"
+                  "Run COMMAND with arguments INITIAL-ARGS and more arguments read from input.\n\n"
+                  "This is pad's xargs, which follows GNU findutils 4.9.")
+            return 0
+    if eof_str is not None and delimiter is not None:
+        sys.stderr.write("xargs: warning: the -E option has no effect if -0 or -d is used.\n\n")
+    if replace is not None or lines_per_exec:
+        exit_if_size = True
     command = command or ["echo"]
+    initial_chars = sum(len(os.fsencode(a)) + 1 for a in command)
+    if show_limits:
+        env_size = sum(len(os.fsencode(k)) + len(os.fsencode(v)) + 2 for k, v in os.environ.items())
+        sys.stderr.write(f"Your environment variables take up {env_size} bytes\n"
+                         f"POSIX upper limit on argument length (this system): {SYSTEM_MAX}\n"
+                         "POSIX smallest allowable upper limit on argument length (all systems): 4096\n"
+                         f"Maximum length of command we could actually use: {SYSTEM_MAX - env_size}\n"
+                         f"Size of command buffer we are actually using: {arg_max}\n"
+                         "Maximum parallelism (--max-procs must be no greater): 2147483647\n")
 
-    data = sys.stdin.read()
-    items = [x for x in (data.split("\0") if null else data.split()) if x]
-    if not items:
-        return 0
-
-    batches = []
-    if replace is not None:
-        batches = [[item] for item in items]
-    elif max_args:
-        batches = [items[i : i + max_args] for i in range(0, len(items), max_args)]
-    else:
-        batches = [items]
+    try:
+        if input_file is None or input_file == "-":
+            data = sys.stdin.buffer.read()
+        else:
+            with open(input_file, "rb") as f:
+                data = f.read()
+    except OSError as e:
+        fail(f"Cannot open input file '{input_file}': {e.strerror}")
+    # The command gets /dev/null for its input, as GNU's does, unless the
+    # items came from a file (-a) and stdin is still free for it.
+    child_stdin = subprocess.DEVNULL if (input_file is None or input_file == "-") else None
+    if open_tty:
+        try:
+            child_stdin = open("/dev/tty", "rb")
+        except OSError as e:
+            fail(f"/dev/tty: {e.strerror}")
 
     status = 0
-    for batch in batches:
-        if replace is not None:
-            line = [part.replace(replace, batch[0]) for part in command]
+    executed = 0
+    batch = []                 # arguments read since the last command, as bytes
+    chars = initial_chars
+    pos = 0
+    eof = False
+    lineno = 0
+    nul_warned = False
+    tty = []
+
+    def show(words):
+        return " ".join(_shell_quote(os.fsdecode(w.split(b"\0", 1)[0]) if isinstance(w, bytes) else w, escape=True) for w in words)
+
+    def execute(line):
+        nonlocal status, executed
+        if query:
+            sys.stderr.write(show(line))
+            if not tty:
+                try:
+                    tty.append(open("/dev/tty", "rb"))
+                except OSError as e:
+                    fail(f"failed to open /dev/tty for reading: {e.strerror}")
+            sys.stderr.write("?...")
+            sys.stderr.flush()
+            answer = tty[0].readline()
+            if not answer:
+                fail("Failed to read from stdin")
+            if answer[:1] not in (b"y", b"Y"):
+                return
+        elif trace:
+            sys.stderr.write(show(line) + "\n")
+            sys.stderr.flush()
+        sys.stdout.flush()
+        env = None
+        if slot_var:
+            env = dict(os.environ, **{slot_var: "0"})
+        executed += 1
+        name = os.fsdecode(line[0]) if isinstance(line[0], bytes) else line[0]
+        try:
+            result = subprocess.run([os.fsdecode(w.split(b"\0", 1)[0]) if isinstance(w, bytes) else w for w in line],
+                                    stdin=child_stdin, env=env)
+        except FileNotFoundError:
+            sys.stderr.write(f"xargs: {name}: No such file or directory\n")
+            raise SystemExit(127)
+        except PermissionError:
+            sys.stderr.write(f"xargs: {name}: Permission denied\n")
+            raise SystemExit(126)
+        except OSError as e:
+            sys.stderr.write(f"xargs: {name}: {e.strerror}\n")
+            raise SystemExit(126)
+        rc = result.returncode
+        if rc < 0:
+            sys.stderr.write(f"xargs: {name}: terminated by signal {-rc}\n")
+            raise SystemExit(125)
+        if rc == 255:
+            sys.stderr.write(f"xargs: {name}: exited with status 255; aborting\n")
+            raise SystemExit(124)
+        if rc:
+            status = 123
+
+    def do_exec():
+        nonlocal batch, chars
+        line = list(command) + batch
+        batch, chars = [], initial_chars
+        execute(line)
+
+    def push(item):
+        nonlocal chars
+        size = len(item) + 1
+        if chars + size > arg_max:
+            if not batch:
+                fail("cannot fit single argument within argument list size limit")
+            if replace is not None or (exit_if_size and (lines_per_exec or args_per_exec)):
+                fail("argument list too long")
+            do_exec()
+        batch.append(item)
+        chars += size
+        if args_per_exec and len(batch) == args_per_exec:
+            do_exec()
+
+    def exec_if_possible():
+        if replace is None and batch and not exit_if_size:
+            do_exec()
+
+    def too_long():
+        exec_if_possible()
+        fail("argument line too long")
+
+    endbuf = arg_max - initial_chars - 1
+
+    def read_line():
+        # Returns None at end of input, else the item (already pushed unless -I).
+        nonlocal pos, eof, lineno, nul_warned
+        if eof:
+            return None
+        state, c, quotc, first, seen = "space", None, 0, True, False
+        buf = bytearray()
+        while True:
+            prevc = c
+            if pos >= len(data):
+                eof = True
+                if not buf:
+                    return None
+                if state == "quote":
+                    exec_if_possible()
+                    fail(f"unmatched {'double' if quotc == 34 else 'single'} quote; by default quotes are "
+                         "special to xargs unless you use the -0 option")
+                item = bytes(buf)
+                if first and eof_str is not None and item == os.fsencode(eof_str):
+                    return None
+                if replace is None:
+                    push(item)
+                return item
+            c = data[pos]
+            pos += 1
+            if state == "space":
+                if c in b" \t\n\v\f\r":
+                    continue
+                state = "norm"
+            if state == "norm":
+                if c == 10:
+                    if prevc not in (32, 9):
+                        lineno += 1
+                    if not buf and not seen:
+                        state = "space"
+                        continue
+                    item = bytes(buf)
+                    if eof_str is not None and item == os.fsencode(eof_str):
+                        eof = True
+                        return None if first else item
+                    if replace is None:
+                        push(item)
+                    return item
+                seen = True
+                if replace is None and c in (32, 9):
+                    item = bytes(buf)
+                    if eof_str is not None and item == os.fsencode(eof_str):
+                        eof = True
+                        return None if first else item
+                    push(item)
+                    buf = bytearray()
+                    state, first = "space", False
+                    continue
+                if c == 92:
+                    state = "backslash"
+                    continue
+                if c in (34, 39):
+                    state, quotc = "quote", c
+                    continue
+            elif state == "quote":
+                if c == 10:
+                    exec_if_possible()
+                    fail(f"unmatched {'double' if quotc == 34 else 'single'} quote; by default quotes are "
+                         "special to xargs unless you use the -0 option")
+                if c == quotc:
+                    state, seen = "norm", True
+                    continue
+            elif state == "backslash":
+                state = "norm"
+            if c == 0 and not nul_warned:
+                sys.stderr.write("xargs: WARNING: a NUL character occurred in the input.  It cannot be passed "
+                                 "through in the argument list.  Did you mean to use the --null option?\n")
+                nul_warned = True
+            if len(buf) >= endbuf:
+                too_long()
+            buf.append(c)
+
+    def read_string():
+        nonlocal pos, eof, lineno
+        if eof:
+            return None
+        end = data.find(bytes([delimiter]), pos)
+        if end < 0:
+            eof = True
+            if pos >= len(data):
+                return None
+            item, pos = data[pos:], len(data)
         else:
-            line = command + batch
-        if trace:
-            sys.stderr.write(" ".join(line) + "\n")
-        result = subprocess.run(line)
-        status = result.returncode or status
+            item, pos = data[pos:end], end + 1
+            lineno += 1
+        if len(item) > endbuf:
+            too_long()
+        if replace is None:
+            push(item)
+        return item
+
+    read = read_line if delimiter is None else read_string
+    if replace is None:
+        while read() is not None:
+            if lines_per_exec and lineno >= lines_per_exec:
+                do_exec()
+                lineno = 0
+        if batch or (always_run and executed == 0):
+            do_exec()
+    else:
+        pattern = os.fsencode(replace)
+        while True:
+            item = read()
+            if item is None:
+                break
+            line = [os.fsencode(command[0])]
+            for word in command[1:]:
+                inserted = os.fsencode(word).replace(pattern, item) if pattern else os.fsencode(word)
+                if len(inserted) >= arg_max:
+                    fail("command too long")
+                line.append(inserted)
+            if sum(len(w) + 1 for w in line) > arg_max:
+                fail("argument list too long")
+            execute(line)
     return status
 
 
