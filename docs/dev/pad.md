@@ -146,7 +146,26 @@ findutils binary that could not spawn, which is why `find` is a shim too.
 
 `patch` applies context-matched hunks with no fuzz. A hunk whose context does
 not match is refused rather than guessed at, because patch guessing wrong is
-how a file silently becomes something nobody wrote.
+how a file silently becomes something nobody wrote. Since 20 October it is
+GNU patch 2.7.6 otherwise, ported from its source: unified, context and
+normal diffs, read by their hunks' counts (a removed line that began `-- ` had
+been taken for a header, and the change silently not made); a hunk found at an
+offset, leaving `.orig` as GNU does; a failed one in a `.rej` in GNU's form
+while the rest apply, and stderr saying when fuzz would have placed it; files
+made and deleted. `-F N` asks for fuzz, and gives GNU's result.
+
+`diff`, `cmp`, `xargs` and `find` are ports of GNU's too, since 20 October,
+checked against diffutils 3.10 and findutils 4.9 on the review harness's 118
+cases for the five and some thousands more: `diff` is GNU's algorithm and its
+formats — normal output by default, `-u`, `-c`, `-y`, `-e`, `-r` (leaving out
+`.ajar`, as `find` does) — with the "\ No newline at end of file" marker it
+lacked, so GNU patch could not apply its diffs; `cmp` compares bytes, so a file
+and its CRLF copy differ; `xargs` reads input as GNU's does, `-I` taking whole
+lines, with its exit statuses, running `-P N`'s commands one at a time; and
+`find` has GNU's grammar and errors, `-depth`, a `-delete` that removes a tree
+from its leaves up, and most of its tests and actions — listing a directory's
+entries sorted, where GNU takes the filesystem's order. What none of them can
+do here they refuse by name (`find -fstype`, `patch -D`, `diff -D`).
 
 `du` reports **apparent** size, which GNU calls `--apparent-size` and not its
 default. Real `du` counts allocated blocks and this filesystem has none to

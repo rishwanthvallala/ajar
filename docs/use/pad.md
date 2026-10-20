@@ -142,7 +142,7 @@ is a real bash.
 python3 transform.py < input.csv > out.csv
 grep -c ERROR *.log | sort -n
 for f in *.txt; do echo "$f: $(wc -l < "$f")"; done
-diff old.txt new.txt > changes.patch
+diff -u old.txt new.txt > changes.patch
 find . -name '*.py' -exec wc -l {} +
 pip install six
 grep -rn TODO . > todo.txt
