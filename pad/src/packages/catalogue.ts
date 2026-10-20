@@ -112,7 +112,7 @@ export const CANDIDATES: Candidate[] = [
       { covers: "zip and unzip round trip", run: "mkdir -p zp && echo zipped > zp/f.txt; zip -r out.zip zp >/dev/null; mkdir -p ex; unzip -d ex out.zip >/dev/null; cat ex/zp/f.txt", want: "zipped" },
       { covers: "unzip -l", run: "mkdir -p zl && echo x > zl/g.txt; zip -r l.zip zl >/dev/null; unzip -l l.zip | grep -c 'zl/g.txt'", want: "1" },
       { covers: "patch applies a diff", run: "printf 'a\\nb\\n' > pf.txt; printf 'a\\nZ\\n' > pw.txt; diff -u pf.txt pw.txt > p.diff; patch -p0 pf.txt < p.diff >/dev/null; cat pf.txt", want: "a\nZ" },
-      { covers: "patch refuses a hunk that does not match", run: "printf 'a\\nb\\n' > q1.txt; printf 'a\\nZ\\n' > q2.txt; diff -u q1.txt q2.txt > q.diff; printf 'x\\ny\\n' > bad.txt; patch -p0 bad.txt < q.diff 2>&1 | grep -c 'hunk failed'", want: "1" },
+      { covers: "patch refuses a hunk that does not match", run: "printf 'a\\nb\\n' > q1.txt; printf 'a\\nZ\\n' > q2.txt; diff -u q1.txt q2.txt > q.diff; printf 'x\\ny\\n' > bad.txt; patch -p0 bad.txt < q.diff 2>&1 | grep -c 'Hunk #1 FAILED'", want: "1" },
       { covers: "cmp", run: "printf 'x\\n' > m1; printf 'x\\n' > m2; cmp m1 m2; echo rc=$?", want: "rc=0" },
       { covers: "hexdump -C", run: "printf 'A' | hexdump -C | head -n 1", match: "41" },
       { covers: "xxd", run: "printf 'A' | xxd | head -n 1", match: "^00000000: 41" },

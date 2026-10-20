@@ -3651,86 +3651,1157 @@ def unzip_ask(shown):
 
 
 # ---------------------------------------------------------------- patch
+#
+# GNU patch 2.7.6, as far as a file in the pad can follow it: unified,
+# context and normal diffs; hunks read by their line counts, so a removed
+# line that happens to begin "-- " is a removed line and not a new file's
+# header; a hunk found where its context matches even when lines above have
+# moved ("succeeded at 4 (offset 2 lines)"), with the .orig GNU leaves when
+# it had to look; "\ No newline at end of file" honoured; files created and
+# deleted; and what does not apply written to a .rej, the rest applied, as
+# GNU does.
+#
+# One deliberate difference: no fuzz unless asked for. GNU will apply a
+# hunk whose outer context lines do not match (fuzz 2, by default), which
+# is how a file quietly becomes something nobody wrote; here such a hunk
+# fails and says so, and -F 2 gets GNU's behaviour for those who want it.
 def cmd_patch(argv):
-    """Apply a unified diff.
+    import re
 
-    Context matching only, with no fuzz: a hunk whose context does not match
-    is refused rather than guessed at. `patch` guessing wrong is how a file
-    silently becomes something nobody wrote.
-    """
-    strip, target, reverse, dry = 1, None, False, False
-    patch_file = None
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a.startswith("-p"):
-            strip = int(a[2:] or argv[(i := i + 1)])
-        elif a in ("-i", "--input"):
-            i += 1
-            patch_file = argv[i]
-        elif a in ("-R", "--reverse"):
-            reverse = True
-        elif a == "--dry-run":
+    NL = b"\n"
+
+    L = {"backup": (0, "b"), "prefix": (1, "B"), "context": (0, "c"), "directory": (1, "d"), "ifdef": (1, "D"),
+         "ed": (0, "e"), "remove-empty-files": (0, "E"), "force": (0, "f"), "fuzz": (1, "F"), "get": (1, "g"),
+         "input": (1, "i"), "ignore-whitespace": (0, "l"), "normal": (0, "n"), "forward": (0, "N"),
+         "output": (1, "o"), "strip": (1, "p"), "reject-file": (1, "r"), "reverse": (0, "R"), "quiet": (0, "s"),
+         "silent": (0, "s"), "batch": (0, "t"), "set-time": (0, "T"), "unified": (0, "u"), "version": (0, "v"),
+         "version-control": (1, "V"), "debug": (1, "x"), "basename-prefix": (1, "Y"), "suffix": (1, "z"),
+         "set-utc": (0, "Z"), "dry-run": (0, "dry-run"), "verbose": (0, "verbose"), "binary": (0, "binary"),
+         "help": (0, "help"), "backup-if-mismatch": (0, "bim"), "no-backup-if-mismatch": (0, "nobim"),
+         "posix": (0, "posix"), "quoting-style": (1, "quoting"), "reject-format": (1, "reject-format"),
+         "read-only": (1, "read-only"), "follow-symlinks": (0, "follow-symlinks")}
+    options, operands, _ = _getopt_long("patch", argv, "bB:cd:D:eEfF:g:i:lnNo:p:r:RstTuvV:x:Y:z:Z", L)
+
+    def fatal(message, code=2):
+        out.flush()
+        sys.stderr.write(f"patch: **** {message}\n")
+        raise SystemExit(code)
+
+    def refuse(what):
+        die("patch", f"{what} is not supported here", code=2)
+
+    out = sys.stdout
+    posix = bool(os.environ.get("POSIXLY_CORRECT"))
+    strip, patch_file, reverse_flag, dry, outfile, rejname = -1, None, False, False, None, None
+    silent = verbose = noreverse = force = batch = make_backups = remove_empty = canon_ws = binary = False
+    backup_if_mismatch, maxfuzz, fuzz_given, suffix, prefix = None, 0, False, None, None
+    forced_type, reject_format = None, None
+    for key, value in options:
+        if key == "p":
+            if not re.fullmatch(r"\d+", value):
+                fatal(f"strip count {value} is not a number")
+            strip = int(value)
+        elif key == "i":
+            patch_file = value
+        elif key == "R":
+            reverse_flag = True
+        elif key == "dry-run":
             dry = True
-        elif a.startswith("-") and a != "-":
-            die("patch", f"unsupported option '{a}'. Supported: -pN -i FILE -R --dry-run")
+        elif key == "o":
+            outfile = value
+        elif key == "r":
+            rejname = value
+        elif key == "s":
+            silent = True
+        elif key == "verbose":
+            verbose = True
+        elif key == "N":
+            noreverse = True
+        elif key == "f":
+            force = True
+        elif key == "t":
+            batch = True
+        elif key == "b":
+            make_backups = True
+        elif key == "bim":
+            backup_if_mismatch = True
+        elif key == "nobim":
+            backup_if_mismatch = False
+        elif key == "E":
+            remove_empty = True
+        elif key == "F":
+            if not re.fullmatch(r"\d+", value):
+                fatal(f"fuzz factor {value} is not a number")
+            maxfuzz, fuzz_given = int(value), True
+        elif key == "l":
+            canon_ws = True
+        elif key in ("u", "c", "n"):
+            forced_type = {"u": "unified", "c": "context", "n": "normal"}[key]
+        elif key == "d":
+            try:
+                os.chdir(value)
+            except OSError as e:
+                fatal(f"Can't change to directory {value} : {e.strerror}")
+        elif key == "z":
+            suffix = value
+        elif key == "B":
+            prefix = value
+        elif key == "V":
+            if value not in ("simple", "never", "existing", "nil"):
+                refuse(f"--version-control={value}")
+        elif key == "posix":
+            posix = True
+        elif key == "binary":
+            binary = True
+        elif key == "reject-format":
+            if value not in ("context", "unified"):
+                fatal(f"unsupported reject format '{value}'")
+            reject_format = value
+        elif key in ("quoting", "read-only", "follow-symlinks"):
+            pass
+        elif key == "help":
+            print("Usage: patch [OPTION]... [ORIGFILE [PATCHFILE]]\n\n"
+                  "This is pad's patch, which follows GNU patch 2.7.6 (without fuzz unless -F asks for it).")
+            return 0
+        elif key == "v":
+            print("patch (pad, following GNU patch) 2.7.6")
+            return 0
         else:
-            target = a
-        i += 1
+            refuse({"D": "-D/--ifdef", "e": "-e/--ed (ed scripts)", "g": "-g/--get", "x": "-x/--debug",
+                    "Y": "-Y/--basename-prefix", "T": "-T/--set-time", "Z": "-Z/--set-utc"}.get(key, key))
+    if backup_if_mismatch is None:
+        backup_if_mismatch = not posix
+    inname_given = operands[0] if operands else None
+    if len(operands) > 1:
+        patch_file = operands[1]
+    if len(operands) > 2:
+        sys.stderr.write(f"patch: {operands[2]}: extra operand\npatch: Try 'patch --help' for more information.\n")
+        return 2
+    if outfile == "-":
+        out = sys.stderr
 
-    text = read_text(patch_file, "patch") if patch_file else sys.stdin.read()
-    lines = text.splitlines()
+    try:
+        if patch_file is None or patch_file == "-":
+            raw = sys.stdin.buffer.read()
+        else:
+            with open(patch_file, "rb") as f:
+                raw = f.read()
+    except OSError as e:
+        fatal(f"Can't open patch file {patch_file} : {e.strerror}")
+    parts = raw.split(b"\n")
+    plines = [part + b"\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
 
-    # Split into per-file sections, then per-hunk within each.
-    sections, current = [], None
-    for line in lines:
-        if line.startswith("--- "):
-            current = {"old": line[4:].split("\t")[0], "new": None, "hunks": []}
-            sections.append(current)
-        elif line.startswith("+++ ") and current:
-            current["new"] = line[4:].split("\t")[0]
-        elif line.startswith("@@") and current:
-            current["hunks"].append({"header": line, "body": []})
-        elif current and current["hunks"]:
-            current["hunks"][-1]["body"].append(line)
+    def say(text):
+        out.write(text)
 
-    if not sections:
-        die("patch", "no unified diff found on input")
+    def ask(prompt):
+        # No terminal to answer on: GNU prints the question and takes its default.
+        say(prompt + "\n")
+        out.flush()
 
-    def strip_path(path):
-        parts = path.split("/")
-        return "/".join(parts[strip:]) if strip < len(parts) else parts[-1]
+    def write_stdout_bytes(data):
+        out.flush()
+        sys.stdout.buffer.write(data)
 
-    applied = 0
-    for section in sections:
-        name = target or strip_path(section["new"] or section["old"])
-        original = read_text(name, "patch").splitlines(keepends=True)
-        result = list(original)
-        offset = 0
-        for hunk in section["hunks"]:
-            head = hunk["header"].split("@@")[1].strip()
-            old_part = head.split(" ")[0]
-            start = int(old_part[1:].split(",")[0]) - 1
-            want, produce = [], []
-            for line in hunk["body"]:
-                tag, rest = (line[0], line[1:]) if line else (" ", "")
-                if reverse:
-                    tag = {"+": "-", "-": "+"}.get(tag, tag)
-                if tag in (" ", "-"):
-                    want.append(rest + "\n")
-                if tag in (" ", "+"):
-                    produce.append(rest + "\n")
-            at = start + offset
-            if result[at : at + len(want)] != want:
-                die("patch", f"hunk failed to apply at {name}:{start + 1}", code=1)
-            result[at : at + len(want)] = produce
-            offset += len(produce) - len(want)
-            applied += 1
-        if not dry:
-            with open(name, "w", errors="surrogateescape") as f:
-                f.writelines(result)
-        print(f"patching file {name}")
-    return 0
+    output_stream = None
+    if outfile is not None:
+        if outfile == "-":
+            output_stream = sys.stdout.buffer
+        elif not dry:
+            try:
+                output_stream = open(outfile, "wb")
+            except OSError as e:
+                fatal(f"Can't create file {outfile} : {e.strerror}")
+
+    def fetchname(text, want_stamp):
+        """util.c's fetchname: a name, then its date if a tab separates it."""
+        at = text.lstrip()
+        if at.startswith(b'"'):
+            m = re.match(rb'"((?:[^"\\]|\\.)*)"', at)
+            if not m:
+                return None, None, -1
+            name = m.group(1).decode("unicode_escape").encode("latin-1")
+            rest = at[m.end():]
+        else:
+            t = 0
+            while t < len(at):
+                if at[t:t + 1].isspace():
+                    u = t
+                    while at[u:u + 1] != b"\t" and at[u + 1:u + 2].isspace():
+                        u += 1
+                    if at[u:u + 1] != b"\t" and (b"\t" if want_stamp else b"\n") in at[u + 1:]:
+                        t += 1
+                        continue
+                    break
+                t += 1
+            name, rest = at[:t], at[t:]
+        stamp = -1
+        if name == b"/dev/null":
+            return None, None, 0
+        parts = re.split(rb"/+", name)
+        if strip < 0:
+            stripped = parts[-1]
+        else:
+            if strip >= len(parts) or (strip and not parts[strip:]):
+                return None, None, -1
+            stripped = b"/".join(parts[strip:]) if strip else name
+        if not stripped:
+            return None, None, -1
+        timestr = rest.rstrip(b"\n").rstrip(b"\r")
+        if rest.strip() and want_stamp:
+            m = re.search(rb"(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(?:\.\d+)? ([+-]\d{4})", rest)
+            if m:
+                import calendar
+                y, mo, d, h, mi, s = (int(g) for g in m.groups()[:6])
+                tz = int(m.group(7))
+                seconds = calendar.timegm((y, mo, d, h, mi, s)) - (tz // 100 * 3600 + tz % 100 * 60) * (1 if tz >= 0 else 1)
+                stamp = 0 if -25 * 3600 < seconds < 26 * 3600 else seconds
+            elif re.search(rb"\b1970\b", rest) and re.search(rb"\b(Thu )?Jan +1\b", rest):
+                stamp = 0
+            else:
+                stamp = 1
+        return os.fsdecode(stripped), timestr, stamp
+
+    def components(name, check):
+        count = 0
+        parts = name.split("/")
+        for k in range(1, len(parts)):
+            if not parts[k - 1]:
+                continue
+            if check and not os.path.isdir("/".join(parts[:k])):
+                break
+            count += 1
+        return count
+
+    def best_name(names, ignore):
+        cmin = bmin = lmin = None
+        comp, base, length = {}, {}, {}
+        for i in range(3):
+            if names[i] is None or ignore[i]:
+                continue
+            comp[i] = components(names[i], False)
+            if cmin is not None and cmin < comp[i]:
+                continue
+            cmin = comp[i]
+            base[i] = len(names[i].rstrip("/").rsplit("/", 1)[-1])
+            if bmin is not None and bmin < base[i]:
+                continue
+            bmin = base[i]
+            length[i] = len(names[i])
+            if lmin is not None and lmin < length[i]:
+                continue
+            lmin = length[i]
+        for i in range(3):
+            if (names[i] is not None and not ignore[i] and comp.get(i) == cmin and base.get(i) == bmin
+                    and length.get(i) == lmin):
+                return i
+        return None
+
+    state = {"failed_any": False}
+    backed_up = set()
+    created_files = set()
+    pos = 0          # next line of the patch to read
+
+    def pget(k, strip_cr, indent, nesting):
+        """pget_line: the patch's line k with indentation, '- ' nesting and CR handled.
+
+        Returns (line, next_index), skipping comment lines; (None, k) at the end.
+        """
+        while k < len(plines):
+            line = plines[k]
+            k += 1
+            if not line.endswith(b"\n"):
+                say("patch unexpectedly ends in middle of line\n")
+                return None, k
+            i = col = 0
+            while i < len(line) and col < indent and line[i:i + 1] in (b" ", b"X", b"\t"):
+                col = (col + 8) & ~7 if line[i:i + 1] == b"\t" else col + 1
+                i += 1
+            line = line[i:]
+            n = nesting
+            while n > 0 and line.startswith(b"- "):
+                line = line[2:]
+                n -= 1
+            if line.startswith(b"#"):
+                continue
+            if strip_cr and line.endswith(b"\r\n"):
+                line = line[:-2] + b"\n"
+            return line, k
+        return None, k
+
+    def intuit(start):
+        """intuit_diff_type: find the next diff in the patch, and its file names."""
+        names = [None, None, None]
+        timestr = [None, None]
+        stamps = [-1, -1]
+        nonexistent = [0, 0]
+        # Without a file named on the command line a diff needs a header to
+        # say which file it is for, so GNU skips header-less normal diffs.
+        need_header = not (inname_given or posix) and forced_type != "normal"
+        git = False
+        first_command = None
+        this_is_command = stars_this = False
+        indent = 0
+        prereq = None
+        k = start
+        nesting = 0
+        strip_cr = False
+        while k < len(plines):
+            previous_line = k
+            last_command, stars_last, indent_last = this_is_command, stars_this, indent
+            line = plines[k]
+            k += 1
+            if not line.endswith(b"\n"):
+                line += b"\n"
+            line_strip_cr = line.endswith(b"\r\n")
+            s, indent = 0, 0
+            while s < len(line) and line[s:s + 1] in (b" ", b"\t", b"X"):
+                indent = (indent + 8) & ~7 if line[s:s + 1] == b"\t" else indent + 1
+                s += 1
+            body = line[s:]
+            this_is_command = bool(re.match(rb"\d+(,\d+)?[acd]\d+(,\d+)?[ \t]*\r?\n", body))
+            if not need_header and first_command is None and this_is_command:
+                first_command = previous_line
+            if not stars_last and body.startswith(b"*** "):
+                names[0], timestr[0], stamps[0] = fetchname(body[4:], True)
+                need_header = False
+            elif body.startswith(b"+++ "):
+                names[0], timestr[0], stamps[0] = fetchname(body[4:], True)
+                need_header = False
+                strip_cr = line_strip_cr
+            elif body.startswith(b"Index:"):
+                names[2] = fetchname(body[6:], False)[0]
+                need_header = False
+                strip_cr = line_strip_cr
+            elif body.startswith(b"Prereq:"):
+                words = body[7:].split()
+                prereq = words[0] if words else None
+            elif body.startswith(b"diff --git "):
+                git = True
+                need_header = False
+                parts = body[11:].split()
+                if len(parts) == 2:
+                    names[0] = fetchname(parts[0] + b"\n", False)[0]
+                    names[1] = fetchname(parts[1] + b"\n", False)[0]
+            elif git and body.startswith(b"deleted file mode "):
+                nonexistent[1] = 2
+            elif git and body.startswith(b"new file mode "):
+                nonexistent[0] = 2
+            elif git and (body.startswith(b"rename ") or body.startswith(b"copy ")):
+                refuse("a git rename or copy")
+            elif git and (body.startswith(b"old mode ") or body.startswith(b"new mode ")):
+                refuse("a git mode change")
+            elif git and body.startswith(b"GIT binary patch"):
+                refuse("a git binary patch")
+            else:
+                t = body
+                level = 0
+                while t.startswith(b"- "):
+                    t = t[2:]
+                    level += 1
+                if t.startswith(b"--- "):
+                    names[1], timestr[1], stamp = fetchname(t[4:], True)
+                    need_header = False
+                    if stamp != -1:
+                        stamps[1] = stamp
+                        nesting = level
+                    strip_cr = line_strip_cr
+            if need_header:
+                continue
+            if forced_type in (None, "unified") and body.startswith(b"@@ -"):
+                names[0], names[1] = names[1], names[0]
+                timestr[0], timestr[1] = timestr[1], timestr[0]
+                stamps[0], stamps[1] = stamps[1], stamps[0]
+                m = re.match(rb"@@ -(\d+)(?:,\d+)? \+(\d+)", body)
+                rest = body[4:]
+                if re.match(rb"0(?!\d)", rest):
+                    nonexistent[0] = 1 + (not stamps[0])
+                m = re.match(rb"[^ \n]*\s*\+0(?!\d)", rest)
+                if m:
+                    nonexistent[1] = 1 + (not stamps[1])
+                return dict(type="unified", start=previous_line, names=names, timestr=timestr, stamps=stamps,
+                            nonexistent=nonexistent, indent=indent, strip_cr=strip_cr, nesting=nesting,
+                            prereq=prereq, git=git)
+            stars_this = body.startswith(b"********")
+            if (forced_type in (None, "context") and stars_last and indent_last == indent
+                    and body.startswith(b"*** ")):
+                rest = body[4:]
+                if re.match(rb"0(?!\d)", rest):
+                    nonexistent[0] = 1 + (not stamps[0])
+                d = dict(type="context", start=previous_line - 1, names=names, timestr=timestr, stamps=stamps,
+                         nonexistent=nonexistent, indent=indent, strip_cr=strip_cr, nesting=nesting,
+                         prereq=prereq, git=git)
+                return d
+            if (forced_type in (None, "normal") and last_command
+                    and (body.startswith(b"< ") or body.startswith(b"> "))):
+                return dict(type="normal", start=previous_line - 1, names=names, timestr=timestr, stamps=stamps,
+                            nonexistent=nonexistent, indent=indent, strip_cr=False, nesting=0, prereq=prereq,
+                            git=git)
+        if first_command is not None:
+            refuse("an ed script")
+        return None
+
+    def malformed(k, line):
+        fatal(f"malformed patch at line {k}: {os.fsdecode(line.rstrip(NL))}")
+
+    def next_hunk(info, k):
+        """another_hunk: the hunk starting at patch line k, or None if none starts there."""
+        kind = info["type"]
+        strip_cr, indent, nesting = info["strip_cr"], info["indent"], info["nesting"]
+
+        def get(j):
+            return pget(j, strip_cr, indent, nesting)
+
+        def incomplete(j):
+            # incomplete_line: a following "\ No newline" line means this one has none.
+            if j < len(plines) and plines[j].startswith(b"\\"):
+                return True, j + 1
+            return False, j
+
+        line, j = get(k)
+        if line is None:
+            return None, k
+        if kind == "unified":
+            m = re.match(rb"@@ -(\d+)(?:,(\d+))? ?\+(\d+)(?:,(\d+))? ?@@( [^\n]*)?", line)
+            if not line.startswith(b"@@ -"):
+                return None, k
+            if not m:
+                malformed(j, line)
+            first, old_n = int(m.group(1)), int(m.group(2)) if m.group(2) is not None else 1
+            newfirst, new_n = int(m.group(3)), int(m.group(4)) if m.group(4) is not None else 1
+            function = m.group(5) or b""
+            if not old_n:
+                first += 1
+            if not new_n:
+                newfirst += 1
+            old, new = [], []
+            context, prefix_ctx = 0, -1
+            p_max = old_n + new_n + 1
+            while len(old) < old_n or len(new) < new_n:
+                line, j = get(j)
+                if line is None:
+                    if p_max - (old_n + 1 + len(new) + 1) < 3:
+                        line = b" \n"
+                    else:
+                        fatal("unexpected end of file in patch")
+                if line[:1] in (b"\t", b"\n"):
+                    ch, text = b" ", line
+                else:
+                    ch, text = line[:1], line[1:]
+                if ch == b"-":
+                    if len(old) >= old_n:
+                        malformed(j, line)
+                    if len(old) == old_n - 1:
+                        cut, j = incomplete(j)
+                        if cut:
+                            text = text[:-1]
+                    old.append((b"-", text))
+                elif ch in (b" ", b"="):
+                    ch = b" "
+                    if len(old) >= old_n:
+                        malformed(j, line)
+                    context += 1
+                    if len(old) == old_n - 1:
+                        cut, j = incomplete(j)
+                        if cut:
+                            text = text[:-1]
+                    old.append((b" ", text))
+                    if len(new) >= new_n:
+                        malformed(j, line)
+                    if len(new) == new_n - 1:
+                        cut, j = incomplete(j)
+                        if cut:
+                            text = text[:-1]
+                    new.append((b" ", text))
+                elif ch == b"+":
+                    if len(new) >= new_n:
+                        malformed(j, line)
+                    if len(new) == new_n - 1:
+                        cut, j = incomplete(j)
+                        if cut:
+                            text = text[:-1]
+                    new.append((b"+", text))
+                else:
+                    malformed(j, line)
+                if ch != b" ":
+                    if prefix_ctx == -1:
+                        prefix_ctx = context
+                    context = 0
+            if prefix_ctx == -1:
+                malformed(j, line)
+            return dict(first=first, newfirst=newfirst, old=old, new=new, prefix=prefix_ctx, suffix=context,
+                        function=function, start=k), j
+        if kind == "context":
+            if not line.startswith(b"********"):
+                return None, k
+            m = re.match(rb"\*+( [^\n]*)?", line)
+            function = m.group(1) or b""
+            line, j = get(j)
+            if line is None or not line.startswith(b"*** "):
+                fatal("unexpected end of file in patch" if line is None else
+                      f"unexpected '***' at line {j}: {os.fsdecode(line.rstrip(NL))}")
+            nums = re.findall(rb"\d+", line)
+            first = int(nums[0]) if nums else 0
+            last = int(nums[1]) if len(nums) > 1 else None
+            if last is not None:
+                old_n = last - first + 1
+            elif first:
+                old_n = 1
+            else:
+                old_n, first = 0, 1
+            if first == 0 and last == 0:
+                old_n, first = 0, 1
+            old = []
+            while True:
+                line, j = get(j)
+                if line is None:
+                    fatal("unexpected end of file in patch")
+                if line.startswith(b"--- ") or line.rstrip(b"\n") == b"---":
+                    break
+                if line[:1] in (b"\t", b"\n"):
+                    ch, text = b" ", line[1:] if line[:1] == b"\t" else line
+                elif line[:2] in (b"  ", b"- ", b"! ", b"+ ") or line[:1] in (b" ", b"-", b"!", b"+") and line[1:2] == b"\t":
+                    ch, text = line[:1], line[2:]
+                else:
+                    malformed(j, line)
+                if len(old) == old_n - 1:
+                    cut, j = incomplete(j)
+                    if cut:
+                        text = text[:-1]
+                old.append((ch, text))
+            nums = re.findall(rb"\d+", line)
+            newfirst = int(nums[0]) if nums else 0
+            newlast = int(nums[1]) if len(nums) > 1 else None
+            if newlast is not None:
+                new_n = newlast - newfirst + 1
+            elif newfirst:
+                new_n = 1
+            else:
+                new_n, newfirst = 0, 1
+            new = []
+            while len(new) < new_n:
+                line, nj = get(j)
+                if line is None or not (line[:2] in (b"  ", b"+ ", b"! ", b"- ") or line[:1] in (b"\t", b"\n")):
+                    break
+                j = nj
+                ch, text = (b" ", line[1:] if line[:1] == b"\t" else line) if line[:1] in (b"\t", b"\n") else (line[:1], line[2:])
+                if len(new) == new_n - 1:
+                    cut, j = incomplete(j)
+                    if cut:
+                        text = text[:-1]
+                new.append((ch, text))
+            if not old and old_n:
+                # The old lines were left out, there being no deletions: they
+                # are the new side's context.
+                old = [(c, t) for c, t in new if c == b" "]
+            if not new and new_n:
+                new = [(c, t) for c, t in old if c == b" "]
+            if len(old) != old_n or len(new) != new_n:
+                fatal(f"replacement text or line numbers mangled in hunk at line {k + 2}")
+            changes = [i for i, (c, _) in enumerate(old) if c != b" "]
+            changes_new = [i for i, (c, _) in enumerate(new) if c != b" "]
+            pre = [changes[0] if changes else len(old), changes_new[0] if changes_new else len(new)]
+            post = [len(old) - 1 - changes[-1] if changes else len(old),
+                    len(new) - 1 - changes_new[-1] if changes_new else len(new)]
+            prefix_ctx = min(pre[0] if changes else pre[1], pre[1] if changes_new else pre[0])
+            suffix_ctx = min(post[0] if changes else post[1], post[1] if changes_new else post[0])
+            return dict(first=first, newfirst=newfirst, old=old, new=new, prefix=prefix_ctx, suffix=suffix_ctx,
+                        function=function, start=k), j
+        # normal
+        m = re.match(rb"(\d+)(?:,(\d+))?([acd])(\d+)(?:,(\d+))?[ \t]*\r?\n", line)
+        if not m:
+            return None, k
+        first = int(m.group(1))
+        old_n = int(m.group(2)) - first + 1 if m.group(2) else (0 if m.group(3) == b"a" else 1)
+        kind_letter = m.group(3)
+        if kind_letter == b"a":
+            first += 1
+        lo = int(m.group(4))
+        hi = int(m.group(5)) if m.group(5) else lo
+        if kind_letter == b"d":
+            lo += 1
+        new_n = hi - lo + 1
+        old, new = [], []
+        for i in range(old_n):
+            line, j = get(j)
+            if line is None:
+                fatal(f"unexpected end of file in patch at line {j}")
+            if not (line.startswith(b"< ") or line.startswith(b"<\t")):
+                fatal(f"'<' followed by space or tab expected at line {j} of patch")
+            text = line[2:]
+            if i == old_n - 1:
+                cut, j = incomplete(j)
+                if cut:
+                    text = text[:-1]
+            old.append((b"-", text))
+        if kind_letter == b"c":
+            line, j = get(j)
+            if line is None:
+                fatal(f"unexpected end of file in patch at line {j}")
+            if not line.startswith(b"-"):
+                fatal(f"'---' expected at line {j} of patch")
+        for i in range(new_n):
+            line, j = get(j)
+            if line is None:
+                fatal(f"unexpected end of file in patch at line {j}")
+            if not (line.startswith(b"> ") or line.startswith(b">\t")):
+                fatal(f"'>' followed by space or tab expected at line {j} of patch")
+            text = line[2:]
+            if i == new_n - 1:
+                cut, j = incomplete(j)
+                if cut:
+                    text = text[:-1]
+            new.append((b"+", text))
+        return dict(first=first, newfirst=lo, old=old, new=new, prefix=0, suffix=0, function=b"", start=k), j
+
+    def first_hunk_line(info):
+        return info["start"] + 1
+
+    def render_rejects(info, rejects, reverse):
+        """The failed hunks as GNU writes them: unified for a unified patch, else context."""
+        names, timestr = info["names"], info["timestr"]
+        unified = reject_format == "unified" or (reject_format is None and info["type"] == "unified")
+        chunks = []
+        if names[2]:
+            chunks.append(b"Index: " + os.fsencode(names[2]) + b"\n")
+
+        def header(tag, which):
+            name = names[which]
+            chunks.append(tag + b" " + (os.fsencode(name) if name is not None else b"/dev/null") +
+                          (timestr[which] or b"") + b"\n")
+
+        if unified:
+            header(b"---", reverse)
+            header(b"+++", not reverse)
+        else:
+            header(b"***", reverse)
+            header(b"---", not reverse)
+        for h, offset in rejects:
+            old = [[c, t] for c, t in h["old"]]
+            new = [[c, t] for c, t in h["new"]]
+            if unified:
+                for side, mark in ((old, b"-"), (new, b"+")):
+                    for item in side:
+                        if item[0] == b"!":
+                            item[0] = mark
+
+                def urange(start, count):
+                    return b"%d,0" % (start - 1) if count == 0 else b"%d" % start if count == 1 else b"%d,%d" % (start, count)
+                chunks.append(b"@@ -" + urange(h["first"] + offset, len(old)) + b" +" +
+                              urange(h["newfirst"] + offset, len(new)) + b" @@" + h["function"] + b"\n")
+                oi = ni = 0
+                while True:
+                    while oi < len(old) and old[oi][0] == b"-":
+                        chunks.append(b"-" + old[oi][1])
+                        oi += 1
+                    while ni < len(new) and new[ni][0] == b"+":
+                        chunks.append(b"+" + new[ni][1])
+                        ni += 1
+                    if oi >= len(old):
+                        break
+                    chunks.append(b" " + old[oi][1])
+                    oi += 1
+                    ni += 1
+                continue
+            if info["type"] == "unified":
+                # pch_normalize: a run of removals met by a run of additions is a change.
+                oi = ni = 0
+                while oi < len(old):
+                    if old[oi][0] == b"-":
+                        if ni < len(new) and new[ni][0] == b"+":
+                            while oi < len(old) and old[oi][0] == b"-":
+                                old[oi][0] = b"!"
+                                oi += 1
+                            while ni < len(new) and new[ni][0] == b"+":
+                                new[ni][0] = b"!"
+                                ni += 1
+                        else:
+                            while oi < len(old) and old[oi][0] == b"-":
+                                oi += 1
+                    elif ni < len(new) and new[ni][0] == b"+":
+                        while ni < len(new) and new[ni][0] == b"+":
+                            ni += 1
+                    else:
+                        oi += 1
+                        ni += 1
+            new_style = info["type"] in ("context", "unified")
+            stars, minuses = (b" ****", b" ----") if new_style else (b"", b" -----")
+
+            def crange(first, count, tail):
+                last = first + count - 1
+                if last < first:
+                    return b"0" + tail
+                return (b"%d" % first if last == first else b"%d,%d" % (first, last)) + tail
+            chunks.append(b"***************" + h["function"] + b"\n")
+            chunks.append(b"*** " + crange(h["first"] + offset, len(old), stars) + b"\n")
+            for c, t in old:
+                chunks.append(c + b" " + t)
+            chunks.append(b"--- " + crange(h["newfirst"] + offset, len(new), minuses) + b"\n")
+            for c, t in new:
+                chunks.append(c + b" " + t)
+        return b"".join(chunks)
+
+    def swap(h):
+        flip = {b"-": b"+", b"+": b"-"}
+        return dict(h, first=h["newfirst"], newfirst=h["first"],
+                    old=[(flip.get(c, c), t) for c, t in h["new"]],
+                    new=[(flip.get(c, c), t) for c, t in h["old"]])
+
+    def similar(a, b):
+        a, b = a.rstrip(b"\n"), b.rstrip(b"\n")
+        return re.sub(rb"[ \t]+", b" ", a).strip(b" ") == re.sub(rb"[ \t]+", b" ", b).strip(b" ")
+
+    somefailed = False
+    any_patch = False
+    explicit = inname_given
+
+    def leading_text(start):
+        say("The text leading up to this was:\n--------------------------\n")
+        out.flush()
+        for line in plines[pos:start]:
+            out.buffer.write(b"|" + line + (b"" if line.endswith(b"\n") else b"\n"))
+        out.buffer.flush()
+        say("--------------------------\n")
+
+    while True:
+        if any_patch and pos >= len(plines):
+            if verbose:
+                say("done\n")
+            break
+        if verbose:
+            say("Hmm...")
+        info = intuit(pos)
+        if info is None:
+            if verbose:
+                say("  Ignoring the trailing garbage.\ndone\n" if any_patch else
+                    "  I can't seem to find a patch in there anywhere.\n")
+            if not any_patch and raw:
+                fatal("Only garbage was found in the patch input.")
+            break
+        if verbose:
+            say(f"  {'L' if not any_patch else 'The next patch l'}ooks like "
+                f"{ {'unified': 'a unified diff', 'context': 'a new-style context diff', 'normal': 'a normal diff'}[info['type']] } to me...\n")
+        any_patch = True
+        reverse = reverse_flag
+        names, nonexistent = info["names"], info["nonexistent"]
+        if info["indent"] and not silent:
+            say(f"(Patch is indented {info['indent']} space{'' if info['indent'] == 1 else 's'}.)\n")
+        if info["strip_cr"] and binary:
+            info["strip_cr"] = False
+        if info["strip_cr"] and not silent:
+            say("(Stripping trailing CRs from patch; use --binary to disable.)\n")
+        skip_rest = False
+        inname = explicit
+        if inname is None:
+            if not posix and (names[0] or names[1]) and names[2]:
+                names[2] = None
+            errs, stats = [None] * 3, [None] * 3
+            first_named = None
+            for k in range(3):
+                if names[k] is None:
+                    continue
+                if first_named is not None and names[first_named] == names[k]:
+                    errs[k], stats[k] = errs[first_named], stats[first_named]
+                else:
+                    try:
+                        stats[k] = os.stat(names[k])
+                    except OSError as e:
+                        errs[k] = e.errno
+                first_named = k
+            choice = best_name(names, [errs[k] is not None for k in range(3)])
+            if first_named is not None and (choice is None or stat.S_ISREG(stats[choice].st_mode)):
+                target = names[choice if choice is not None else first_named]
+                missing = choice is None
+                empty = missing or stats[choice].st_size == 0
+                looks_reversed = (not empty) < nonexistent[reverse ^ empty]
+                if empty and nonexistent[reverse ^ missing] == 1 and nonexistent[(not reverse) ^ missing] == 2:
+                    looks_reversed = False
+                if looks_reversed:
+                    what = "delete" if missing else "empty out" if empty else "create"
+                    why = "does not exist" if missing else "is already empty" if empty else "already exists"
+                    message = (f"The next patch{', when reversed,' if reverse else ''} would {what} the file "
+                               f"{target},\nwhich {why}!")
+                    if noreverse or not (force and silent):
+                        say(message)
+                    if noreverse:
+                        say("  Skipping patch.\n")
+                        skip_rest = True
+                    elif force:
+                        if not silent:
+                            say("  Applying it anyway.\n")
+                    elif batch:
+                        say("  Ignoring -R.\n" if reverse else "  Assuming -R.\n")
+                        reverse = not reverse
+                    else:
+                        ask("  Ignore -R? [n] " if reverse else "  Assume -R? [n] ")
+                        ask("Apply anyway? [n] ")
+                        if not silent:
+                            say("Skipping patch.\n")
+                        skip_rest = True
+                    if choice is None:
+                        choice = first_named
+            if choice is None and nonexistent[reverse]:
+                newdirs = {k: components(names[k], False) - components(names[k], True)
+                           for k in range(3) if names[k] is not None}
+                if newdirs:
+                    low = min(newdirs.values())
+                    choice = best_name(names, [names[k] is None or newdirs[k] - low != 0 for k in range(3)])
+            if choice is not None:
+                inname = names[choice]
+        if not skip_rest and inname is None:
+            if not silent:
+                say(f"can't find file to patch at input line {first_hunk_line(info)}\n")
+                if info["type"] != "normal":
+                    say("Perhaps you should have used the -p or --strip option?\n" if strip == -1 else
+                        "Perhaps you used the wrong -p or --strip option?\n")
+            if not silent and pos < info["start"]:
+                leading_text(info["start"])
+            if force or batch:
+                say("No file to patch.  Skipping patch.\n")
+            else:
+                ask("File to patch: ")
+                ask("Skip this patch? [y] ")
+                if not silent:
+                    say("Skipping patch.\n")
+            skip_rest = True
+        elif verbose and pos < info["start"] and inname is not None:
+            leading_text(info["start"])
+        if inname is not None and not skip_rest and info["prereq"]:
+            try:
+                with open(inname, "rb") as f:
+                    content = f.read()
+            except OSError:
+                content = b""
+            if not re.search(rb"(?<![^\s])" + re.escape(info["prereq"]) + rb"(?![^\s])", content):
+                if force:
+                    say(f"Warning: this file doesn't appear to be the {os.fsdecode(info['prereq'])} version"
+                        " -- patching anyway.\n")
+                else:
+                    ask(f"This file doesn't appear to be the {os.fsdecode(info['prereq'])} version -- "
+                        "patch anyway? [n] ")
+                    fatal("aborted\n")
+
+        # Read the file to patch.
+        inlines, in_exists, in_size = [], False, 0
+        outname = outfile if outfile is not None else inname
+        if not skip_rest:
+            try:
+                with open(inname, "rb") as f:
+                    data = f.read()
+                in_exists, in_size = True, len(data)
+                inlines = [part + b"\n" for part in data.split(b"\n")]
+                if data.endswith(b"\n") or not data:
+                    inlines.pop()
+                else:
+                    inlines[-1] = inlines[-1][:-1]
+            except IsADirectoryError:
+                say(f"File {inname} is not a regular file -- refusing to patch\n")
+                skip_rest = True
+                somefailed = True
+            except FileNotFoundError:
+                in_exists = False
+            except OSError as e:
+                fatal(f"Can't open file {inname} : {e.strerror}")
+            if not skip_rest and in_exists and not os.access(inname, os.W_OK):
+                say(f"File {inname} is read-only; trying to patch anyway\n")
+            if not skip_rest and not silent:
+                renamed = outname != inname
+                say(f"{'checking' if dry else 'patching'} file {outname}" +
+                    (f" (read from {inname})\n" if renamed else "\n"))
+                if verbose:
+                    say("Using Plan A...\n")
+
+        # Apply each hunk. Rejects are saved only when the file was known
+        # before the hunks were read; a patch skipped later still keeps them.
+        have_outname = not skip_rest
+        result = []
+        copied = 0            # input lines copied or deleted so far (last_frozen_line)
+        in_offset = out_offset = 0
+        hunk_no = failed = 0
+        mismatch = False
+        apply_anyway = False
+        rejects = []
+        k = info["start"]
+        while True:
+            h, nk = next_hunk(info, k)
+            if h is None:
+                break
+            k = nk
+            if reverse:
+                h = swap(h)
+            hunk_no += 1
+            where = 0
+            fuzz = 0
+            context_max = max(h["prefix"], h["suffix"])
+            mymaxfuzz = min(maxfuzz, context_max)
+
+            def matches(base, offset, prefix_fuzz, suffix_fuzz, hunk):
+                pat = hunk["old"]
+                for pline in range(prefix_fuzz, len(pat) - suffix_fuzz):
+                    iline = base + offset + pline - 1
+                    if iline < 0 or iline >= len(inlines):
+                        return False
+                    if canon_ws:
+                        if not similar(inlines[iline], pat[pline][1]):
+                            return False
+                    elif inlines[iline] != pat[pline][1]:
+                        return False
+                return True
+
+            def locate(fz, hunk):
+                nonlocal in_offset
+                first_guess = hunk["first"] + in_offset
+                pat_lines = len(hunk["old"])
+                ctx = max(hunk["prefix"], hunk["suffix"])
+                prefix_fuzz = fz + hunk["prefix"] - ctx
+                suffix_fuzz = fz + hunk["suffix"] - ctx
+                max_where = len(inlines) - (pat_lines - suffix_fuzz) + 1
+                min_where = copied + 1
+                max_pos = max_where - first_guess
+                max_neg = first_guess - min_where
+                max_offset = max(max_pos, max_neg)
+                if not pat_lines:
+                    return first_guess
+                if first_guess <= max_neg:
+                    max_neg = first_guess - 1
+                if prefix_fuzz < 0 and hunk["first"] <= 1:
+                    if suffix_fuzz < 0 and (pat_lines != len(inlines) or hunk["prefix"] < copied):
+                        return 0
+                    offset = 1 - first_guess
+                    if copied <= hunk["prefix"] and offset <= max_pos and matches(first_guess, offset, 0, max(suffix_fuzz, 0), hunk):
+                        in_offset += offset
+                        return first_guess + offset
+                    return 0
+                if prefix_fuzz < 0:
+                    prefix_fuzz = 0
+                if suffix_fuzz < 0:
+                    offset = first_guess - (len(inlines) - pat_lines + 1)
+                    if offset <= max_neg and matches(first_guess, -offset, prefix_fuzz, 0, hunk):
+                        in_offset -= offset
+                        return first_guess - offset
+                    return 0
+                min_offset = (first_guess - max_where if max_pos < 0 else first_guess - min_where if max_neg < 0 else 0)
+                offset = min_offset
+                while offset <= max_offset:
+                    if offset <= max_pos and matches(first_guess, offset, prefix_fuzz, suffix_fuzz, hunk):
+                        in_offset += offset
+                        return first_guess + offset
+                    if offset <= max_neg and matches(first_guess, -offset, prefix_fuzz, suffix_fuzz, hunk):
+                        in_offset -= offset
+                        return first_guess - offset
+                    offset += 1
+                return 0
+
+            if not skip_rest:
+                while True:
+                    where = locate(fuzz, h)
+                    if not where or fuzz or in_offset:
+                        mismatch = True
+                    if hunk_no == 1 and not where and not (force or apply_anyway) and reverse == reverse_flag:
+                        swapped = swap(h)
+                        where = locate(fuzz, swapped)
+                        if where:
+                            message = f"{'Unreversed' if reverse else 'Reversed (or previously applied)'} patch detected!"
+                            if noreverse or not (force and silent):
+                                say(message)
+                            if noreverse:
+                                say("  Skipping patch.\n")
+                                skip_rest = True
+                                ok = False
+                            elif batch:
+                                say("  Ignoring -R.\n" if reverse else "  Assuming -R.\n")
+                                ok = True
+                            else:
+                                ask("  Ignore -R? [n] " if reverse else "  Assume -R? [n] ")
+                                ask("Apply anyway? [n] ")
+                                if not silent:
+                                    say("Skipping patch.\n")
+                                skip_rest = True
+                                ok = False
+                            if ok:
+                                reverse = not reverse
+                                h = swapped
+                            else:
+                                apply_anyway = True
+                                fuzz -= 1
+                                where = 0
+                    if skip_rest or where:
+                        break
+                    fuzz += 1
+                    if fuzz > mymaxfuzz:
+                        break
+            newwhere = (where if where else h["first"]) + out_offset
+            ok = False
+            if not skip_rest and where and not (where == 1 and nonexistent[reverse] == 2 and in_size):
+                # apply_hunk, copying the file's own lines for context as GNU does
+                base = where - 1
+                old, new = h["old"], h["new"]
+                oi = ni = 0
+
+                def copy_till(n):
+                    # GNU's copy_till: the input up to line n; past the end
+                    # there is nothing to copy, and going backwards is refused.
+                    nonlocal copied
+                    if copied > n:
+                        say("misordered hunks! output would be garbled\n")
+                        return False
+                    while copied < n:
+                        if copied < len(inlines):
+                            result.append(inlines[copied])
+                        copied += 1
+                    return True
+
+                ok = True
+                while ok and oi < len(old):
+                    c = old[oi][0]
+                    if c == b"-":
+                        ok = copy_till(base + oi)
+                        copied += 1
+                        oi += 1
+                    elif ni >= len(new):
+                        break
+                    elif new[ni][0] == b"+":
+                        ok = copy_till(base + oi)
+                        result.append(new[ni][1])
+                        ni += 1
+                    elif new[ni][0] != c:
+                        fatal(f"Out-of-sync patch, lines {oi + 1},{ni + 1} -- mangled text or line numbers, maybe?")
+                    elif c == b"!":
+                        ok = copy_till(base + oi)
+                        while oi < len(old) and old[oi][0] == b"!":
+                            copied += 1
+                            oi += 1
+                        while ni < len(new) and new[ni][0] == b"!":
+                            result.append(new[ni][1])
+                            ni += 1
+                    else:
+                        oi += 1
+                        ni += 1
+                if ok and ni < len(new) and new[ni][0] == b"+":
+                    ok = copy_till(base + oi)
+                    while ni < len(new) and new[ni][0] == b"+":
+                        result.append(new[ni][1])
+                        ni += 1
+                if ok:
+                    out_offset += len(new) - len(old)
+            if not ok:
+                if not skip_rest and where == 0 and not fuzz_given:
+                    # Say so when GNU, fuzzing by default, would have applied it.
+                    saved = in_offset
+                    for fz in range(maxfuzz + 1, min(2, context_max) + 1):
+                        if locate(fz, h):
+                            out.flush()
+                            sys.stderr.write(f"patch: hunk #{hunk_no} matches only with fuzz {fz}, which GNU patch "
+                                             f"allows by default and this one only with -F {fz}\n")
+                            break
+                    in_offset = saved
+                rejects.append((h, out_offset))
+                failed += 1
+                if verbose or (not skip_rest and not silent):
+                    ending = ""
+                    if not skip_rest and h["old"] and inlines:
+                        patch_crlf = h["old"][0][1].endswith(b"\r\n")
+                        line = inlines[min(newwhere, len(inlines)) - 1]
+                        if line and line.endswith(b"\r\n") != patch_crlf:
+                            ending = " (different line endings)"
+                    say(f"Hunk #{hunk_no} {'ignored' if skip_rest else 'FAILED'} at {newwhere}{ending}.\n")
+            elif verbose or (not silent and (fuzz or in_offset)):
+                say(f"Hunk #{hunk_no} succeeded at {newwhere}" + (f" with fuzz {fuzz}" if fuzz else "") +
+                    (f" (offset {in_offset} line{'' if in_offset == 1 else 's'})" if in_offset else "") + ".\n")
+        pos = k
+
+        if not skip_rest:
+            result.extend(inlines[copied:])
+            # Lines without a newline are only ever last; anything after one gets it back.
+            for i in range(len(result) - 1):
+                if not result[i].endswith(b"\n"):
+                    result[i] += b"\n"
+        body = b"".join(result)
+        zero = not result
+
+        def backup_name(name):
+            if prefix is not None:
+                return prefix + name
+            return name + (suffix if suffix is not None else os.environ.get("SIMPLE_BACKUP_SUFFIX", ".orig"))
+
+        def make_backup(name):
+            if name in backed_up or name in created_files or dry:
+                return
+            backed_up.add(name)
+            try:
+                with open(name, "rb") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = None
+            try:
+                with open(backup_name(name), "wb") as f:
+                    f.write(content or b"")
+            except OSError as e:
+                fatal(f"Can't create file {backup_name(name)} : {e.strerror}")
+            if content is None and not nonexistent[reverse]:
+                # A file named on the command line that is not there, for a
+                # patch that does not create it: GNU fails here, just so.
+                fatal(f"Can't reopen file {name} : No such file or directory")
+
+        if not skip_rest and outfile is None:
+            backup = make_backups or (backup_if_mismatch and (mismatch or failed))
+            if zero and (remove_empty or (nonexistent[not reverse] == 2 and not posix)):
+                if not dry:
+                    if backup:
+                        make_backup(outname)
+                    try:
+                        os.unlink(outname)
+                    except FileNotFoundError:
+                        pass
+                    parent = os.path.dirname(outname)
+                    while parent:
+                        try:
+                            os.rmdir(parent)
+                        except OSError:
+                            break
+                        parent = os.path.dirname(parent)
+            else:
+                if not zero and nonexistent[not reverse] == 2 and (remove_empty or not posix):
+                    mismatch = True
+                    somefailed = True
+                    if not silent:
+                        say(f"Not deleting file {outname} as content differs from patch\n")
+                if not dry:
+                    if backup:
+                        make_backup(outname)
+                    if failed < hunk_no:
+                        parent = os.path.dirname(outname)
+                        if parent and not os.path.isdir(parent):
+                            os.makedirs(parent, exist_ok=True)
+                        try:
+                            with open(outname, "wb") as f:
+                                f.write(body)
+                        except OSError as e:
+                            fatal(f"Can't create file {outname} : {e.strerror}")
+                        if not in_exists:
+                            created_files.add(outname)
+        elif not skip_rest and output_stream is not None:
+            output_stream.write(body)
+        if failed:
+            somefailed = True
+            say(f"{failed} out of {hunk_no} hunk{'' if hunk_no == 1 else 's'} {'ignored' if skip_rest else 'FAILED'}")
+            target = outname if have_outname else None
+            if target is not None and rejname != "-":
+                rej = rejname or target + ".rej"
+                if not dry:
+                    say(f" -- saving rejects to file {rej}\n")
+                    written = state.setdefault("rej_written", set())
+                    with open(rej, "ab" if rej in written else "wb") as f:
+                        f.write(render_rejects(info, rejects, reverse))
+                    written.add(rej)
+                else:
+                    say("\n")
+            else:
+                say("\n")
+    if output_stream is not None and output_stream is not sys.stdout.buffer:
+        output_stream.close()
+    out.flush()
+    return 1 if somefailed else 0
 
 
 # ---------------------------------------------------------------- cmp
