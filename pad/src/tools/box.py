@@ -170,50 +170,150 @@ def cmd_sum(argv, algorithm):
 # block allocation to count — a 3000-byte file occupies 3000 bytes here and
 # 4096 on a disk. Reporting a number invented to look like a real one would be
 # worse than reporting the one that is true.
+#
+# Otherwise it is GNU's: a line for every directory, deepest first, in the
+# order the directory lists them; a file's size and a symlink's own, never a
+# directory's (GNU counts st_size only for those two); a file with several
+# links counted once, and with more than one argument anything already
+# counted skipped — which is why `du -s dir dir/sub` prints one line.
 def cmd_du(argv):
-    summarise, human, all_files, paths = False, False, False, []
-    for a in argv:
-        if a.startswith("-") and a != "-":
-            for flag in a[1:]:
-                if flag == "s":
-                    summarise = True
-                elif flag == "h":
-                    human = True
-                elif flag == "a":
-                    all_files = True
-                else:
-                    die("du", f"unsupported option '-{flag}'. Supported: -s -h -a")
-        else:
+    summarise, all_files, total, null, max_depth, unit, paths = False, False, False, False, None, 1024, []
+    separate, one_fs = False, False
+    supported = "Supported: -s -a -c -h -k -m -b -0 -S -x -d N --apparent-size"
+    longs = {"--summarize": "s", "--all": "a", "--total": "c", "--human-readable": "h", "--bytes": "b",
+             "--null": "0", "--separate-dirs": "S", "--one-file-system": "x", "--apparent-size": ""}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            paths.extend(argv[i + 1 :])
+            break
+        if not a.startswith("-") or a == "-":
             paths.append(a)
+            i += 1
+            continue
+        if a.startswith("--"):
+            key, eq, value = a.partition("=")
+            if key == "--max-depth":
+                if not eq:
+                    i += 1
+                    value = argv[i] if i < len(argv) else ""
+                flags = "d"
+            elif key in longs and not eq:
+                flags = longs[key]
+            else:
+                die("du", f"unsupported option '{a}'. {supported}")
+        else:
+            flags = a[1:]
+        for j, flag in enumerate(flags):
+            if flag == "s":
+                summarise = True
+            elif flag == "a":
+                all_files = True
+            elif flag == "c":
+                total = True
+            elif flag == "0":
+                null = True
+            elif flag == "S":
+                separate = True
+            elif flag == "x":
+                one_fs = True
+            elif flag in "hkmb":
+                unit = {"h": None, "k": 1024, "m": 1024 * 1024, "b": 1}[flag]
+            elif flag == "d":
+                if not a.startswith("--"):
+                    value = flags[j + 1 :]
+                    if not value:
+                        i += 1
+                        value = argv[i] if i < len(argv) else ""
+                if not value.isdigit():
+                    sys.stderr.write(f"du: invalid maximum depth '{value}'\nTry 'du --help' for more information.\n")
+                    return 1
+                max_depth = int(value)
+                break
+            else:
+                die("du", f"unsupported option '-{flag}'. {supported}")
+        i += 1
+    if summarise and all_files:
+        sys.stderr.write("du: cannot both summarize and show all entries\nTry 'du --help' for more information.\n")
+        return 1
+    if summarise:
+        if max_depth:
+            sys.stderr.write(f"du: warning: summarizing conflicts with --max-depth={max_depth}\nTry 'du --help' for more information.\n")
+            return 1
+        if max_depth == 0:
+            sys.stderr.write("du: warning: summarizing is the same as using --max-depth=0\n")
+        max_depth = 0
+    paths = paths or ["."]
+    hash_all = len(paths) > 1
+    seen, status, grand = set(), 0, 0
+    end = "\0" if null else "\n"
 
     def show(size, name):
-        if human:
-            value = float(size)
-            for unit in ("", "K", "M", "G"):
-                if value < 1024 or unit == "G":
-                    print(f"{value:.0f}{unit}\t{name}" if unit else f"{value:.0f}\t{name}")
-                    return
-                value /= 1024
-        else:
-            print(f"{(size + 1023) // 1024}\t{name}")
+        amount = du_human(size) if unit is None else str(-(-size // unit))
+        sys.stdout.write(f"{amount}\t{name}{end}")
 
-    for path in paths or ["."]:
-        if os.path.isfile(path):
-            show(os.path.getsize(path), path)
-            continue
-        total = 0
-        for root, _, names in os.walk(path):
+    def visit(path, st, depth, device):
+        nonlocal status, grand
+        is_dir = stat.S_ISDIR(st.st_mode)
+        if hash_all or (not is_dir and st.st_nlink > 1):
+            key = (st.st_dev, st.st_ino)
+            if key in seen:
+                return 0
+            seen.add(key)
+        size = st.st_size if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode) else 0
+        grand += size
+        if is_dir:
+            try:
+                names = [entry.name for entry in os.scandir(path)]
+            except OSError as e:
+                sys.stderr.write(f"du: cannot read directory '{path}': {e.strerror}\n")
+                status, names = 1, []
             for name in names:
-                full = os.path.join(root, name)
+                child = os.path.join(path, name)
                 try:
-                    size = os.path.getsize(full)
-                except OSError:
+                    child_st = os.lstat(child)
+                except OSError as e:
+                    sys.stderr.write(f"du: cannot access '{child}': {e.strerror}\n")
+                    status = 1
                     continue
-                total += size
-                if all_files:
-                    show(size, full)
-        show(total, path)
-    return 0
+                if one_fs and child_st.st_dev != device:
+                    continue
+                inner = visit(child, child_st, depth + 1, device)
+                size += 0 if separate and stat.S_ISDIR(child_st.st_mode) else inner
+        if (is_dir or all_files or depth == 0) and (max_depth is None or depth <= max_depth):
+            show(size, path)
+        return size
+
+    for path in paths:
+        try:
+            st = os.lstat(path)
+        except OSError as e:
+            sys.stderr.write(f"du: cannot access '{path}': {e.strerror}\n")
+            status = 1
+            continue
+        visit(path, st, 0, st.st_dev)
+    if total:
+        show(grand, "total")
+    return status
+
+
+def du_human(size):
+    """GNU's -h: powers of 1024, one decimal below 10, and always rounded up."""
+    if size < 1024:
+        return str(size)
+    units, power, exponent = "KMGTPEZYRQ", 1024, 1
+    while exponent < len(units) and size >= power * 1024:
+        power, exponent = power * 1024, exponent + 1
+    if size * 10 < power * 100:
+        tenths = -(-size * 10 // power)
+        if tenths < 100:
+            return f"{tenths // 10}.{tenths % 10}{units[exponent - 1]}"
+        return f"10{units[exponent - 1]}"
+    whole = -(-size // power)
+    if whole >= 1024 and exponent < len(units):
+        return f"1.0{units[exponent]}"
+    return f"{whole}{units[exponent - 1]}"
 
 
 # ---------------------------------------------------------------- stat
