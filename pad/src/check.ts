@@ -717,6 +717,8 @@ async function main() {
     ["sed 's/alpha/ALPHA/' poem.txt | head -1", "ALPHA one 10"],
     ["sed -n '2p' poem.txt", "beta two 20"],
     ["cat poem.txt | grep two", "beta two 20"],
+    // Every -k key, in order: the shim used only the last (review of 19 October).
+    ["sort -k1,1 -k3,3nr poem.txt", "alpha four 40\nalpha one 10\nbeta two 20\ngamma three 30"],
     ["awk '{print $1}' poem.txt | head -1", "alpha"],
     ["awk '$3 > 20 {print $1}' poem.txt", "gamma\nalpha"],
     ["awk '/beta/ {print $2}' poem.txt", "two"],

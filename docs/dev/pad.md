@@ -120,6 +120,18 @@ and then again inside the runtime. Each refuses what it does not implement
 rather than ignoring it: a `sort` that silently drops `-k` is worse than one
 that says it cannot.
 
+That was not enough. A reviewer's differential harness on 19 October — 456
+cases typed as a person would, each run through the shim and the real tool —
+found 211 differences, 56 of them silently wrong answers: `sort` used only the
+last of several `-k` keys, among them. Since 20 October **sort is GNU sort
+9.4** for everything it takes — every key in order with its own modifiers,
+`-g -h -M -V -R`, `-c`/`-C`/`-m`, bytes compared as bytes — and **tail is GNU
+tail without following**: bytes throughout, GNU's counts and suffixes and its
+old `+N` form, a file read back from its end only as far as needed. Both pass
+the harness's 51 and 27 cases, and some thousands of random inputs, against
+coreutils 9.4 in the C locale; what they refuse (`sort --debug`, `tail -f`)
+they refuse by name. `check.ts` sorts by two keys inside the runtime.
+
 The cost is one python start per invocation: **214 ms against 39 ms** for a
 native command. Worth paying for a command that otherwise does not exist, and
 not worth paying for one that works — which is why nothing already in coreutils
