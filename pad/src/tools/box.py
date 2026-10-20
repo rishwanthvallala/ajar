@@ -1470,9 +1470,12 @@ def zip_time(seconds):
 
 
 def zip_umask():
-    mask = os.umask(0)
-    os.umask(mask)
-    return mask
+    try:
+        mask = os.umask(0)
+        os.umask(mask)
+        return mask
+    except (AttributeError, OSError):
+        return 0o022
 
 
 def zip_mtime(info):
@@ -1688,7 +1691,12 @@ def cmd_unzip(argv):
     for target, shown, points_at in links:
         if not quiet:
             print(f"  {shown:<22} -> {points_at}")
-        os.symlink(points_at, target)
+        try:
+            os.symlink(points_at, target)
+        except OSError as e:
+            sys.stdout.flush()
+            sys.stderr.write(f"error:  cannot create symlink {shown}: {e.strerror}\n")
+            status = max(status, 1)
     for target, info, mode in reversed(directories):
         if mode & 0o777:
             os.chmod(target, stat.S_IMODE(mode) & 0o777)
