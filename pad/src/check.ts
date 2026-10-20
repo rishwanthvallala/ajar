@@ -1046,6 +1046,14 @@ async function main() {
     is(out, ["before", "ReferenceError: undefinedThing is not defined", "    at f (<anonymous>:2:3)", "    at Object.eval (<anonymous>:5:1)", "Node.js v24.13.2", ""].join("\r\n"), "a Node error keeps the program's frames at their own lines, and loses the runtime's");
     n.end();
     is(n.push("    at nothing.special (main.py:3)\r\n"), "    at nothing.special (main.py:3)\r\n", "and a frame that is not the runtime's is left alone");
+    n.end();
+    // A syntax error: a line past where it is, and the parser's fields after
+    // it (review of 18 October, N3), arriving in two pieces.
+    const parserAt = "    at pp$4.raise (http://x/vendor/wasmer/pkg/snippets/wasmer-napi-4dc4/acorn.mjs:3807:13)";
+    const syntax = n.push(`SyntaxError: Unexpected token (3:8) {\r\n${parserAt}\r\n${parserAt}\r\n  pos: 69,\r\n  loc: Posi`) + n.push("tion { line: 3, column: 8 },\r\n  raisedAt: 70\r\n}\r\nNode.js v24.13.2\r\n");
+    is(syntax, "SyntaxError: Unexpected token (2:8)\r\nNode.js v24.13.2\r\n", "a Node syntax error is said at its own line, without the parser's fields");
+    const marked = problemsIn("SyntaxError: Unexpected token (2:8)\nNode.js v24.13.2\n", (p) => p, "app.js").map((p) => `${p.path}:${p.line}:${p.column} ${p.message}`).join(" | ");
+    is(marked, "app.js:2:9 SyntaxError: Unexpected token", "and marked there, in the file node ran");
   }
 
   // ---- a document message too big for the relay ----

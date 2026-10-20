@@ -78,6 +78,25 @@ function tooBigToShare(units: number, text: () => string): boolean {
   return new TextEncoder().encode(text()).length > LIVE_MAX;
 }
 
+/**
+ * Whether `b` is still recognisably `a`, changed: most of their lines in
+ * common, or — a short file — most of its text at the same start and end.
+ * What tells a file moved and edited from another file of the same name.
+ */
+function alike(a: string, b: string): boolean {
+  if (a === b) return true;
+  const longest = Math.max(a.length, b.length);
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let end = 0;
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+  if ((start + end) * 2 >= longest) return true;
+  const lines = new Set(a.split("\n").filter((l) => l.trim()));
+  const theirs = b.split("\n").filter((l) => l.trim());
+  const shared = theirs.filter((l) => lines.has(l)).length;
+  return shared * 2 >= Math.min(lines.size, theirs.length) && shared > 0;
+}
+
 const STARTER = `# Paste over this, or start typing.
 import csv
 
@@ -490,6 +509,11 @@ export class App {
   }
 
   async start(): Promise<void> {
+    // Pressed before this existed (bootstrap.ts): remembered there.
+    if (this.el.run.dataset.wanted) {
+      delete this.el.run.dataset.wanted;
+      this.runWanted = true;
+    }
     // Answered from the start; `wire` puts the full handler on later.
     this.el.run.onclick = () => void this.run();
     try {
@@ -745,13 +769,28 @@ export class App {
         const free = arrived.filter((p) => ![...moves.values()].includes(p));
         const same = free.filter((p) => incoming.get(p) === was);
         // The same text, under the same name if one has it; or, the text
-        // since changed by the mover, the one file of that name that arrived.
-        const named = free.filter((p) => base(p) === base(from));
+        // since changed by the mover, the one file of that name that arrived —
+        // if it is still recognisably that file. A file deleted and another
+        // of its name made somewhere else is not a move: until 20 October it
+        // was taken for one, and its text went into the new file (review of
+        // 19 October, C5).
+        const named = free.filter((p) => base(p) === base(from) && was !== undefined && alike(was, incoming.get(p)!));
         const to = same.find((p) => base(p) === base(from)) ?? (same.length === 1 ? same[0] : named.length === 1 ? named[0] : undefined);
         if (to) moves.set(from, to);
       }
     }
-    const typedBefore = new Map([...moves.keys()].map((from) => [from, this.current(from)] as const));
+    // Typing here not yet saved, in a file somebody moved: what this page last
+    // knew stored, and what it holds now — only where the two differ. Until
+    // 20 October every moved file's text was taken for typing, and carried
+    // onto the file as the mover left it, it undid what they had changed in
+    // it: a `mv` and a `sed` in one place reverted by a page merely open in
+    // another (review of 19 October, C3).
+    const typedBefore = new Map<string, { shown: string; typed: string }>();
+    for (const from of moves.keys()) {
+      const shown = this.known.get(from);
+      const typed = this.current(from);
+      if (shown !== undefined && typed !== undefined && typed !== shown) typedBefore.set(from, { shown, typed });
+    }
     const followFrom = moves.has(this.active) ? this.active : null;
     if (followFrom && this.editor) {
       const state = this.editor.saveViewState();
@@ -807,12 +846,12 @@ export class App {
       if (this.formatted.delete(from)) this.formatted.add(to);
       // What was typed here before the move reached here, onto the file as it
       // now is: an edit like typing, which saves and reaches the room.
-      const typed = typedBefore.get(from);
-      const stored = incoming.get(to)!;
-      if (typed === undefined || typed === stored || !this.texts.has(to) || this.docs.has(to) || !this.monaco) continue;
-      // Into its model, made for it if it has none, as the edit typing is.
+      const carried = typedBefore.get(from);
+      if (!carried || !this.texts.has(to) || this.docs.has(to) || !this.monaco) continue;
+      // Into its model, made for it if it has none, as the edit typing is:
+      // the typing, measured from what was stored, onto the file as it is.
       const model = this.texts.model(to)!;
-      const edit = carryOver(stored, typed, model.getValue());
+      const edit = carryOver(carried.shown, carried.typed, model.getValue());
       if (!edit) continue;
       const start = model.getPositionAt(edit.at);
       const end = model.getPositionAt(edit.at + edit.remove);
@@ -1661,8 +1700,18 @@ export class App {
     for (const c of changes) {
       const was = this.known.get(c.path);
       const edit = was !== undefined && was.length >= EDITS_FROM ? carryOver(was, c.content, was) : null;
-      if (was === undefined || !edit) {
+      if (was === undefined) {
         out.push(c);
+        continue;
+      }
+      if (!edit) {
+        // Whole, with the hash of the version it was typed over: the relay
+        // refuses it if that has moved on, and it is merged as an edit's is
+        // (writeOverStale). Without, a page whose room was out of reach saved
+        // its copy over somebody's newer one and said "saved" (review of
+        // 19 October, C6).
+        out.push({ ...c, base: await storedHash(was) });
+        any = true;
         continue;
       }
       out.push({ path: c.path, content: null, base: await storedHash(was), edits: [edit] });
@@ -3059,6 +3108,9 @@ export class App {
       const installed = command && finished?.exitCode === 0 && !finished.interrupted ? pipInstalled(command) : null;
       if (session && installed?.length) await this.recordInstalled(await this.runtime, session, installed);
       await this.publish(await this.runtime);
+      // Marked again now its files are the page's: a file the same line made
+      // — `printf … > s.js; node s.js` — was not yet when the command ended.
+      if (session && command && languageOfLine(command)) this.markProblems(session.lastOutput, command);
       // Ctrl-C on a pipe the runtime did not end (docs/use/pad.md, "A
       // pipeline can hang") can leave Python in this page answering nothing
       // after: the prompt is back, and the next `python` prints nothing at

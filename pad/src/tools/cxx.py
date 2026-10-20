@@ -162,8 +162,21 @@ def build(args, here):
     return 0
 
 
+# Lines that ask the compiler about itself rather than to build: run as they
+# are, since there are no steps to plan. Through `-###` their answer was
+# taken for its header and left out — `clang++ --version` printed nothing
+# (review of 18 October).
+ABOUT = {"--version", "-dumpversion", "-dumpmachine", "--help", "-help", "--help-hidden", "-print-search-dirs", "-print-targets", "-print-resource-dir"}
+
+
 def main():
     here = os.getcwd()
+    if ABOUT.intersection(sys.argv[1:]):
+        try:
+            return subprocess.run([LLVM, "clang++", *FLAGS, *sys.argv[1:]]).returncode
+        except FileNotFoundError:
+            sys.stderr.write("clang++: not here yet — type it again once C++ has been fetched\n")
+            return 127
     args = rewrite(sys.argv[1:], here)
     linking = not any(a in NOT_LINKING for a in args) and any(not a.startswith("-") for a in args)
     if linking and not NO_MAIN.intersection(args):

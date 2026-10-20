@@ -51,6 +51,8 @@ export function footer(): HTMLElement {
   return el(
     "footer",
     { className: "page-foot" },
+    el("a", { href: "/help" }, "Help"),
+    el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
     el("a", { href: "/privacy" }, "Privacy"),
     el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
     el("a", { href: "/" }, "Open a pad"),

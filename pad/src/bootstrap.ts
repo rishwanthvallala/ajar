@@ -20,6 +20,10 @@ export async function startPad(): Promise<void> {
     const { startAdmin } = await import("./admin");
     return startAdmin(root);
   }
+  if (path === "help") {
+    const { startHelp } = await import("./help");
+    return startHelp(root);
+  }
   // A name typed with capitals is the same pad in lower case.
   if (path !== path.toLowerCase() && /^[a-z0-9-]{1,64}$/.test(path.toLowerCase())) {
     location.replace(`/${path.toLowerCase()}${location.search}${location.hash}`);
@@ -58,6 +62,14 @@ export async function startPad(): Promise<void> {
   }
 
   const ui = new PadWorkspace(root, name);
+  // Run answered from its first paint. On a first visit the page waits here
+  // for its service worker before the app that answers the button exists,
+  // and a press then was lost without a word (review of 18 October, N1's
+  // first-paint window); it is remembered, and run once the pad is open.
+  ui.elements.run.onclick = () => {
+    ui.elements.run.dataset.wanted = "1";
+    ui.elements.status.textContent = "opening… — Run starts as soon as the pad is open";
+  };
   await mirrorPackages();
   let app: App | null = null;
   const leave = () => {

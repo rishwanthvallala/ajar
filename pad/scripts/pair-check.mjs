@@ -507,6 +507,82 @@ try {
     await b.context().close();
   }
 
+  // ---- another place's command moves and changes files; this one is open ---
+  // Review of 19 October, against production: a page merely open reverted a
+  // `mv` and a `sed` made in another place, taking its own copy of the moved
+  // file for typing (C3); a file deleted and another of its name made
+  // elsewhere was taken for a move, and the old text went into the new file
+  // (C5); and a page whose room was out of reach saved its copy over a newer
+  // one, and said "saved" (C6).
+  {
+    const name = `pair-moves-${Date.now().toString(36)}`;
+    const [a, b] = await pair(name);
+    const term = async (command) => {
+      await b.locator("#terminal .xterm-helper-textarea").focus();
+      await b.keyboard.type(command);
+      await b.keyboard.press("Enter");
+      await wait(b, 300);
+      await b.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 120_000 }).catch(() => {});
+    };
+    const knows = (page, path) => page.waitForFunction((p) => window.__pad.known().includes(p), path, { timeout: 30_000 }).then(() => true, () => false);
+    const storedText = async (path) => ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files[path] ?? {}).content;
+    await b.click("#terminal");
+    await term("printf 'DEBUG = True\\n' > app.py");
+    const aHas = await knows(a, "app.py");
+    await wait(a, 1500);
+    await term("mkdir -p src && mv app.py src/app.py && sed -i 's/True/False/' src/app.py");
+    await wait(a, 6000);
+    const c3 = [await storedText("src/app.py"), await a.evaluate(() => window.__pad.text("src/app.py"))];
+    if (aHas && c3[0] === "DEBUG = False\n" && c3[1] === "DEBUG = False\n") ok("a file another place moved and changed stays as they left it, with this page merely open");
+    else fail(`a moved and changed file — ${JSON.stringify({ aHas, stored: c3[0], a: c3[1] })}`);
+
+    await term("mkdir -p old_pkg && printf 'from .core import run\\n' > old_pkg/__init__.py");
+    await knows(a, "old_pkg/__init__.py");
+    await wait(a, 1500);
+    await term("rm old_pkg/__init__.py && mkdir -p new_pkg && printf 'VERSION = 2\\n' > new_pkg/__init__.py");
+    await wait(a, 6000);
+    const c5 = await storedText("new_pkg/__init__.py");
+    if (c5 === "VERSION = 2\n") ok("and a file deleted while another of its name is made elsewhere is not taken for a move");
+    else fail(`a deleted file and a new one of its name — ${JSON.stringify(c5)}`);
+
+    // A third place whose room is out of reach from the start.
+    await term("printf 'x = 1\\n' > notes.py");
+    await wait(b, 1500);
+    const wPage = await (await browser.newContext()).newPage();
+    await wPage.addInitScript(() => {
+      const Real = window.WebSocket;
+      const Blocked = function () { return new Real("ws://127.0.0.1:9/"); };
+      Blocked.prototype = Real.prototype;
+      for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Blocked[k] = Real[k];
+      window.WebSocket = Blocked;
+    });
+    await wPage.goto(`${ORIGIN}/${name}`);
+    await wPage.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+    const openIn = async (page, path) => {
+      await page.locator(`#files .row.file[data-path="${path}"]`).click();
+      await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });
+      await wait(page, 500);
+    };
+    const typeAt = async (page, line, text) => {
+      await page.evaluate((l) => { const ed = window.monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: l, column: 1 }); }, line);
+      await page.keyboard.type(text, { delay: 15 });
+    };
+    await openIn(wPage, "notes.py");
+    await typeAt(wPage, 1, "# opened by W\n");
+    await wait(wPage, 3500);
+    await openIn(b, "notes.py");
+    await typeAt(b, 2, "def from_b():\n    return 42\n");
+    await wait(b, 3500);
+    await typeAt(wPage, 1, "#");
+    await wait(wPage, 5000);
+    const c6 = await storedText("notes.py");
+    if (c6?.includes("from_b") && c6?.includes("# opened by W")) ok("and a page whose room is out of reach merges its save with a newer one, rather than writing over it");
+    else fail(`a save from a page with no room — ${JSON.stringify(c6)}`);
+    await wPage.context().close();
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a write somebody else made just before this page's own --------------
   // Each write moves a pad on by one. A page took its save's number as how far
   // it had read, so a write that went in just before its own — whose nudge

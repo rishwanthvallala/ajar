@@ -196,6 +196,8 @@ export class RuntimeNotices {
   private brokenPipe = false;
   /** In a Node stack, past the program's own frames: the runtime's, left out. */
   private runtimeFrames = false;
+  /** After a Node syntax error: the parser's own fields, left out. */
+  private parserDump = false;
 
   /** Text to show now, of what has arrived. */
   push(text: string): string {
@@ -224,7 +226,7 @@ export class RuntimeNotices {
     }
     // Held until its line is whole: the start of a notice, or of a stack
     // frame or the loader's line, which are taken out or rewritten whole.
-    if (rest && (NOTICE_START.startsWith(rest) || rest.startsWith(NOTICE_START) || NODE_FAILED.startsWith(rest) || /^\s+(a|at( .*)?)?$/.test(rest))) this.held = rest;
+    if (rest && (this.parserDump || NOTICE_START.startsWith(rest) || rest.startsWith(NOTICE_START) || NODE_FAILED.startsWith(rest) || /^\s+(a|at( .*)?)?$/.test(rest) || "SyntaxError".startsWith(rest) || rest.startsWith("SyntaxError"))) this.held = rest;
     else out += rest;
     return out;
   }
@@ -241,6 +243,21 @@ export class RuntimeNotices {
    */
   private nodeLine(bare: string): string | null {
     if (bare === NODE_FAILED) return null;
+    // A syntax error, as the runtime's node says one: a line past where it
+    // is — counted in the wrapper it parses each file in — and then the
+    // parser's own `pos`, `loc` and `raisedAt`, which say nothing a person
+    // needs. `let b = ;` on line 1 was "(2:8)" (review of 18 October, N3).
+    const syntax = /^(SyntaxError: .*) \((\d+):(\d+)\)( \{)?$/.exec(bare);
+    if (syntax) {
+      this.parserDump = true;
+      return `${syntax[1]} (${Math.max(1, Number(syntax[2]) - 1)}:${syntax[3]})`;
+    }
+    // The parser's own frames come between, and go as the runtime's do.
+    if (this.parserDump && !/^\s+at /.test(bare)) {
+      if (/^\s+(pos|loc|raisedAt): /.test(bare)) return null;
+      this.parserDump = false;
+      if (bare === "}") return null;
+    }
     if (!/^\s+at /.test(bare)) {
       this.runtimeFrames = false;
       return bare;

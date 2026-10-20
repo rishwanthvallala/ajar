@@ -165,36 +165,38 @@ body { background: var(--bg); color: var(--ink); }
 }
 .pad-shell .editor-tool.on { border-color: var(--rule); background: var(--surface-2); color: var(--ink); }
 .pad-shell .md-note { margin: 1.5rem; color: var(--muted); font-size: 0.875rem; }
-.pad-shell .md-body { max-width: 50rem; margin: 0 auto; padding: 1.25rem 1.75rem 3rem; font: 0.9375rem/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-wrap: break-word; }
-.pad-shell .md-body > :first-child { margin-top: 0; }
-.pad-shell .md-body :is(h1, h2, h3, h4, h5, h6) { margin: 1.5em 0 0.6em; line-height: 1.25; font-weight: 600; scroll-margin-top: 0.75rem; }
-.pad-shell .md-body h1 { font-size: 1.85em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
-.pad-shell .md-body h2 { font-size: 1.45em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
-.pad-shell .md-body h3 { font-size: 1.2em; }
-.pad-shell .md-body h4 { font-size: 1em; }
-.pad-shell .md-body :is(h5, h6) { font-size: 0.875em; color: var(--ink-2); }
-.pad-shell .md-body :is(p, ul, ol, blockquote, pre, table, details, .md-table) { margin: 0 0 1em; }
-.pad-shell .md-body :is(ul, ol) { padding-left: 2em; }
-.pad-shell .md-body li + li { margin-top: 0.25em; }
-.pad-shell .md-body :is(ul, ol) :is(ul, ol) { margin: 0.25em 0 0; }
-.pad-shell .md-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
-.pad-shell .md-body li > input[type="checkbox"] { margin: 0 0.45em 0 0; vertical-align: -0.1em; }
-.pad-shell .md-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
-.pad-shell .md-body code { font: 0.85em var(--mono); padding: 0.15em 0.35em; border-radius: 4px; background: var(--surface-2); }
-.pad-shell .md-body pre { overflow: auto; padding: 0.85rem 1rem; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--rule); line-height: 1.45; }
-.pad-shell .md-body pre code { padding: 0; background: none; font-size: 0.8125rem; white-space: pre; }
-.pad-shell .md-body blockquote { padding: 0 1em; color: var(--ink-2); border-left: 0.25em solid var(--rule); }
-.pad-shell .md-body hr { height: 0; margin: 1.5em 0; border: 0; border-top: 1px solid var(--rule); }
-.pad-shell .md-body img { max-width: 100%; height: auto; background: #fff; }
-.pad-shell .md-body .md-table { overflow-x: auto; }
-.pad-shell .md-body table { border-collapse: collapse; margin: 0; }
-.pad-shell .md-body :is(th, td) { padding: 0.4em 0.8em; border: 1px solid var(--rule); text-align: left; }
-.pad-shell .md-body th { font-weight: 600; background: var(--surface-2); }
-.pad-shell .md-body tr:nth-child(2n) td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
-.pad-shell .md-body details { padding: 0.5em 0.75em; border: 1px solid var(--rule); border-radius: 6px; }
-.pad-shell .md-body summary { cursor: pointer; font-weight: 600; }
-.pad-shell .md-body kbd { font: 0.8em var(--mono); padding: 0.1em 0.4em; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-2); }
-.pad-shell .md-body .md-missing, .pad-shell .md-body .md-image-outside { display: inline-block; padding: 0.15em 0.5em; border: 1px dashed var(--rule); border-radius: 4px; font-size: 0.85em; color: var(--muted); }
+/* The help page (help.ts) is the guide in the same type. */
+.help { padding: 1rem 0 2rem; background: var(--surface); color: var(--ink); }
+:is(.pad-shell, .help) .md-body { max-width: 50rem; margin: 0 auto; padding: 1.25rem 1.75rem 3rem; font: 0.9375rem/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-wrap: break-word; }
+:is(.pad-shell, .help) .md-body > :first-child { margin-top: 0; }
+:is(.pad-shell, .help) .md-body :is(h1, h2, h3, h4, h5, h6) { margin: 1.5em 0 0.6em; line-height: 1.25; font-weight: 600; scroll-margin-top: 0.75rem; }
+:is(.pad-shell, .help) .md-body h1 { font-size: 1.85em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
+:is(.pad-shell, .help) .md-body h2 { font-size: 1.45em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
+:is(.pad-shell, .help) .md-body h3 { font-size: 1.2em; }
+:is(.pad-shell, .help) .md-body h4 { font-size: 1em; }
+:is(.pad-shell, .help) .md-body :is(h5, h6) { font-size: 0.875em; color: var(--ink-2); }
+:is(.pad-shell, .help) .md-body :is(p, ul, ol, blockquote, pre, table, details, .md-table) { margin: 0 0 1em; }
+:is(.pad-shell, .help) .md-body :is(ul, ol) { padding-left: 2em; }
+:is(.pad-shell, .help) .md-body li + li { margin-top: 0.25em; }
+:is(.pad-shell, .help) .md-body :is(ul, ol) :is(ul, ol) { margin: 0.25em 0 0; }
+:is(.pad-shell, .help) .md-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
+:is(.pad-shell, .help) .md-body li > input[type="checkbox"] { margin: 0 0.45em 0 0; vertical-align: -0.1em; }
+:is(.pad-shell, .help) .md-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
+:is(.pad-shell, .help) .md-body code { font: 0.85em var(--mono); padding: 0.15em 0.35em; border-radius: 4px; background: var(--surface-2); }
+:is(.pad-shell, .help) .md-body pre { overflow: auto; padding: 0.85rem 1rem; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--rule); line-height: 1.45; }
+:is(.pad-shell, .help) .md-body pre code { padding: 0; background: none; font-size: 0.8125rem; white-space: pre; }
+:is(.pad-shell, .help) .md-body blockquote { padding: 0 1em; color: var(--ink-2); border-left: 0.25em solid var(--rule); }
+:is(.pad-shell, .help) .md-body hr { height: 0; margin: 1.5em 0; border: 0; border-top: 1px solid var(--rule); }
+:is(.pad-shell, .help) .md-body img { max-width: 100%; height: auto; background: #fff; }
+:is(.pad-shell, .help) .md-body .md-table { overflow-x: auto; }
+:is(.pad-shell, .help) .md-body table { border-collapse: collapse; margin: 0; }
+:is(.pad-shell, .help) .md-body :is(th, td) { padding: 0.4em 0.8em; border: 1px solid var(--rule); text-align: left; }
+:is(.pad-shell, .help) .md-body th { font-weight: 600; background: var(--surface-2); }
+:is(.pad-shell, .help) .md-body tr:nth-child(2n) td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+:is(.pad-shell, .help) .md-body details { padding: 0.5em 0.75em; border: 1px solid var(--rule); border-radius: 6px; }
+:is(.pad-shell, .help) .md-body summary { cursor: pointer; font-weight: 600; }
+:is(.pad-shell, .help) .md-body kbd { font: 0.8em var(--mono); padding: 0.1em 0.4em; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-2); }
+:is(.pad-shell, .help) .md-body .md-missing, :is(.pad-shell, .help) .md-body .md-image-outside { display: inline-block; padding: 0.15em 0.5em; border: 1px dashed var(--rule); border-radius: 4px; font-size: 0.85em; color: var(--muted); }
 /* The preview is a small browser: its bar, the page, and under it the
    requests or the console when asked for. */
 .pad-shell .preview-browser-bar { display: flex; align-items: center; gap: 0.25rem; flex: none; min-width: 0; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--rule); background: var(--surface); }

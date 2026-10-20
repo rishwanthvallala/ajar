@@ -75,6 +75,8 @@ const FRAME = new RegExp(String.raw`^\s+at .*?\(?(${PATH}):(\d+)(?::(\d+))?\)?$`
  * program's own (shell.ts takes the wrapper's lines off).
  */
 const ANONYMOUS_FRAME = /^\s+at .*?\(?<anonymous>:(\d+)(?::(\d+))?\)?$/;
+/** Node's syntax error, its place at the end: `SyntaxError: Unexpected token (2:8)` (shell.ts puts the line right). */
+const NODE_SYNTAX = /^(SyntaxError: .*) \((\d+):(\d+)\)$/;
 /** Go's, under a panic: a tab, the file and line, and an offset. */
 const GO_FRAME = new RegExp(String.raw`^\s+(${PATH}):(\d+)(?: \+0x[0-9a-f]+)?$`);
 /** A Node error's first line, the file and line it is in, before the code and the caret. */
@@ -152,6 +154,11 @@ export function problemsIn(output: string, ours: (path: string) => string | null
     }
     // `evaluated`: the file a `node` command ran, which is what Node calls
     // `<anonymous>` — until 18 October no JS error was marked at all.
+    const syntax = evaluated ? NODE_SYNTAX.exec(line.trim()) : null;
+    if (syntax) {
+      add({ path: evaluated!, line: Number(syntax[2]), column: Number(syntax[3]) + 1, message: syntax[1]!, severity: "error" });
+      continue;
+    }
     const anonymous = evaluated ? ANONYMOUS_FRAME.exec(line) : null;
     if (anonymous) {
       if (pending) {

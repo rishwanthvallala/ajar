@@ -1297,6 +1297,43 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     await early.close();
   }
 
+  // ---- Run pressed before the page has its service worker ----
+  // A first visit draws the workspace and then waits for the service worker
+  // to install before the app that answers the button exists; a press in
+  // that wait was lost without a word (review of 18 October, N1's
+  // first-paint window). A browser of its own, with sw.js held back, so the
+  // press lands in it.
+  section = "run before the service worker";
+  {
+    const cold = await chromium.launch();
+    const first = await (await cold.newContext()).newPage();
+    await first.route(/\/sw\.js$/, async (route) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      await route.continue().catch(() => {});
+    });
+    await first.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+    await first.locator("#run").waitFor({ timeout: 30_000 });
+    const before = await first.evaluate(() => !!window.__pad);
+    await first.locator("#run").click();
+    const told = await first.evaluate(() => document.getElementById("status")?.textContent ?? "");
+    const ran = await first.waitForFunction(() => /wrote 10 rows to out\.csv/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 240_000 }).then(() => true, () => false);
+    expect("Run pressed before the app is there, on a first visit, is said and runs once the pad is open", !before && /Run starts/.test(told) && ran, JSON.stringify({ before, told, ran }));
+    await cold.close();
+  }
+
+  // ---- the guide, at /help ----
+  // "help" is kept for the site, and the page said it was no pad's address:
+  // the guide, with F6 in it, was on no page (review of 18 October).
+  section = "help";
+  {
+    const help = await context.newPage();
+    await help.goto(`${ORIGIN}/help`, { waitUntil: "domcontentloaded" });
+    const shown = await help.waitForSelector(".md-body h1", { timeout: 30_000 }).then(() => true, () => false);
+    const text = shown ? await help.evaluate(() => document.querySelector(".md-body")?.textContent ?? "") : "";
+    expect("/help is the guide, and it says F6 leaves the terminal", shown && text.includes("F6") && text.includes("Ctrl-Enter"), text.slice(0, 120));
+    await help.close();
+  }
+
   // ---- Markdown, formatted ----
   // Preview beside the source or over it, as it will look: GitHub's
   // Markdown, the editor's colours in its code, the pad's own pictures — and
