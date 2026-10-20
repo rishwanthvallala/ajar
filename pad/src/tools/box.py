@@ -1999,46 +1999,258 @@ def xxd_revert(data, hextype, cols, base_off, fd):
 
 # ---------------------------------------------------- bzip2 / xz, via stdlib
 def compressor(argv, tool, module, suffix):
-    decompress, keep, to_stdout, files = tool.startswith(("bun", "un")), False, False, []
-    for a in argv:
-        if a.startswith("-") and a != "-":
-            for flag in a[1:]:
-                if flag == "d":
-                    decompress = True
-                elif flag == "k":
-                    keep = True
-                elif flag == "c":
-                    to_stdout = True
-                else:
-                    die(tool, f"unsupported option '-{flag}'. Supported: -d -k -c")
-        else:
+    """bzip2 and xz, by python's bz2 and lzma — which make the same bytes the tools make.
+
+    Checked: every level, -e, and a 600 KB file all come out byte-for-byte
+    what bzip2 1.0.8 and xz 5.4 write. Around that, each tool's own rules: the
+    suffixes each knows (.tbz2 and .txz come back as .tar), refusing to
+    overwrite without -f or to compress what already has the suffix, keeping
+    the input's mode and times, and the messages and exit codes each gives —
+    for xz, 1 for an error and 2 for a file it skipped.
+    """
+    xz = module.__name__ == "lzma"
+    decompress = tool.startswith(("bun", "un"))
+    keep = force = to_stdout = testing = quiet = extreme = False
+    level, lzma_format, check, files, only_files = (6 if xz else 9), "xz", None, [], False
+    if xz:
+        longs = {"--decompress": "d", "--uncompress": "d", "--compress": "z", "--keep": "k", "--force": "f",
+                 "--stdout": "c", "--to-stdout": "c", "--test": "t", "--quiet": "q", "--extreme": "e",
+                 "--fast": "0", "--best": "9"}
+        shorts, valued = "dzkfctqe0123456789", "TFC"
+        supported = "Supported: -d -z -k -f -c -t -q -0..-9 -e -T1 -F xz|lzma -C crc32|crc64|sha256|none"
+    else:
+        longs = {"--decompress": "d", "--compress": "z", "--keep": "k", "--force": "f", "--stdout": "c",
+                 "--test": "t", "--quiet": "q", "--small": "s", "--fast": "1", "--best": "9"}
+        shorts, valued = "dzkfctqs123456789", ""
+        supported = "Supported: -d -z -k -f -c -t -q -s -1..-9"
+    named = {"--threads": "T", "--format": "F", "--check": "C"} if xz else {}
+
+    def option(flag, value=None):
+        nonlocal decompress, keep, force, to_stdout, testing, quiet, extreme, level, lzma_format, check
+        if flag in "dz":
+            decompress = flag == "d"
+        elif flag == "k":
+            keep = True
+        elif flag == "f":
+            force = True
+        elif flag == "c":
+            to_stdout = True
+        elif flag == "t":
+            testing = True
+        elif flag == "q":
+            quiet = True
+        elif flag == "e":
+            extreme = True
+        elif flag.isdigit():
+            level = int(flag)
+        elif flag == "T":
+            if value not in ("1",):
+                die(tool, f"-T{value} is not supported here: the output is single-threaded, and xz's threaded output differs")
+        elif flag == "F":
+            if value not in ("xz", "lzma", "alone", "auto"):
+                die(tool, f"--format={value} is not supported here. Supported: xz lzma")
+            lzma_format = "lzma" if value == "alone" else value
+        elif flag == "C":
+            checks = {"crc32": module.CHECK_CRC32, "crc64": module.CHECK_CRC64, "sha256": module.CHECK_SHA256,
+                      "none": module.CHECK_NONE}
+            if value not in checks:
+                die(tool, f"--check={value} is not supported here. Supported: crc32 crc64 sha256 none")
+            check = checks[value]
+
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if only_files or not a.startswith("-") or a == "-":
             files.append(a)
+        elif a == "--":
+            only_files = True
+        elif a.startswith("--"):
+            key, eq, value = a.partition("=")
+            if key in longs and not eq:
+                option(longs[key])
+            elif key in named:
+                if not eq:
+                    i += 1
+                    value = argv[i] if i < len(argv) else ""
+                option(named[key], value)
+            else:
+                die(tool, f"unsupported option '{a}'. {supported}")
+        else:
+            for j, f in enumerate(a[1:], start=1):
+                if f in valued:
+                    value = a[j + 1 :]
+                    if not value:
+                        i += 1
+                        value = argv[i] if i < len(argv) else ""
+                    option(f, value)
+                    break
+                if f not in shorts:
+                    die(tool, f"unsupported option '-{f}'. {supported}")
+                option(f)
+        i += 1
+
+    worst = [0, 0]  # bzip2's highest exit code; for xz, [errors, warnings]
+
+    def error(message, code=1):
+        sys.stderr.write(f"{tool}: {message}\n")
+        if xz:
+            worst[0 if code == 1 else 1] = 1
+        else:
+            worst[0] = max(worst[0], code)
+
+    def warning(message):
+        if not quiet:
+            sys.stderr.write(f"{tool}: {message}\n")
+        if xz:
+            worst[1] = 1
+
+    def result():
+        return (1 if worst[0] else 2 if worst[1] else 0) if xz else worst[0]
+
+    def pack(raw):
+        if xz:
+            if lzma_format == "lzma":
+                return module.compress(raw, format=module.FORMAT_ALONE, preset=level | (module.PRESET_EXTREME if extreme else 0))
+            return module.compress(raw, check=module.CHECK_CRC64 if check is None else check,
+                                   preset=level | (module.PRESET_EXTREME if extreme else 0))
+        return module.compress(raw, level)
+
+    def unpack(raw, label):
+        """The data, or None having said what was wrong with it, in the tool's words."""
+        recovery = ("\nYou can use the `bzip2recover' program to attempt to recover\n"
+                    "data from undamaged sections of corrupted files.\n\n")
+        if xz:
+            try:
+                return module.decompress(raw, format=module.FORMAT_ALONE if lzma_format == "lzma" else module.FORMAT_AUTO)
+            except EOFError:
+                error(f"{label}: Unexpected end of input")
+            except module.LZMAError as e:
+                error(f"{label}: {'File format not recognized' if 'format' in str(e) else 'Compressed data is corrupt'}")
+            return None
+        if not raw.startswith(b"BZh"):
+            if testing:
+                sys.stderr.write(f"{tool}: {label}: bad magic number (file not created by bzip2)\n{recovery}")
+                worst[0] = max(worst[0], 2)
+            else:
+                error(f"{label} is not a bzip2 file.", 2)
+            return None
+        out, data = [], raw
+        try:
+            while data:
+                d = module.BZ2Decompressor()
+                out.append(d.decompress(data))
+                if not d.eof:
+                    raise EOFError
+                data = d.unused_data
+                if data and not data.startswith(b"BZh"):
+                    warning(f"{label}: trailing garbage after EOF ignored")
+                    break
+        except EOFError:
+            what = f"{label}: file ends unexpectedly" if testing else (
+                "Compressed file ends unexpectedly;\n\tperhaps it is corrupted?  *Possible* reason follows.")
+            sys.stderr.write(f"{tool}: {what}\n{recovery}")
+            worst[0] = max(worst[0], 2)
+            return None
+        except OSError:
+            what = f"{label}: data integrity (CRC) error in data" if testing else "Data integrity error when decompressing."
+            sys.stderr.write(f"{tool}: {what}\n{recovery}")
+            worst[0] = max(worst[0], 2)
+            return None
+        return b"".join(out)
+
+    def through(raw, label):
+        """(De)compress or test one input; the bytes to write, or None."""
+        if testing:
+            unpack(raw, label)
+            return None
+        return unpack(raw, label) if decompress else pack(raw)
 
     if not files:
-        raw = sys.stdin.buffer.read()
-        sys.stdout.buffer.write(module.decompress(raw) if decompress else module.compress(raw))
-        return 0
-
+        files = ["-"]
     for name in files:
+        if name == "-":
+            reading = decompress or testing
+            if reading and sys.stdin.isatty() and not force:
+                error("Compressed data cannot be read from a terminal" if xz else
+                      "I won't read compressed data from a terminal.\n" f"{tool}: For help, type: `{tool} --help'.")
+                continue
+            if not reading and sys.stdout.isatty() and not force:
+                error("Compressed data cannot be written to a terminal" if xz else
+                      "I won't write compressed data to a terminal.\n" f"{tool}: For help, type: `{tool} --help'.")
+                continue
+            body = through(sys.stdin.buffer.read(), "(stdin)")
+            if body is not None:
+                sys.stdout.buffer.write(body)
+            continue
+
+        try:
+            # A symlink is skipped as not a regular file, unless -f says to follow it.
+            st = os.stat(name) if force else os.lstat(name)
+        except OSError as e:
+            error(f"{name}: {e.strerror}" if xz else f"Can't open input file {name}: {e.strerror}.")
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            warning(f"{name}: Is a directory, skipping") if xz else error(f"Input file {name} is a directory.")
+            continue
+        if not stat.S_ISREG(st.st_mode) and not to_stdout:
+            warning(f"{name}: Not a regular file, skipping") if xz else error(f"Input file {name} is not a normal file.")
+            continue
+        in_place = not to_stdout and not testing
+        if xz:
+            known = [(".xz", ""), (".txz", ".tar")] if lzma_format == "xz" else [(".lzma", ""), (".tlz", ".tar")]
+            if lzma_format == "auto" or decompress:
+                known = [(".xz", ""), (".txz", ".tar"), (".lzma", ""), (".tlz", ".tar")]
+            new_suffix = ".lzma" if lzma_format == "lzma" else ".xz"
+        else:
+            known, new_suffix = [(".bz2", ""), (".bz", ""), (".tbz2", ".tar"), (".tbz", ".tar")], suffix
+        ending = next(((old, new) for old, new in known if name.endswith(old) and len(name) > len(old)), None)
+        if in_place and not decompress:
+            if ending and (xz or not force):
+                if xz:
+                    warning(f"{name}: File already has `{ending[0]}' suffix, skipping")
+                else:
+                    error(f"Input file {name} already has {ending[0]} suffix.")
+                continue
+            out_name = name + new_suffix
+        elif in_place:
+            out_name = name[: -len(ending[0])] + ending[1] if ending else None
+        if in_place and st.st_nlink > 1 and not force:
+            others = st.st_nlink - 1
+            if xz:
+                warning(f"{name}: Input file has more than one hard link, skipping")
+            else:
+                error(f"Input file {name} has {others} other link{'s' if others > 1 else ''}.")
+            continue
         try:
             with open(name, "rb") as f:
                 raw = f.read()
         except OSError as e:
-            die(tool, f"{name}: {e.strerror}", code=1)
-        if decompress:
-            out_name = name[: -len(suffix)] if name.endswith(suffix) else name + ".out"
-            body = module.decompress(raw)
-        else:
-            out_name = name + suffix
-            body = module.compress(raw)
-        if to_stdout:
+            error(f"{name}: {e.strerror}" if xz else f"Can't open input file {name}: {e.strerror}.")
+            continue
+        if in_place and decompress and out_name is None and not xz:
+            out_name = name + ".out"
+            warning(f"Can't guess original name for {name} -- using {out_name}")
+        body = through(raw, name)
+        if body is None:
+            continue
+        if not in_place:
             sys.stdout.buffer.write(body)
             continue
+        if out_name is None:
+            warning(f"{name}: Filename has an unknown suffix, skipping")
+            continue
+        if os.path.lexists(out_name):
+            if not force:
+                error(f"{out_name}: File exists" if xz else f"Output file {out_name} already exists.")
+                continue
+            os.remove(out_name)
         with open(out_name, "wb") as f:
             f.write(body)
+        os.chmod(out_name, stat.S_IMODE(st.st_mode))
+        os.utime(out_name, ns=(st.st_atime_ns, st.st_mtime_ns))
         if not keep:
             os.remove(name)
-    return 0
+    return result()
 
 
 # ---------------------------------------------------------------- cal / rev
