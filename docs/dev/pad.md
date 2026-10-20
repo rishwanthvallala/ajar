@@ -1217,6 +1217,70 @@ so a read that left that save out cannot undo it here. `pair-check.mjs` makes
 a write straight to the API while the page's own is on its way, with no nudge
 at all; before, the page never saw it.
 
+## Opening a pad to paste into
+
+Most visits open a pad, paste or type into the editor, and share the link,
+and until 20 October the editor waited for the terminal to do it. Measured
+that day with `open-perf.mjs paste`: an empty pad, opened as a first visit —
+nothing cached, no service worker — and then as a return one, three runs each,
+before and after the change below, in headless Chromium on this Mac with a
+local relay. Slow is the throttles above, with the page's files gzipped as
+Caddy sends them. Editor is the starter on screen, keys the editor holding
+the keyboard's focus — where a paste lands — and shell a typed `echo`
+answering.
+
+| Visit | Link | Editor | Keys | Terminal | Shell |
+|---|---|---:|---:|---:|---:|
+| first | local | 0.20 → 0.17 s | 0.24 → 0.17 s | 0.24 → 0.22 s | 1.1–1.2 → 1.1 s |
+| return | local | 0.07 → 0.06 s | 0.09–0.11 → 0.06 s | 0.09–0.11 → 0.09 s | 0.7–0.9 → 0.7–0.8 s |
+| first | slow | 1.45–1.50 → 1.16–1.19 s | 1.73–1.76 → 1.16–1.19 s | 1.73–1.76 → 1.54–1.57 s | 7.7–7.8 → 7.4 s |
+| return | slow | 0.36–0.40 → 0.27–0.29 s | 0.41–0.48 → 0.27–0.29 s | 0.41–0.48 → 0.36–0.38 s | 5.8–6.1 → 5.7–6.0 s |
+
+What the page fetched before the editor showed went from 1,313 to 1,123 KB
+compressed. What it waited for:
+
+- **The terminal.** `App.open` opened the terminal — xterm, 74 KB compressed,
+  fetched then — and only after that focused the editor, so the editor was on
+  screen and took no key until the terminal had been fetched and drawn; on a
+  return visit, the terminal's work held up the editor's first frame as well.
+  The editor is focused first now, and the terminal opens once the editor has
+  been drawn (`painted` in app.ts). Run or Ctrl+Enter pressed in between waits
+  as it does while the pad is read (`App.opening`), and `__pad`, which the
+  checks wait for, still comes once the terminal is there.
+- **The shell's code, with the page's.** `terminals.ts` brought `shell.ts`
+  into the page's first scripts, and with it every tool it writes into the
+  sandbox — box.py and the rest, 400 KB, 110 KB compressed. `addTerminal`
+  imports it with xterm now.
+- **The service worker.** On a first visit `bootstrap.ts` waited for the
+  worker that serves the runtime's packages to install — three files fetched,
+  then an activation — before it made the app at all. The runtime alone waits
+  now (`AppHooks.mirrored`, in `ensureRuntime` and `warm`), so its first
+  download still goes through the worker. With nothing between the workspace
+  and the app any more, `bootstrap.ts`'s own answer to Run, and its
+  `data-wanted`, went too: `App` answers from the first paint.
+- **The pad's read, for the editor's code.** Monaco — 690 KB compressed, and
+  290 KB for its languages and the standard editor features with them — was
+  asked for once the pad had been read. `main.ts` asks for it as the page
+  starts, when the address is a pad's (`editor-load.ts`), so it comes beside
+  the page's own scripts and the read. A pad that turns out to be private has
+  fetched it for nothing.
+
+What is left before the editor is mostly Monaco: 980 of the 1,123 KB on the
+slow first visit, and its parsing the longest task, about 210 ms with the CPU
+slowed. The terminal and the shell are no later than they were: the runtime
+starts after the terminal, as before. The 500-file pad
+[above](#opening-a-pad-of-500-files), local, one run each: editor 0.29 →
+0.21 s, ready 0.36 → 0.26 s, its `find` answering 1.59 → 1.47 s.
+
+`user-check.mjs` holds back `sw.js` and the terminal's code on a first visit
+— in its own server: a service worker fetches its script past Playwright's
+routes, and a page with routes has its requests sent past its worker — and
+pastes a line into the editor meanwhile. Then it presses Run, lets them
+through, and wants the pasted line's output, and the worker's own counts to
+show it saw the runtime's downloads. The test it replaces held `sw.js` with a
+route, which never held it, and took a run for done from text the last run
+kept for the pad also shows.
+
 ## The download
 
 Wasmer's CDN sends `.webc` with no content encoding at all: **66.5 MB raw**
@@ -1746,6 +1810,9 @@ What the reviewer's second look at the deployed pad found, and what changed:
   from its first paint now: a press marks it (`data-wanted`) and says so on
   the status line, and `App.start` runs it once the pad is open.
   `user-check.mjs` holds `sw.js` back in a browser of its own and clicks.
+  Since 20 October the page waits for the worker nowhere but in the runtime,
+  so `App` itself is there from the first paint
+  ([Opening a pad to paste into](#opening-a-pad-to-paste-into)).
 - **A JavaScript syntax error** is said at its own line and marked there. The
   runtime's node gave the line one past — it counts the wrapper it parses each
   file in — and then printed its parser's own frames and its `pos`, `loc` and

@@ -251,6 +251,7 @@ AGENT=target/release/ajar node scripts/perf/ajar-session.mjs   # a local build
 COLD=0,5000 WARM=3000,3000 node scripts/perf/pad-visit.mjs     # first and return visits
 node pad/scripts/typing-perf.mjs 125000 bursts                 # two people in one long file, locally
 node pad/scripts/open-perf.mjs big slow                        # a pad of 500 files opening, locally
+node pad/scripts/open-perf.mjs paste slow                      # an empty pad opening to paste into, first and return visits
 ```
 
 `typing-perf.mjs` and `open-perf.mjs` run locally rather than against the
@@ -259,7 +260,10 @@ into a long file, both watched for long tasks and timer lag; its numbers are
 in [pad.md](pad.md#two-people-in-one-long-file). The second opens a pad of
 500 files and times the editor, the page and the terminal, counting the
 editor models it made; its numbers are in
-[pad.md](pad.md#opening-a-pad-of-500-files). Both need `cargo build` and the
+[pad.md](pad.md#opening-a-pad-of-500-files). With `paste` it opens an empty
+pad instead, on a first visit and a return one, and times the editor taking
+keys before the terminal and the shell; those are in
+[pad.md](pad.md#opening-a-pad-to-paste-into). Both need `cargo build` and the
 pad built first.
 
 Run them one at a time — two browsers on one machine slow each other down.

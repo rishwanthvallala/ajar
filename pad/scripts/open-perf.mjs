@@ -5,14 +5,20 @@
 // tasks, its heap, and what it read. A measurement, not a check;
 // docs/dev/pad.md has the numbers it gave.
 //
-//   cargo build && npx vite build && node scripts/open-perf.mjs [small|big] [fast|slow]
+//   cargo build && npx vite build && node scripts/open-perf.mjs [small|big|paste] [fast|slow]
 //
 // small is 500 files of 2.4 KB, big 500 of 165 KB (78 MB). slow is Chromium's
 // own throttles — the network at 20 Mbit/s with 80 ms of latency, the CPU four
-// times slower — with the pad's reads gzipped, as Caddy sends them. Each run
-// is a return visit: the pad is opened once first, unthrottled and as far as
-// the sandbox, so the page and the runtime are cached as a returning
-// visitor's are. DIST points at another build.
+// times slower — with the pad's reads and the page's files gzipped, as Caddy
+// sends them. Each run is a return visit: the pad is opened once first,
+// unthrottled and as far as the sandbox, so the page and the runtime are
+// cached as a returning visitor's are. DIST points at another build.
+//
+// paste is somebody opening a new pad to paste into: an empty one, timed on a
+// first visit — nothing cached, no service worker — and then a return one, to
+// the editor showing, to it taking what is typed or pasted, to the terminal
+// showing and to its shell answering, with what the page fetched before the
+// editor showed.
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -20,7 +26,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createGzip } from "node:zlib";
+import { createGzip, gzipSync } from "node:zlib";
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const { chromium } = createRequire(`${REPO}web/package.json`)("playwright");
@@ -62,8 +68,17 @@ const server = createServer(async (req, res) => {
   if (urlPath.startsWith("/assets/")) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   const rel = urlPath.split("/").filter((p) => p && p !== "." && p !== "..").join("/");
   const file = join(ROOT, rel || "index.html");
-  try { const body = await readFile(file); res.setHeader("Content-Type", TYPES[extname(file)] ?? "application/octet-stream"); res.end(body); }
-  catch { res.setHeader("Content-Type", "text/html"); res.end(await readFile(join(ROOT, "index.html"))); }
+  const send = (type, body) => {
+    res.setHeader("Content-Type", type);
+    // Text compressed on the slow link, as Caddy's `encode` does.
+    if (SLOW && /text|json|javascript/.test(type) && /gzip/.test(req.headers["accept-encoding"] ?? "")) {
+      res.setHeader("Content-Encoding", "gzip");
+      return res.end(gzipSync(body, { level: 4 }));
+    }
+    res.end(body);
+  };
+  try { send(TYPES[extname(file)] ?? "application/octet-stream", await readFile(file)); }
+  catch { send("text/html", await readFile(join(ROOT, "index.html"))); }
 });
 server.on("upgrade", (req, socket, head) => {
   socket.on("error", () => socket.destroy());
@@ -79,6 +94,8 @@ server.on("upgrade", (req, socket, head) => {
   up.end();
 });
 await new Promise((r) => server.listen(PORT, r));
+
+if (SIZE === "paste") await paste();
 
 // A project's worth of files in folders, of the kinds a pad holds.
 const name = `open-${SIZE}`;
@@ -180,3 +197,78 @@ await gone;
 // The big pad is 78 MB on disk, and the relay keeps versions of it.
 await rm(dir, { recursive: true, force: true });
 process.exit(0);
+
+async function paste() {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.addInitScript(() => {
+    window.__long = [];
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long.push([Math.round(e.startTime), Math.round(e.duration)]); }).observe({ type: "longtask", buffered: true });
+    window.__marks = {};
+    const watch = () => {
+      const now = Math.round(performance.now());
+      const editor = window.monaco?.editor.getEditors()[0];
+      if (!window.__marks.editor && editor?.getModel()?.getValueLength() > 0) window.__marks.editor = now;
+      // Where a keystroke or a paste goes.
+      if (!window.__marks.typeable && editor?.hasTextFocus()) window.__marks.typeable = now;
+      if (!window.__marks.terminal && document.querySelector("#terminal .xterm-screen")) window.__marks.terminal = now;
+      if (!window.__marks.ready && window.__pad) window.__marks.ready = now;
+      if (Object.keys(window.__marks).length < 4) requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+  });
+  const visit = async (label) => {
+    const page = await context.newPage();
+    page.on("pageerror", (e) => console.error(`page error: ${e.message.slice(0, 200)}`));
+    const cdp = await context.newCDPSession(page);
+    if (SLOW) {
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      await cdp.send("Network.enable");
+      await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 80, downloadThroughput: 20e6 / 8, uploadThroughput: 10e6 / 8 });
+    }
+    const name = `paste-${Date.now().toString(36)}`;
+    const t0 = Date.now();
+    await page.goto(`${ORIGIN}/${name}`);
+    await page.waitForFunction(() => window.__marks.editor && window.__marks.typeable, null, { timeout: 300_000 });
+    // Typed as soon as it can be, as a paste would land.
+    await page.keyboard.insertText("print('pasted')\n");
+    const pasted = await page.evaluate(() => window.monaco.editor.getEditors()[0].getValue().includes("print('pasted')"));
+    await page.waitForFunction(() => window.__marks.terminal && window.__marks.ready, null, { timeout: 300_000 });
+    await page.click("#terminal");
+    await page.keyboard.type("echo $((6*7))");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /\n42\s*\n/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 300_000 });
+    const shell = Date.now() - t0;
+    const seen = await page.evaluate(() => {
+      const at = window.__marks.editor;
+      const before = performance.getEntriesByType("resource").filter((e) => e.startTime < at && /\/assets\/|\/api\//.test(e.name));
+      return {
+        marks: window.__marks,
+        long: window.__long.filter(([start]) => start < at).map(([, d]) => d),
+        before: before.map((e) => `${e.name.replace(/^.*\/(assets|api)\//, "$1/").replace(/-[\w-]{8}\./, ".")} ${(e.encodedBodySize / 1024).toFixed(0)} KB`),
+        kb: Math.round(before.reduce((n, e) => n + e.encodedBodySize, 0) / 1024),
+      };
+    });
+    console.log(JSON.stringify({
+      visit: label,
+      slow: SLOW,
+      editorMs: seen.marks.editor,
+      typeableMs: seen.marks.typeable,
+      pasted,
+      terminalMs: seen.marks.terminal,
+      readyMs: seen.marks.ready,
+      shellMs: shell,
+      longTasksBeforeEditor: seen.long,
+      fetchedBeforeEditorKB: seen.kb,
+      fetchedBeforeEditor: seen.before,
+    }));
+    await page.close();
+  };
+  await visit("first");
+  await visit("return");
+  await browser.close();
+  server.close();
+  relay.kill();
+  await rm(dir, { recursive: true, force: true });
+  process.exit(0);
+}
