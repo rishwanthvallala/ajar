@@ -34,7 +34,8 @@ def read_text(name, tool):
         die(tool, f"{name}: {e.strerror}")
 
 
-# ------------------------------------- shared by diff, cmp, patch, xargs, find
+# ---------------------------------------------------------------- diff
+# Shared by diff, cmp, patch, xargs and find.
 def _getopt_long(tool, argv, shortopts, longopts, code=2, prefix_try=True):
     """GNU getopt_long, the way these tools read their arguments.
 
@@ -418,8 +419,6 @@ def _gnu_regex(pattern, syntax, icase=False):
     return re.compile("".join(out).encode("latin-1"), flags)
 
 
-# ---------------------------------------------------------------- diff
-#
 # A port of GNU diffutils 3.10's diff rather than a resemblance of it: the
 # same analysis — lines no other line matches set aside first, Myers' middle
 # snake on the rest, then GNU's sliding of each change to where it reads
