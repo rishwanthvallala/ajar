@@ -2619,24 +2619,157 @@ def compressor(argv, tool, module, suffix):
 
 
 # ---------------------------------------------------------------- cal / rev
+CAL_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+              "October", "November", "December"]
+
+
 def cmd_cal(argv):
-    import calendar
+    """The cal of Debian's ncal: a month, a year, -3, -A and -B, -y, -m, -1 and -d, as it lays them out.
+
+    Each month is twenty columns and two of space, and six weeks high however
+    many it has. Months go three to a row; a run that starts a quarter and
+    fills a row gets the year as a heading of its own, as ncal gives it. The
+    calendar is Britain's, as cal's is: September 1752 lost eleven days, and
+    before them the year is Julian.
+    """
     import datetime
 
-    numbers = [int(a) for a in argv if a.isdigit()]
+    def usage(message=None):
+        sys.stderr.write((f"cal: {message}\n" if message else "") + (
+            "Usage: cal [general options] [-jy] [[month] year]\n"
+            "       cal [general options] [-j] [-m month] [year]\n"
+            "General options: [-31] [-A months] [-B months] [-d yyyy-mm]\n"))
+        raise SystemExit(64)
+
+    def fail(message):
+        sys.stderr.write(f"cal: {message}\n")
+        raise SystemExit(64)
+
     today = datetime.date.today()
-    # Unix `cal` starts the week on Sunday; python's default is Monday.
-    weeks = calendar.TextCalendar(calendar.SUNDAY)
-    if len(numbers) == 2:
-        month, year = numbers[0], numbers[1]
-    elif len(numbers) == 1:
-        print(weeks.formatyear(numbers[0]), end="")
-        return 0
-    else:
-        month, year = today.month, today.year
-    # Real cal ends with a blank line; python's formatmonth does not.
-    print(weeks.formatmonth(year, month).rstrip("\n") + "\n\n", end="")
+    year, month = today.year, today.month
+    before = after = 0
+    three = whole = False
+    flag_month, operands, i = None, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            operands.extend(argv[i + 1 :])
+            break
+        if not a.startswith("-") or a == "-":
+            operands.append(a)
+            i += 1
+            continue
+        for j, f in enumerate(a[1:], start=1):
+            if f in "ABdm":
+                value = a[j + 1 :]
+                if not value:
+                    i += 1
+                    if i >= len(argv):
+                        usage(f"option requires an argument -- '{f}'")
+                    value = argv[i]
+                if f in "AB":
+                    count = max(0, c_number(value)[0] or 0)  # strtol, as ncal reads it
+                    before, after = (count, after) if f == "B" else (before, count)
+                elif f == "m":
+                    flag_month = value
+                else:
+                    parts = value.split("-")
+                    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                        fail(f"invalid date {value}")
+                    # mktime's arithmetic: month 13 of 2026 is January 2027.
+                    year, month = int(parts[0]) + (int(parts[1]) - 1) // 12, (int(parts[1]) - 1) % 12 + 1
+                break
+            if f == "3":
+                three = True
+            elif f == "1":
+                three = False
+            elif f == "y":
+                whole = True
+            elif f == "j":
+                die("cal", "unsupported option '-j'. Supported: -1 -3 -A N -B N -d YYYY-MM -m MONTH -y")
+            else:
+                usage(f"invalid option -- '{f}'")
+        i += 1
+    if len(operands) > 2:
+        usage()
+    if operands:
+        text = operands[-1]
+        if not text.isdigit():
+            fail(f"not a valid year {text}")
+        year = int(text)
+        if not 1 <= year <= 9999:
+            fail(f"year `{text}' not in range 1..9999")
+        if len(operands) == 2:
+            flag_month = operands[0]
+        elif flag_month is None:
+            whole = True
+    if flag_month is not None:
+        # With a year given, ncal has no current month to compare 2f and 2p with: it is 0.
+        month, year = cal_month(flag_month, 0 if operands else month, year, fail)
+    if whole:
+        month, before, after = 1, 0, 11
+    elif three:
+        before, after = before + 1, after + 1
+
+    first = year * 12 + month - 1 - before
+    last = year * 12 + month - 1 + after
+    heading = last - first + 1 >= 3 and first % 3 == 0
+    lines, shown_year = [], None
+    for start in range(first, last + 1, 3):
+        row = list(range(start, min(start + 3, last + 1)))
+        if heading and start // 12 != shown_year:
+            shown_year = start // 12
+            lines.append(" " * ((60 - len(str(shown_year))) // 2) + str(shown_year))
+        names = []
+        for index in row:
+            name = CAL_MONTHS[index % 12] if heading else f"{CAL_MONTHS[index % 12]} {index // 12}"
+            names.append((" " * ((20 - len(name)) // 2) + name).ljust(20) + "  ")
+        lines.append("".join(names))
+        lines.append("Su Mo Tu We Th Fr Sa  " * len(row))
+        weeks = [cal_weeks(index // 12, index % 12 + 1) for index in row]
+        for week in range(6):
+            lines.append("".join(w[week] + "  " for w in weeks))
+        if start + 3 <= last:
+            lines.append("")
+    sys.stdout.write("\n".join(lines) + "\n")
     return 0
+
+
+def cal_month(text, month, year, fail):
+    """ncal's parsemonth(): 1..12, with f or p for the next or last such month; or a month's name or its start."""
+    digits = text.rstrip("fFpP")
+    if digits.isdigit() and len(text) - len(digits) <= 1:
+        number, mark = int(digits), text[len(digits) :].lower()
+        if 1 <= number <= 12:
+            if mark == "f" and number <= month:
+                year += 1
+            elif mark == "p" and number >= month:
+                year -= 1
+            return number, year
+    else:
+        lowered = text.lower()
+        for index, name in enumerate(CAL_MONTHS):
+            if lowered.startswith(name.lower()) or lowered.startswith(name[:3].lower()):
+                return index + 1, year
+    fail(f"{text} is neither a month number (1..12) nor a name")
+
+
+def cal_weeks(year, month):
+    """A month's six rows of days, Sunday first, by the calendar Britain kept."""
+    def julian_day(y, m, d):
+        a = (14 - m) // 12
+        y2, m2 = y + 4800 - a, m + 12 * a - 3
+        day = d + (153 * m2 + 2) // 5 + 365 * y2 + y2 // 4
+        if (y, m, d) < (1752, 9, 14):
+            return day - 32083
+        return day - y2 // 100 + y2 // 400 - 32045
+
+    leap = year % 4 == 0 if year <= 1752 else (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+    length = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    days = [d for d in range(1, length + 1) if not ((year, month) == (1752, 9) and 3 <= d <= 13)]
+    cells = ["  "] * ((julian_day(year, month, 1) + 1) % 7) + [f"{d:2d}" for d in days]
+    cells += ["  "] * (42 - len(cells))
+    return [" ".join(cells[k : k + 7]) for k in range(0, 42, 7)]
 
 
 def cmd_rev(argv):
