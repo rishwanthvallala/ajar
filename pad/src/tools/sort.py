@@ -6,17 +6,44 @@ is not among the functions compiled into it — `sort file` answers
 `wasmer/coreutils@1.0.25` is the same build. The package that would fix it
 properly, `kilyanni/coreutils` (GNU 9.11), cannot be installed from here.
 
-So this stands in, the way `awk.py` does. The flags are the ones people
-actually type. Anything else is refused rather than quietly ignored, because a
-sort that silently drops `-k` is worse than one that admits it cannot.
+So this stands in, the way `awk.py` does, and for everything it accepts it is
+GNU sort 9.4 in the C locale — the only locale this sandbox has: lines are
+bytes and compared as bytes, every -k key counts, in order, with its own
+modifiers, and lines equal by every key fall back to comparing whole lines.
+That was not always so. Until 20 October only the last -k was used, a key's
+own `n` was a traceback, -f lower-cased where GNU upper-cases, -u kept the
+smallest of equal lines rather than the first, and a file's CRs were dropped.
+
+What it does not do — -g, -h, -M, -V, -R, -c, -C, -m, --debug,
+--files0-from, --random-source — is refused rather than quietly ignored,
+because a sort that silently drops an option is worse than one that admits it
+cannot. -S, -T, --parallel, --batch-size and --compress-program are accepted:
+they tune GNU's memory, temporary files and threads, and change nothing about
+what comes out.
 """
 
 import os
 import re
 import sys
 from decimal import Decimal
+from operator import itemgetter
 
-SUPPORTED = "-n -r -u -f -b -s -z -t SEP -k KEY -o FILE"
+SUPPORTED = (
+    "-b -d -f -i -n -r -k KEYDEF -t SEP -s -u -z "
+    "-o FILE, and -S -T --parallel --batch-size --compress-program, which change nothing here"
+)
+
+# What GNU sort treats as blank: space and tab, and newline, which only a
+# line can contain under -z.
+BLANKS = b" \t\n"
+BLANK_RUN = re.compile(rb"[ \t\n]*")
+UPPER = bytes.maketrans(b"abcdefghijklmnopqrstuvwxyz", b"ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+ALNUM = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+IGNORED = {
+    # -d: everything but letters, digits and blanks. -i: the unprintable.
+    "d": bytes(c for c in range(256) if c not in ALNUM and c not in BLANKS),
+    "i": bytes(c for c in range(256) if not 0x20 <= c <= 0x7E),
+}
 
 
 def die(message, code=2):
@@ -24,45 +51,196 @@ def die(message, code=2):
     raise SystemExit(code)
 
 
+# Every long option GNU sort 9.4 has, so that an abbreviation resolves, or is
+# ambiguous, exactly as it would there. A name of None is refused here.
+LONG = {
+    "batch-size": (True, "batch-size"),
+    "buffer-size": (True, "S"),
+    "check": ("optional", None),
+    "compress-program": (True, "compress-program"),
+    "debug": (False, None),
+    "dictionary-order": (False, "d"),
+    "field-separator": (True, "t"),
+    "files0-from": (True, None),
+    "general-numeric-sort": (False, None),
+    "help": (False, "help"),
+    "human-numeric-sort": (False, None),
+    "ignore-case": (False, "f"),
+    "ignore-leading-blanks": (False, "b"),
+    "ignore-nonprinting": (False, "i"),
+    "key": (True, "k"),
+    "merge": (False, None),
+    "month-sort": (False, None),
+    "numeric-sort": (False, "n"),
+    "output": (True, "o"),
+    "parallel": (True, "parallel"),
+    "random-sort": (False, None),
+    "random-source": (True, None),
+    "reverse": (False, "r"),
+    "sort": (True, None),
+    "stable": (False, "s"),
+    "temporary-directory": (True, "T"),
+    "unique": (False, "u"),
+    "version": (False, None),
+    "version-sort": (False, None),
+    "zero-terminated": (False, "z"),
+}
+FLAGS = set("bdfinrsuz")
+VALUED = set("koStT")
+
+
+def resolve(word, choices, ambiguous):
+    """An exact name, or the one name `word` abbreviates, as getopt and argmatch allow."""
+    if word in choices:
+        return word
+    found = [name for name in choices if name.startswith(word)]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        die(ambiguous(found))
+    return None
+
+
+class Key:
+    """One -k key, or the whole line under the global options: GNU's keyfield."""
+
+    def __init__(self):
+        self.sword = 0          # fields skipped before the key starts
+        self.schar = 0          # then characters skipped
+        self.eword = None       # None: the key runs to the end of the line
+        self.echar = 0          # 0: to the end of field eword + 1
+        self.skipsblanks = False
+        self.skipeblanks = False
+        self.fold = False
+        self.ignore = None      # "d" or "i"
+        self.kinds = set()      # "n", or none
+        self.reverse = False
+
+    def plain(self):
+        return not (self.ignore or self.fold or self.skipsblanks or self.skipeblanks or self.kinds)
+
+
+def set_ordering(spec, key, blanks):
+    """Ordering letters at the start of `spec`, set on `key`; the rest is returned."""
+    i = 0
+    while i < len(spec):
+        c = spec[i]
+        if c == "b":
+            if blanks != "end":
+                key.skipsblanks = True
+            if blanks != "start":
+                key.skipeblanks = True
+        elif c == "d":
+            key.ignore = "d"
+        elif c == "i":
+            # As GNU: -d wins over -i whichever comes first.
+            if not key.ignore:
+                key.ignore = "i"
+        elif c == "f":
+            key.fold = True
+        elif c == "r":
+            key.reverse = True
+        elif c == "n":
+            key.kinds.add(c)
+        else:
+            break
+        i += 1
+    return spec[i:]
+
+
+def field_count(text, what, spec):
+    m = re.match(r"[ \t\n\v\f\r]*\+?([0-9]+)", text)
+    if not m:
+        die(f"{what}: invalid count at start of '{text}'")
+    return int(m.group(1)), text[m.end():]
+
+
+def parse_key(spec):
+    key = Key()
+    n, rest = field_count(spec, "invalid number at field start", spec)
+    if n == 0:
+        die(f"field number is zero: invalid field specification '{spec}'")
+    key.sword = n - 1
+    if rest.startswith("."):
+        n, rest = field_count(rest[1:], "invalid number after '.'", spec)
+        if n == 0:
+            die(f"character offset is zero: invalid field specification '{spec}'")
+        key.schar = n - 1
+    rest = set_ordering(rest, key, "start")
+    if rest.startswith(","):
+        n, rest = field_count(rest[1:], "invalid number after ','", spec)
+        if n == 0:
+            die(f"field number is zero: invalid field specification '{spec}'")
+        key.eword = n - 1
+        if rest.startswith("."):
+            key.echar, rest = field_count(rest[1:], "invalid number after '.'", spec)
+        rest = set_ordering(rest, key, "end")
+    if rest[:1] in tuple("ghMRV"):
+        die(f"unsupported key '{spec}': -{rest[0]} is not implemented. This shim supports: {SUPPORTED}")
+    if rest:
+        die(f"stray character in field spec: invalid field specification '{spec}'")
+    return key
+
+
 class Options:
     def __init__(self):
-        self.numeric = False
-        self.reverse = False
-        self.unique = False
-        self.fold = False
-        self.blanks = False
-        self.zero = False
-        self.stable = False
-        self.sep = None
-        self.key = None
+        self.whole = Key()      # the global ordering options
+        self.keys = []
+        self.tab = None
         self.out = None
+        self.stable = False
+        self.unique = False
+        self.zero = False
 
 
-def take_value(flag, rest, argv, i):
-    """A value attached to the flag (`-t,`) or as the next argument (`-t ,`)."""
-    if rest:
-        return rest, i
-    if i + 1 < len(argv):
-        return argv[i + 1], i + 1
-    die(f"option requires an argument -- '{flag}'")
+def apply(opts, name, value):
+    if name in "bdfinr" and len(name) == 1:
+        set_ordering(name, opts.whole, "both")
+    elif name == "s":
+        opts.stable = True
+    elif name == "u":
+        opts.unique = True
+    elif name == "z":
+        opts.zero = True
+    elif name == "k":
+        opts.keys.append(parse_key(value))
+    elif name == "t":
+        tab = b"\0" if value == "\\0" else os.fsencode(value)
+        if not tab:
+            die("empty tab")
+        if len(tab) > 1:
+            die(f"multi-character tab '{value}'")
+        if opts.tab is not None and opts.tab != tab:
+            die("incompatible tabs")
+        opts.tab = tab
+    elif name == "o":
+        if opts.out is not None and opts.out != value:
+            die("multiple output files specified")
+        opts.out = value
+    elif name == "S":
+        if not re.fullmatch(r"[0-9]+[%bkKmMgGtTpPeEzZyYrRqQ]?", value):
+            die(f"invalid -S argument '{value}'")
+    elif name == "parallel":
+        if not re.fullmatch(r"[0-9]+", value):
+            die(f"invalid --parallel argument '{value}'")
+        if int(value) == 0:
+            die("number in parallel must be nonzero")
+    elif name == "batch-size":
+        if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+            die(f"invalid --batch-size argument '{value}'\nsort: minimum --batch-size argument is '2'")
+    elif name == "help":
+        sys.stdout.write(
+            "Usage: sort [OPTION]... [FILE]...\n"
+            "The pad's sort: GNU sort 9.4 in the C locale, for these options:\n"
+            f"  {SUPPORTED}\n"
+        )
+        raise SystemExit(0)
+    # -T and --compress-program: GNU only uses them once input outgrows memory.
 
 
 def parse(argv):
     opts = Options()
     files = []
-    short = {"n": "numeric", "r": "reverse", "u": "unique", "f": "fold", "b": "blanks", "z": "zero", "s": "stable"}
-    long = {
-        "numeric-sort": "numeric",
-        "reverse": "reverse",
-        "unique": "unique",
-        "ignore-case": "fold",
-        "ignore-leading-blanks": "blanks",
-        "zero-terminated": "zero",
-        "stable": "stable",
-    }
-    valued = {"t": "sep", "k": "key", "o": "out"}
-    long_valued = {"field-separator": "sep", "key": "key", "output": "out"}
-
     i = 0
     only_files = False
     while i < len(argv):
@@ -72,153 +250,312 @@ def parse(argv):
         elif arg == "--":
             only_files = True
         elif arg.startswith("--"):
-            name, _, inline = arg[2:].partition("=")
-            if name in long:
-                setattr(opts, long[name], True)
-            elif name in long_valued:
-                if inline:
+            word, eq, inline = arg[2:].partition("=")
+            name = resolve(word, LONG, lambda found: f"option '--{word}' is ambiguous; possibilities: "
+                           + " ".join(f"'--{n}'" for n in found))
+            if name is None:
+                die(f"unsupported option '{arg}'. This shim supports: {SUPPORTED}")
+            takes, action = LONG[name]
+            if action is None:
+                die(f"unsupported option '--{name}'. This shim supports: {SUPPORTED}")
+            if takes is False and eq:
+                die(f"option '--{name}' doesn't allow an argument")
+            value = None
+            if takes is True:
+                if eq:
                     value = inline
                 elif i + 1 < len(argv):
                     i += 1
                     value = argv[i]
                 else:
                     die(f"option '--{name}' requires an argument")
-                setattr(opts, long_valued[name], value)
-            else:
-                die(f"unsupported option '{arg}'. This shim supports: {SUPPORTED}")
+            elif takes == "optional" and eq:
+                value = inline
+            apply(opts, action, value)
         else:
             rest = arg[1:]
             while rest:
                 flag, rest = rest[0], rest[1:]
-                if flag in short:
-                    setattr(opts, short[flag], True)
-                elif flag in valued:
-                    value, i = take_value(flag, rest, argv, i)
-                    setattr(opts, valued[flag], value)
-                    rest = ""
+                if flag in FLAGS:
+                    apply(opts, flag, None)
+                elif flag in VALUED:
+                    if rest:
+                        value, rest = rest, ""
+                    elif i + 1 < len(argv):
+                        i += 1
+                        value = argv[i]
+                    else:
+                        die(f"option requires an argument -- '{flag}'")
+                    apply(opts, flag, value)
                 else:
                     die(f"unsupported option '-{flag}'. This shim supports: {SUPPORTED}")
         i += 1
     return opts, files
 
 
-def field_of(line, opts):
-    """The part of the line a comparison looks at, honouring -k and -t."""
-    if not opts.key:
-        return line.lstrip() if opts.blanks else line
-    start = opts.key.split(",")[0]
-    # `-k2` and `-k2,3` and `-k2.1` all begin at field 2; only whole fields are
-    # supported, and a character offset is refused rather than half-applied.
-    if "." in start:
-        die(f"unsupported key '{opts.key}': character offsets are not implemented")
-    try:
-        first = int(start)
-    except ValueError:
-        die(f"unsupported key '{opts.key}'")
-    if first < 1:
-        die("field number is zero")
-    end = opts.key.split(",")[1] if "," in opts.key else None
-    if end is not None and "." in end:
-        die(f"unsupported key '{opts.key}': character offsets are not implemented")
-    # Where each field starts, in the line as it is: with -t, after each
-    # separator; without, at each run of blanks before a word, which GNU
-    # counts as part of the field. A key with no end runs to the end of the
-    # line, as GNU's does — `-k2` stopped at field 2, so lines equal there
-    # kept their order whatever followed (audit R3).
-    if opts.sep is not None:
-        starts = [0] + [m.end() for m in re.finditer(re.escape(opts.sep), line)]
-        ends = [m.start() for m in re.finditer(re.escape(opts.sep), line)] + [len(line)]
+def settle_keys(opts):
+    """
+    GNU's rules for which options a key has: one with no ordering options of
+    its own — not even `b` or `r` — takes all the global ones; one with any
+    keeps only its own. With no -k, the global options, if any, make one key of
+    the whole line.
+    """
+    g = opts.whole
+    keys = opts.keys
+    for key in keys:
+        if key.plain() and not key.reverse:
+            key.ignore, key.fold, key.kinds = g.ignore, g.fold, set(g.kinds)
+            key.skipsblanks, key.skipeblanks, key.reverse = g.skipsblanks, g.skipeblanks, g.reverse
+    if not keys and not g.plain():
+        keys = [g]
+    for key in keys:
+        if "n" in key.kinds and key.ignore:
+            letters = ("d" if key.ignore == "d" else "") + ("f" if key.fold else "") + ("i" if key.ignore == "i" else "")
+            die(f"options '-{letters}n' are incompatible")
+    return keys
+
+
+# ------------------------------------------------------------------ fields
+
+REPEAT_LIMIT = 4096
+
+
+def skipper(unit, count):
+    """Where `count` repetitions of the regex `unit` end, from the start of a line."""
+    if count <= REPEAT_LIMIT:
+        whole = re.compile(b"(?:%s){%d}" % (unit, count))
+        return lambda line: whole.match(line).end()
+    # Python's regex steps through every repetition, even the empty ones past
+    # the end of a short line: `-k10000000` took seconds a line. Each one that
+    # is not at the end moves on by at least a character, so no line needs
+    # more than its own length of them.
+    one = re.compile(unit)
+
+    def far(line):
+        p, end = 0, len(line)
+        for _ in range(min(count, end)):
+            p = one.match(line, p).end()
+            if p == end:
+                break
+        return p
+
+    return far
+
+
+def field_of(key, tab):
+    """
+    The part of a line a key compares, found as GNU's begfield and limfield
+    find it. Without -t a field is its leading blanks and the word after them;
+    with -t it is what lies between separators. A key with no end runs to the
+    end of the line — `-k2` stopped at field 2, so lines equal there kept their
+    order whatever followed (audit R3).
+    """
+    if tab is None:
+        unit = rb"[ \t\n]*[^ \t\n]*"
     else:
-        words = list(re.finditer(r"\s*\S+", line))
-        starts = [m.start() for m in words]
-        ends = [m.end() for m in words]
-    if first > len(starts):
-        return ""
-    stop = len(line) if end is None or int(end) > len(ends) else ends[int(end) - 1]
-    joined = line[starts[first - 1] : stop]
-    return joined.lstrip() if opts.blanks else joined
+        t = b"\\x%02x" % tab[0]
+        unit = b"[^%s]*%s?" % (t, t)
+    if key.sword == 0 and key.schar == 0 and key.eword is None:
+        return (lambda line: line.lstrip(BLANKS)) if key.skipsblanks else None
+
+    begin_fields = skipper(unit, key.sword) if key.sword else None
+    skipsblanks, schar = key.skipsblanks, key.schar
+
+    def begin(line):
+        p = begin_fields(line) if begin_fields else 0
+        if skipsblanks:
+            p = BLANK_RUN.match(line, p).end()
+        return p + schar
+
+    if key.eword is None:
+        return lambda line: line[begin(line):]
+
+    echar, skipeblanks = key.echar, key.skipeblanks
+    if echar:
+        end_fields = skipper(unit, key.eword) if key.eword else (lambda line: 0)
+    elif tab is None:
+        end_fields = skipper(unit, key.eword + 1)
+    else:
+        # Up to the separator that ends field eword + 1, not past it.
+        t = b"\\x%02x" % tab[0]
+        rest = re.compile(b"[^%s]*" % t)
+        before = skipper(unit, key.eword) if key.eword else (lambda line: 0)
+        end_fields = lambda line: rest.match(line, before(line)).end()
+
+    def end(line):
+        p = end_fields(line)
+        if echar:
+            if skipeblanks:
+                p = BLANK_RUN.match(line, p).end()
+            p += echar
+        return p
+
+    # A key that ends before it starts is empty, as GNU treats it.
+    return lambda line: line[begin(line):end(line)]
 
 
-def numeric_value(text):
+# ------------------------------------------------------------------ orders
+
+NUMBER = re.compile(rb"[ \t\n]*(-?)([0-9]*)(?:\.([0-9]*))?")
+
+
+def numeric(text):
     """
-    A key's number as GNU's -n reads it: its leading number, and 0 for a key
-    with none — so `word` sorts between -1 and 2, where this put it below
-    every number. Exact, not a float: 9007199254740993 and 9007199254740992
-    were equal as floats and kept their order (audit R3).
+    -n: the leading number, and 0 for a key with none — so `word` sorts
+    between -1 and 2. Exact, not a float: 9007199254740993 and
+    9007199254740992 were equal as floats and kept their order (audit R3).
     """
-    m = re.match(r"\s*(-?)(\d*)(?:\.(\d*))?", text)
-    digits, fraction = m.group(2), m.group(3) or ""
-    if not digits and not fraction:
-        return Decimal(0)
-    return Decimal((m.group(1) or "") + (digits or "0") + "." + (fraction or "0"))
+    sign, whole, fraction = NUMBER.match(text).groups()
+    if fraction:
+        fraction = fraction.rstrip(b"0")
+    if fraction:
+        value = Decimal((b"%s.%s" % (whole or b"0", fraction)).decode())
+    elif whole:
+        value = int(whole) if len(whole) < 4000 else Decimal(whole.decode())
+    else:
+        return 0
+    return -value if sign else value
 
 
-def key_for(line, opts):
-    field = field_of(line, opts)
-    if opts.numeric:
-        return numeric_value(field)
-    return field.lower() if opts.fold else field
+def value_of(key, tab):
+    """A function from a line to what this key compares, in Python's order."""
+    steps = [field_of(key, tab)]
+    if key.fold or key.ignore:
+        table, delete = UPPER if key.fold else None, IGNORED.get(key.ignore, b"")
+        steps.append(lambda text: text.translate(table, delete))
+    if "n" in key.kinds:
+        steps.append(numeric)
+    steps = [s for s in steps if s]
+    if not steps:
+        return lambda line: line
+    if len(steps) == 1:
+        return steps[0]
+    if len(steps) == 2:
+        first, second = steps
+        return lambda line: second(first(line))
+    first, second, third = steps
+    return lambda line: third(second(first(line)))
 
 
-def order_for(line, opts):
+# ------------------------------------------------------------------ sorting
+
+
+class Order:
+    """How records compare: each key in turn, then the whole line unless -s or -u."""
+
+    def __init__(self, keys, opts):
+        self.values = [value_of(k, opts.tab) for k in keys]
+        self.width = len(keys) or 1
+        # With no key at all the whole line is the key, -s and -u or not.
+        self.last_resort = not keys or not (opts.stable or opts.unique)
+        self.directions = [k.reverse for k in keys] + ([opts.whole.reverse] if self.last_resort else [])
+
+    def records(self, lines):
+        """Each line as (value of key 1, ..., line)."""
+        if not self.values:
+            return [(line,) for line in lines]
+        return list(zip(*[list(map(v, lines)) for v in self.values], lines))
+
+    def sort(self, records):
+        # One stable sort per run of keys that go the same way, least
+        # significant first: a key that is reversed and one that is not
+        # cannot share a sort, and a comparison function called a million
+        # times is what a slow sandbox cannot afford.
+        groups = []
+        for i, backwards in enumerate(self.directions):
+            if groups and groups[-1][1] == backwards:
+                groups[-1][0].append(i)
+            else:
+                groups.append(([i], backwards))
+        if len(groups) == 1 and self.last_resort:
+            # Every key and then the line, all one way: the records as they are.
+            records.sort(reverse=groups[0][1])
+        else:
+            for indices, backwards in reversed(groups):
+                records.sort(key=itemgetter(*indices), reverse=backwards)
+
+    def unique(self, records):
+        """The first of each run of records equal by every key — GNU keeps the first, not the smallest."""
+        kept = []
+        width = self.width
+        last = None
+        for r in records:
+            k = r[:width]
+            if not kept or k != last:
+                kept.append(r)
+                last = k
+        return kept
+
+
+def read_lines(name, terminator):
     """
-    The key, then — as GNU's last resort — the whole line, so lines equal by
-    the key come out in a settled order rather than as they came; `-s` keeps
-    them as they came.
+    One input's lines, as bytes: a CR is part of its line, as in GNU, where
+    universal newlines dropped it from a file and kept it from a pipe. A file
+    that does not end in a newline still ends its last line: read as one text,
+    `z` with no newline and then `a` were one line, `za` (audit R3).
     """
-    return key_for(line, opts) if opts.stable else (key_for(line, opts), line)
+    try:
+        if name == "-":
+            data = sys.stdin.buffer.read()
+        else:
+            with open(name, "rb") as handle:
+                data = handle.read()
+    except OSError as e:
+        die(f"read failed: {name}: {e.strerror}")
+    lines = data.split(terminator)
+    if lines[-1] == b"":
+        lines.pop()
+    return lines
 
 
 def main(argv):
     opts, files = parse(argv)
-    terminator = "\0" if opts.zero else "\n"
+    keys = settle_keys(opts)
+    terminator = b"\0" if opts.zero else b"\n"
+    files = files or ["-"]
 
-    # Each input's own lines: a file that does not end in a newline still ends
-    # its last line. Read as one text, `z` with no newline and then `a` were
-    # one line, `za` (audit R3).
-    def lines_of(text):
-        lines = text.split(terminator)
-        if lines and lines[-1] == "":
-            lines.pop()
-        return lines
-
-    lines = []
-    if not files:
-        lines = lines_of(sys.stdin.read())
-    else:
-        for name in files:
-            if name == "-":
-                lines += lines_of(sys.stdin.read())
-                continue
+    # As GNU: every input readable, and the output openable, before any is read.
+    for name in files:
+        if name != "-":
             try:
-                with open(name, "r", errors="surrogateescape") as handle:
-                    lines += lines_of(handle.read())
+                open(name, "rb").close()
+            except IsADirectoryError:
+                pass        # readable as GNU asks; reading it is what fails
             except OSError as e:
-                die(f"cannot read: {name}: {e.strerror}", code=2)
-
-    # Two passes rather than one comparison function: -u removes duplicates by
-    # the *key*, which is not the same as removing duplicate lines.
-    lines.sort(key=lambda line: order_for(line, opts), reverse=opts.reverse)
-    if opts.unique:
-        seen = set()
-        kept = []
-        for line in lines:
-            k = key_for(line, opts)
-            if k in seen:
-                continue
-            seen.add(k)
-            kept.append(line)
-        lines = kept
-
-    body = "".join(line + terminator for line in lines)
-    if opts.out:
+                die(f"cannot read: {name}: {e.strerror}")
+    if opts.out is not None:
         try:
-            with open(opts.out, "w", errors="surrogateescape") as handle:
+            os.close(os.open(opts.out, os.O_WRONLY | os.O_CREAT, 0o666))
+        except OSError as e:
+            die(f"open failed: {opts.out}: {e.strerror}")
+
+    inputs = [read_lines(name, terminator) for name in files]
+    order = Order(keys, opts)
+
+    if not keys:
+        # The common case, and the cheapest: whole lines as bytes.
+        lines = [line for chunk in inputs for line in chunk]
+        lines.sort(reverse=opts.whole.reverse)
+        records = None
+        if opts.unique:
+            lines = [line for i, line in enumerate(lines) if not i or line != lines[i - 1]]
+    else:
+        records = order.records([line for chunk in inputs for line in chunk])
+        order.sort(records)
+    if records is not None:
+        if opts.unique:
+            records = order.unique(records)
+        lines = [r[-1] for r in records]
+
+    body = terminator.join(lines) + terminator if lines else b""
+    if opts.out is not None:
+        try:
+            with open(opts.out, "wb") as handle:
                 handle.write(body)
         except OSError as e:
-            die(f"cannot write: {opts.out}: {e.strerror}")
+            die(f"open failed: {opts.out}: {e.strerror}")
     else:
-        sys.stdout.write(body)
+        sys.stdout.buffer.write(body)
     return 0
 
 
