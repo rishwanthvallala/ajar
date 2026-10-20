@@ -1295,66 +1295,431 @@ def cmd_xargs(argv):
 
 # ------------------------------------------------------------ zip / unzip
 def cmd_zip(argv):
-    recurse, files = False, []
+    """Info-ZIP zip 3.0 as it is mostly used: add files to an archive, or update it.
+
+    An archive that exists is added to: an entry of the same name is replaced
+    ("updating:") and the others are kept. -r adds each directory as an entry
+    of its own, so an empty one survives, and a directory named without -r is
+    added as that one entry, as zip adds it. Files are deflated at zip's level
+    6 and stored instead when that would not make them smaller, and reported
+    with zip's percentages. Python's deflate gives Info-ZIP's sizes for small
+    files and a few bytes fewer on large ones, so the percentage for a big
+    file can be a point or so higher than zip's.
+    """
+    import fnmatch
+    import tempfile
+    import zlib
+
+    recurse = quiet = junk = no_dirs = symlinks = in_excludes = False
+    level, excludes, operands = 6, [], []
+    supported = "Supported: -r -q -j -D -y -X -0..-9 -x PATTERNS"
+    longs = {"--recurse-paths": "r", "--quiet": "q", "--junk-paths": "j", "--no-dir-entries": "D",
+             "--symlinks": "y", "--no-extra": "X", "--exclude": "x"}
     for a in argv:
-        if a in ("-r", "-R"):
-            recurse = True
-        elif a.startswith("-"):
-            die("zip", f"unsupported option '{a}'. Supported: -r")
+        if a.startswith("-") and len(a) > 1:
+            in_excludes = False
+            if a.startswith("--") and a not in longs:
+                die("zip", f"unsupported option '{a}'. {supported}")
+            for f in [longs[a]] if a in longs else a[1:]:
+                if f == "r":
+                    recurse = True
+                elif f == "q":
+                    quiet = True
+                elif f == "j":
+                    junk = True
+                elif f == "D":
+                    no_dirs = True
+                elif f == "y":
+                    symlinks = True
+                elif f == "X":
+                    pass  # no extra attributes are written here anyway
+                elif f == "x":
+                    in_excludes = True
+                elif f.isdigit():
+                    level = int(f)
+                else:
+                    die("zip", f"unsupported option '-{f}'. {supported}")
+        elif in_excludes:
+            excludes.append(a)
         else:
-            files.append(a)
-    if len(files) < 2:
-        die("zip", "needs an archive and at least one file")
-    archive, targets = files[0], files[1:]
-    if not archive.endswith(".zip"):
+            operands.append(a)
+    if not operands:
+        die("zip", "needs an archive and files: zip [options] archive file ...")
+    archive, targets = operands[0], operands[1:]
+    if "." not in os.path.basename(archive):
         archive += ".zip"
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-        for target in targets:
-            if os.path.isdir(target):
-                if not recurse:
-                    sys.stderr.write(f"zip: {target} is a directory; use -r\n")
+
+    found, names = [], set()
+    try:
+        archive_stat = os.stat(archive)
+    except OSError:
+        archive_stat = None
+
+    def arc_name(path):
+        name = path
+        while name.startswith("/"):
+            name = name[1:]
+        while name.startswith("./"):
+            name = name[2:]
+        name = "" if name == "." else name
+        return os.path.basename(name) if junk else name
+
+    def add(path):
+        name = arc_name(path)
+        if archive_stat is not None and os.path.exists(path) and os.path.samestat(os.stat(path), archive_stat):
+            return
+        link = os.path.islink(path)
+        if link and symlinks:
+            kind = "link"
+        elif os.path.isdir(path):
+            if name and not no_dirs and not junk:
+                keep(name + "/", path, "dir")
+            if recurse:
+                for entry in os.scandir(path):
+                    add(os.path.join(path, entry.name))
+            return
+        else:
+            kind = "file"
+        keep(name, path, kind)
+
+    def keep(name, path, kind):
+        if name and name not in names and not any(fnmatch.fnmatchcase(name, p) for p in excludes):
+            names.add(name)
+            found.append((name, path, kind))
+
+    # zip says its warnings and errors on stdout, where its progress goes.
+    for target in targets:
+        if not os.path.lexists(target):
+            sys.stdout.write(f"\tzip warning: name not matched: {target}\n")
+            continue
+        add(target.rstrip("/") or target)
+    if not found:
+        sys.stdout.write(f"\nzip error: Nothing to do! ({archive})\n")
+        return 12
+
+    old_entries = []
+    if archive_stat is not None:
+        try:
+            with zipfile.ZipFile(archive) as old:
+                old_entries = [(info, old.read(info)) for info in old.infolist()]
+        except (zipfile.BadZipFile, OSError):
+            sys.stdout.write(
+                "\tzip warning: missing end signature--probably not a zip file (did you\n"
+                "\tzip warning: remember to use binary mode when you transferred it?)\n"
+                "\tzip warning: (if you are trying to read a damaged archive try -F)\n"
+                f"\nzip error: Zip file structure invalid ({archive})\n"
+            )
+            return 3
+    old_names = {info.filename for info, _ in old_entries}
+
+    built = {}
+    for name, path, kind in found:
+        if kind == "link":
+            st = os.lstat(path)
+            info = zipfile.ZipInfo(name, zip_time(st.st_mtime))
+            info.external_attr = (st.st_mode & 0xFFFF) << 16
+            data = os.fsencode(os.readlink(path))
+        else:
+            info = zipfile.ZipInfo.from_file(path, name, strict_timestamps=False)
+            data = b""
+            if kind == "file":
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read()
+                except OSError:
+                    sys.stdout.write(f"\tzip warning: could not open for reading: {path}\n")
                     continue
-                for root, _, names in os.walk(target):
-                    for name in names:
-                        full = os.path.join(root, name)
-                        z.write(full)
-                        print(f"  adding: {full}")
-            else:
-                z.write(target)
-                print(f"  adding: {target}")
+        info.filename, info.create_system = name, 3
+        if kind == "dir" or not data or level == 0:
+            method, packed = zipfile.ZIP_STORED, len(data)
+        else:
+            squeeze = zlib.compressobj(level, zlib.DEFLATED, -15)
+            packed = len(squeeze.compress(data) + squeeze.flush())
+            method = zipfile.ZIP_DEFLATED if packed < len(data) else zipfile.ZIP_STORED
+        built[name] = (info, data, method)
+        if not quiet:
+            how = "stored 0%" if method == zipfile.ZIP_STORED else f"deflated {((200 * (len(data) - packed) // len(data)) + 1) // 2}%"
+            sys.stdout.write(f"{'updating' if name in old_names else '  adding'}: {name} ({how})\n")
+
+    folder = os.path.dirname(os.path.abspath(archive))
+    handle, temporary = tempfile.mkstemp(prefix=".zi", dir=folder)
+    os.close(handle)
+    try:
+        with zipfile.ZipFile(temporary, "w") as z:
+            for info, data in old_entries:
+                if info.filename in built:
+                    new_info, new_data, method = built.pop(info.filename)
+                    z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
+                else:
+                    z.writestr(info, data, compress_type=info.compress_type)
+            for new_info, new_data, method in built.values():
+                z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
+        os.chmod(temporary, stat.S_IMODE(archive_stat.st_mode) if archive_stat else 0o666 & ~zip_umask())
+        os.replace(temporary, archive)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
     return 0
+
+
+def zip_time(seconds):
+    """A file time as a zip's local date and time — which cannot be before 1980."""
+    import time
+
+    return max(time.localtime(seconds)[:6], (1980, 1, 1, 0, 0, 0))
+
+
+def zip_umask():
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+def zip_mtime(info):
+    """When an entry was last changed: its UT extra field if zip wrote one (UTC), else its DOS time (local)."""
+    import struct
+    import time
+
+    extra, i = info.extra, 0
+    while i + 4 <= len(extra):
+        tag, size = struct.unpack("<HH", extra[i : i + 4])
+        body = extra[i + 4 : i + 4 + size]
+        if tag == 0x5455 and len(body) >= 5 and body[0] & 1:
+            return struct.unpack("<i", body[1:5])[0]
+        i += 4 + size
+    return time.mktime(info.date_time + (0, 0, -1))
 
 
 def cmd_unzip(argv):
-    listing, dest, files = False, ".", []
+    """Info-ZIP unzip 6.0: extract, -l, -p, -t, -d, -o, -n, -q, -j and member names, as unzip says them.
+
+    Like unzip it asks before replacing a file, unless -o or -n, and reads the
+    answer from the terminal; with no answer to read it takes [N]one, as
+    unzip does. Options go before the archive: after it, only -d DIR and
+    -x NAMES are options, as for unzip, and anything else is a member name.
+    A name with ../ in it, or a leading /, is extracted inside the
+    destination with a warning, never outside it.
+    """
+    import fnmatch
+    import time
+
+    listing = pipe = testing = overwrite = never = junk = in_excludes = False
+    quiet, dest, archive, includes, excludes = 0, None, None, [], []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "-l":
-            listing = True
-        elif a == "-d":
-            i += 1
-            dest = argv[i]
-        elif a.startswith("-"):
-            die("unzip", f"unsupported option '{a}'. Supported: -l -d DIR")
+        if archive is None and a.startswith("-") and len(a) > 1:
+            for j, f in enumerate(a[1:], start=1):
+                if f in "lptonjq":
+                    listing, pipe, testing = listing or f == "l", pipe or f == "p", testing or f == "t"
+                    overwrite, never, junk = overwrite or f == "o", never or f == "n", junk or f == "j"
+                    quiet += f == "q"
+                elif f == "d":
+                    dest = a[j + 1 :]
+                    if not dest:
+                        i += 1
+                        dest = argv[i] if i < len(argv) else ""
+                    break
+                else:
+                    die("unzip", f"unsupported option '-{f}'. Supported: -l -p -t -o -n -q -j -d DIR, and -x NAMES after the archive")
+        elif archive is None:
+            archive = a
+        elif a == "-d" or (a.startswith("-d") and len(a) > 2):
+            dest = a[2:]
+            if not dest:
+                i += 1
+                dest = argv[i] if i < len(argv) else ""
+        elif a == "-x":
+            in_excludes = True
         else:
-            files.append(a)
+            (excludes if in_excludes else includes).append(a)
         i += 1
-    if not files:
-        die("unzip", "needs an archive")
+    if archive is None:
+        sys.stdout.write("UnZip 6.00 (box.py). Usage: unzip [-lptonjq] [-d exdir] file[.zip] [list] [-x xlist] [-d exdir]\n")
+        return 0
+    path = next((p for p in (archive, archive + ".zip", archive + ".ZIP") if os.path.isfile(p)), None)
+    if path is None:
+        sys.stderr.write(f"unzip:  cannot find or open {archive}, {archive}.zip or {archive}.ZIP.\n")
+        return 9
+    if not (quiet or pipe):
+        print(f"Archive:  {path}")
     try:
-        with zipfile.ZipFile(files[0]) as z:
-            if listing:
-                print("  Length      Name")
-                for info in z.infolist():
-                    print(f"{info.file_size:>8}      {info.filename}")
-                return 0
-            z.extractall(dest)
-            for info in z.infolist():
-                print(f"  inflating: {info.filename}")
-    except (OSError, zipfile.BadZipFile) as e:
-        die("unzip", f"cannot open {files[0]}: {e}", code=9)
-    return 0
+        z = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError):
+        sys.stdout.flush()
+        sys.stderr.write(
+            "  End-of-central-directory signature not found.  Either this file is not\n"
+            "  a zipfile, or it constitutes one disk of a multi-part archive.  In the\n"
+            "  latter case the central directory and zipfile comment will be found on\n"
+            "  the last disk(s) of this archive.\n"
+            f"unzip:  cannot find zipfile directory in one of {path} or\n"
+            f"        {path}.zip, and cannot find {path}.ZIP, period.\n"
+        )
+        return 9
+
+    status = 0
+    members = z.infolist()
+    used_in, used_ex = set(), set()
+
+    def wanted(info):
+        hits = [p for p in includes if fnmatch.fnmatchcase(info.filename, p)]
+        misses = [p for p in excludes if fnmatch.fnmatchcase(info.filename, p)]
+        used_in.update(hits)
+        used_ex.update(misses)
+        return (not includes or hits) and not misses
+
+    selected = [info for info in members if wanted(info)]
+
+    def cautions():
+        nonlocal status
+        sys.stdout.flush()
+        for p in excludes:
+            if p not in used_ex:
+                sys.stderr.write(f"caution: excluded filename not matched:  {p}\n")
+        for p in includes:
+            if p not in used_in:
+                sys.stderr.write(f"caution: filename not matched:  {p}\n")
+                status = 11
+
+    if listing:
+        print("  Length      Date    Time    Name\n---------  ---------- -----   ----")
+        for info in selected:
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(zip_mtime(info)))
+            print(f"{info.file_size:9d}  {stamp}   {info.filename}")
+        count = len(selected)
+        print(f"---------                     -------\n{sum(m.file_size for m in selected):9d}"
+              f"                     {count} file{'' if count == 1 else 's'}")
+        cautions()
+        return status
+
+    if testing:
+        bad = False
+        for info in selected:
+            try:
+                z.read(info)
+                ok = "OK"
+            except (zipfile.BadZipFile, OSError, EOFError) as e:
+                ok, bad = f"bad CRC or data ({e})", True
+            if not quiet:
+                print(f"    testing: {info.filename:<22}   {ok}")
+        print(f"At least one error was detected in {path}." if bad else f"No errors detected in compressed data of {path}.")
+        cautions()
+        return 2 if bad else status
+
+    if pipe:
+        for info in selected:
+            if not info.is_dir():
+                sys.stdout.buffer.write(z.read(info))
+        cautions()
+        return status
+
+    base = dest or "."
+    if dest:
+        os.makedirs(dest, exist_ok=True)
+    answer_all, directories, links = None, [], []
+    for info in selected:
+        parts = info.filename.split("/")
+        # unzip's own split: the first of these warnings on stdout, the second on stderr.
+        if ".." in parts:
+            print(f'warning:  skipped "../" path component(s) in {info.filename}')
+            status = max(status, 1)
+        if info.filename.startswith("/"):
+            sys.stdout.flush()
+            sys.stderr.write(f"warning:  stripped absolute path spec from {info.filename}\n")
+            status = max(status, 1)
+        parts = [p for p in parts if p not in ("", ".", "..")]
+        if junk:
+            if info.is_dir():
+                continue
+            parts = parts[-1:]
+        if not parts:
+            continue
+        clean = "/".join(parts)
+        target = os.path.join(base, clean)
+        shown = os.path.join(dest, clean) if dest else clean
+        mode = info.external_attr >> 16 if info.create_system == 3 else 0
+        if info.is_dir():
+            if not os.path.isdir(target):
+                os.makedirs(target)
+                if not quiet:
+                    print(f"   creating: {shown}/")
+            directories.append((target, info, mode))
+            continue
+        parent = os.path.dirname(target)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        if os.path.lexists(target):
+            if never or answer_all is False:
+                continue
+            if not overwrite and answer_all is None:
+                answer = unzip_ask(shown)
+                if answer is None:
+                    answer_all, status = False, max(status, 1)
+                    continue
+                if answer == "A":
+                    answer_all = True
+                elif answer == "N":
+                    answer_all = False
+                    continue
+                elif answer == "n":
+                    continue
+                elif answer.startswith("r:"):
+                    target = shown = answer[2:]
+            if os.path.lexists(target) and not os.path.isdir(target):
+                os.remove(target)
+        data = z.read(info)
+        if stat.S_ISLNK(mode):
+            # unzip makes the links last, once everything they could point at is out.
+            if not quiet:
+                print(f"    linking: {shown:<22}  -> {os.fsdecode(data)} ")
+            links.append((target, shown, os.fsdecode(data)))
+            continue
+        verb = "extract" if info.compress_type == zipfile.ZIP_STORED else "inflat"
+        if not quiet:
+            print(f"{verb:>8}ing: {shown:<22}  ")
+        with open(target, "wb") as f:
+            f.write(data)
+        if mode & 0o777:
+            os.chmod(target, stat.S_IMODE(mode) & 0o777)
+        stamp = zip_mtime(info)
+        os.utime(target, (stamp, stamp))
+    if links and not quiet:
+        print("finishing deferred symbolic links:")
+    for target, shown, points_at in links:
+        if not quiet:
+            print(f"  {shown:<22} -> {points_at}")
+        os.symlink(points_at, target)
+    for target, info, mode in reversed(directories):
+        if mode & 0o777:
+            os.chmod(target, stat.S_IMODE(mode) & 0o777)
+        stamp = zip_mtime(info)
+        os.utime(target, (stamp, stamp))
+    cautions()
+    return status
+
+
+def unzip_ask(shown):
+    """unzip's question about a file that is there already: y, n, A, N, or 'r:' and a new name; None at EOF."""
+    while True:
+        sys.stdout.flush()
+        sys.stderr.write(f"replace {shown}? [y]es, [n]o, [A]ll, [N]one, [r]ename: ")
+        sys.stderr.flush()
+        line = sys.stdin.readline()
+        if not line:
+            sys.stderr.write(' NULL\n(EOF or read error, treating as "[N]one" ...)\n')
+            return None
+        answer = line.strip()[:1]
+        if answer in ("y", "Y"):
+            return "y"
+        if answer in ("n", "A", "N"):
+            return answer
+        if answer in ("r", "R"):
+            sys.stderr.write("new name: ")
+            sys.stderr.flush()
+            name = sys.stdin.readline().strip()
+            if name:
+                return "r:" + name
+        sys.stderr.write(f"error:  invalid response [{line.strip()}]\n")
 
 
 
