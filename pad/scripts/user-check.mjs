@@ -45,6 +45,12 @@ const MANY = "five-hundred-files";
 const manyFiles = { "main.py": "print('five hundred')\n", "bom.csv": "\ufeffname,qty\n", "mixed.txt": "one\r\ntwo\nthree\r\n" };
 for (let i = 0; i < 497; i++) manyFiles[`src/m${Math.floor(i / 50)}/f${i}.py`] = `def f${i}(x):\n    return x * ${i}\n`;
 const manySaved = [];
+// The service worker's script and the terminal's code, held back while this
+// is a promise ("first visit, editor first"). Here rather than with
+// `page.route`: a service worker fetches its script itself, past any route,
+// and a page with routes has its requests sent past its service worker.
+let holding = null;
+const heldBack = new Set();
 const server = createServer(async (req, res) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
@@ -94,6 +100,10 @@ const server = createServer(async (req, res) => {
     return res.end(req.method === "PUT" ? JSON.stringify({ seq: 1 }) : JSON.stringify({ exists: false, seq: 0, files: {} }));
   }
   if (path === "/sw.js") res.setHeader("Service-Worker-Allowed", "/");
+  if (holding && /^\/sw\.js$|^\/assets\/(xterm|terminals)-[\w-]+\.js$/.test(path)) {
+    heldBack.add(path === "/sw.js" ? "sw" : "terminal");
+    await holding;
+  }
   try {
     const file = join(ROOT, path);
     const body = await readFile(file);
@@ -1297,27 +1307,54 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     await early.close();
   }
 
-  // ---- Run pressed before the page has its service worker ----
-  // A first visit draws the workspace and then waits for the service worker
-  // to install before the app that answers the button exists; a press in
-  // that wait was lost without a word (review of 18 October, N1's
-  // first-paint window). A browser of its own, with sw.js held back, so the
-  // press lands in it.
-  section = "run before the service worker";
-  {
+  // ---- a first visit: the editor before its service worker and its terminal ----
+  // A first visit installs the service worker that serves the runtime's
+  // packages. Until 20 October the page waited for that before it had an app
+  // or an editor — a Run pressed then was lost without a word (review of 18
+  // October, N1's first-paint window) — and the editor then waited for the
+  // terminal's code before it took a key. Now the runtime alone waits for
+  // the worker, and the terminal comes once the editor is drawn. A browser of
+  // its own, with sw.js and the terminal's code held back until the editor
+  // has been typed into.
+  section = "first visit, editor first";
+  if (!LIVE) {
+    let release;
+    holding = new Promise((r) => (release = r));
     const cold = await chromium.launch();
     const first = await (await cold.newContext()).newPage();
-    await first.route(/\/sw\.js$/, async (route) => {
-      await new Promise((r) => setTimeout(r, 2500));
-      await route.continue().catch(() => {});
-    });
     await first.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
-    await first.locator("#run").waitFor({ timeout: 30_000 });
+    const typeable = await first.waitForFunction(() => window.monaco?.editor.getEditors()[0]?.hasTextFocus(), null, { timeout: 60_000 }).then(() => true, () => false);
+    if (typeable) await first.keyboard.insertText("print('pasted before the terminal')\n");
+    const early = await first.evaluate(() => ({
+      pasted: window.monaco?.editor.getEditors()[0]?.getValue().startsWith("print('pasted before the terminal')\n") ?? false,
+      controlled: !!navigator.serviceWorker.controller,
+      terminal: !!document.querySelector("#terminal .xterm"),
+    }));
+    expect(
+      "on a first visit the editor takes a paste with the service worker still installing and the terminal's code not yet here",
+      typeable && early.pasted && !early.controlled && !early.terminal && heldBack.has("sw") && heldBack.has("terminal"),
+      JSON.stringify({ typeable, ...early, heldBack: [...heldBack] }),
+    );
     const before = await first.evaluate(() => !!window.__pad);
     await first.locator("#run").click();
     const told = await first.evaluate(() => document.getElementById("status")?.textContent ?? "");
-    const ran = await first.waitForFunction(() => /wrote 10 rows to out\.csv/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 240_000 }).then(() => true, () => false);
-    expect("Run pressed before the app is there, on a first visit, is said and runs once the pad is open", !before && /Run starts/.test(told) && ran, JSON.stringify({ before, told, ran }));
+    holding = null;
+    release();
+    // What was pasted, printed: the terminal also shows the last run kept for
+    // the pad as it opens, which here is another section's.
+    const ran = await first.waitForFunction(() => /pasted before the terminal\s/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 240_000 }).then(() => true, () => false);
+    expect("Run pressed before the pad is open is said, and runs what was pasted once it is", !before && /Run starts/.test(told) && ran, JSON.stringify({ before, told, ran }));
+    // The worker's own counts: a response it gives keeps the address asked
+    // for, so the network log cannot tell (app-check.mjs). It sees the
+    // downloads with no mirror here too, as on CI, and passes them on.
+    const stats = await first.evaluate(() => new Promise((resolve) => {
+      const sw = navigator.serviceWorker.controller;
+      if (!sw) return resolve(null);
+      navigator.serviceWorker.addEventListener("message", (e) => resolve(e.data), { once: true });
+      sw.postMessage("stats");
+      setTimeout(() => resolve(null), 3000);
+    }));
+    expect("and the runtime's packages came through the service worker all the same", stats?.intercepted > 0, JSON.stringify(stats));
     await cold.close();
   }
 
