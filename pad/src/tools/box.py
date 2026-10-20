@@ -248,15 +248,54 @@ def tree_name(name, utf8):
 
 # ------------------------------------------------------- sha256sum / md5sum
 def cmd_sum(argv, algorithm):
+    """GNU md5sum / sha1sum / sha256sum: -b, -t, --tag, and -c with its reports.
+
+    A file that cannot be read is reported and the rest are still hashed. A
+    name with a backslash, newline or CR in it is escaped and its line marked
+    with a leading backslash, as GNU does, so that -c can read it back.
+    -c reads the binary marker, the BSD-style --tag lines and upper-case hex,
+    and ends with GNU's warnings about what did not match.
+    """
     tool = f"{algorithm}sum"
-    check, files = False, []
+    tag_name = {"md5": "MD5", "sha1": "SHA1", "sha256": "SHA256"}[algorithm]
+    width = hashlib.new(algorithm).digest_size * 2
+    check = binary = tag = quiet = status_only = strict = warn = ignore_missing = zero = False
+    files, only_files = [], False
+    longs = {"--check": "c", "--binary": "b", "--text": "t", "--warn": "w", "--tag": "T", "--quiet": "Q",
+             "--status": "S", "--strict": "X", "--ignore-missing": "I", "--zero": "z"}
+    supported = "Supported: -c -b -t -w -z --tag --quiet --status --strict --ignore-missing"
     for a in argv:
-        if a in ("-c", "--check"):
-            check = True
-        elif a.startswith("-") and a != "-":
-            die(tool, f"unsupported option '{a}'. Supported: -c")
-        else:
+        if only_files or not a.startswith("-") or a == "-":
             files.append(a)
+            continue
+        if a == "--":
+            only_files = True
+            continue
+        if a.startswith("--") and a not in longs:
+            die(tool, f"unsupported option '{a}'. {supported}")
+        for f in [longs[a]] if a.startswith("--") else a[1:]:
+            if f == "c":
+                check = True
+            elif f in "bt":
+                binary = f == "b"
+            elif f == "w":
+                warn = True
+            elif f == "T":
+                tag = True
+            elif f == "Q":
+                quiet = True
+            elif f == "S":
+                status_only = True
+            elif f == "X":
+                strict = True
+            elif f == "I":
+                ignore_missing = True
+            elif f == "z":
+                zero = True
+            else:
+                die(tool, f"unsupported option '-{f}'. {supported}")
+    if check and zero:
+        die(tool, "-z with -c is not supported here")
 
     def digest_of(name):
         h = hashlib.new(algorithm)
@@ -268,21 +307,125 @@ def cmd_sum(argv, algorithm):
                     h.update(block)
         return h.hexdigest()
 
-    if check:
-        bad = 0
-        for name in files or ["-"]:
-            for line in read_text(name, tool).splitlines():
-                if not line.strip():
-                    continue
-                want, _, target = line.partition("  ")
-                ok = digest_of(target) == want
-                print(f"{target}: {'OK' if ok else 'FAILED'}")
-                bad += 0 if ok else 1
-        return 1 if bad else 0
+    def escaped(name):
+        if any(ch in name for ch in "\\\n\r"):
+            return "\\", name.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+        return "", name
 
-    for name in files or ["-"]:
-        print(f"{digest_of(name)}  {name}")
-    return 0
+    def say(text):
+        sys.stdout.buffer.write((text + "\n").encode("utf-8", "surrogateescape"))
+
+    status = 0
+    if not check:
+        for name in files or ["-"]:
+            try:
+                digest = digest_of(name)
+            except OSError as e:
+                sys.stderr.write(f"{tool}: {name}: {e.strerror}\n")
+                status = 1
+                continue
+            mark, shown = ("", name) if zero else escaped(name)
+            line = f"{mark}{tag_name} ({shown}) = {digest}" if tag else f"{mark}{digest} {'*' if binary else ' '}{shown}"
+            sys.stdout.buffer.write((line + ("\0" if zero else "\n")).encode("utf-8", "surrogateescape"))
+        return status
+
+    def parse(line):
+        mark = line.startswith("\\")
+        body = line[1:] if mark else line
+        target = None
+        if body.startswith(tag_name + " (") and ") = " in body:
+            target, _, want = body[len(tag_name) + 2 :].rpartition(") = ")
+        elif len(body) > width and body[width] in " \t":
+            want, target = body[:width], body[width + 1 :]
+            if target[:1] in (" ", "*"):
+                target = target[1:]
+        if not target or len(want) != width or any(ch not in "0123456789abcdefABCDEF" for ch in want):
+            return None
+        if mark:
+            out, k = [], 0
+            while k < len(target):
+                if target[k] == "\\":
+                    nxt = target[k + 1 : k + 2]
+                    if nxt not in ("\\", "n", "r"):
+                        return None
+                    out.append({"\\": "\\", "n": "\n", "r": "\r"}[nxt])
+                    k += 2
+                else:
+                    out.append(target[k])
+                    k += 1
+            target = "".join(out)
+        return want.lower(), target
+
+    for listname in files or ["-"]:
+        shown_list = "standard input" if listname == "-" else listname
+        try:
+            if listname == "-":
+                data = sys.stdin.buffer.read()
+            else:
+                with open(listname, "rb") as f:
+                    data = f.read()
+        except OSError as e:
+            sys.stderr.write(f"{tool}: {listname}: {e.strerror}\n")
+            status = 1
+            continue
+        misformatted = unreadable = mismatched = 0
+        formatted = verified = False
+        lines = data.split(b"\n")
+        if lines and not lines[-1]:
+            lines.pop()
+        for number, raw in enumerate(lines, start=1):
+            line = raw.decode("utf-8", "surrogateescape")
+            if line.startswith("#"):
+                continue
+            line = line[:-1] if line.endswith("\r") else line
+            if not line:
+                continue
+            parsed = parse(line)
+            if parsed is None:
+                misformatted += 1
+                if warn:
+                    sys.stderr.write(f"{tool}: {shown_list}: {number}: improperly formatted {tag_name} checksum line\n")
+                continue
+            formatted = True
+            want, target = parsed
+            mark, shown = escaped(target)
+            try:
+                got = digest_of(target)
+            except FileNotFoundError as e:
+                if ignore_missing:
+                    continue
+                unreadable += 1
+                sys.stderr.write(f"{tool}: {target}: {e.strerror}\n")
+                if not status_only:
+                    say(f"{mark}{shown}: FAILED open or read")
+                continue
+            except OSError as e:
+                unreadable += 1
+                sys.stderr.write(f"{tool}: {target}: {e.strerror}\n")
+                if not status_only:
+                    say(f"{mark}{shown}: FAILED open or read")
+                continue
+            verified = True
+            ok = got == want
+            mismatched += 0 if ok else 1
+            if not status_only and not (ok and quiet):
+                say(f"{mark}{shown}: {'OK' if ok else 'FAILED'}")
+        if not formatted:
+            sys.stderr.write(f"{tool}: {shown_list}: no properly formatted checksum lines found\n")
+            status = 1
+            continue
+        if not status_only:
+            for count, one, many in ((misformatted, "line is improperly formatted", "lines are improperly formatted"),
+                                     (unreadable, "listed file could not be read", "listed files could not be read"),
+                                     (mismatched, "computed checksum did NOT match", "computed checksums did NOT match")):
+                if count:
+                    sys.stderr.write(f"{tool}: WARNING: {count} {one if count == 1 else many}\n")
+        if ignore_missing and not verified:
+            sys.stderr.write(f"{tool}: {shown_list}: no file was verified\n")
+            status = 1
+        if mismatched or unreadable or (strict and misformatted):
+            status = 1
+    return status
 
 
 # ---------------------------------------------------------------- du
