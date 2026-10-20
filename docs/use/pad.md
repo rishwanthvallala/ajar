@@ -135,6 +135,11 @@ python3 pip qjs jq curl wget              scripting, data and fetching
 nano                                       an editor in the terminal
 ```
 
+`awk` is The One True Awk — the awk on a Mac — with `system()`, pipes to and
+from commands, and `getline`. `sort`, `tail`, `diff`, `patch`, `find`, `xargs`
+and the rest from `diff` on behave as GNU's do, checked against them; what one
+cannot do here it refuses by name rather than ignoring.
+
 Pipes, globs, redirection, loops and command substitution all work, because it
 is a real bash.
 

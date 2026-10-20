@@ -57,23 +57,24 @@ limitation and which was only ever that build.
 
 ## Commands that come from python
 
-Twenty-eight aliases, covering twenty-eight names, all of them in
-`shell.ts`:
+Twenty-seven aliases, covering twenty-seven names, all of them in
+`shell.ts` — and `awk`, which is no longer python's: since 20 October it is
+The One True Awk, built for the sandbox (see [awk](#awk) below):
 
 | | Why |
 |---|---|
-| `awk`, `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `bunzip2`, `xz`, `unxz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
+| `diff`, `patch`, `cmp`, `zip`, `unzip`, `bzip2`, `bunzip2`, `xz`, `unxz`, `tree`, `xargs`, `xxd`, `which` | No port published anywhere |
 | `sort`, `tail`, `split`, `stat`, `du`, `sha256sum`, `sha1sum`, `md5sum` | Advertised by the shipped coreutils and **not compiled into it** |
 | `hexdump`, `cal`, `rev` | Published in `syrusakbary/util-linux`, where only `cal` runs |
 | `nano` / `edit` | Neither nano nor vim can be installed, and curses cannot start |
 | `find` | Published and working, but it cannot spawn, so `-exec` produces nothing — and it exits 1 even on success, unable to restore its cwd |
 
-`awk`, `sort` and `tail` are a file each, being large. The other twenty-three
+`sort` and `tail` are a file each, being large. The other twenty-three
 live in `src/tools/box.py` and dispatch on their first argument — the same
 multi-call shape as the coreutils binary, and unlike that one everything listed
 is present. One file rather than twenty-three because the shell writes and
 aliases these before the first prompt; all the shell's aliases go out in a
-single `run` for the same reason — these twenty-eight, `curl` and `wget` (python
+single `run` for the same reason — these twenty-seven, `awk`, `curl` and `wget` (python
 too, [networking.md](networking.md)), `flask`, and the compilers' `go`, `gofmt`,
 `gcc`, `cc`, `clang++`, `g++` and `c++` — along with `clear` and the shell's
 exports, the two below among them. A warm
@@ -115,7 +116,7 @@ newer-package move that fixed bash does nothing here, and `kilyanni/coreutils`
 (GNU 9.11) cannot be installed.
 
 Each shim is checked against the real tool before being trusted — awk on thirty
-programs, sort on fifteen cases, tail on twelve, the boxed set on twenty-three —
+programs (while it was a shim), sort on fifteen cases, tail on twelve, the boxed set on twenty-three —
 and then again inside the runtime. Each refuses what it does not implement
 rather than ignoring it: a `sort` that silently drops `-k` is worse than one
 that says it cannot.
@@ -466,6 +467,58 @@ package returns full metadata from the GraphQL API and then fails
 registry rather than one bad publisher. `kilyanni/coreutils` is GNU 9.11 at
 half the size of ours and would remove seven shims if that ever changes, so the
 entries stay.
+
+## awk
+
+`awk` is **The One True Awk** — Kernighan's, the awk macOS ships
+(github.com/onetrueawk/awk, tag 20260426, its own permissive licence) — built
+for WASIX by `pad/scripts/build-awk.mjs` and committed as
+`pad/src/tools/awk.wasm`, 430 KB. The shell writes it to `.ajar/awk.wasm` with
+the shims and aliases `awk` to it, run by path. Until 20 October it was
+`awk.py`, a translator into Python whose own first line said it was not awk:
+a reviewer's harness found 79 of its 169 cases wrong, 34 of them quietly —
+`/a/,/b/` printed every line, `print length` printed `<built-in function len>`,
+`2^10` was 8, two numbers concatenated were OR-ed. Against gawk 5.2.1 the real
+one matches 168 of the 169; the last, `print 1 == 1.0`, is a syntax error, as
+POSIX's grammar and BWK's have it (`print (1 == 1.0)` is not). And it starts
+in 2–6 ms, where a python shim costs 140 or more.
+
+Committed rather than built on deploy because CI has no package mirror, and
+its browser checks run awk. The build runs in a pinned Ubuntu container, with
+every download checked against `pad/scripts/awk/pins.mjs`: the registry's
+`clang/clang` under Wasmer's own CLI, byacc for the grammar, binaryen's
+`wasm-opt`. Four builds, one from fresh downloads, made the same bytes.
+`node pad/scripts/build-awk.mjs` rebuilds it — about ten minutes the first
+time, one after. What it took, each in `build.sh` or in `wasix.c`, linked in
+ahead of libc:
+
+- **byacc, not bison**: bison's parser crashes that clang — the 64 KiB stack
+  C++ ran into ([C++](#c)) — where byacc's, of the same grammar, compiles.
+- **`-fno-integrated-cc1`**: `clang -c` otherwise stops at "unknown integrated
+  tool '-cc1'".
+- **`wasm-opt --asyncify`**: awk's `exit` is a `longjmp` and its pipes a `fork`,
+  and both need it; without, either ended awk with status 45.
+- **its own `popen`**, from `fork`, `dup2` and `exec`: libc's crashes in the
+  child it spawns. libc's `system()` works and is kept.
+- **`chdir(getcwd())` at the start**: libc resolved a relative path against `/`
+  until something had changed directory, so `awk 1 file` found no file.
+- **status 141, silently**, when what it writes to has closed — `awk … | head
+  -1` said "write error on /dev/stdout", where a real one dies of SIGPIPE.
+- **8 MiB of stack, first in memory**, so running out traps rather than
+  writing over awk's data.
+
+`system()`, `print | "cmd"`, `"cmd" | getline`, `print >` a file and `-f
+prog.awk` all work in the browser. Its limits: a function recursing about 500
+deep in the browser — native BWK reaches some 6,000 — ends awk with status 11
+and no word; a command it starts sees none of the shell's aliases, so `awk`
+inside `system()` is not found; it is UTF-8 by default, as the sandbox sets no
+locale (`length("héllo")` is 5, 6 under `LC_ALL=C`); and there are no gawk
+extensions.
+
+C programs built with the pad's `clang` are likely to meet the same libc
+faults — relative paths before a `chdir`, `setjmp` and `fork` without
+asyncify, `popen` — seen under Wasmer's CLI while building awk, not yet tried
+with a person's program in the browser.
 
 ## Languages on first use
 
