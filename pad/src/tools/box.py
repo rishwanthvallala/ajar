@@ -34,51 +34,1607 @@ def read_text(name, tool):
         die(tool, f"{name}: {e.strerror}")
 
 
-# ---------------------------------------------------------------- diff
-def cmd_diff(argv):
-    import difflib
+# ------------------------------------- shared by diff, cmp, patch, xargs, find
+def _getopt_long(tool, argv, shortopts, longopts, code=2, prefix_try=True):
+    """GNU getopt_long, the way these tools read their arguments.
 
-    unified, brief, ignore_case, context = True, False, False, 3
-    files = []
+    Clustered short options (`-ruN`), an argument attached or separate
+    (`-U1`, `-U 1`), `--name=value`, any unambiguous abbreviation of a long
+    name, and options after operands unless `shortopts` starts with '+'.
+    `longopts` maps a name to (has_arg, key): 0 none, 1 required, 2 optional.
+    Returns (options as (key, value) in order, operands, the option words).
+    """
+    def bad(message):
+        sys.stderr.write(f"{tool}: {message}\n")
+        sys.stderr.write(f"{tool + ': ' if prefix_try else ''}Try '{tool} --help' for more information.\n")
+        raise SystemExit(code)
+
+    permute = not shortopts.startswith("+")
+    shorts, k = {}, 0
+    while k < len(shortopts):
+        c, k = shortopts[k], k + 1
+        if c == "+":
+            continue
+        n = 0
+        while k < len(shortopts) and shortopts[k] == ":":
+            n, k = n + 1, k + 1
+        shorts[c] = n
+    options, operands, words = [], [], []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("-u", "--unified"):
-            unified = True
-        elif a in ("-q", "--brief"):
-            brief = True
-        elif a in ("-i", "--ignore-case"):
-            ignore_case = True
-        elif a.startswith("-U"):
-            context = int(a[2:] or argv[(i := i + 1)])
-        elif a == "--":
-            files.extend(argv[i + 1 :])
+        if a == "--":
+            words.append(a)
+            operands.extend(argv[i + 1 :])
             break
+        if a.startswith("--"):
+            name, eq, value = a[2:].partition("=")
+            found = [n for n in longopts if n == name] or [n for n in longopts if n.startswith(name)]
+            if not found:
+                bad(f"unrecognized option '--{name}'")
+            if len({longopts[n] for n in found}) > 1:
+                bad(f"option '{a}' is ambiguous; possibilities:" + "".join(f" '--{n}'" for n in found))
+            has, key = longopts[found[0]]
+            words.append(a)
+            if has == 0 and eq:
+                bad(f"option '--{found[0]}' doesn't allow an argument")
+            if has == 1 and not eq:
+                if i + 1 >= len(argv):
+                    bad(f"option '--{found[0]}' requires an argument")
+                i += 1
+                value = argv[i]
+                words.append(value)
+            options.append((key, value if (eq or has == 1) else None))
         elif a.startswith("-") and a != "-":
-            die("diff", f"unsupported option '{a}'. Supported: -u -q -i -U N")
+            words.append(a)
+            j = 1
+            while j < len(a):
+                c, j = a[j], j + 1
+                if c not in shorts:
+                    bad(f"invalid option -- '{c}'")
+                if shorts[c] == 0:
+                    options.append((c, None))
+                    continue
+                if j < len(a):
+                    options.append((c, a[j:]))
+                elif shorts[c] == 2:
+                    options.append((c, None))
+                elif i + 1 >= len(argv):
+                    bad(f"option requires an argument -- '{c}'")
+                else:
+                    i += 1
+                    options.append((c, argv[i]))
+                    words.append(argv[i])
+                break
+        elif permute:
+            operands.append(a)
         else:
-            files.append(a)
+            operands.extend(argv[i:])
+            break
         i += 1
-    if len(files) != 2:
-        die("diff", "needs exactly two files")
+    return options, operands, words
 
-    left, right = (read_text(f, "diff") for f in files)
-    if ignore_case:
-        left, right = left.lower(), right.lower()
-    if left == right:
-        return 0
-    if brief:
-        print(f"Files {files[0]} and {files[1]} differ")
-        return 1
-    out = difflib.unified_diff(
-        left.splitlines(keepends=True),
-        right.splitlines(keepends=True),
-        fromfile=files[0],
-        tofile=files[1],
-        n=context,
-    )
-    sys.stdout.writelines(out)
-    return 1
+
+def _shell_quote(word):
+    """A word as a shell would need it typed: bare when that is safe."""
+    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789%+,-./:=@_"
+    if word and all(c in safe for c in word):
+        return word
+    return "'" + word.replace("'", "'\\''") + "'"
+
+
+def _c_locale(category):
+    """True when LC_ALL / the category / LANG leave the tool in the C locale.
+
+    GNU picks some wordings by this ("char" against "byte" in cmp, the date
+    in a context diff's header), so the shims ask the same question.
+    """
+    for var in ("LC_ALL", category, "LANG"):
+        value = os.environ.get(var)
+        if value:
+            return value in ("C", "POSIX")
+    return True
+
+
+def _fnmatch_re(pattern, icase=False, pathname=False):
+    """A shell glob as GNU fnmatch reads it, compiled for bytes.
+
+    Python's fnmatch takes a backslash literally, does not know `[^...]` or
+    `[[:digit:]]`, and so answers some patterns differently from the real
+    find and diff.
+    """
+    import re
+
+    classes = {"alpha": "A-Za-z", "digit": "0-9", "alnum": "A-Za-z0-9", "upper": "A-Z", "lower": "a-z",
+               "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "punct": "!-/:-@\\[-`{-~", "print": " -~",
+               "graph": "!-~", "cntrl": "\\x00-\\x1f\\x7f", "xdigit": "0-9A-Fa-f"}
+    p = os.fsencode(pattern).decode("latin-1")
+    out, i, n = [], 0, len(p)
+    star = "[^/]*" if pathname else ".*"
+    while i < n:
+        c = p[i]
+        i += 1
+        if c == "*":
+            out.append(star)
+        elif c == "?":
+            out.append("[^/]" if pathname else ".")
+        elif c == "\\" and i < n:
+            out.append(re.escape(p[i]))
+            i += 1
+        elif c == "[":
+            j, neg, items, first = i, False, [], True
+            if j < n and p[j] in "!^":
+                neg, j = True, j + 1
+            closed = False
+            while j < n:
+                ch = p[j]
+                if ch == "]" and not first:
+                    closed = True
+                    j += 1
+                    break
+                first = False
+                if ch == "[" and j + 1 < n and p[j + 1] == ":":
+                    end = p.find(":]", j + 2)
+                    if end > 0 and p[j + 2 : end] in classes:
+                        items.append(classes[p[j + 2 : end]])
+                        j = end + 2
+                        continue
+                if ch == "\\" and j + 1 < n:
+                    j += 1
+                    ch = p[j]
+                if j + 2 < n and p[j + 1] == "-" and p[j + 2] != "]":
+                    hi = p[j + 2]
+                    if ord(ch) <= ord(hi):
+                        items.append(re.escape(ch) + "-" + re.escape(hi))
+                    j += 3
+                    continue
+                items.append(re.escape(ch))
+                j += 1
+            if closed and items:
+                out.append(("[^" if neg else "[") + "".join(items) + "]")
+                i = j
+            else:
+                out.append("\\[")
+        else:
+            out.append(re.escape(c))
+    flags = re.DOTALL | (re.IGNORECASE if icase else 0)
+    return re.compile("".join(out).encode("latin-1") + b"\\Z", flags)
+
+
+def _gnu_regex(pattern, syntax, icase=False):
+    """A GNU regular expression in one of its syntaxes, as a Python bytes pattern.
+
+    `emacs` is what find uses by default: \\( \\) \\| for groups and
+    alternation, + and ? as operators, and no character classes or
+    intervals. `basic` is POSIX BRE with GNU's \\+ \\? \\|, as grep and diff -I
+    read it; `extended` is ERE. Only whether something matches is ever
+    asked of it, which is the same question under Python's backtracking as
+    under POSIX's leftmost-longest rule.
+    """
+    import re
+
+    if syntax not in ("emacs", "basic", "extended"):
+        raise ValueError(syntax)
+    ext, emacs = syntax == "extended", syntax == "emacs"
+    classes = {"alpha": "A-Za-z", "digit": "0-9", "alnum": "A-Za-z0-9", "upper": "A-Z", "lower": "a-z",
+               "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "punct": "!-/:-@\\[-`{-~", "print": " -~",
+               "graph": "!-~", "cntrl": "\\x00-\\x1f\\x7f", "xdigit": "0-9A-Fa-f"}
+    p = os.fsencode(pattern).decode("latin-1")
+    n = len(p)
+    out = []          # tokens; an atom and its quantifier stay separate so they can be wrapped
+    kinds = []        # 'open', 'alt', 'start', 'atom', 'quant', 'anchor'
+    depth = 0
+
+    def last_atom_start():
+        # Index in `out` where the atom the next quantifier applies to begins.
+        k, level = len(out) - 1, 0
+        while kinds[k] == "quant":
+            k -= 1
+        if out[k] == ")":
+            while True:
+                if out[k] == ")":
+                    level += 1
+                elif out[k] in ("(", "(?:"):
+                    level -= 1
+                    if level == 0:
+                        return k
+                k -= 1
+        return k
+
+    def quantify(q):
+        if kinds and kinds[-1] == "quant":
+            k = last_atom_start()
+            out[k:] = ["(?:" + "".join(out[k:]) + ")"]
+            kinds[k:] = ["atom"]
+        out.append(q)
+        kinds.append("quant")
+
+    def context_start():
+        return not kinds or kinds[-1] in ("open", "alt", "start")
+
+    i = 0
+    while i < n:
+        c = p[i]
+        i += 1
+        if c == "\\":
+            if i >= n:
+                raise re.error("Trailing backslash")
+            c = p[i]
+            i += 1
+            if not ext and c == "(":
+                out.append("(")
+                kinds.append("open")
+                depth += 1
+            elif not ext and c == ")":
+                if not depth:
+                    raise re.error("Unmatched ) or \\)")
+                depth -= 1
+                out.append(")")
+                kinds.append("atom")
+            elif not ext and c == "|":
+                out.append("|")
+                kinds.append("alt")
+            elif syntax == "basic" and c in "+?":
+                if context_start():
+                    out.append(re.escape(c))
+                    kinds.append("atom")
+                else:
+                    quantify(c)
+            elif syntax == "basic" and c == "{":
+                end = p.find("\\}", i)
+                body = p[i:end] if end >= 0 else ""
+                if end < 0 or not re.fullmatch(r"\d*(,\d*)?", body) or body in ("", ","):
+                    raise re.error("Invalid content of \\{\\}")
+                quantify("{" + body + "}")
+                i = end + 2
+            elif c in "123456789":
+                out.append("\\" + c)
+                kinds.append("atom")
+            elif c in "wWsSbB":
+                out.append({"w": "[A-Za-z0-9_]", "W": "[^A-Za-z0-9_]", "s": "[ \\t\\n\\r\\f\\v]",
+                            "S": "[^ \\t\\n\\r\\f\\v]", "b": "\\b", "B": "\\B"}[c])
+                kinds.append("atom" if c in "wWsS" else "anchor")
+            elif c == "<":
+                out.append("\\b(?=\\w)")
+                kinds.append("anchor")
+            elif c == ">":
+                out.append("\\b(?<=\\w)")
+                kinds.append("anchor")
+            elif c == "`":
+                out.append("\\A")
+                kinds.append("start")
+            elif c == "'":
+                out.append("\\Z")
+                kinds.append("anchor")
+            else:
+                out.append(re.escape(c))
+                kinds.append("atom")
+        elif ext and c == "(":
+            out.append("(")
+            kinds.append("open")
+            depth += 1
+        elif ext and c == ")" and depth:
+            depth -= 1
+            out.append(")")
+            kinds.append("atom")
+        elif ext and c == "|":
+            out.append("|")
+            kinds.append("alt")
+        elif c == "^" and (ext or context_start()):
+            out.append("^")
+            kinds.append("start")
+        elif c == "$" and (ext or i == n or p.startswith("\\)", i) or p.startswith("\\|", i)):
+            out.append("\\Z")
+            kinds.append("anchor")
+        elif c == "*" or (c in "+?" and syntax != "basic"):
+            if context_start():
+                if ext:
+                    raise re.error("Invalid preceding regular expression")
+                out.append(re.escape(c))
+                kinds.append("atom")
+            else:
+                quantify(c)
+        elif ext and c == "{" and not context_start() and re.match(r"\d*(,\d*)?\}", p[i:]) and p[i] != "}":
+            end = p.index("}", i)
+            quantify("{" + p[i:end] + "}")
+            i = end + 1
+        elif c == ".":
+            out.append(".")
+            kinds.append("atom")
+        elif c == "[":
+            j, neg, items, first = i, False, [], True
+            if j < n and p[j] == "^":
+                neg, j = True, j + 1
+            while True:
+                if j >= n:
+                    raise re.error("Unmatched [, [^, [:, [., or [=")
+                ch = p[j]
+                if ch == "]" and not first:
+                    j += 1
+                    break
+                first = False
+                if not emacs and ch == "[" and j + 1 < n and p[j + 1] in ":=.":
+                    kind = p[j + 1]
+                    end = p.find(kind + "]", j + 2)
+                    if end < 0:
+                        raise re.error("Unmatched [, [^, [:, [., or [=")
+                    name = p[j + 2 : end]
+                    if kind == ":":
+                        if name not in classes:
+                            raise re.error("Invalid character class name")
+                        items.append(classes[name])
+                    else:
+                        items.append(re.escape(name))
+                    j = end + 2
+                    continue
+                if j + 2 < n and p[j + 1] == "-" and p[j + 2] != "]":
+                    hi = p[j + 2]
+                    if ord(ch) <= ord(hi):
+                        items.append(re.escape(ch) + "-" + re.escape(hi))
+                    elif not emacs:
+                        raise re.error("Invalid range end")
+                    j += 3
+                    continue
+                items.append(re.escape(ch))
+                j += 1
+            out.append(("[^" if neg else "[") + "".join(items) + "]" if items else ("." if neg else "(?!)"))
+            kinds.append("atom")
+            i = j
+        else:
+            out.append(re.escape(c))
+            kinds.append("atom")
+    if depth:
+        raise re.error("Unmatched ( or \\(")
+    flags = re.DOTALL | (re.IGNORECASE if icase else 0)
+    return re.compile("".join(out).encode("latin-1"), flags)
+
+
+# ---------------------------------------------------------------- diff
+#
+# A port of GNU diffutils 3.10's diff rather than a resemblance of it: the
+# same analysis — lines no other line matches set aside first, Myers' middle
+# snake on the rest, then GNU's sliding of each change to where it reads
+# best — so the hunks come out where GNU puts them, in the formats it prints,
+# with "\ No newline at end of file" where a file stops short. difflib was
+# here before: it pairs lines its own way, printed only unified output, and
+# without the marker its diffs of such files could not be applied by
+# anybody's patch.
+
+def _diff_lines(data):
+    parts = data.split(b"\n")
+    lines = [part + b"\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _diff_script(a, b, key, horizon, minimal, heuristic):
+    """The changes between line lists `a` and `b`, as GNU diff finds them.
+
+    `key(line, incomplete)` gives the equivalence of a line under the
+    --ignore options. Returns (line0, line1, deleted, inserted) per change,
+    0-based, in order.
+    """
+    n0, n1 = len(a), len(b)
+    # The identical prefix and suffix are set aside, less `horizon` lines,
+    # exactly as find_identical_ends does — it decides which lines the
+    # discarding below counts, and so which of several equal diffs comes out.
+    k, m = 0, min(n0, n1)
+    while k < m and a[k] == b[k]:
+        k += 1
+    prefix = max(0, k - horizon)
+    suffix = 0
+    if (n0 and not a[-1].endswith(b"\n")) == (n1 and not b[-1].endswith(b"\n")):
+        s, limit = 0, m - prefix
+        while s < limit and a[n0 - 1 - s] == b[n1 - 1 - s]:
+            s += 1
+        suffix = max(0, s - horizon)
+    body = (a[prefix : n0 - suffix], b[prefix : n1 - suffix])
+    classes = {}
+    equivs = []
+    for f, lines in enumerate(body):
+        # Only a file's last line can lack its newline, and it is in the body
+        # only when no identical suffix was set aside.
+        incomplete_at = len(lines) - 1 if suffix == 0 and lines and not lines[-1].endswith(b"\n") else -1
+        equivs.append([classes.setdefault(key(line, i == incomplete_at), len(classes) + 1) for i, line in enumerate(lines)])
+    len0, len1 = len(equivs[0]), len(equivs[1])
+    changed = [bytearray(len0 + 2), bytearray(len1 + 2)]   # index i+1 holds line i; the ends stay 0
+
+    # discard_confusing_lines
+    counts = [{}, {}]
+    for f in (0, 1):
+        for e in equivs[f]:
+            counts[f][e] = counts[f].get(e, 0) + 1
+    discards = []
+    for f in (0, 1):
+        end = len(equivs[f])
+        other = counts[1 - f]
+        many, tem = 5, end // 64
+        while True:
+            tem >>= 2
+            if tem <= 0:
+                break
+            many *= 2
+        d = bytearray(end)
+        for i, e in enumerate(equivs[f]):
+            nmatch = other.get(e, 0)
+            if nmatch == 0:
+                d[i] = 1
+            elif nmatch > many:
+                d[i] = 2
+        discards.append(d)
+    for f in (0, 1):
+        d = discards[f]
+        end = len(d)
+        i = 0
+        while i < end:
+            if d[i] == 2:
+                d[i] = 0
+            elif d[i] != 0:
+                provisional, j = 0, i
+                while j < end:
+                    if d[j] == 0:
+                        break
+                    if d[j] == 2:
+                        provisional += 1
+                    j += 1
+                while j > i and d[j - 1] == 2:
+                    j -= 1
+                    d[j] = 0
+                    provisional -= 1
+                length = j - i
+                if provisional * 4 > length:
+                    while j > i:
+                        j -= 1
+                        if d[j] == 2:
+                            d[j] = 0
+                else:
+                    minimum, tem = 1, length >> 2
+                    while True:
+                        tem >>= 2
+                        if tem <= 0:
+                            break
+                        minimum <<= 1
+                    minimum += 1
+                    j = consec = 0
+                    while j < length:
+                        if d[i + j] != 2:
+                            consec = 0
+                        else:
+                            consec += 1
+                            if minimum == consec:
+                                j -= consec
+                            elif minimum < consec:
+                                d[i + j] = 0
+                        j += 1
+                    j = consec = 0
+                    while j < length:
+                        if j >= 8 and d[i + j] == 1:
+                            break
+                        if d[i + j] == 2:
+                            consec = 0
+                            d[i + j] = 0
+                        elif d[i + j] == 0:
+                            consec = 0
+                        else:
+                            consec += 1
+                        if consec == 3:
+                            break
+                        j += 1
+                    i += length - 1
+                    j = consec = 0
+                    while j < length:
+                        if j >= 8 and d[i - j] == 1:
+                            break
+                        if d[i - j] == 2:
+                            consec = 0
+                            d[i - j] = 0
+                        elif d[i - j] == 0:
+                            consec = 0
+                        else:
+                            consec += 1
+                        if consec == 3:
+                            break
+                        j += 1
+            i += 1
+    xv, yv, real = [], [], ([], [])
+    for f, vec in ((0, xv), (1, yv)):
+        for i, e in enumerate(equivs[f]):
+            if minimal or discards[f][i] == 0:
+                vec.append(e)
+                real[f].append(i)
+            else:
+                changed[f][i + 1] = 1
+
+    # compareseq / diag, from gnulib's diffseq.h
+    nx, ny = len(xv), len(yv)
+    off = ny + 1
+    fd = [0] * (nx + ny + 3)
+    bd = [0] * (nx + ny + 3)
+    too_expensive, t = 1, nx + ny + 3
+    while t:
+        too_expensive <<= 1
+        t >>= 2
+    too_expensive = max(4096, too_expensive)
+    SNAKE, BIG = 20, 1 << 62
+
+    def diag(xoff, xlim, yoff, ylim, find_minimal):
+        dmin, dmax = xoff - ylim, xlim - yoff
+        fmid, bmid = xoff - yoff, xlim - ylim
+        fmin = fmax = fmid
+        bmin = bmax = bmid
+        odd = (fmid - bmid) & 1
+        fd[fmid + off] = xoff
+        bd[bmid + off] = xlim
+        c = 0
+        while True:
+            c += 1
+            big_snake = False
+            if fmin > dmin:
+                fmin -= 1
+                fd[fmin - 1 + off] = -1
+            else:
+                fmin += 1
+            if fmax < dmax:
+                fmax += 1
+                fd[fmax + 1 + off] = -1
+            else:
+                fmax -= 1
+            for d in range(fmax, fmin - 1, -2):
+                tlo, thi = fd[d - 1 + off], fd[d + 1 + off]
+                x0 = thi if tlo < thi else tlo + 1
+                x, y = x0, x0 - d
+                while x < xlim and y < ylim and xv[x] == yv[y]:
+                    x += 1
+                    y += 1
+                if x - x0 > SNAKE:
+                    big_snake = True
+                fd[d + off] = x
+                if odd and bmin <= d <= bmax and bd[d + off] <= x:
+                    return x, y, True, True
+            if bmin > dmin:
+                bmin -= 1
+                bd[bmin - 1 + off] = BIG
+            else:
+                bmin += 1
+            if bmax < dmax:
+                bmax += 1
+                bd[bmax + 1 + off] = BIG
+            else:
+                bmax -= 1
+            for d in range(bmax, bmin - 1, -2):
+                tlo, thi = bd[d - 1 + off], bd[d + 1 + off]
+                x0 = tlo if tlo < thi else thi - 1
+                x, y = x0, x0 - d
+                while xoff < x and yoff < y and xv[x - 1] == yv[y - 1]:
+                    x -= 1
+                    y -= 1
+                if x0 - x > SNAKE:
+                    big_snake = True
+                bd[d + off] = x
+                if not odd and fmin <= d <= fmax and x <= fd[d + off]:
+                    return x, y, True, True
+            if find_minimal:
+                continue
+            if 200 < c and big_snake and heuristic:
+                best = 0
+                for d in range(fmax, fmin - 1, -2):
+                    dd = d - fmid
+                    x = fd[d + off]
+                    y = x - d
+                    v = (x - xoff) * 2 - dd
+                    if v > 12 * (c + abs(dd)) and v > best and xoff + SNAKE <= x < xlim and yoff + SNAKE <= y < ylim:
+                        k = 1
+                        while xv[x - k] == yv[y - k]:
+                            if k == SNAKE:
+                                best, part = v, (x, y)
+                                break
+                            k += 1
+                if best > 0:
+                    return part[0], part[1], True, False
+                best = 0
+                for d in range(bmax, bmin - 1, -2):
+                    dd = d - bmid
+                    x = bd[d + off]
+                    y = x - d
+                    v = (xlim - x) * 2 + dd
+                    if v > 12 * (c + abs(dd)) and v > best and xoff < x <= xlim - SNAKE and yoff < y <= ylim - SNAKE:
+                        k = 0
+                        while xv[x + k] == yv[y + k]:
+                            if k == SNAKE - 1:
+                                best, part = v, (x, y)
+                                break
+                            k += 1
+                if best > 0:
+                    return part[0], part[1], False, True
+            if c >= too_expensive:
+                fxybest, fxbest = -1, 0
+                for d in range(fmax, fmin - 1, -2):
+                    x = min(fd[d + off], xlim)
+                    y = x - d
+                    if ylim < y:
+                        x, y = ylim + d, ylim
+                    if fxybest < x + y:
+                        fxybest, fxbest = x + y, x
+                bxybest, bxbest = BIG, 0
+                for d in range(bmax, bmin - 1, -2):
+                    x = max(xoff, bd[d + off])
+                    y = x - d
+                    if y < yoff:
+                        x, y = yoff + d, yoff
+                    if x + y < bxybest:
+                        bxybest, bxbest = x + y, x
+                if (xlim + ylim) - bxybest < fxybest - (xoff + yoff):
+                    return fxbest, fxybest - fxbest, True, False
+                return bxbest, bxybest - bxbest, False, True
+
+    def compareseq(xoff, xlim, yoff, ylim, find_minimal):
+        while True:
+            while xoff < xlim and yoff < ylim and xv[xoff] == yv[yoff]:
+                xoff += 1
+                yoff += 1
+            while xoff < xlim and yoff < ylim and xv[xlim - 1] == yv[ylim - 1]:
+                xlim -= 1
+                ylim -= 1
+            if xoff == xlim:
+                for y in range(yoff, ylim):
+                    changed[1][real[1][y] + 1] = 1
+                return
+            if yoff == ylim:
+                for x in range(xoff, xlim):
+                    changed[0][real[0][x] + 1] = 1
+                return
+            xmid, ymid, lo_minimal, hi_minimal = diag(xoff, xlim, yoff, ylim, find_minimal)
+            if (xlim + ylim) - (xmid + ymid) < (xmid + ymid) - (xoff + yoff):
+                compareseq(xmid, xlim, ymid, ylim, hi_minimal)
+                xlim, ylim, find_minimal = xmid, ymid, lo_minimal
+            else:
+                compareseq(xoff, xmid, yoff, ymid, lo_minimal)
+                xoff, yoff, find_minimal = xmid, ymid, hi_minimal
+
+    compareseq(0, nx, 0, ny, minimal)
+
+    # shift_boundaries: slide each run of changes to join its neighbours, and
+    # otherwise as far down as it will go.
+    for f in (0, 1):
+        ch, oc, eq = changed[f], changed[1 - f], equivs[f]
+        i = j = 0
+        i_end = len(eq)
+        while True:
+            while i < i_end and not ch[i + 1]:
+                while True:
+                    j += 1
+                    if not oc[j]:
+                        break
+                i += 1
+            if i == i_end:
+                break
+            start = i
+            i += 1
+            while ch[i + 1]:
+                i += 1
+            while oc[j + 1]:
+                j += 1
+            while True:
+                runlength = i - start
+                while start and eq[start - 1] == eq[i - 1]:
+                    start -= 1
+                    ch[start + 1] = 1
+                    i -= 1
+                    ch[i + 1] = 0
+                    while ch[start]:
+                        start -= 1
+                    while True:
+                        j -= 1
+                        if not oc[j + 1]:
+                            break
+                corresponding = i if oc[j] else i_end
+                while i != i_end and eq[start] == eq[i]:
+                    ch[start + 1] = 0
+                    start += 1
+                    ch[i + 1] = 1
+                    i += 1
+                    while ch[i + 1]:
+                        i += 1
+                    while True:
+                        j += 1
+                        if not oc[j + 1]:
+                            break
+                        corresponding = i
+                if runlength == i - start:
+                    break
+            while corresponding < i:
+                start -= 1
+                ch[start + 1] = 1
+                i -= 1
+                ch[i + 1] = 0
+                while True:
+                    j -= 1
+                    if not oc[j + 1]:
+                        break
+
+    # build_script
+    script = []
+    c0, c1 = changed
+    i0, i1 = len0, len1
+    while i0 >= 0 or i1 >= 0:
+        if c0[i0] or c1[i1]:
+            line0, line1 = i0, i1
+            while c0[i0]:
+                i0 -= 1
+            while c1[i1]:
+                i1 -= 1
+            script.append((i0 + prefix, i1 + prefix, line0 - i0, line1 - i1))
+        i0 -= 1
+        i1 -= 1
+    script.reverse()
+    return script
+
+
+def cmd_diff(argv):
+    import errno
+    import re
+    import time
+
+    L = {"binary": (0, "binary"), "brief": (0, "q"), "changed-group-format": (1, "formats"), "color": (2, "color"),
+         "context": (2, "C"), "ed": (0, "e"), "exclude": (1, "x"), "exclude-from": (1, "X"),
+         "expand-tabs": (0, "t"), "forward-ed": (0, "f"), "from-file": (1, "from-file"), "help": (0, "help"),
+         "horizon-lines": (1, "horizon"), "ifdef": (1, "D"), "ignore-all-space": (0, "w"),
+         "ignore-blank-lines": (0, "B"), "ignore-case": (0, "i"), "ignore-file-name-case": (0, "name-case"),
+         "ignore-matching-lines": (1, "I"), "ignore-space-change": (0, "b"), "ignore-tab-expansion": (0, "E"),
+         "ignore-trailing-space": (0, "Z"), "inhibit-hunk-merge": (0, "inhibit"), "initial-tab": (0, "T"),
+         "label": (1, "L"), "left-column": (0, "left-column"), "line-format": (1, "formats"), "minimal": (0, "d"),
+         "new-file": (0, "N"), "new-group-format": (1, "formats"), "new-line-format": (1, "formats"),
+         "no-dereference": (0, "no-deref"), "no-ignore-file-name-case": (0, "no-name-case"), "normal": (0, "normal"),
+         "old-group-format": (1, "formats"), "old-line-format": (1, "formats"), "paginate": (0, "l"),
+         "palette": (1, "palette"), "rcs": (0, "n"), "recursive": (0, "r"), "report-identical-files": (0, "s"),
+         "sdiff-merge-assist": (0, "merge-assist"), "show-c-function": (0, "p"), "show-function-line": (1, "F"),
+         "side-by-side": (0, "y"), "speed-large-files": (0, "H"), "starting-file": (1, "S"),
+         "strip-trailing-cr": (0, "strip-cr"), "suppress-blank-empty": (0, "sbe"),
+         "suppress-common-lines": (0, "suppress-common"), "tabsize": (1, "tabsize"), "text": (0, "a"),
+         "to-file": (1, "to-file"), "unchanged-group-format": (1, "formats"), "unchanged-line-format": (1, "formats"),
+         "unidirectional-new-file": (0, "P"), "unified": (2, "U"), "version": (0, "v"), "width": (1, "W")}
+    options, operands, words = _getopt_long(
+        "diff", argv, "0123456789abBcC:dD:eEfF:hHiI:lL:nNpPqrsS:tTuU:vwW:x:X:yZ", L)
+
+    def usage_error(message):
+        sys.stderr.write(f"diff: {message}\ndiff: Try 'diff --help' for more information.\n")
+        raise SystemExit(2)
+
+    def refuse(what):
+        die("diff", f"{what} is not supported here. Supported: the normal, -u/-U, -c/-C, -y, -e, -f, -n "
+                    "and -q formats, -r -N -i -w -b -B -E -Z -I -p -F -x -X -s -t -T -a -d -H --label")
+
+    style = None
+    context, ocontext, explicit_context = 0, -1, False
+    brief = report_identical = recursive = new_file = unidir = ignore_case = text = False
+    ignore_blank = strip_cr = expand_tabs = initial_tab = sbe = left_column = suppress_common = False
+    minimal = speed = no_deref = show_c_function = False
+    ws, horizon, width, tabsize = 0, 0, 0, 0
+    labels, ignore_res, function_res, excludes = [], [], [], []
+    starting_file = from_file = to_file = None
+    prev = None
+
+    def specify(new):
+        nonlocal style
+        if style != new:
+            if style is not None:
+                usage_error("conflicting output style options")
+            style = new
+
+    def number(value, what, low=0):
+        if not re.fullmatch(r"[+-]?\d+", value or "") or int(value) < low:
+            usage_error(f"invalid {what} '{value}'")
+        return int(value)
+
+    for key, value in options:
+        if key.isdigit() and len(key) == 1:
+            ocontext = int(key) if not (prev and prev.isdigit() and len(prev) == 1) else ocontext * 10 + int(key)
+        elif key == "a":
+            text = True
+        elif key in ("b", "Z", "E"):
+            if ws < 4:
+                ws = 4 if key == "b" else ws | (2 if key == "Z" else 1)
+        elif key == "w":
+            ws = 5
+        elif key == "B":
+            ignore_blank = True
+        elif key in ("C", "U"):
+            n = number(value, "context length") if value is not None else 3
+            specify("unified" if key == "U" else "context")
+            context = max(context, n)
+            explicit_context = True
+        elif key in ("c", "u"):
+            specify("context" if key == "c" else "unified")
+            context = max(context, 3)
+        elif key == "d":
+            minimal = True
+        elif key == "H":
+            speed = True
+        elif key == "i":
+            ignore_case = True
+        elif key == "I":
+            try:
+                ignore_res.append(_gnu_regex(value, "basic"))
+            except re.error as e:
+                die("diff", f"{value}: {e}")
+        elif key == "F":
+            try:
+                function_res.append(_gnu_regex(value, "basic"))
+            except re.error as e:
+                die("diff", f"{value}: {e}")
+        elif key == "p":
+            show_c_function = True
+            function_res.append(_gnu_regex("^[[:alpha:]$_]", "basic"))
+        elif key == "L":
+            if len(labels) >= 2:
+                die("diff", "too many file label options")
+            labels.append(value)
+        elif key == "N":
+            new_file = True
+        elif key == "P":
+            unidir = True
+        elif key == "q":
+            brief = True
+        elif key == "r":
+            recursive = True
+        elif key == "s":
+            report_identical = True
+        elif key == "S":
+            starting_file = value
+        elif key == "t":
+            expand_tabs = True
+        elif key == "T":
+            initial_tab = True
+        elif key == "x":
+            excludes.append(_fnmatch_re(value))
+        elif key == "X":
+            try:
+                with open(value, "rb") as f:
+                    excludes.extend(_fnmatch_re(os.fsdecode(line)) for line in f.read().split(b"\n") if line)
+            except OSError as e:
+                die("diff", f"{value}: {e.strerror}")
+        elif key == "y":
+            specify("sdiff")
+        elif key in ("e", "f", "n"):
+            specify({"e": "ed", "f": "forward-ed", "n": "rcs"}[key])
+        elif key == "W":
+            w = number(value, "width", 1)
+            if width and width != w:
+                die("diff", "conflicting width options")
+            width = w
+        elif key == "normal":
+            specify("normal")
+        elif key == "tabsize":
+            t = number(value, "tabsize", 1)
+            if tabsize and tabsize != t:
+                die("diff", "conflicting tabsize options")
+            tabsize = t
+        elif key == "horizon":
+            horizon = max(horizon, number(value, "horizon length"))
+        elif key == "left-column":
+            left_column = True
+        elif key == "suppress-common":
+            suppress_common = True
+        elif key == "sbe":
+            sbe = True
+        elif key == "strip-cr":
+            strip_cr = True
+        elif key == "no-deref":
+            no_deref = True
+        elif key == "from-file":
+            from_file = value
+        elif key == "to-file":
+            to_file = value
+        elif key in ("binary", "inhibit", "h", "no-name-case"):
+            pass
+        elif key == "color":
+            if value not in (None, "never", "auto"):
+                refuse(f"--color={value}")
+        elif key == "help":
+            print("Usage: diff [OPTION]... FILES\nCompare FILES line by line.\n\n"
+                  "This is pad's diff, which follows GNU diffutils 3.10.")
+            return 0
+        elif key == "v":
+            print("diff (pad, following GNU diffutils) 3.10")
+            return 0
+        else:
+            names = {"D": "-D/--ifdef", "l": "-l/--paginate",
+                     "formats": "--*-line-format/--*-group-format", "palette": "--palette",
+                     "name-case": "--ignore-file-name-case", "merge-assist": "--sdiff-merge-assist"}
+            refuse(names.get(key, key))
+        prev = key
+    if style is None:
+        if show_c_function:
+            specify("context")
+            if ocontext < 0:
+                context = 3
+        else:
+            specify("normal")
+    if 0 <= ocontext and style in ("context", "unified") and (
+            context < ocontext or (ocontext < context and not explicit_context)):
+        context = ocontext
+    tabsize = tabsize or 8
+    width = width or 130
+    t = 1 if expand_tabs else tabsize
+    unaligned = (width >> 1) + ((t + 3) >> 1) + (width & (t + 3) & 1)
+    off = unaligned - unaligned % t
+    half = 0 if (off <= 3 or width <= off) else min(off - 3, width - off)
+    column2 = off if half else width
+    horizon = max(horizon, context)
+    no_diff_no_output = style != "sdiff" or suppress_common
+    switch = "".join(" " + _shell_quote(w) for w in words).encode()
+    ctime_header = style == "context" and _c_locale("LC_TIME")
+    out = sys.stdout.buffer
+    HIDDEN = ".ajar"   # the shims' own folder; find leaves it out the same way
+
+    def message(text):
+        out.write(os.fsencode(text))
+
+    def perror(path, e):
+        out.flush()
+        sys.stderr.write(f"diff: {path}: {e.strerror}\n")
+
+    def c_escape(name):
+        raw = os.fsencode(name)
+        escapes = {7: b"a", 8: b"b", 9: b"t", 10: b"n", 11: b"v", 12: b"f", 13: b"r", 34: b'"', 92: b"\\"}
+        if b" " not in raw and not any(c in escapes or c < 32 or c >= 128 for c in raw):
+            return raw
+        body = bytearray(b'"')
+        for c in raw:
+            if c in escapes:
+                body += b"\\" + escapes[c]
+            elif c < 32 or c >= 128:
+                body += b"\\%03o" % c
+            else:
+                body.append(c)
+        return bytes(body + b'"')
+
+    def stamp(ns):
+        sec, nsec = divmod(ns, 10 ** 9)
+        tm = time.localtime(sec)
+        if ctime_header:
+            return (f"{'SunMonTueWedThuFriSat'[(tm.tm_wday + 1) % 7 * 3:][:3]} "
+                    f"{'JanFebMarAprMayJunJulAugSepOctNovDec'[(tm.tm_mon - 1) * 3:][:3]} {tm.tm_mday:2d} "
+                    f"{tm.tm_hour:02d}:{tm.tm_min:02d}:{tm.tm_sec:02d} {tm.tm_year}")
+        gmtoff = getattr(tm, "tm_gmtoff", 0) or 0
+        sign, gmtoff = ("-", -gmtoff) if gmtoff < 0 else ("+", gmtoff)
+        return (f"{tm.tm_year:04d}-{tm.tm_mon:02d}-{tm.tm_mday:02d} {tm.tm_hour:02d}:{tm.tm_min:02d}:"
+                f"{tm.tm_sec:02d}.{nsec:09d} {sign}{gmtoff // 3600:02d}{gmtoff // 60 % 60:02d}")
+
+    def key_of(line, incomplete):
+        t = line[:-1] if line.endswith(b"\n") else line
+        if ws == 5:
+            t = re.sub(rb"[ \t\n\v\f\r]+", b"", t)
+        elif ws == 4:
+            t = re.sub(rb"[ \t\n\v\f\r]+", b" ", t)
+            if t.endswith(b" "):
+                t = t[:-1]
+        else:
+            if ws & 1:
+                col, chars = 0, bytearray()
+                for c in t:
+                    if c == 8:
+                        col -= col > 0
+                        chars.append(c)
+                    elif c == 9:
+                        n = tabsize - col % tabsize
+                        chars += b" " * n
+                        col += n
+                    elif c == 13:
+                        col = 0
+                        chars.append(c)
+                    else:
+                        col += 1
+                        chars.append(c)
+                t = bytes(chars)
+            if ws & 2:
+                t = t.rstrip(b" \t\n\v\f\r")
+        if ignore_case:
+            t = t.lower()
+        return (t, True) if incomplete and ws < 2 else t
+
+    stdin_data = []
+
+    def read(path):
+        if path == "-":
+            if not stdin_data:
+                stdin_data.append(sys.stdin.buffer.read())
+            return stdin_data[0]
+        with open(path, "rb") as f:
+            return f.read()
+
+    def file_type(st):
+        mode = st.st_mode if st else 0
+        if stat.S_ISREG(mode):
+            return "regular empty file" if st.st_size == 0 else "regular file"
+        return {stat.S_IFDIR: "directory", stat.S_IFLNK: "symbolic link", stat.S_IFIFO: "fifo",
+                stat.S_IFSOCK: "socket", stat.S_IFCHR: "character special file",
+                stat.S_IFBLK: "block special file"}.get(stat.S_IFMT(mode), "weird file")
+
+    def concat(directory, name):
+        return directory + name if directory.endswith("/") else directory + "/" + name
+
+    def diff_two(info, paths, in_dir):
+        data = []
+        for f in (0, 1):
+            if info[f]["gone"]:
+                data.append(b"")
+            elif f == 1 and info[1]["same"]:
+                data.append(data[0])
+            else:
+                try:
+                    data.append(read(paths[f]))
+                except OSError as e:
+                    perror(paths[f], e)
+                    return 2
+        names = [labels[0] if labels else paths[0], labels[1] if len(labels) > 1 else paths[1]]
+        if not text:
+            # GNU decides from the first buffer it reads, a block's worth.
+            sizes = [max(getattr(i["st"], "st_blksize", 0) or 4096, 4096) for i in info]
+            if b"\0" in data[0][: sizes[0]] or b"\0" in data[1][: sizes[1]]:
+                if data[0] == data[1]:
+                    return 0
+                message(f"{'Files' if brief else 'Binary files'} {names[0]} and {names[1]} differ\n")
+                return 1
+        if strip_cr:
+            data = [d.replace(b"\r\n", b"\n") for d in data]
+        # ed scripts cannot say "no newline", so GNU completes the line and
+        # complains afterwards rather than print a script that lies.
+        robust = style not in ("ed", "forward-ed")
+        missing = [bool(d) and not d.endswith(b"\n") for d in data]
+        if not robust:
+            data = [d + b"\n" if m else d for d, m in zip(data, missing)]
+        a, b = _diff_lines(data[0]), _diff_lines(data[1])
+        script = _diff_script(a, b, key_of, horizon, minimal, speed)
+
+        def trivial(lines, lo, hi):
+            if not (ignore_blank or ignore_res):
+                return False
+            for line in lines[lo:hi]:
+                t = line[:-1] if line.endswith(b"\n") else line
+                blank = ignore_blank and (not t or (ws >= 2 and not t.strip(b" \t\n\v\f\r")))
+                if not blank and not any(r.search(t) for r in ignore_res):
+                    return False
+            return True
+
+        def analyze(hunk):
+            first0, first1 = hunk[0][0], hunk[0][1]
+            show_from = show_to = 0
+            is_trivial = True
+            for l0, l1, deleted, inserted in hunk:
+                show_from += deleted
+                show_to += inserted
+                if is_trivial and not (trivial(a, l0, l0 + deleted) and trivial(b, l1, l1 + inserted)):
+                    is_trivial = False
+            last0 = hunk[-1][0] + hunk[-1][2] - 1
+            last1 = hunk[-1][1] + hunk[-1][3] - 1
+            if (ignore_blank or ignore_res) and is_trivial:
+                return 0, first0, last0, first1, last1
+            return (1 if show_from else 0) | (2 if show_to else 0), first0, last0, first1, last1
+
+        changes = any(analyze([c])[0] for c in script) if (ignore_blank or ignore_res) else bool(script)
+
+        def finish(status):
+            if not robust and any(missing):
+                out.flush()
+                for f in (0, 1):
+                    if missing[f]:
+                        sys.stderr.write(f"diff: {names[f]}: No newline at end of file\n\n")
+                return 2
+            return status
+
+        if brief:
+            if changes:
+                message(f"Files {names[0]} and {names[1]} differ\n")
+            return finish(1 if changes else 0)
+        if not changes and no_diff_no_output:
+            return finish(0)
+        chunks = []
+        w = chunks.append
+        started = []
+        escaped = [c_escape(names[0]), c_escape(names[1])]
+
+        def label(mark, f):
+            if f < len(labels):
+                w(f"{mark} {labels[f]}\n".encode())
+            else:
+                ns = 0 if info[f]["gone"] else info[f]["mtime"]
+                w(mark.encode() + b" " + escaped[f] + b"\t" + stamp(ns).encode() + b"\n")
+
+        def begin():
+            if started:
+                return
+            started.append(True)
+            if in_dir:
+                w(b"diff" + switch + b" " + escaped[0] + b" " + escaped[1] + b"\n")
+            if style == "context":
+                label("***", 0)
+                label("---", 1)
+            elif style == "unified":
+                label("---", 0)
+                label("+++", 1)
+
+        def text_of(line, flag):
+            body = line[:-1] if line.endswith(b"\n") else line
+            if expand_tabs:
+                col, o = 0, bytearray()
+                for k, c in enumerate(body):
+                    if c == 9:
+                        n = tabsize - col % tabsize
+                        col += n
+                        o += b" " * n
+                    elif c == 13:
+                        o.append(c)
+                        if flag and k + 1 < len(body):
+                            o += flag
+                        col = 0
+                    elif c == 8:
+                        if col == 0:
+                            continue
+                        col -= 1
+                        o.append(c)
+                    else:
+                        col += 32 <= c < 127
+                        o.append(c)
+                body = bytes(o)
+            return body
+
+        def emit(flag, line):
+            # print_1_line_nl: the flag, the text, then the newline or the marker.
+            if flag:
+                fmt_flag = flag + (b"\t" if initial_tab else b" ")
+                if sbe and line == b"\n":
+                    w(flag[1:] if flag.startswith(b" ") else flag)
+                else:
+                    w(fmt_flag)
+            w(text_of(line, (flag + (b"\t" if initial_tab else b" ")) if flag else None))
+            w(b"\n" if line.endswith(b"\n") else b"\n\\ No newline at end of file\n")
+
+        def emit_unified(tag, line):
+            w(tag)
+            if initial_tab and not (sbe and line == b"\n"):
+                w(b"\t")
+            w(text_of(line, None))
+            w(b"\n" if line.endswith(b"\n") else b"\n\\ No newline at end of file\n")
+
+        def number_range(first, last, sep=b","):
+            ta, tb = first + 1, last + 1
+            return b"%d%s%d" % (ta, sep, tb) if tb > ta else b"%d" % tb
+
+        last_search = [0]
+        last_match = [None]
+
+        def find_function(linenum):
+            i, last = linenum, last_search[0]
+            last_search[0] = linenum
+            while True:
+                i -= 1
+                if i < last:
+                    break
+                line = a[i][:-1] if a[i].endswith(b"\n") else a[i]
+                if any(r.search(line) for r in function_res):
+                    last_match[0] = i
+                    return a[i]
+            return a[last_match[0]] if last_match[0] is not None else None
+
+        def function_text(line):
+            line = line[:-1] if line.endswith(b"\n") else line
+            i = 0
+            while i < len(line) and line[i] in b" \t\v\f\r":
+                i += 1
+            j = min(len(line), i + 40)
+            while i < j and line[j - 1] in b" \t\n\v\f\r":
+                j -= 1
+            return b" " + line[i:j]
+
+        def hunks():
+            # find_hunk: changes closer than 2*context+1 lines (context, when
+            # the next one is ignorable) belong together.
+            marks = [not analyze([c])[0] for c in script] if (ignore_blank or ignore_res) else [False] * len(script)
+            k = 0
+            while k < len(script):
+                start = k
+                while k + 1 < len(script):
+                    top0 = script[k][0] + script[k][2]
+                    thresh = context if marks[k + 1] else 2 * context + 1
+                    if script[k + 1][0] - top0 < thresh:
+                        k += 1
+                    else:
+                        break
+                yield script[start : k + 1]
+                k += 1
+
+        if style in ("ed", "forward-ed", "rcs"):
+            for change in (reversed(script) if style == "ed" else script):
+                kinds, first0, last0, first1, last1 = analyze([change])
+                if not kinds:
+                    continue
+                begin()
+                if style == "rcs":
+                    t0, t1 = first0 + 1, last0 + 1
+                    if kinds & 1:
+                        w(b"d%d %d\n" % (t0, t1 - t0 + 1 if t0 <= t1 else 1))
+                    if kinds & 2:
+                        w(b"a%d %d\n" % (t1, last1 - first1 + 1 if first1 <= last1 else 1))
+                        for i in range(first1, last1 + 1):
+                            w(b[i])
+                    continue
+                letter = b" dac"[kinds : kinds + 1]
+                if style == "ed":
+                    w(number_range(first0, last0) + letter + b"\n")
+                else:
+                    w(letter + number_range(first0, last0, b" ") + b"\n")
+                if kinds == 1:
+                    continue
+                insert_mode = True
+                for i in range(first1, last1 + 1):
+                    if not insert_mode:
+                        w(b"a\n")
+                        insert_mode = True
+                    if style == "ed" and b[i] == b".\n":
+                        # A line of just a dot would end ed's insert mode.
+                        w(b"..\n.\ns/.//\n")
+                        insert_mode = False
+                    else:
+                        w(b[i])
+                if insert_mode:
+                    w(b".\n")
+        elif style == "normal":
+            for change in script:
+                kinds, first0, last0, first1, last1 = analyze([change])
+                if not kinds:
+                    continue
+                begin()
+                w(number_range(first0, last0) + b" dac"[kinds : kinds + 1] + number_range(first1, last1) + b"\n")
+                if kinds & 1:
+                    for i in range(first0, last0 + 1):
+                        emit(b"<", a[i])
+                if kinds == 3:
+                    w(b"---\n")
+                if kinds & 2:
+                    for i in range(first1, last1 + 1):
+                        emit(b">", b[i])
+        elif style in ("unified", "context"):
+            for hunk in hunks():
+                kinds, first0, last0, first1, last1 = analyze(hunk)
+                if not kinds:
+                    continue
+                first0, first1 = max(first0 - context, 0), max(first1 - context, 0)
+                last0, last1 = min(last0 + context, len(a) - 1), min(last1 + context, len(b) - 1)
+                function = find_function(first0) if function_res else None
+                begin()
+                if style == "unified":
+                    def urange(first, last):
+                        ta, tb = first + 1, last + 1
+                        if tb <= ta:
+                            return b"%d,0" % tb if tb < ta else b"%d" % tb
+                        return b"%d,%d" % (ta, tb - ta + 1)
+                    w(b"@@ -" + urange(first0, last0) + b" +" + urange(first1, last1) + b" @@")
+                    if function is not None:
+                        w(function_text(function))
+                    w(b"\n")
+                    i, j, k = first0, first1, 0
+                    while i <= last0 or j <= last1:
+                        if k >= len(hunk) or i < hunk[k][0]:
+                            line = a[i]
+                            if not (sbe and line == b"\n"):
+                                w(b"\t" if initial_tab else b" ")
+                            w(text_of(line, None))
+                            w(b"\n" if line.endswith(b"\n") else b"\n\\ No newline at end of file\n")
+                            i += 1
+                            j += 1
+                        else:
+                            for _ in range(hunk[k][2]):
+                                emit_unified(b"-", a[i])
+                                i += 1
+                            for _ in range(hunk[k][3]):
+                                emit_unified(b"+", b[j])
+                                j += 1
+                            k += 1
+                else:
+                    def crange(first, last):
+                        ta, tb = first + 1, last + 1
+                        return b"%d" % tb if tb <= ta else b"%d,%d" % (ta, tb)
+                    w(b"***************")
+                    if function is not None:
+                        w(function_text(function))
+                    w(b"\n*** " + crange(first0, last0) + b" ****\n")
+                    if kinds & 1:
+                        k = 0
+                        for i in range(first0, last0 + 1):
+                            while k < len(hunk) and hunk[k][0] + hunk[k][2] <= i:
+                                k += 1
+                            flag = b" "
+                            if k < len(hunk) and hunk[k][0] <= i:
+                                flag = b"!" if hunk[k][3] > 0 else b"-"
+                            emit(flag, a[i])
+                    w(b"--- " + crange(first1, last1) + b" ----\n")
+                    if kinds & 2:
+                        k = 0
+                        for i in range(first1, last1 + 1):
+                            while k < len(hunk) and hunk[k][1] + hunk[k][3] <= i:
+                                k += 1
+                            flag = b" "
+                            if k < len(hunk) and hunk[k][1] <= i:
+                                flag = b"!" if hunk[k][2] > 0 else b"+"
+                            emit(flag, b[i])
+        else:
+            def tab_to(frm, to):
+                if not expand_tabs:
+                    tab = frm + tabsize - frm % tabsize
+                    while tab <= to:
+                        w(b"\t")
+                        frm = tab
+                        tab += tabsize
+                if frm < to:
+                    w(b" " * (to - frm))
+                return to
+
+            def half_line(line, indent, bound):
+                in_pos = out_pos = 0
+                o = bytearray()
+                for c in line:
+                    if c == 10:
+                        break
+                    if c == 9:
+                        spaces = tabsize - in_pos % tabsize
+                        if in_pos == out_pos:
+                            stop = out_pos + spaces
+                            if expand_tabs:
+                                stop = min(stop, bound)
+                                o += b" " * max(0, stop - out_pos)
+                                out_pos = max(out_pos, stop)
+                            elif stop < bound:
+                                out_pos = stop
+                                o.append(c)
+                        in_pos += spaces
+                    elif c == 13:
+                        o.append(c)
+                        w(bytes(o))
+                        o = bytearray()
+                        tab_to(0, indent)
+                        in_pos = out_pos = 0
+                    elif c == 8:
+                        if in_pos != 0:
+                            in_pos -= 1
+                            if in_pos < bound:
+                                if out_pos <= in_pos:
+                                    o += b" " * (in_pos - out_pos)
+                                    out_pos = in_pos
+                                else:
+                                    out_pos = in_pos
+                                    o.append(c)
+                    elif 32 <= c < 127:
+                        if in_pos < bound:
+                            in_pos += 1
+                            out_pos = in_pos
+                            o.append(c)
+                        else:
+                            in_pos += 1
+                    elif c in (0, 11, 12) or c >= 128:
+                        if in_pos < bound:
+                            o.append(c)
+                    elif in_pos <= bound:
+                        out_pos = in_pos
+                        o.append(c)
+                w(bytes(o))
+                return out_pos
+
+            def sdiff_line(left, sep, right):
+                col = 0
+                newline = False
+                if left is not None:
+                    newline = newline or left.endswith(b"\n")
+                    col = half_line(left, 0, half)
+                if sep != " ":
+                    col = tab_to(col, (half + column2 - 1) // 2) + 1
+                    if sep == "|" and newline != right.endswith(b"\n"):
+                        sep = "/" if newline else "\\"
+                    w(sep.encode())
+                if right is not None:
+                    newline = newline or right.endswith(b"\n")
+                    if right[:1] not in (b"\n",):
+                        col = tab_to(col, column2)
+                        half_line(right, col, half)
+                if newline:
+                    w(b"\n")
+
+            nxt = [0, 0]
+
+            def common(limit0, limit1):
+                i0, i1 = nxt
+                if not suppress_common and (i0 != limit0 or i1 != limit1):
+                    if not left_column:
+                        while i0 != limit0 and i1 != limit1:
+                            sdiff_line(a[i0], " ", b[i1])
+                            i0 += 1
+                            i1 += 1
+                        while i1 != limit1:
+                            sdiff_line(None, ")", b[i1])
+                            i1 += 1
+                    while i0 != limit0:
+                        sdiff_line(a[i0], "(", None)
+                        i0 += 1
+                nxt[:] = [limit0, limit1]
+
+            begin()
+            for change in script:
+                kinds, first0, last0, first1, last1 = analyze([change])
+                if not kinds:
+                    continue
+                common(first0, first1)
+                if kinds == 3:
+                    i, j = first0, first1
+                    while i <= last0 and j <= last1:
+                        sdiff_line(a[i], "|", b[j])
+                        i += 1
+                        j += 1
+                    kinds = (1 if i <= last0 else 0) + (2 if j <= last1 else 0)
+                    nxt[:] = [i, j]
+                    first0, first1 = i, j
+                if kinds & 2:
+                    for j in range(first1, last1 + 1):
+                        sdiff_line(None, ">", b[j])
+                    nxt[1] = last1 + 1
+                if kinds & 1:
+                    for i in range(first0, last0 + 1):
+                        sdiff_line(a[i], "<", None)
+                    nxt[0] = last0 + 1
+            common(len(a), len(b))
+        out.write(b"".join(chunks))
+        return finish(1 if changes else 0)
+
+    def compare(parent, name0, name1):
+        if not ((name0 is not None and name1 is not None) or (unidir and name1 is not None) or new_file):
+            message(f"Only in {parent[0 if name0 is not None else 1]}: {name0 if name0 is not None else name1}\n")
+            return 1
+        present = [name0 is not None, name1 is not None]
+        name0 = name1 if name0 is None else name0
+        name1 = name0 if name1 is None else name1
+        paths = [concat(parent[0], name0), concat(parent[1], name1)] if parent else [name0, name1]
+        info = [dict(st=None, err=None, stdin=False, same=False, gone=not present[f], mtime=0) for f in (0, 1)]
+        for f in (0, 1):
+            if not present[f]:
+                continue
+            if f == 1 and present[0] and paths[1] == paths[0]:
+                info[1].update(st=info[0]["st"], err=info[0]["err"], stdin=info[0]["stdin"], same=True,
+                               mtime=info[0]["mtime"])
+            elif paths[f] == "-":
+                info[f]["stdin"] = True
+                try:
+                    info[f]["st"] = os.fstat(0)
+                    info[f]["mtime"] = time.time_ns()
+                except OSError as e:
+                    info[f]["err"] = e
+            else:
+                try:
+                    st = os.lstat(paths[f]) if no_deref else os.stat(paths[f])
+                    info[f].update(st=st, mtime=st.st_mtime_ns)
+                except OSError as e:
+                    info[f]["err"] = e
+        for f in (0, 1):
+            if not (new_file or (f == 0 and unidir)) or info[f]["gone"]:
+                continue
+            st, other = info[f]["st"], info[1 - f]
+            if st is not None and not info[f]["stdin"]:
+                if stat.S_ISREG(st.st_mode) and not st.st_mode & 0o777 and st.st_size == 0:
+                    info[f].update(gone=True, st=None)
+            elif (info[f]["err"] is not None and info[f]["err"].errno in (errno.ENOENT, errno.EBADF)
+                  and not parent and other["st"] is not None):
+                info[f].update(gone=True, err=None)
+        status = 0
+        for f in (0, 1):
+            if info[f]["err"] is not None and not info[f]["gone"]:
+                perror(paths[f], info[f]["err"])
+                status = 2
+
+        def mode(f):
+            i = info[f]
+            if i["gone"]:
+                return info[1 - f]["st"].st_mode if info[1 - f]["st"] is not None else 0
+            return i["st"].st_mode if i["st"] is not None else 0
+
+        is_dir = lambda f: stat.S_ISDIR(mode(f))
+        if status == 0 and not parent and is_dir(0) != is_dir(1):
+            fnm_arg = 1 if is_dir(0) else 0
+            dir_arg = 1 - fnm_arg
+            if paths[fnm_arg] == "-":
+                die("diff", "cannot compare '-' to a directory")
+            paths[dir_arg] = concat(paths[dir_arg], os.path.basename(paths[fnm_arg].rstrip("/")) or paths[fnm_arg])
+            try:
+                st = os.lstat(paths[dir_arg]) if no_deref else os.stat(paths[dir_arg])
+                info[dir_arg].update(st=st, mtime=st.st_mtime_ns)
+            except OSError as e:
+                perror(paths[dir_arg], e)
+                status = 2
+        if status != 0:
+            pass
+        elif info[0]["gone"] and info[1]["gone"]:
+            pass
+        elif info[1]["same"] and no_diff_no_output:
+            pass
+        elif is_dir(0) and is_dir(1):
+            if parent and not recursive:
+                message(f"Common subdirectories: {paths[0]} and {paths[1]}\n")
+            else:
+                status = diff_dirs(paths, info, parent is None)
+        elif is_dir(0) or is_dir(1) or (parent and not all(
+                stat.S_ISREG(mode(f)) or stat.S_ISLNK(mode(f)) for f in (0, 1))):
+            if info[0]["gone"] or info[1]["gone"]:
+                if (is_dir(0) or is_dir(1)) and recursive and (new_file or (unidir and info[0]["gone"])):
+                    status = diff_dirs(paths, info, parent is None)
+                else:
+                    message(f"Only in {parent[1 if info[0]['gone'] else 0]}: {name0}\n")
+                    status = 1
+            else:
+                message(f"File {labels[0] if labels else paths[0]} is a {file_type(info[0]['st'])} while file "
+                        f"{labels[1] if len(labels) > 1 else paths[1]} is a {file_type(info[1]['st'])}\n")
+                status = 1
+        elif stat.S_ISLNK(mode(0)) or stat.S_ISLNK(mode(1)):
+            if stat.S_ISLNK(mode(0)) and stat.S_ISLNK(mode(1)):
+                try:
+                    if os.readlink(paths[0]) != os.readlink(paths[1]):
+                        message(f"Symbolic links {paths[0]} and {paths[1]} differ\n")
+                        status = 1
+                except OSError as e:
+                    perror(paths[0], e)
+                    status = 2
+            else:
+                message(f"File {paths[0]} is a {file_type(info[0]['st'])} while file "
+                        f"{paths[1]} is a {file_type(info[1]['st'])}\n")
+                status = 1
+        else:
+            status = diff_two(info, paths, parent is not None)
+        if status == 0 and report_identical and not is_dir(0):
+            message(f"Files {labels[0] if labels else paths[0]} and {labels[1] if len(labels) > 1 else paths[1]}"
+                    " are identical\n")
+        out.flush()
+        return status
+
+    def diff_dirs(paths, info, top):
+        listing = []
+        for f in (0, 1):
+            if info[f]["gone"]:
+                listing.append([])
+                continue
+            try:
+                names = os.listdir(paths[f])
+            except OSError as e:
+                perror(paths[f], e)
+                return 2
+            listing.append(sorted(n for n in names if n != HIDDEN
+                                  and not any(r.match(os.fsencode(n)) for r in excludes)))
+        if starting_file and top:
+            listing = [[n for n in names if n >= starting_file] for names in listing]
+        status, i, j = 0, 0, 0
+        n0, n1 = listing
+        while i < len(n0) or j < len(n1):
+            if j >= len(n1) or (i < len(n0) and n0[i] < n1[j]):
+                s = compare(paths, n0[i], None)
+                i += 1
+            elif i >= len(n0) or n1[j] < n0[i]:
+                s = compare(paths, None, n1[j])
+                j += 1
+            else:
+                s = compare(paths, n0[i], n1[j])
+                i += 1
+                j += 1
+            status = max(status, s)
+        return status
+
+    if from_file is not None and to_file is not None:
+        die("diff", "--from-file and --to-file both specified")
+    if from_file is not None or to_file is not None:
+        status = 0
+        for name in operands:
+            status = max(status, compare(None, from_file, name) if from_file is not None else compare(None, name, to_file))
+        return status
+    if len(operands) != 2:
+        if len(operands) < 2:
+            usage_error(f"missing operand after '{argv[-1] if argv else 'diff'}'")
+        usage_error(f"extra operand '{operands[2]}'")
+    return compare(None, operands[0], operands[1])
 
 
 # ---------------------------------------------------------------- tree
