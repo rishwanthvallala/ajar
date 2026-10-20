@@ -1108,23 +1108,81 @@ def cmd_cal(argv):
 
 
 def cmd_rev(argv):
-    files = [a for a in argv if not a.startswith("-")]
-    text = sys.stdin.read() if not files else "".join(read_text(f, "rev") for f in files)
-    for line in text.splitlines():
-        print(line[::-1])
-    return 0
+    """util-linux rev: each file on its own, and a last line with no newline left without one.
+
+    Lines end at a newline and at nothing else — not at the form feeds and
+    carriage returns python's splitlines() also ends them at. Characters are
+    reversed, not bytes, as rev does in a UTF-8 locale.
+    """
+    sep, files, only_files = "\n", [], False
+    for a in argv:
+        if only_files or not a.startswith("-") or a == "-":
+            files.append(a)
+        elif a == "--":
+            only_files = True
+        elif a in ("-0", "--zero"):
+            sep = "\0"
+        else:
+            die("rev", f"unsupported option '{a}'. Supported: -0")
+    status = 0
+    for name in files or [None]:
+        if name is None:
+            data = sys.stdin.buffer.read()
+        else:
+            try:
+                with open(name, "rb") as f:
+                    data = f.read()
+            except OSError as e:
+                sys.stderr.write(f"rev: cannot open {name}: {e.strerror}\n")
+                status = 1
+                continue
+        text = data.decode("utf-8", "surrogateescape")
+        reversed_text = sep.join(line[::-1] for line in text.split(sep))
+        sys.stdout.buffer.write(reversed_text.encode("utf-8", "surrogateescape"))
+    return status
 
 
 # ---------------------------------------------------------------- which
 def cmd_which(argv):
-    import shutil
+    """debianutils which: the first match on PATH for each name, or every match with -a.
 
-    status = 0
-    for name in [a for a in argv if not a.startswith("-")]:
-        found = shutil.which(name)
-        if found:
-            print(found)
-        else:
+    A name with a slash in it is tested as it stands. An empty PATH entry is
+    the current directory, and a match there is written `./name`, as which
+    writes it. Like which, it knows nothing of aliases — the shims are aliases.
+    """
+    every, silent, names, i = False, False, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            names = argv[i + 1 :]
+            break
+        if not a.startswith("-") or a == "-":
+            names = argv[i:]
+            break
+        for f in a[1:]:
+            if f == "a":
+                every = True
+            elif f == "s":
+                silent = True
+            else:
+                die("which", f"unsupported option '-{f}'. Supported: -a -s")
+        i += 1
+    path = os.environ.get("PATH", "")
+    entries = path.split(":") if path else []
+    status = 0 if names else 1
+    for name in names:
+        found = False
+        candidates = [name] if "/" in name else [f"{entry or '.'}/{name}" for entry in entries]
+        for candidate in candidates:
+            # shutil.which's test rather than which's `-f`: this runtime's
+            # commands need not be regular files, and that test finds them.
+            if os.path.exists(candidate) and not os.path.isdir(candidate) and os.access(candidate, os.X_OK):
+                found = True
+                if not silent:
+                    print(candidate)
+                if not every:
+                    break
+        if not found:
             status = 1
     return status
 
