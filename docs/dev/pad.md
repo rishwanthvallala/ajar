@@ -151,7 +151,35 @@ how a file silently becomes something nobody wrote.
 `du` reports **apparent** size, which GNU calls `--apparent-size` and not its
 default. Real `du` counts allocated blocks and this filesystem has none to
 count; a number invented to look like a real one would be worse than the true
-one.
+one. As GNU's apparent size does, a directory itself counts as nothing — only
+its files and links — a file with several hard links is counted once, and
+with more than one argument what one has counted already is not counted
+again, so `du -s dir dir/sub` is one line.
+
+Of the boxed set, fifteen were checked again on 20 October against the real
+ones in Ubuntu 24.04 — GNU coreutils 9.4, vim's xxd 9.1, util-linux 2.39,
+tree 2.1.1, ncal, Info-ZIP zip 3.0 and unzip 6.0, bzip2 1.0.8, xz 5.4.5: the
+review harness's 98 cases for them and 669 more, all alike but for what each
+refuses by name and what no two machines share (a file's inode and change
+time in `stat`). Fifty-eight of the harness's cases had differed — `hexdump`
+reading only its first file, `xxd` ignoring `-p`, `-r -p` and `-i`, `split`
+reading bytes as text, `zip` replacing an archive it should have added to.
+Some of what they now do differently from before:
+
+- **`unzip` asks before replacing a file**, as unzip does, reading the answer
+  from the terminal, and with no answer replaces none and exits 1; `-o` and
+  `-n` decide without asking. After the archive's name only `-d` and `-x` are
+  options; anything else there is a member's name. It used to replace without
+  asking.
+- **`zip` adds to an archive** that exists rather than writing a new one over
+  it, and keeps directories. `-R`, which was taken for `-r`, is refused: in
+  Info-ZIP it means something else.
+- **`tree`** counts the directory it lists, as tree 2.1 does (`2 directories`
+  where it said `1 directory`), and draws in UTF-8 unless the locale says
+  otherwise — the pad sets none, so it draws.
+- **`xxd`** refuses a cluster like `-rp`, which the real one reads as `-r`
+  alone and so does the wrong thing quietly: it says to write `-r -p`.
+- **`bzip2` and `xz`** write the same bytes as the real ones, at every level.
 
 `watch` is deliberately absent. It ends only when interrupted, and ctrl-c here
 ends the shell rather than the command, so it would trap whoever ran it.
