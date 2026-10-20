@@ -83,45 +83,167 @@ def cmd_diff(argv):
 
 # ---------------------------------------------------------------- tree
 def cmd_tree(argv):
-    show_all, dirs_only, roots = False, False, []
-    for a in argv:
-        if a == "-a":
-            show_all = True
-        elif a == "-d":
-            dirs_only = True
-        elif a.startswith("-"):
-            die("tree", f"unsupported option '{a}'. Supported: -a -d")
+    """tree 2.1: -a, -d, -L, -I, --dirsfirst and --noreport, drawn and counted as tree 2.1 does.
+
+    tree 2.x counts the directory it was asked to list — when it lists
+    anything in it — and a symlink to a directory as a directory, without
+    following it. Lines are drawn in UTF-8 unless the locale says otherwise
+    (tree_utf8), and an unprintable name is escaped the way tree escapes it.
+    """
+    import fnmatch
+
+    show_all = dirs_only = dirs_first = noreport = False
+    level, ignore, roots, i = None, [], [], 0
+    supported = "Supported: -a -d -L LEVEL -I PATTERN --dirsfirst --noreport"
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            roots.extend(argv[i + 1 :])
+            break
+        if a in ("--dirsfirst", "--noreport"):
+            dirs_first, noreport = dirs_first or a == "--dirsfirst", noreport or a == "--noreport"
+        elif a.startswith("--"):
+            die("tree", f"unsupported option '{a}'. {supported}")
+        elif a.startswith("-") and a != "-":
+            for f in a[1:]:
+                if f == "a":
+                    show_all = True
+                elif f == "d":
+                    dirs_only = True
+                elif f in "LI":
+                    # tree takes an option's argument from the next word, never the same one.
+                    i += 1
+                    value = argv[i] if i < len(argv) else ""
+                    if f == "L":
+                        if not value.isdigit() or int(value) < 1:
+                            sys.stderr.write("tree: Invalid level, must be greater than 0.\n")
+                            return 1
+                        level = int(value)
+                    else:
+                        ignore.extend(value.split("|"))
+                else:
+                    die("tree", f"unsupported option '-{f}'. {supported}")
         else:
             roots.append(a)
-    roots = roots or ["."]
+        i += 1
+
+    utf8 = tree_utf8()
+    tee, elbow, pipe, gap = ("├── ", "└── ", "│   ", "    ") if utf8 else ("|-- ", "`-- ", "|   ", "    ")
     files = dirs = 0
 
-    def walk(path, prefix):
-        nonlocal files, dirs
-        try:
-            names = sorted(os.listdir(path))
-        except OSError as e:
-            sys.stderr.write(f"tree: {path}: {e.strerror}\n")
-            return
+    def listing(path):
+        names = os.listdir(path)
         if not show_all:
             names = [n for n in names if not n.startswith(".")]
-        entries = [(n, os.path.isdir(os.path.join(path, n))) for n in names]
+        if ignore:
+            names = [n for n in names if not any(fnmatch.fnmatchcase(n, p) for p in ignore)]
+        entries = []
+        for n in sorted(names, key=os.fsencode):
+            full = os.path.join(path, n)
+            entries.append((n, full, os.path.islink(full), os.path.isdir(full)))
         if dirs_only:
-            entries = [e for e in entries if e[1]]
-        for index, (name, is_dir) in enumerate(entries):
+            entries = [e for e in entries if e[3]]
+        if dirs_first:
+            entries.sort(key=lambda e: not e[3])
+        return entries
+
+    out = []
+
+    def walk(entries, prefix, depth):
+        nonlocal files, dirs
+        for index, (name, full, is_link, is_dir) in enumerate(entries):
             last = index == len(entries) - 1
-            print(f"{prefix}{'└── ' if last else '├── '}{name}")
+            line = prefix + (elbow if last else tee) + tree_name(name, utf8)
             if is_dir:
                 dirs += 1
-                walk(os.path.join(path, name), prefix + ("    " if last else "│   "))
             else:
                 files += 1
+            if is_link:
+                out.append(f"{line} -> {tree_name(os.readlink(full), utf8)}")
+                continue
+            if not is_dir or (level is not None and depth >= level):
+                out.append(line)
+                continue
+            try:
+                inner = listing(full)
+            except OSError:
+                out.append(line + "  [error opening dir]")
+                continue
+            out.append(line)
+            walk(inner, prefix + (gap if last else pipe), depth + 1)
 
-    for root in roots:
-        print(root)
-        walk(root, "")
-    print(f"\n{dirs} director{'y' if dirs == 1 else 'ies'}, {files} file{'' if files == 1 else 's'}")
-    return 0
+    status = 0
+    for root in roots or ["."]:
+        shown = tree_name(root, utf8)
+        if os.path.isdir(root):
+            try:
+                entries = listing(root)
+            except OSError:
+                out.append(f"{shown}  [error opening dir]")
+                status = 2
+                continue
+            out.append(shown)
+            dirs += 1 if entries else 0
+            walk(entries, "", 1)
+        else:
+            out.append(f"{shown}  [error opening dir]")
+            if os.path.lexists(root):
+                files += 1
+            else:
+                status = 2
+    if not noreport:
+        out.append("")
+        report = f"{dirs} director{'y' if dirs == 1 else 'ies'}"
+        out.append(report if dirs_only else f"{report}, {files} file{'' if files == 1 else 's'}")
+    sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8", "surrogateescape"))
+    return status
+
+
+def tree_utf8():
+    """Whether tree draws in UTF-8: as the locale says, the first of LC_ALL, LC_CTYPE and LANG that is set.
+
+    With none of them set — as in this sandbox, whose terminal and python are
+    both UTF-8 regardless — it draws in UTF-8, where tree on a machine with
+    no locale at all would fall back to ASCII. LC_ALL=C gets tree's ASCII.
+    """
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        value = os.environ.get(name)
+        if value:
+            return "utf8" in value.lower().replace("-", "")
+    return True
+
+
+def tree_name(name, utf8):
+    """A name as tree 2.1 prints it.
+
+    In UTF-8, an unprintable character's bytes become octal escapes. In a
+    single-byte locale every byte outside printable ASCII does, and a space
+    and a backslash are escaped too — tree's `a\\ b`.
+    """
+    raw = os.fsencode(name)
+    if utf8:
+        import unicodedata
+
+        out = []
+        for ch in raw.decode("utf-8", "surrogateescape"):
+            if "\udc80" <= ch <= "\udcff":
+                out.append("\\%03o" % (ord(ch) - 0xDC00))
+            elif ch.isprintable() or unicodedata.category(ch) == "Zs":
+                out.append(ch)
+            else:
+                out.append("".join("\\%03o" % b for b in ch.encode("utf-8")))
+        return "".join(out)
+    out = []
+    for b in raw:
+        if 7 <= b <= 13:
+            out.append("\\" + "abtnvfr"[b - 7])
+        elif b in (0x20, 0x5C):
+            out.append("\\" + chr(b))
+        elif 0x20 < b < 0x7F:
+            out.append(chr(b))
+        else:
+            out.append("\\%03o" % b)
+    return "".join(out)
 
 
 # ------------------------------------------------------- sha256sum / md5sum

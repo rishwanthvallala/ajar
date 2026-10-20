@@ -100,7 +100,7 @@ export const CANDIDATES: Candidate[] = [
       { covers: "diff", run: "printf 'a\\nb\\n' > L; printf 'a\\nx\\n' > R; diff -u L R | grep '^+x'", want: "+x" },
       { covers: "diff on identical files", run: "printf 'a\\n' > E1; printf 'a\\n' > E2; diff E1 E2; echo rc=$?", want: "rc=0" },
       { covers: "diff exit 1 when differing", run: "printf 'a\\n' > D1; printf 'b\\n' > D2; diff D1 D2 >/dev/null; echo rc=$?", want: "rc=1" },
-      { covers: "tree", run: "mkdir -p tr/sub && touch tr/one tr/sub/two; tree tr | tail -n 1", want: "1 directory, 2 files" },
+      { covers: "tree", run: "mkdir -p tr/sub && touch tr/one tr/sub/two; tree tr | tail -n 1", want: "2 directories, 2 files" },
       { covers: "sha256sum", run: "printf '' | sha256sum | cut -c1-8", want: "e3b0c442" },
       { covers: "md5sum", run: "printf '' | md5sum | cut -c1-8", want: "d41d8cd9" },
       { covers: "sha256sum -c", run: "echo body > sc.txt; sha256sum sc.txt > sc.sum; sha256sum -c sc.sum", want: "sc.txt: OK" },
