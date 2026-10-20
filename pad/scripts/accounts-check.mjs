@@ -154,7 +154,12 @@ async function person(label) {
   return page;
 }
 const until = (page, fn, arg, timeout = 20_000) => page.waitForFunction(fn, arg, { timeout });
-const role = (page) => page.evaluate(() => window.__pad?.role());
+// Once the page is open: `__pad` comes with the terminal, after the editor
+// and the toasts (app.ts `open`), so neither is a sign of it.
+const role = async (page) => {
+  await page.waitForFunction(() => window.__pad, null, { timeout: 30_000 }).catch(() => {});
+  return page.evaluate(() => window.__pad?.role());
+};
 const text = (page, path) => page.evaluate((p) => window.__pad?.text(p) ?? "", path);
 async function typeAtEnd(page, path, words) {
   await page.click(`#files .row.file[data-path="${path}"]`);
