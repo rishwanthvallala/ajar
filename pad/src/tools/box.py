@@ -514,39 +514,531 @@ def cmp_files(argv):
 
 
 # ------------------------------------------------------------ hexdump / xxd
+def hexdump_size(value, what):
+    """util-linux's reading of -n and -s: C's number (0x10, 010), then K, KiB or KB."""
+    number, rest = c_number(value)
+    if number is not None and number >= 0:
+        if not rest:
+            return number
+        units = "KMGTPEZY"
+        power = units.find(rest[0].upper()) + 1
+        tail = rest[1:]
+        if power and tail in ("", "iB", "ib"):
+            return number * 1024 ** power
+        if power and tail in ("B", "b"):
+            return number * 1000 ** power
+    die("hexdump", f"failed to parse {what}: '{value}': Invalid argument", 1)
+
+
+def c_number(text):
+    """strtol(text, NULL, 0): (the number, what was left), or (None, text).
+
+    C reads 0x10 as sixteen and 010 as eight, and stops at the first character
+    it cannot use — which is how xxd and hexdump read their numbers.
+    """
+    s = text.lstrip(" \t\n")
+    sign = 1
+    if s and s[0] in "+-":
+        sign, s = (-1 if s[0] == "-" else 1), s[1:]
+    if s[:2].lower() == "0x" and s[2:3] and s[2] in "0123456789abcdefABCDEF":
+        base, digits, s = 16, "0123456789abcdefABCDEF", s[2:]
+    elif s[:1] == "0":
+        base, digits = 8, "01234567"
+    else:
+        base, digits = 10, "0123456789"
+    end = 0
+    while end < len(s) and s[end] in digits:
+        end += 1
+    if not end:
+        return None, text
+    return sign * int(s[:end], base), s[end:]
+
+
+def write_all(fd, data):
+    """os.write until it is all out: a pipe may take less than it is given."""
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
 def cmd_hexdump(argv):
-    canonical, files = False, []
-    for a in argv:
-        if a in ("-C", "-c"):
-            canonical = True
+    """util-linux hexdump: its canned formats, -n, -s and -v, over every file named.
+
+    Each canned format is one of hexdump's format strings worked through: an
+    offset, then the units, the last unit of a line without its trailing space
+    — hexdump's rule for a repeated unit, which is why a full line ends on a
+    digit and a short one is padded to where a full one would end. Two-byte
+    units are little-endian, and a lone last byte is zero-padded. A block the
+    same as the one before it is a `*`, once, unless -v. The files are one
+    stream, as they are to hexdump, and -s skips into it.
+    """
+    formats, length, skip, squeeze, files = [], None, 0, True, []
+    longs = {"--one-byte-octal": "b", "--one-byte-char": "c", "--canonical": "C",
+             "--two-bytes-decimal": "d", "--two-bytes-octal": "o", "--two-bytes-hex": "x",
+             "--no-squeezing": "v"}
+    supported = "Supported: -b -c -C -d -o -x -n LENGTH -s OFFSET -v"
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            files.extend(argv[i + 1 :])
+            break
+        if a.startswith("--"):
+            key, eq, value = a.partition("=")
+            if key in ("--length", "--skip"):
+                if not eq:
+                    i += 1
+                    if i >= len(argv):
+                        die("hexdump", f"option '{key}' requires an argument", 1)
+                    value = argv[i]
+                if key == "--length":
+                    length = hexdump_size(value, "length")
+                else:
+                    skip = hexdump_size(value, "offset")
+                i += 1
+                continue
+            if key not in longs or eq:
+                die("hexdump", f"unsupported option '{a}'. {supported}")
+            flags = longs[key]
         elif a.startswith("-") and a != "-":
-            die("hexdump", f"unsupported option '{a}'. Supported: -C")
+            flags = a[1:]
         else:
             files.append(a)
-    data = sys.stdin.buffer.read() if not files else open(files[0], "rb").read()
-    for offset in range(0, len(data), 16):
-        chunk = data[offset : offset + 16]
-        hexes = " ".join(f"{b:02x}" for b in chunk)
-        left, right = hexes[:23], hexes[24:]
-        if canonical:
-            text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-            print(f"{offset:08x}  {left:<23}  {right:<23}  |{text}|")
+            i += 1
+            continue
+        for j, f in enumerate(flags):
+            if f in "bcCdox":
+                formats.append(f)
+            elif f == "v":
+                squeeze = False
+            elif f in "ns":
+                value = flags[j + 1 :]
+                if not value:
+                    i += 1
+                    if i >= len(argv):
+                        die("hexdump", f"option requires an argument -- '{f}'", 1)
+                    value = argv[i]
+                if f == "n":
+                    length = hexdump_size(value, "length")
+                else:
+                    skip = hexdump_size(value, "offset")
+                break
+            else:
+                die("hexdump", f"unsupported option '-{f}'. {supported}")
+        i += 1
+
+    status = 0
+    if not files:
+        if skip:
+            try:
+                os.lseek(0, 0, os.SEEK_CUR)
+            except OSError as e:
+                die("hexdump", f"stdin: {e.strerror}", 1)
+        data = sys.stdin.buffer.read()
+    else:
+        parts, opened = [], 0
+        for name in files:
+            try:
+                with open(name, "rb") as f:
+                    parts.append(f.read())
+            except IsADirectoryError as e:
+                # hexdump opens a directory and fails to read it, which it
+                # reports without counting the file as one that failed.
+                sys.stderr.write(f"hexdump: {name}: {e.strerror}\n")
+                opened += 1
+                continue
+            except OSError as e:
+                sys.stderr.write(f"hexdump: {name}: {e.strerror}\n")
+                status = 1
+                continue
+            opened += 1
+        if not opened:
+            sys.stderr.write("hexdump: all input file arguments failed\n")
+            return 1
+        data = b"".join(parts)
+    if length == 0:
+        return status
+
+    start = min(skip, len(data))
+    shown = data[start:] if length is None else data[start : start + length]
+    formats = formats or ["default"]
+    out = []
+    previous, starred = None, False
+    for offset in range(0, len(shown), 16):
+        block = shown[offset : offset + 16]
+        if squeeze and len(block) == 16 and block == previous:
+            if not starred:
+                out.append("*\n")
+                starred = True
+            continue
+        previous, starred = block, False
+        for f in formats:
+            out.append(hexdump_line(f, start + offset, block) + "\n")
+    end = start + len(shown)
+    if end:
+        out.append(f"{end:08x}\n" if formats[-1] == "C" else f"{end:07x}\n")
+    sys.stdout.write("".join(out))
+    return status
+
+
+def hexdump_line(kind, address, block):
+    if kind == "C":
+        hexes = [f"{b:02x}" for b in block] + ["  "] * (16 - len(block))
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in block)
+        return f"{address:08x}  {' '.join(hexes[:8])}  {' '.join(hexes[8:])}  |{text}|"
+    if kind in "bc":
+        if kind == "b":
+            units = [f"{b:03o}" for b in block]
         else:
-            print(f"{offset:07x} {hexes}")
-    print(f"{len(data):08x}" if canonical else f"{len(data):07x}")
-    return 0
+            named = {0: "\\0", 7: "\\a", 8: "\\b", 9: "\\t", 10: "\\n", 11: "\\v", 12: "\\f", 13: "\\r"}
+            units = [(named.get(b) or (chr(b) if 32 <= b < 127 else f"{b:03o}")).rjust(3) for b in block]
+        return f"{address:07x} " + " ".join(units + ["   "] * (16 - len(units)))
+    shape = {"default": "{:04x}", "x": "   {:04x}", "d": "  {:05d}", "o": " {:06o}"}[kind]
+    words = [block[k] | (block[k + 1] << 8 if k + 1 < len(block) else 0) for k in range(0, len(block), 2)]
+    units = [shape.format(w) for w in words]
+    blank = " " * len(shape.format(0))
+    return f"{address:07x} " + " ".join(units + [blank] * (8 - len(units)))
 
 
 def cmd_xxd(argv):
-    files = [a for a in argv if not a.startswith("-")]
-    data = sys.stdin.buffer.read() if not files else open(files[0], "rb").read()
-    for offset in range(0, len(data), 16):
-        chunk = data[offset : offset + 16]
-        pairs = " ".join(chunk[i : i + 2].hex() for i in range(0, len(chunk), 2))
-        text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-        # 39 columns of hex, then two spaces, then the text — measured
-        # against real xxd rather than guessed.
-        print(f"{offset:08x}: {pairs:<39}  {text}")
+    """vim's xxd (9.1): the dump, -p, -i, -b, -e, -r and -r -p, and its options.
+
+    The dump is laid out the way xxd.c lays it, column arithmetic and all, so
+    -c, -g and -e put things where xxd puts them. Options are read as xxd reads
+    them — by their first letter, so -ps and -plain are -p and -c8 is -c 8,
+    with C's numbers (0x10 is sixteen, 010 is eight). The one difference: a
+    cluster xxd would quietly read as its first letter alone — `-rp` is `-r`
+    to xxd, not `-r -p` — is refused here rather than half-done.
+    """
+    hextype, autoskip, capitalize, decimal, upper, revert = "normal", False, False, False, False, False
+    cols, group, length, seek, relseek, negseek, display, varname = None, None, -1, 0, False, False, 0, None
+
+    def usage():
+        sys.stderr.write(
+            "Usage:\n       xxd [options] [infile [outfile]]\n    or\n"
+            "       xxd -r [-s [-]offset] [-c cols] [-ps] [infile [outfile]]\n"
+            "Supported here: -a -b -C -c cols -d -e -g bytes -i -l len -n name -o off -p -r -s [+][-]seek -u -R never|auto\n"
+        )
+        raise SystemExit(1)
+
+    args = list(argv)
+    while args:
+        a = args[0]
+        if a == "--":
+            args.pop(0)
+            break
+        pp = a[1:] if a.startswith("--") and len(a) > 2 else a
+        if not pp.startswith("-") or pp == "-":
+            break
+        args.pop(0)
+        letter, rest = pp[1:2], pp[2:]
+
+        def value(attached_unless):
+            # xxd's option arguments: attached (-c8), or the next word when the
+            # rest of the option is its long spelling (-cols 8) or nothing.
+            if rest and not any(rest.startswith(w) for w in attached_unless):
+                return rest
+            if not args:
+                usage()
+            return args.pop(0)
+
+        flags = {"a": ("utoskip",), "b": ("its",), "e": (), "u": ("ppercase",), "p": ("s", "lain", "ostscript"),
+                 "i": ("nclude",), "C": ("apitalize",), "d": ("ecimal",), "r": ("evert",)}
+        if letter in flags:
+            if rest and rest not in flags[letter]:
+                die("xxd", f"'{a}' is '-{letter}' to xxd, which ignores the rest of it; write each option separately")
+            if letter == "a":
+                autoskip = not autoskip
+            elif letter == "b":
+                hextype = "bits"
+            elif letter == "e":
+                hextype = "little"
+            elif letter == "u":
+                upper = True
+            elif letter == "p":
+                hextype = "ps"
+            elif letter == "i":
+                hextype = "include"
+            elif letter == "C":
+                capitalize = True
+            elif letter == "d":
+                decimal = True
+            else:
+                revert = True
+        elif letter == "c":
+            if rest == "apitalize":
+                capitalize = True
+            else:
+                cols = c_number(value(("ols",)))[0] or 0
+        elif letter == "g":
+            group = c_number(value(("roup",)))[0] or 0
+        elif letter == "o":
+            display = c_number(value(("ffset",)))[0] or 0
+        elif letter == "l":
+            length = c_number(value(("en",)))[0] or 0
+        elif letter == "n":
+            varname = value(("ame",))
+        elif letter == "s":
+            text = value(("kip", "eek"))
+            relseek = text.startswith("+")
+            text = text[1:] if relseek else text
+            negseek = text.startswith("-")
+            seek = c_number(text[1:] if negseek else text)[0] or 0
+        elif letter == "R":
+            when = value(())
+            if when not in ("never", "auto"):
+                die("xxd", f"-R {when} is not supported here: this xxd does not colour its output")
+        elif letter == "v":
+            sys.stderr.write("xxd 2023-10-25 by Juergen Weigert et al.\n")
+            return 0
+        elif letter == "E":
+            die("xxd", "unsupported option '-E': EBCDIC is not supported here")
+        else:
+            usage()
+    if len(args) > 2:
+        usage()
+    infile = args[0] if args else "-"
+    outfile = args[1] if len(args) > 1 else "-"
+
+    if revert:
+        if hextype == "bits":
+            die("xxd", "-r -b is not supported here; -r reads the plain dump and -p")
+        if hextype not in ("normal", "ps"):
+            sys.stderr.write("xxd: Sorry, cannot revert this type of hexdump\n")
+            return 255
+    if cols is None or (cols == 0 and hextype != "ps"):
+        cols = {"ps": 30, "include": 12, "bits": 6}.get(hextype, 16)
+    if group is None:
+        group = {"bits": 1, "normal": 2, "little": 4}.get(hextype, 0)
+    if (hextype == "ps" and cols < 0) or (hextype != "ps" and cols < 1) or (
+        hextype in ("normal", "bits", "little") and cols > 256
+    ):
+        sys.stderr.write("xxd: invalid number of columns (max. 256).\n")
+        return 1
+    if group < 1 or group > cols:
+        group = cols
+    elif hextype == "little" and group & (group - 1):
+        sys.stderr.write("xxd: number of octets per group must be a power of 2 with -e.\n")
+        return 1
+
+    if infile == "-":
+        source, regular = sys.stdin.buffer, stat.S_ISREG(os.fstat(0).st_mode)
+    else:
+        try:
+            source = open(infile, "rb")
+            regular = stat.S_ISREG(os.fstat(source.fileno()).st_mode)
+        except IsADirectoryError as e:
+            if revert:
+                return 0
+            die("xxd", e.strerror)
+        except OSError as e:
+            die("xxd", f"{infile}: {e.strerror}")
+    data = source.read()
+
+    if outfile == "-":
+        sys.stdout.flush()
+        fd = 1
+    else:
+        try:
+            fd = os.open(outfile, os.O_WRONLY | os.O_CREAT | (0 if revert else os.O_TRUNC), 0o666)
+        except OSError as e:
+            die("xxd", f"{outfile}: {e.strerror}", 3)
+
+    if revert:
+        return xxd_revert(data, hextype, cols, -seek if negseek else seek, fd)
+
+    seekoff = 0
+    if seek or negseek or not relseek:
+        if regular:
+            where = (-seek if negseek else seek) + (len(data) if negseek and not relseek else 0)
+            if where < 0:
+                if negseek:
+                    die("xxd", "Sorry, cannot seek.", 4)
+                where = 0
+            seekoff = where
+        else:
+            if negseek or len(data) < seek:
+                die("xxd", "Sorry, cannot seek.", 4)
+            seekoff = seek
+        data = data[seekoff:]
+    if length >= 0:
+        data = data[:length]
+
+    digits = "0123456789ABCDEF" if upper else "0123456789abcdef"
+    out = []
+    if hextype == "ps":
+        left = cols
+        for b in data:
+            out.append(digits[b >> 4] + digits[b & 15])
+            if cols > 0:
+                left -= 1
+                if not left:
+                    out.append("\n")
+                    left = cols
+        if cols == 0 or left < cols:
+            out.append("\n")
+    elif hextype == "include":
+        name = os.fsencode(varname if varname is not None else infile)
+        ident = ("__" if name[:1].isdigit() else "") + "".join(
+            (chr(c).upper() if capitalize else chr(c)) if chr(c).isascii() and chr(c).isalnum() else "_" for c in name
+        )
+        if infile != "-":
+            out.append(f"unsigned char {ident}[] = {{\n")
+        shape = "0X%02X" if upper else "0x%02x"
+        for p, b in enumerate(data):
+            out.append((", " if p % cols else ("  " if not p else ",\n  ")) + shape % b)
+        if data:
+            out.append("\n")
+        if infile != "-":
+            out.append(f"}};\nunsigned int {ident}_{'LEN' if capitalize else 'len'} = {len(data)};\n")
+    else:
+        out = xxd_lines(data, hextype, cols, group, digits, decimal, seekoff + display, autoskip)
+    write_all(fd, "".join(out).encode())
+    return 0
+
+
+def xxd_lines(data, hextype, cols, group, digits, decimal, base, autoskip):
+    """xxd.c's main loop: each byte put at the column xxd.c computes for it."""
+    out = []
+    grplen = 8 * group + 1 if hextype == "bits" else 2 * group + 1
+    zero_seen, kept = 0, ""
+
+    def xxdline(text, nz):
+        # xxd.c's xxdline(): with -a, the first all-zero line is shown, a run
+        # of them becomes one '*', and the last of a run is shown again.
+        nonlocal zero_seen, kept
+        if not nz and zero_seen == 1:
+            kept = text
+        if nz:
+            show = True
+        else:
+            show = zero_seen == 0
+            zero_seen += 1
+        if show:
+            if nz:
+                if nz < 0:
+                    zero_seen -= 1
+                if zero_seen == 2:
+                    out.append(kept)
+                if zero_seen > 2:
+                    out.append("*\n")
+            if nz >= 0 or zero_seen > 0:
+                out.append(text)
+            if nz:
+                zero_seen = 0
+
+    line, last, p, nonzero, c, addrlen = [], "", 0, 0, 0, 0
+    for n, e in enumerate(data):
+        if p == 0:
+            address = ("%08d:" if decimal else "%08x:") % (n + base)
+            addrlen = len(address)
+            line = list(address) + [" "] * (addrlen + 4 + grplen * cols + cols)
+        x = p ^ (group - 1) if hextype == "little" else p
+        c = addrlen + 1 + (grplen * x) // group
+        if hextype == "bits":
+            for bit in range(7, -1, -1):
+                line[c] = "1" if e >> bit & 1 else "0"
+                c += 1
+        else:
+            line[c], line[c + 1] = digits[e >> 4], digits[e & 15]
+        nonzero += 1 if e else 0
+        if hextype == "little":
+            c = grplen * ((cols + group - 1) // group)
+        else:
+            c = (grplen * cols - 1) // group
+        c += addrlen + 3 + p
+        line[c] = chr(e) if 31 < e < 127 else "."
+        c += 1
+        p += 1
+        if p == cols:
+            last = "".join(line[:c]) + "\n"
+            xxdline(last, nonzero if autoskip else 1)
+            nonzero, p = 0, 0
+    if p:
+        xxdline("".join(line[:c]) + "\n", 1)
+    elif autoskip:
+        xxdline(last, -1)
+    return out
+
+
+def xxd_revert(data, hextype, cols, base_off, fd):
+    """xxd.c's huntype(): hex back into bytes, garbage and all, as xxd reads it.
+
+    In the plain dump each line starts with an offset, and the bytes go there;
+    three characters in a row that are not hex end a line's data. With -p the
+    hex is one stream, whitespace ignored. Written to a file, the file is not
+    truncated — xxd -r patches it — and a gap is a seek; written to a pipe, a
+    gap is zeros, and an offset going backwards is an error.
+    """
+    plain = hextype == "ps"
+    have, want, n1, n2, n3, p, ign_garb = 0, 0, -1, 0, 0, cols, True
+    pending = bytearray()
+
+    def flush():
+        if pending:
+            write_all(fd, bytes(pending))
+            pending.clear()
+
+    def move(target):
+        nonlocal have
+        flush()
+        try:
+            os.lseek(fd, target - have, os.SEEK_CUR)
+            have = target
+            return
+        except OSError:
+            pass
+        if target < have:
+            die("xxd", "Sorry, cannot seek backwards.", 5)
+        while have < target:
+            step = min(target - have, 1 << 20)
+            write_all(fd, bytes(step))
+            have += step
+
+    i, size = 0, len(data)
+
+    def skip_to_eol(ch):
+        nonlocal i
+        while ch not in (10, -1):
+            ch = data[i] if i < size else -1
+            i += 1
+        return ch
+
+    while i < size:
+        c = data[i]
+        i += 1
+        if c == 13 or (plain and c in (32, 10, 9)):
+            continue
+        n3, n2 = n2, n1
+        n1 = int(chr(c), 16) if chr(c) in "0123456789abcdefABCDEF" else -1
+        if n1 == -1 and ign_garb:
+            continue
+        ign_garb = False
+        if not plain and p >= cols:
+            if n1 < 0:
+                p = 0
+                continue
+            want = (want << 4) | n1
+            continue
+        if base_off + want != have:
+            move(base_off + want)
+        if n2 >= 0 and n1 >= 0:
+            pending.append((n2 << 4) | n1)
+            have += 1
+            want += 1
+            n1 = -1
+            if not plain:
+                p += 1
+                if p >= cols:
+                    c = skip_to_eol(c)
+        elif n1 < 0 and n2 < 0 and n3 < 0:
+            c = skip_to_eol(c)
+        if c == 10:
+            if not plain:
+                want = 0
+            p = cols
+            ign_garb = True
+    flush()
     return 0
 
 
