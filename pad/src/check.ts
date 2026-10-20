@@ -705,10 +705,12 @@ async function main() {
 
   // ---- the text-processing tools ----
   //
-  // grep, sed and find are real ports; awk is a python shim, because no awk is
-  // published for this runtime. Checked the same way regardless — what matters
-  // is that someone typing them gets what they expect.
+  // grep, sed and find are real ports; awk is The One True Awk, built for this
+  // runtime by scripts/build-awk.mjs, because no awk is published for it.
+  // Checked the same way regardless — what matters is that someone typing
+  // them gets what they expect.
   await rt.write("poem.txt", "alpha one 10\nbeta two 20\ngamma three 30\nalpha four 40\n");
+  await rt.write("first.awk", "{ print $1 }\n");
   for (const [cmd, want] of [
     ["grep alpha poem.txt", "alpha one 10\nalpha four 40"],
     ["grep -c alpha poem.txt", "2"],
@@ -725,6 +727,13 @@ async function main() {
     ["awk -F' ' '{n += $3} END {print n}' poem.txt", "100"],
     ["awk '{print $1 \"-\" $3}' poem.txt | head -1", "alpha-10"],
     ["awk '$1 !~ /alpha/ {print $1}' poem.txt", "beta\ngamma"],
+    // What the python awk it replaced got wrong without a word, and what
+    // starts a command: the awk is a WASIX program, and forks.
+    ["awk '/beta/,/gamma/ {print $2}' poem.txt", "two\nthree"],
+    ["awk 'NR==1 {print length, 2^10}' poem.txt", "12 1024"],
+    ["awk -f first.awk poem.txt | tail -n 1", "alpha"],
+    ["awk '{print $2 | \"sort -r\"}' poem.txt", "two\nthree\none\nfour"],
+    ["awk 'BEGIN {system(\"echo from-system\"); \"echo from-pipe\" | getline x; print x}'", "from-system\nfrom-pipe"],
     // Far more than `head` reads: each is still writing when the pipe closes,
     // and says nothing about it, as a real tool says nothing.
     ["python -c 'print(*range(100000), sep=chr(10))' > many.txt && awk '{print $1}' many.txt | head -1", "0"],
