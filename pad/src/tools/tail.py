@@ -15,10 +15,13 @@ a tail that never returns is worse than one that says it cannot follow.
 
 import os
 import re
+import stat
 import sys
+from collections import deque
 
 SUPPORTED = "-n [+]N | -c [+]N | -N | +N | -q | -v | -z (N may end in b, K, M, G, ... kB, MB, ...)"
 UINTMAX = 2**64 - 1
+BLOCK = 1 << 16
 FOLLOW = "-f is not supported: nothing else writes to a file here"
 
 
@@ -253,6 +256,59 @@ def parse(argv):
 # ------------------------------------------------------------------ output
 
 
+def copy(handle, out):
+    while True:
+        block = handle.read(BLOCK)
+        if not block:
+            return
+        out.write(block)
+
+
+def regular(handle):
+    """Where a regular file's unread part starts and ends, or None for a pipe."""
+    try:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        start = handle.tell()
+        end = handle.seek(0, os.SEEK_END)
+        handle.seek(start)
+    except (OSError, ValueError):
+        return None
+    # A file that says it is empty may only not know its size, as /proc's do.
+    return (start, end) if end > start else None
+
+
+def from_start(handle, opts, sep, out):
+    """`+N`: everything from line or byte N on, read once, front to back."""
+    skip = max(opts.count - 1, 0)
+    if not opts.lines:
+        span = regular(handle)
+        if span:
+            handle.seek(min(span[0] + skip, span[1]))
+        else:
+            while skip:
+                block = handle.read(min(skip, BLOCK))
+                if not block:
+                    return
+                skip -= len(block)
+        copy(handle, out)
+        return
+    while skip:
+        block = handle.read(BLOCK)
+        if not block:
+            return
+        seen = block.count(sep)
+        if seen < skip:
+            skip -= seen
+            continue
+        at = 0
+        for _ in range(skip):
+            at = block.find(sep, at) + 1
+        out.write(memoryview(block)[at:])
+        break
+    copy(handle, out)
+
+
 def last_of(data, count, sep):
     """Where the last `count` lines of `data` start; a final line without its newline still counts."""
     want = count + 1 if data.endswith(sep) else count
@@ -264,23 +320,58 @@ def last_of(data, count, sep):
     return at + 1
 
 
-def tail_of(data, opts, sep):
+def from_end(handle, opts, sep, out):
+    """The last N lines or bytes."""
     count = opts.count
-    if opts.from_start:
-        skip = max(count - 1, 0)
-        if not opts.lines:
-            return data[skip:]
-        at = 0
-        for _ in range(skip):
-            at = data.find(sep, at) + 1
-            if not at:
-                return b""
-        return data[at:]
     if not count:
-        return b""
-    if not opts.lines:
-        return data[-count:]
-    return data[last_of(data, count, sep):]
+        return
+    span = regular(handle)
+    if span:
+        # A file: read back from its end only as far as it takes, then copy
+        # forward from there — not the whole of a 90 MB log for its last lines.
+        start, end = span
+        if not opts.lines:
+            handle.seek(max(start, end - count))
+            copy(handle, out)
+            return
+        handle.seek(end - 1)
+        want = count + 1 if handle.read(1) == sep else count
+        at = end
+        while at > start:
+            size = min(BLOCK, at - start)
+            at -= size
+            handle.seek(at)
+            block = handle.read(size)
+            seen = block.count(sep)
+            if seen >= want:
+                cut = len(block)
+                for _ in range(want):
+                    cut = block.rfind(sep, 0, cut)
+                handle.seek(at + cut + 1)
+                copy(handle, out)
+                return
+            want -= seen
+        handle.seek(start)
+        copy(handle, out)
+        return
+    # A pipe: keep only the blocks the last N lines or bytes could be in.
+    blocks, sizes = deque(), deque()
+    total = 0
+    need = count + 1
+    while True:
+        block = handle.read(BLOCK)
+        if not block:
+            break
+        size = block.count(sep) if opts.lines else len(block)
+        blocks.append(block)
+        sizes.append(size)
+        total += size
+        while len(blocks) > 1 and total - sizes[0] >= need:
+            total -= sizes.popleft()
+            blocks.popleft()
+    data = b"".join(blocks)
+    at = last_of(data, count, sep) if opts.lines else max(0, len(data) - count)
+    out.write(memoryview(data)[at:])
 
 
 def main(argv):
@@ -315,7 +406,7 @@ def main(argv):
             status = 1
             continue
         try:
-            out.write(tail_of(handle.read(), opts, sep))
+            (from_start if opts.from_start else from_end)(handle, opts, sep, out)
         except BrokenPipeError:
             raise
         except OSError as e:
