@@ -4947,224 +4947,1054 @@ def cmd_which(argv):
 # onto it, at which point a correct search looks like a failed one.
 #
 # python can spawn — that is what makes `xargs` work here — so find becomes a
-# shim like the rest. The expression grammar is the part worth being careful
-# about: `-o` binds looser than `-a`, `!` binds tightest, and an expression
-# with no action gets an implicit `-print`, which is the whole reason
-# `find . -name x` prints anything at all.
+# shim like the rest, following GNU findutils 4.9 closely enough to be checked
+# against it: its expression grammar (`,` loosest, then `-o`, then `-a`, then
+# `!`), an implicit `-print` only when nothing else acts, `-depth` walking a
+# directory's contents before the directory — which `-delete` turns on, or it
+# would try to remove directories before emptying them — and its time tests
+# with GNU's own rounding. What it does not do it refuses, exit 1, as GNU
+# refuses a predicate it does not know.
 def cmd_find(argv):
-    import fnmatch
+    import errno
+    import math
+    import re
+    import time
 
-    paths, i = [], 0
-    while i < len(argv) and argv[i] not in ("!", "(") and not argv[i].startswith("-"):
+    out = sys.stdout.buffer
+    start_ns = time.time_ns()
+    state = {"status": 0}
+    warnings = sys.stdin.isatty()
+
+    def fatal(message):
+        out.flush()
+        sys.stderr.write(f"find: {message}\n")
+        raise SystemExit(1)
+
+    def error(message):
+        out.flush()
+        sys.stderr.write(f"find: {message}\n")
+        state["status"] = 1
+
+    def refuse(what):
+        fatal(f"{what} is not supported here")
+
+    # Options before the starting points.
+    follow, i = "P", 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-H", "-L", "-P"):
+            follow = a[1]
+        elif a == "-D":
+            refuse("-D (debug output)")
+        elif a.startswith("-O") and a[2:].isdigit():
+            pass   # an optimisation level; it never changes what is found
+        elif a == "--":
+            i += 1
+            break
+        else:
+            break
+        i += 1
+    paths = []
+    while i < len(argv) and not (argv[i].startswith("-") and len(argv[i]) > 1) and argv[i] not in ("!", "("):
         paths.append(argv[i])
         i += 1
     paths = paths or ["."]
-    rest = argv[i:]
+    tokens = argv[i:]
 
-    mindepth, maxdepth = 0, None
-    # -exec ... + batches its matches and runs once at the end, so the command
-    # and the names it collected have to outlive the walk.
-    batched = []
+    opts = dict(maxdepth=None, mindepth=0, depth=False, xdev=False, ignore_race=False, regextype="emacs",
+                day_start=None, prune=False, delete=False, explicit_depth=False, follow=False)
+    acts = []           # whether the expression does something itself
+    batches = []        # -exec ... + commands with the names they have gathered
+    streams = {}        # -fprint files, opened as GNU opens them: while parsing
+    seen_test = []
 
-    def parse(tokens):
-        """expr := term ('-o' term)* ; term := factor+ ; factor := '!' factor | '(' expr ')' | test"""
-        pos = 0
+    REGEX_TYPES = {"findutils-default": "emacs", "emacs": "emacs", "ed": "basic", "gnu-awk": "extended",
+                   "grep": "basic", "posix-awk": "extended", "awk": "extended", "posix-basic": "basic",
+                   "posix-egrep": "extended", "egrep": "extended", "posix-extended": "extended",
+                   "posix-minimal-basic": "basic", "sed": "basic"}
 
-        def peek():
-            return tokens[pos] if pos < len(tokens) else None
+    def stream(name):
+        if name in streams:
+            return streams[name]
+        if name == "/dev/stdout":
+            streams[name] = out
+        elif name == "/dev/stderr":
+            streams[name] = sys.stderr.buffer
+        else:
+            try:
+                streams[name] = open(name, "wb")
+            except OSError as e:
+                fatal(f"'{name}': {e.strerror}")
+        return streams[name]
 
-        def expr():
-            nonlocal pos
-            node = term()
-            while peek() in ("-o", "-or"):
-                pos += 1
-                right = term()
-                node = ("or", node, right)
-            return node
+    def comparison(text, what):
+        # GNU's get_num: +N more than N, -N less than N, N exactly.
+        kind = text[:1] if text[:1] in "+-" else ""
+        digits = text[len(kind):]
+        if not digits.isdigit():
+            fatal(f"invalid argument `{text}' to `{what}'")
+        n = int(digits)
+        return lambda v: v > n if kind == "+" else v < n if kind == "-" else v == n
 
-        def term():
-            nonlocal pos
-            node = None
-            while True:
-                t = peek()
-                if t is None or t in ("-o", "-or", ")"):
-                    break
-                if t in ("-a", "-and"):
-                    pos += 1
-                    continue
-                f = factor()
-                node = f if node is None else ("and", node, f)
-            return node if node is not None else ("true",)
-
-        def factor():
-            nonlocal pos
-            t = peek()
-            if t in ("!", "-not"):
-                pos += 1
-                return ("not", factor())
-            if t == "(":
-                pos += 1
-                node = expr()
-                if peek() != ")":
-                    die("find", "expected ')'")
-                pos += 1
-                return node
-            return test()
-
-        def arg(name):
-            # The option itself is already consumed, so the argument is sitting
-            # at `pos` — advancing first would step over it.
-            nonlocal pos
-            if pos >= len(tokens):
-                die("find", f"missing argument to '{name}'")
-            value = tokens[pos]
-            pos += 1
-            return value
-
-        def test():
-            nonlocal pos, mindepth, maxdepth
-            t = tokens[pos]
-            pos += 1
-            if t in ("-name", "-iname", "-path", "-ipath", "-wholename"):
-                return (t[1:], arg(t))
-            if t == "-type":
-                return ("type", arg(t))
-            if t == "-size":
-                return ("size", arg(t))
-            if t == "-empty":
-                return ("empty",)
-            if t == "-print":
-                return ("print", "\n")
-            if t == "-print0":
-                return ("print", "\0")
-            if t == "-delete":
-                return ("delete",)
-            if t in ("-maxdepth", "-mindepth"):
-                n = int(arg(t))
-                if t == "-maxdepth":
-                    maxdepth = n
-                else:
-                    mindepth = n
-                return ("true",)
-            if t == "-exec":
-                cmd = []
-                while pos < len(tokens) and tokens[pos] not in (";", "+"):
-                    cmd.append(tokens[pos])
-                    pos += 1
-                if pos >= len(tokens):
-                    die("find", "-exec needs a terminating ';' or '+'")
-                end = tokens[pos]
-                pos += 1
-                if end == "+":
-                    batched.append([cmd, []])
-                    return ("execplus", len(batched) - 1)
-                return ("exec", cmd)
-            die("find", f"unsupported expression '{t}'")
-
-        node = expr()
-        if pos != len(tokens):
-            die("find", f"unexpected '{tokens[pos]}'")
-        return node
-
-    tree = parse(rest)
-
-    def has_action(node):
-        if node[0] in ("print", "delete", "exec", "execplus"):
-            return True
-        if node[0] in ("and", "or"):
-            return has_action(node[1]) or has_action(node[2])
-        if node[0] == "not":
-            return has_action(node[1])
-        return False
-
-    printing = not has_action(tree)
-    status = 0
-
-    def spawn(line):
-        """Run one -exec command, and say something useful when it is not there.
-
-        The commands reachable here are real binaries only. Every tool this file
-        provides is a shell alias, and a spawned process does not inherit those
-        — so `-exec tree {} \\;` cannot work however much it looks like it
-        should. Without this it surfaced as a python traceback.
-        """
-        nonlocal status
+    def reference_stat(name):
         try:
-            return subprocess.run(line).returncode
+            return os.stat(name) if follow in ("L", "H") or opts["follow"] else os.lstat(name)
+        except OSError as e:
+            fatal(f"'{name}': {e.strerror}")
+
+    def time_test(text, what, attr, minutes):
+        kind = text[:1] if text[:1] in "+-" else ""
+        try:
+            offset = float(text[len(kind):]) if text[len(kind):].strip() else None
+        except ValueError:
+            offset = None
+        if offset is None or not math.isfinite(offset):
+            fatal(f"invalid argument `{text}' to `{what}'")
+        day = opts["day_start"]
+        if day is None:
+            origin = start_ns - 86400 * 10 ** 9
+        else:
+            origin = day
+        if minutes:
+            origin += 86400 * 10 ** 9
+            unit = 60
+        else:
+            unit = 86400
+            if kind == "-":
+                origin += 86399 * 10 ** 9
+        frac, whole = math.modf(offset * unit)
+        ref = origin - int(whole) * 10 ** 9 - int(frac * 1e9)
+        window = unit * 10 ** 9
+        if kind == "+":
+            return lambda e: getattr(e.st, attr) < ref
+        if kind == "-":
+            return lambda e: getattr(e.st, attr) > ref
+        return lambda e: 0 < getattr(e.st, attr) - ref <= window
+
+    def parse_date(text):
+        text = text.strip()
+        if text.startswith("@"):
+            try:
+                return int(float(text[1:]) * 10 ** 9)
+            except ValueError:
+                pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+            try:
+                return int(time.mktime(time.strptime(text, fmt))) * 10 ** 9
+            except (ValueError, OverflowError):
+                continue
+        fatal(f"I cannot figure out how to interpret `{text}' as a date or time")
+
+    def mode_bits(text, is_dir):
+        """gnulib's mode_compile and mode_adjust, applied to 0 as -perm does."""
+        if re.fullmatch(r"[0-7]+", text):
+            return int(text, 8) & 0o7777
+        mode = 0
+        for clause in text.split(","):
+            m = re.fullmatch(r"([ugoa]*)((?:[-+=](?:[rwxXst]*|[ugo]))+)", clause)
+            if not m:
+                return None
+            who = 0
+            for c in m.group(1):
+                who |= {"u": 0o4700, "g": 0o2070, "o": 0o1007, "a": 0o7777}[c]
+            who = who or 0o7777
+            for op, perms in re.findall(r"([-+=])([rwxXst]*|[ugo])", m.group(2)):
+                if perms in ("u", "g", "o"):
+                    shift = {"u": 6, "g": 3, "o": 0}[perms]
+                    bits = (mode >> shift) & 7
+                    value = (bits << 6 | bits << 3 | bits) & who
+                else:
+                    value = 0
+                    for c in perms:
+                        value |= {"r": 0o444, "w": 0o222, "x": 0o111, "X": 0o111 if is_dir or mode & 0o111 else 0,
+                                  "s": 0o6000, "t": 0o1000}[c]
+                    value &= who
+                if op == "=":
+                    mode = (mode & ~who) | value
+                elif op == "+":
+                    mode |= value
+                else:
+                    mode &= ~value
+        return mode & 0o7777
+
+    def file_type_letter(mode):
+        return {stat.S_IFREG: "f", stat.S_IFDIR: "d", stat.S_IFLNK: "l", stat.S_IFSOCK: "s",
+                stat.S_IFBLK: "b", stat.S_IFCHR: "c", stat.S_IFIFO: "p"}.get(stat.S_IFMT(mode), "U")
+
+    def type_list(text, what):
+        letters, k = set(), 0
+        if not text:
+            fatal(f"Arguments to {what} should contain at least one letter")
+        while k < len(text):
+            c = text[k]
+            if c not in "bcdpflsD":
+                fatal(f"Unknown argument to {what}: {c}")
+            if c in letters:
+                fatal(f"Duplicate file type '{c}' in the argument list to {what}.")
+            letters.add(c)
+            k += 1
+            if k < len(text):
+                if text[k] != ",":
+                    fatal(f"Must separate multiple arguments to {what} using: ','")
+                k += 1
+                if k == len(text):
+                    fatal(f"Last file type in list argument to {what} is missing, i.e., list is ending on: ','")
+        return letters
+
+    def base_name(path):
+        # gnulib's base_name: the last component, keeping one trailing slash.
+        stripped = path.rstrip("/")
+        if not stripped:
+            return "/" if path else ""
+        base = stripped.rsplit("/", 1)[-1]
+        return base + "/" if len(stripped) < len(path) else base
+
+    def name_of(path):
+        base = base_name(path)
+        return base if base == "/" else base.rstrip("/") or base
+
+    def lookup(kind, number):
+        try:
+            if kind == "user":
+                import pwd
+                return pwd.getpwuid(number).pw_name
+            import grp
+            return grp.getgrgid(number).gr_name
+        except (ImportError, KeyError, OverflowError):
+            return None
+
+    MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    DAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+    def ctime_text(ns):
+        sec, nsec = divmod(ns, 10 ** 9)
+        tm = time.localtime(sec)
+        return (f"{DAYS[(tm.tm_wday + 1) % 7]} {MONTHS[tm.tm_mon - 1]} {tm.tm_mday:2d} {tm.tm_hour:02d}:"
+                f"{tm.tm_min:02d}:{tm.tm_sec:02d}.{nsec:09d}0 {tm.tm_year:04d}")
+
+    def strftime_c(fmt_char, tm):
+        # The C locale's strftime, spelled out: python's goes to the platform's,
+        # which need not know %k or %s.
+        hour12 = tm.tm_hour % 12 or 12
+        wday = (tm.tm_wday + 1) % 7
+        simple = {
+            "a": DAYS[wday], "A": ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                                   "Saturday")[wday],
+            "b": MONTHS[tm.tm_mon - 1], "h": MONTHS[tm.tm_mon - 1],
+            "B": ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+                  "October", "November", "December")[tm.tm_mon - 1],
+            "d": f"{tm.tm_mday:02d}", "e": f"{tm.tm_mday:2d}", "H": f"{tm.tm_hour:02d}", "I": f"{hour12:02d}",
+            "k": f"{tm.tm_hour:2d}", "l": f"{hour12:2d}", "j": f"{tm.tm_yday:03d}", "m": f"{tm.tm_mon:02d}",
+            "M": f"{tm.tm_min:02d}", "p": "AM" if tm.tm_hour < 12 else "PM", "S": f"{tm.tm_sec:02d}",
+            "y": f"{tm.tm_year % 100:02d}", "Y": f"{tm.tm_year}", "C": f"{tm.tm_year // 100:02d}",
+            "u": f"{tm.tm_wday + 1}", "w": f"{wday}", "n": "\n", "t": "\t", "%": "%",
+            "s": f"{int(time.mktime(tm))}",
+            "T": f"{tm.tm_hour:02d}:{tm.tm_min:02d}:{tm.tm_sec:02d}",
+            "X": f"{tm.tm_hour:02d}:{tm.tm_min:02d}:{tm.tm_sec:02d}",
+            "R": f"{tm.tm_hour:02d}:{tm.tm_min:02d}",
+            "r": f"{hour12:02d}:{tm.tm_min:02d}:{tm.tm_sec:02d} {'AM' if tm.tm_hour < 12 else 'PM'}",
+            "D": f"{tm.tm_mon:02d}/{tm.tm_mday:02d}/{tm.tm_year % 100:02d}",
+            "x": f"{tm.tm_mon:02d}/{tm.tm_mday:02d}/{tm.tm_year % 100:02d}",
+            "F": f"{tm.tm_year}-{tm.tm_mon:02d}-{tm.tm_mday:02d}",
+            "c": f"{DAYS[wday]} {MONTHS[tm.tm_mon - 1]} {tm.tm_mday:2d} {tm.tm_hour:02d}:{tm.tm_min:02d}:"
+                 f"{tm.tm_sec:02d} {tm.tm_year}",
+        }
+        if fmt_char in simple:
+            return simple[fmt_char]
+        if fmt_char == "z":
+            off = getattr(tm, "tm_gmtoff", 0) or 0
+            sign = "-" if off < 0 else "+"
+            off = abs(off) // 60
+            return f"{sign}{off // 60:02d}{off % 60:02d}"
+        if fmt_char == "Z":
+            return getattr(tm, "tm_zone", "") or "UTC"
+        try:
+            return time.strftime("%" + fmt_char, tm)
+        except ValueError:
+            return "%" + fmt_char
+
+    def date_text(ns, kind):
+        sec, nsec = divmod(ns, 10 ** 9)
+        suffix = f".{nsec:09d}0"
+        if kind == "@":
+            return f"{sec}{suffix}"
+        tm = time.localtime(sec)
+        if kind == "+":
+            return f"{tm.tm_year}-{tm.tm_mon:02d}-{tm.tm_mday:02d}+{strftime_c('T', tm)}{suffix}"
+        text = strftime_c(kind, tm)
+        return text + suffix if kind in "STX" else text
+
+    def mode_text(mode):
+        t = {stat.S_IFDIR: "d", stat.S_IFCHR: "c", stat.S_IFBLK: "b", stat.S_IFREG: "-", stat.S_IFLNK: "l",
+             stat.S_IFSOCK: "s", stat.S_IFIFO: "p"}.get(stat.S_IFMT(mode), "?")
+        rwx = ""
+        for who, special, letter in ((6, 0o4000, "s"), (3, 0o2000, "s"), (0, 0o1000, "t")):
+            bits = (mode >> who) & 7
+            x = bits & 1
+            rwx += ("r" if bits & 4 else "-") + ("w" if bits & 2 else "-")
+            if mode & special:
+                rwx += letter if x else letter.upper()
+            else:
+                rwx += "x" if x else "-"
+        return t + rwx
+
+    def blocks(st):
+        # st_blocks counts 512-byte units; a filesystem without it gets the size's.
+        return getattr(st, "st_blocks", None) if getattr(st, "st_blocks", None) is not None else (st.st_size + 511) // 512
+
+    def printf_segments(fmt):
+        segments, k, n, literal = [], 0, len(fmt), []
+        while k < n:
+            c = fmt[k]
+            if c == "\\":
+                if k + 1 >= n:
+                    sys.stderr.write("find: warning: escape `\\' followed by nothing at all\n")
+                    literal.append("\\")
+                    k += 1
+                    continue
+                d = fmt[k + 1]
+                if d == "c":
+                    segments.append(("lit", "".join(literal)))
+                    segments.append(("stop",))
+                    return segments
+                if d in "01234567":
+                    j = k + 1
+                    value = 0
+                    while j < n and j < k + 4 and fmt[j] in "01234567":
+                        value = value * 8 + int(fmt[j])
+                        j += 1
+                    literal.append(chr(value))
+                    k = j
+                    continue
+                esc = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\"}
+                if d in esc:
+                    literal.append(esc[d])
+                else:
+                    sys.stderr.write(f"find: warning: unrecognized escape `\\{d}'\n")
+                    literal.append("\\" + d)
+                k += 2
+                continue
+            if c != "%":
+                literal.append(c)
+                k += 1
+                continue
+            if k + 1 >= n:
+                fatal("error: % at end of format string")
+            if fmt[k + 1] == "%":
+                literal.append("%")
+                k += 2
+                continue
+            j = k + 1
+            while j < n and fmt[j] in "-+ #":
+                j += 1
+            while j < n and fmt[j].isdigit():
+                j += 1
+            if j < n and fmt[j] == ".":
+                j += 1
+                while j < n and fmt[j].isdigit():
+                    j += 1
+            spec = fmt[k + 1 : j]
+            conv = fmt[j] if j < n else ""
+            if conv and conv in "abcdDfFgGhHiklmMnpPsStuUyYZ%":
+                if conv in "FZ":
+                    refuse(f"-printf %{conv}")
+                segments.append(("lit", "".join(literal)))
+                literal = []
+                segments.append(("dir", spec, conv, ""))
+                k = j + 1
+            elif conv and conv in "ABCT" and j + 1 < n:
+                if conv == "B":
+                    fatal("This system does not provide a way to find the birth time of a file.")
+                segments.append(("lit", "".join(literal)))
+                literal = []
+                segments.append(("dir", spec, conv, fmt[j + 1]))
+                k = j + 2
+            elif conv in ("{", "[", "("):
+                fatal(f"error: the format directive `%{conv}' is reserved for future use")
+            else:
+                if conv in "ABCT" and conv:
+                    sys.stderr.write(f"find: warning: format directive `%{conv}' should be followed by "
+                                     "another character\n")
+                else:
+                    sys.stderr.write(f"find: warning: unrecognized format directive `%{conv}'\n")
+                literal.append(fmt[k : j + 1])
+                k = j + 1
+        segments.append(("lit", "".join(literal)))
+        return segments
+
+    def c_format(spec, conv, value):
+        flags = re.match(r"[-+ #]*", spec).group(0)
+        rest = spec[len(flags):]
+        width, _, precision = rest.partition(".")
+        left = "-" in flags
+        if conv == "s":
+            text = str(value)
+            if "." in rest:
+                text = text[: int(precision or 0)]
+            zero = False
+        elif conv == "o":
+            text = format(value, "o")
+            if "#" in flags and not text.startswith("0"):
+                text = "0" + text
+            zero = width.startswith("0") and not left
+        elif conv == "g":
+            text = ("%" + flags.replace("#", "") + ("." + precision if "." in rest else "") + "g") % value
+            zero = width.startswith("0") and not left
+        else:
+            text = str(value)
+            if value >= 0 and "+" in flags:
+                text = "+" + text
+            elif value >= 0 and " " in flags:
+                text = " " + text
+            zero = width.startswith("0") and not left
+        w = int(width) if width else 0
+        if len(text) < w:
+            if left:
+                text = text + " " * (w - len(text))
+            elif zero:
+                sign = text[:1] if text[:1] in "+- " else ""
+                text = sign + "0" * (w - len(text)) + text[len(sign):]
+            else:
+                text = " " * (w - len(text)) + text
+        return text
+
+    def directory_part(path):
+        # %h, as print.c computes it, quirks included.
+        s = len(path) - 1
+        while s >= 0 and path[s] == "/":
+            s -= 1
+        p = path
+        if 0 < s and s + 1 < len(path) and path[s + 1] == "/":
+            p = path[: s + 1]
+        cut = p.rfind("/")
+        return "." if cut < 0 else p[:cut]
+
+    def render(segments, e):
+        pieces = []
+        for seg in segments:
+            if seg[0] == "lit":
+                pieces.append(os.fsencode(seg[1]))
+                continue
+            if seg[0] == "stop":
+                break
+            _, spec, conv, sub = seg
+            st = e.st
+            if conv in "ACT" and sub:
+                ns = {"A": st.st_atime_ns, "C": st.st_ctime_ns, "T": st.st_mtime_ns}[conv]
+                value, kind = date_text(ns, sub), "s"
+            elif conv in "act":
+                value, kind = ctime_text({"a": st.st_atime_ns, "c": st.st_ctime_ns, "t": st.st_mtime_ns}[conv]), "s"
+            elif conv == "b":
+                value, kind = blocks(st), "s"
+            elif conv == "k":
+                value, kind = (blocks(st) + 1) // 2, "s"
+            elif conv == "d":
+                value, kind = e.depth, "d"
+            elif conv == "D":
+                value, kind = st.st_dev, "s"
+            elif conv == "f":
+                value, kind = base_name(e.path), "s"
+            elif conv in "gG":
+                value, kind = (lookup("group", st.st_gid) if conv == "g" else None) or st.st_gid, "s"
+            elif conv in "uU":
+                value, kind = (lookup("user", st.st_uid) if conv == "u" else None) or st.st_uid, "s"
+            elif conv == "h":
+                value, kind = directory_part(e.path), "s"
+            elif conv == "H":
+                value, kind = e.start, "s"
+            elif conv == "i":
+                value, kind = st.st_ino, "s"
+            elif conv == "l":
+                value = ""
+                if stat.S_ISLNK(st.st_mode):
+                    try:
+                        value = os.readlink(e.path)
+                    except OSError as err:
+                        error(f"'{e.path}': {err.strerror}")
+                kind = "s"
+            elif conv == "m":
+                value, kind = st.st_mode & 0o7777, "o"
+            elif conv == "M":
+                value, kind = mode_text(st.st_mode), "s"
+            elif conv == "n":
+                value, kind = st.st_nlink, "s"
+            elif conv == "p":
+                value, kind = e.path, "s"
+            elif conv == "P":
+                rest = e.path[len(e.start):] if e.depth > 0 else ""
+                value, kind = rest[1:] if rest.startswith("/") else rest, "s"
+            elif conv == "s":
+                value, kind = st.st_size, "s"
+            elif conv == "S":
+                size = st.st_size
+                value = (blocks(st) * 512 / size) if size else (1.0 if not blocks(st) else float("inf"))
+                kind = "g"
+            elif conv == "y":
+                value, kind = file_type_letter(st.st_mode), "s"
+            elif conv == "Y":
+                if stat.S_ISLNK(st.st_mode):
+                    try:
+                        value = file_type_letter(os.stat(e.path).st_mode)
+                    except OSError as err:
+                        value = "N" if err.errno in (errno.ENOENT, errno.ENOTDIR) else "L" if err.errno == errno.ELOOP else "?"
+                else:
+                    value = file_type_letter(st.st_mode)
+                kind = "s"
+            else:   # %%
+                value, kind = "%", "s"
+            pieces.append(os.fsencode(c_format(spec, kind, value)))
+        return b"".join(pieces)
+
+    ls_widths = {"ino": 9, "blocks": 6, "nlink": 3, "user": 8, "group": 8, "size": 8}
+
+    def ls_line(e):
+        st = e.st
+        parts = []
+
+        def field(key, text, left=False):
+            ls_widths[key] = max(ls_widths[key], len(text))
+            return text.ljust(ls_widths[key]) if left else text.rjust(ls_widths[key])
+
+        parts.append(field("ino", str(st.st_ino)) + " " + field("blocks", str((blocks(st) + 1) // 2)) + " ")
+        parts.append(mode_text(st.st_mode) + " " + field("nlink", str(st.st_nlink)) + " ")
+        parts.append(field("user", str(lookup("user", st.st_uid) or st.st_uid), True) + " ")
+        parts.append(field("group", str(lookup("group", st.st_gid) or st.st_gid), True) + " ")
+        if stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode):
+            parts.append(f"{os.major(st.st_rdev):3d}, {os.minor(st.st_rdev):3d}")
+        else:
+            parts.append(field("size", str(st.st_size)))
+        tm = time.localtime(st.st_mtime)
+        now = start_ns // 10 ** 9
+        recent = now - 6 * 30 * 24 * 3600 <= st.st_mtime <= now + 3600
+        when = (f"{MONTHS[tm.tm_mon - 1]} {tm.tm_mday:2d} {tm.tm_hour:02d}:{tm.tm_min:02d}" if recent
+                else f"{MONTHS[tm.tm_mon - 1]} {tm.tm_mday:2d}  {tm.tm_year}")
+        line = os.fsencode("".join(parts) + " " + when + " ") + os.fsencode(e.path)
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                line += b" -> " + os.fsencode(os.readlink(e.path))
+            except OSError:
+                pass
+        return line + b"\n"
+
+    # -exec's command: real programs only. Every tool this file provides is a
+    # shell alias, and a spawned process does not inherit those — so
+    # `-exec tree {} \;` cannot work however much it looks like it should.
+    def spawn(line, cwd=None):
+        out.flush()
+        try:
+            return subprocess.run(line, cwd=cwd).returncode
         except FileNotFoundError:
-            sys.stderr.write(
-                f"find: '{line[0]}': No such file or directory\n"
-                f"find: -exec runs real programs, and cannot see shell aliases\n"
-            )
-            status = 1
-            return 1
+            sys.stderr.write(f"find: '{line[0]}': No such file or directory\n"
+                             "find: -exec runs real programs, and cannot see shell aliases\n")
+        except OSError as err:
+            sys.stderr.write(f"find: '{line[0]}': {err.strerror}\n")
+        return None
 
-    def size_matches(spec, nbytes):
-        units = {"b": 512, "c": 1, "w": 2, "k": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
-        sign = ""
-        if spec and spec[0] in "+-":
-            sign, spec = spec[0], spec[1:]
-        unit = "b"
-        if spec and spec[-1] in units:
-            unit, spec = spec[-1], spec[:-1]
-        want = int(spec)
-        # GNU rounds up to the next whole unit, so a 3-byte file is 1k — which
-        # is why `-size -1k` finds nothing rather than everything small.
-        size = -(-nbytes // units[unit])
-        return size > want if sign == "+" else size < want if sign == "-" else size == want
+    def flush_batch(batch):
+        cmd, names, cwd = batch["cmd"], batch["names"], batch["cwd"]
+        if not names:
+            return
+        batch["names"], batch["size"] = [], 0
+        rc = spawn(cmd + names, cwd)
+        if rc != 0:
+            state["status"] = 1
 
-    def evaluate(node, path, st):
-        nonlocal status
-        kind = node[0]
-        if kind == "true":
-            return True
-        if kind == "and":
-            return evaluate(node[1], path, st) and evaluate(node[2], path, st)
-        if kind == "or":
-            return evaluate(node[1], path, st) or evaluate(node[2], path, st)
-        if kind == "not":
-            return not evaluate(node[1], path, st)
-        if kind in ("name", "iname"):
-            base = os.path.basename(path)
-            return fnmatch.fnmatch(base.lower(), node[1].lower()) if kind == "iname" else fnmatch.fnmatchcase(base, node[1])
-        if kind in ("path", "ipath", "wholename"):
-            return fnmatch.fnmatch(path.lower(), node[1].lower()) if kind == "ipath" else fnmatch.fnmatchcase(path, node[1])
-        if kind == "type":
-            want = node[1]
-            if want == "f":
-                return stat.S_ISREG(st.st_mode)
-            if want == "d":
-                return stat.S_ISDIR(st.st_mode)
-            if want == "l":
-                return stat.S_ISLNK(st.st_mode)
-            die("find", f"unsupported -type '{want}'")
-        if kind == "size":
-            return stat.S_ISREG(st.st_mode) and size_matches(node[1], st.st_size)
-        if kind == "empty":
-            if stat.S_ISDIR(st.st_mode):
+    class Quit(Exception):
+        pass
+
+    def global_option(name):
+        if seen_test and warnings:
+            sys.stderr.write(f"find: warning: you have specified the global option {name} after the argument "
+                             f"{seen_test[0]}, but global options are not positional, i.e., {name} affects tests "
+                             "specified before it as well as those specified after it.  Please specify global "
+                             "options before other arguments.\n")
+
+    pos = [0]
+
+    def peek(k=0):
+        j = pos[0] + k
+        return tokens[j] if j < len(tokens) else None
+
+    def take():
+        t = tokens[pos[0]]
+        pos[0] += 1
+        return t
+
+    def arg(name):
+        if pos[0] >= len(tokens):
+            fatal(f"missing argument to `{name}'")
+        return take()
+
+    def primary():
+        t = take()
+        name = t
+        if t in ("-name", "-iname"):
+            rx = _fnmatch_re(arg(t), icase=t == "-iname")
+            seen_test.append(t)
+            return lambda e: bool(rx.match(os.fsencode(name_of(e.path))))
+        if t in ("-path", "-ipath", "-wholename", "-iwholename"):
+            rx = _fnmatch_re(arg(t), icase=t in ("-ipath", "-iwholename"))
+            seen_test.append(t)
+            return lambda e: bool(rx.match(os.fsencode(e.path)))
+        if t in ("-lname", "-ilname"):
+            rx = _fnmatch_re(arg(t), icase=t == "-ilname")
+            seen_test.append(t)
+
+            def lname(e):
+                if not stat.S_ISLNK(e.st.st_mode):
+                    return False
                 try:
-                    return not os.listdir(path)
+                    return bool(rx.match(os.fsencode(os.readlink(e.path))))
                 except OSError:
                     return False
-            return st.st_size == 0
-        if kind == "print":
-            sys.stdout.write(path + node[1])
-            return True
-        if kind == "delete":
+            return lname
+        if t in ("-regex", "-iregex"):
+            text = arg(t)
             try:
-                os.rmdir(path) if stat.S_ISDIR(st.st_mode) else os.remove(path)
-            except OSError as e:
-                sys.stderr.write(f"find: cannot delete '{path}': {e.strerror}\n")
-                status = 1
-                return False
+                rx = _gnu_regex(text, opts["regextype"], icase=t == "-iregex")
+            except re.error as err:
+                fatal(f"{text}: {err}")
+            seen_test.append(t)
+            return lambda e: bool(rx.fullmatch(os.fsencode(e.path)))
+        if t == "-regextype":
+            value = arg(t)
+            if value not in REGEX_TYPES:
+                fatal(f"Unknown regular expression type '{value}'; valid types are " +
+                      ", ".join(f"'{k}'" for k in REGEX_TYPES) + ".")
+            opts["regextype"] = REGEX_TYPES[value]
+            return lambda e: True
+        if t in ("-type", "-xtype"):
+            letters = type_list(arg(t), t)
+            seen_test.append(t)
+
+            def type_test(e):
+                st = e.st
+                if t == "-xtype":
+                    st = e.other()
+                return file_type_letter(st.st_mode) in letters
+            return type_test
+        if t == "-size":
+            text = arg(t)
+            if not text:
+                fatal("invalid null argument to -size")
+            unit = {"b": 512, "c": 1, "w": 2, "k": 1024, "M": 1024 ** 2, "G": 1024 ** 3}.get(text[-1])
+            if unit is None and not text[-1].isdigit():
+                fatal(f"invalid -size type `{text[-1]}'")
+            number = text[:-1] if unit else text
+            unit = unit or 512
+            kind = number[:1] if number[:1] in "+-" else ""
+            if not number[len(kind):].isdigit():
+                fatal(f"Invalid argument `{text}' to -size")
+            want = int(number[len(kind):])
+            seen_test.append(t)
+
+            def size_test(e):
+                # GNU rounds up to whole units, so a 3-byte file is 1k — which
+                # is why `-size -1k` finds nothing rather than everything small.
+                size = -(-e.st.st_size // unit)
+                return size > want if kind == "+" else size < want if kind == "-" else size == want
+            return size_test
+        if t == "-empty":
+            seen_test.append(t)
+
+            def empty(e):
+                if stat.S_ISDIR(e.st.st_mode):
+                    try:
+                        return not os.listdir(e.path)
+                    except OSError as err:
+                        error(f"'{e.path}': {err.strerror}")
+                        return False
+                return stat.S_ISREG(e.st.st_mode) and e.st.st_size == 0
+            return empty
+        if t in ("-mtime", "-atime", "-ctime", "-mmin", "-amin", "-cmin"):
+            attr = {"m": "st_mtime_ns", "a": "st_atime_ns", "c": "st_ctime_ns"}[t[1]]
+            seen_test.append(t)
+            return time_test(arg(t), t, attr, t.endswith("min"))
+        if t in ("-newer", "-anewer", "-cnewer"):
+            ref = reference_stat(arg(t)).st_mtime_ns
+            attr = {"-newer": "st_mtime_ns", "-anewer": "st_atime_ns", "-cnewer": "st_ctime_ns"}[t]
+            seen_test.append(t)
+            return lambda e: getattr(e.st, attr) > ref
+        m = re.fullmatch(r"-newer([aBcmt])([aBcmt])", t)
+        if m:
+            x, y = m.groups()
+            if "B" in (x, y):
+                fatal("This system does not provide a way to find the birth time of a file.")
+            if x == "t":
+                fatal(f"invalid predicate `{t}'")
+            value = arg(t)
+            if y == "t":
+                ref = parse_date(value)
+            else:
+                st = reference_stat(value)
+                ref = {"a": st.st_atime_ns, "c": st.st_ctime_ns, "m": st.st_mtime_ns}[y]
+            attr = {"a": "st_atime_ns", "c": "st_ctime_ns", "m": "st_mtime_ns"}[x]
+            seen_test.append(t)
+            return lambda e: getattr(e.st, attr) > ref
+        if t == "-perm":
+            text = arg(t)
+            kind = text[:1] if text[:1] in "-/" else ""
+            vals = [mode_bits(text[len(kind):], False), mode_bits(text[len(kind):], True)]
+            if vals[0] is None or text[len(kind):] == "":
+                fatal(f"invalid mode '{text}'")
+            if kind == "/" and vals == [0, 0]:
+                sys.stderr.write(f"find: warning: you have specified a mode pattern {text} (which is equivalent "
+                                 "to /000). The meaning of -perm /000 has now been changed to be consistent with "
+                                 "-perm -000; that is, while it used to match no files, it now matches all "
+                                 "files.\n")
+            seen_test.append(t)
+
+            def perm(e):
+                mode = e.st.st_mode
+                want = vals[stat.S_ISDIR(mode)]
+                if kind == "-":
+                    return mode & want == want
+                if kind == "/":
+                    return want == 0 or bool(mode & want)
+                return mode & 0o7777 == want
+            return perm
+        if t in ("-readable", "-writable", "-executable"):
+            flag = {"-readable": os.R_OK, "-writable": os.W_OK, "-executable": os.X_OK}[t]
+            seen_test.append(t)
+            return lambda e: os.access(e.path, flag)
+        if t in ("-uid", "-gid"):
+            test = comparison(arg(t), t)
+            attr = "st_uid" if t == "-uid" else "st_gid"
+            seen_test.append(t)
+            return lambda e: test(getattr(e.st, attr))
+        if t in ("-user", "-group"):
+            value = arg(t)
+            number = None
+            try:
+                if t == "-user":
+                    import pwd
+                    number = pwd.getpwnam(value).pw_uid
+                else:
+                    import grp
+                    number = grp.getgrnam(value).gr_gid
+            except (ImportError, KeyError):
+                if value.isdigit():
+                    number = int(value)
+            if number is None:
+                fatal(f"'{value}' is not the name of a known {'user' if t == '-user' else 'group'}")
+            attr = "st_uid" if t == "-user" else "st_gid"
+            seen_test.append(t)
+            return lambda e: getattr(e.st, attr) == number
+        if t in ("-nouser", "-nogroup"):
+            try:
+                import grp  # noqa: F401
+                import pwd  # noqa: F401
+            except ImportError:
+                refuse(t)
+            seen_test.append(t)
+            kind = "user" if t == "-nouser" else "group"
+            return lambda e: lookup(kind, e.st.st_uid if kind == "user" else e.st.st_gid) is None
+        if t in ("-true", "-false"):
+            seen_test.append(t)
+            return (lambda e: True) if t == "-true" else (lambda e: False)
+        if t in ("-print", "-print0", "-fprint", "-fprint0"):
+            dest = stream(arg(t)) if t.startswith("-f") else out
+            end = b"\0" if t.endswith("0") else b"\n"
+            acts.append(t)
+            seen_test.append(t)
+
+            def show(e):
+                dest.write(os.fsencode(e.path) + end)
+                return True
+            return show
+        if t in ("-printf", "-fprintf"):
+            dest = stream(arg(t)) if t == "-fprintf" else out
+            segments = printf_segments(arg(t))
+            acts.append(t)
+            seen_test.append(t)
+
+            def printf(e):
+                dest.write(render(segments, e))
+                if any(s[0] == "stop" for s in segments):
+                    dest.flush()
+                return True
+            return printf
+        if t in ("-ls", "-fls"):
+            dest = stream(arg(t)) if t == "-fls" else out
+            acts.append(t)
+            seen_test.append(t)
+
+            def ls(e):
+                dest.write(ls_line(e))
+                return True
+            return ls
+        if t == "-delete":
+            acts.append(t)
+            seen_test.append(t)
+            opts["delete"] = True
+
+            def delete(e):
+                if e.path == ".":
+                    return True
+                try:
+                    (os.rmdir if stat.S_ISDIR(e.st.st_mode) else os.unlink)(e.path)
+                    return True
+                except OSError as err:
+                    if err.errno == errno.ENOENT and opts["ignore_race"]:
+                        return True
+                    error(f"cannot delete '{e.path}': {err.strerror}")
+                    return False
+            return delete
+        if t == "-prune":
+            seen_test.append(t)
+            opts["prune"] = True
+
+            def prune(e):
+                if not opts["depth"]:
+                    e.pruned = True
+                return True
+            return prune
+        if t == "-quit":
+            seen_test.append(t)
+
+            def quit_(e):
+                raise Quit()
+            return quit_
+        if t in ("-exec", "-execdir", "-ok", "-okdir"):
+            cmd = []
+            plus = False
+            while True:
+                if pos[0] >= len(tokens):
+                    fatal(f"missing argument to `{t}'")
+                word = take()
+                if word == ";":
+                    break
+                if word == "+" and cmd and cmd[-1] == "{}" and t in ("-exec", "-execdir"):
+                    plus = True
+                    break
+                cmd.append(word)
+            if not cmd:
+                fatal(f"missing argument to `{t}'")
+            if plus and sum("{}" in w for w in cmd) > 1:
+                fatal(f"Only one instance of {{}} is supported with {t} ... +")
+            if t in ("-execdir", "-okdir"):
+                for part in os.environ.get("PATH", "").split(":"):
+                    if not part or part == ".":
+                        fatal("The current directory is included in the PATH environment variable, which is "
+                              f"insecure in combination with the {t} action of find.  Please remove the current "
+                              "directory from your $PATH (that is, remove \".\", doubled colons, or leading or "
+                              "trailing colons)")
+                    if not part.startswith("/"):
+                        fatal(f"The relative path '{part}' is included in the PATH environment variable, which "
+                              f"is insecure in combination with the {t} action of find.  Please remove that "
+                              "entry from $PATH")
+            acts.append(t)
+            seen_test.append(t)
+            in_dir = t in ("-execdir", "-okdir")
+
+            def target(e):
+                if not in_dir:
+                    return e.path, None
+                parent = os.path.dirname(e.path.rstrip("/")) or "."
+                return "./" + name_of(e.path), parent
+
+            if plus:
+                batch = {"cmd": cmd[:-1], "names": [], "cwd": None, "size": 0}
+                batches.append(batch)
+
+                def exec_plus(e):
+                    name, cwd = target(e)
+                    if batch["names"] and (cwd != batch["cwd"] or batch["size"] + len(os.fsencode(name)) + 1 >
+                                           131072 - 2048 - sum(len(os.fsencode(w)) + 1 for w in batch["cmd"])):
+                        flush_batch(batch)
+                    batch["cwd"] = cwd
+                    batch["names"].append(name)
+                    batch["size"] += len(os.fsencode(name)) + 1
+                    return True
+                return exec_plus
+
+            def exec_one(e):
+                name, cwd = target(e)
+                line = [name if w == "{}" else w.replace("{}", name) for w in cmd]
+                if t in ("-ok", "-okdir"):
+                    out.flush()
+                    sys.stderr.write(f"< {line[0]} ... {name} > ? ")
+                    sys.stderr.flush()
+                    answer = sys.stdin.readline()
+                    if not answer.lstrip()[:1] in ("y", "Y"):
+                        return False
+                return spawn(line, cwd) == 0
+            return exec_one
+        if t in ("-maxdepth", "-mindepth"):
+            value = arg(t)
+            if not re.fullmatch(r"\+?\d+", value):
+                fatal(f"Expected a positive decimal integer argument to {t}, but got '{value}'")
+            global_option(t)
+            opts["maxdepth" if t == "-maxdepth" else "mindepth"] = int(value)
+            return lambda e: True
+        if t in ("-depth", "-d"):
+            global_option(t)
+            if t == "-d" and warnings:
+                sys.stderr.write("find: warning: the -d option is deprecated; please use -depth instead, because "
+                                 "the latter is a POSIX-compliant feature.\n")
+            opts["depth"] = opts["explicit_depth"] = True
+            return lambda e: True
+        if t in ("-xdev", "-mount"):
+            global_option(t)
+            opts["xdev"] = True
+            return lambda e: True
+        if t in ("-noleaf", "-warn", "-nowarn", "-ignore_readdir_race", "-noignore_readdir_race"):
+            if t.endswith("ignore_readdir_race"):
+                opts["ignore_race"] = t == "-ignore_readdir_race"
+            return lambda e: True
+        if t == "-follow":
+            opts["follow"] = True
+            return lambda e: True
+        if t == "-daystart":
+            if opts["day_start"] is None:
+                tm = time.localtime(start_ns // 10 ** 9)
+                opts["day_start"] = (start_ns // 10 ** 9 - (tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec)) * 10 ** 9
+            return lambda e: True
+        if t in ("-help", "--help"):
+            print("Usage: find [-H] [-L] [-P] [-Olevel] [starting-point...] [expression]\n\n"
+                  "This is pad's find, which follows GNU findutils 4.9.")
+            raise SystemExit(0)
+        if t in ("-version", "--version"):
+            print("find (pad, following GNU findutils) 4.9.0")
+            raise SystemExit(0)
+        if t in ("-links", "-inum"):
+            test = comparison(arg(t), t)
+            attr = "st_nlink" if t == "-links" else "st_ino"
+            seen_test.append(t)
+            return lambda e: test(getattr(e.st, attr))
+        if t == "-samefile":
+            value = arg(t)
+            ref = reference_stat(value)
+            if not ref.st_ino:
+                refuse(f"-samefile on a filesystem that gives '{value}' no inode number")
+            seen_test.append(t)
+            return lambda e: e.st.st_ino == ref.st_ino and e.st.st_dev == ref.st_dev
+        if t == "-used":
+            text = arg(t)
+            kind = text[:1] if text[:1] in "+-" else ""
+            try:
+                days = float(text[len(kind):])
+            except ValueError:
+                fatal(f"invalid argument `{text}' to `-used'")
+            frac, whole = math.modf(days * 86400)
+            ref = -(int(whole) * 10 ** 9 + int(frac * 1e9))
+            seen_test.append(t)
+
+            def used(e):
+                # GNU's: never when the access precedes the change; otherwise the
+                # change time less the access time, against a window at zero.
+                if e.st.st_atime_ns < e.st.st_ctime_ns:
+                    return False
+                delta = e.st.st_ctime_ns - e.st.st_atime_ns
+                if kind == "+":
+                    return delta < ref
+                if kind == "-":
+                    return delta > ref
+                return 0 < delta - ref <= 86400 * 10 ** 9
+            return used
+        if t in ("-fstype", "-context"):
+            refuse(t)
+        if t in ("(", ")", "!", "-not", "-a", "-and", "-o", "-or", ","):
+            fatal(f"invalid expression; you have used a binary operator '{t}' with nothing before it.")
+        if t.startswith("-"):
+            fatal(f"unknown predicate `{t}'")
+        fatal(f"paths must precede expression: `{name}'")
+
+    def unary():
+        t = peek()
+        if t in ("!", "-not"):
+            take()
+            if peek() is None:
+                fatal(f"expected an expression after '{t}'")
+            if peek() in ("-a", "-and", "-o", "-or", ",", ")"):
+                fatal(f"invalid expression; you have used a binary operator '{peek()}' with nothing before it.")
+            inner = unary()
+            return lambda e: not inner(e)
+        if t == "(":
+            take()
+            if peek() == ")":
+                fatal("invalid expression; empty parentheses are not allowed.")
+            inner = comma()
+            if peek() != ")":
+                fatal("invalid expression; I was expecting to find a ')' somewhere but did not see one.")
+            take()
+            return inner
+        return primary()
+
+    def conjunction():
+        if peek() in ("-a", "-and", "-o", "-or", ","):
+            fatal(f"invalid expression; you have used a binary operator '{peek()}' with nothing before it.")
+        node = unary()
+        while peek() is not None and peek() not in ("-o", "-or", ",", ")"):
+            if peek() in ("-a", "-and"):
+                op = take()
+                if peek() is None:
+                    fatal(f"expected an expression after '{op}'")
+                if peek() in ("-a", "-and", "-o", "-or", ",", ")"):
+                    fatal(f"invalid expression; you have used a binary operator '{peek()}' with nothing "
+                          "before it.")
+            left, right = node, unary()
+            node = (lambda l, r: lambda e: l(e) and r(e))(left, right)
+        return node
+
+    def disjunction():
+        node = conjunction()
+        while peek() in ("-o", "-or"):
+            op = take()
+            if peek() is None:
+                fatal(f"expected an expression after '{op}'")
+            left, right = node, conjunction()
+            node = (lambda l, r: lambda e: l(e) or r(e))(left, right)
+        return node
+
+    def comma():
+        node = disjunction()
+        while peek() == ",":
+            take()
+            if peek() is None:
+                fatal("expected an expression after ','")
+            left, right = node, disjunction()
+            node = (lambda l, r: lambda e: (l(e), r(e))[1])(left, right)
+        return node
+
+    if tokens:
+        tree = comma()
+        if pos[0] < len(tokens):
+            fatal("you have too many ')'" if tokens[pos[0]] == ")" else f"unexpected extra predicate '{tokens[pos[0]]}'")
+    else:
+        tree = lambda e: True
+    if not acts:
+        inner = tree
+
+        def tree(e):
+            if inner(e):
+                out.write(os.fsencode(e.path) + b"\n")
             return True
-        if kind == "exec":
-            line = [path if a == "{}" else a.replace("{}", path) for a in node[1]]
-            return spawn(line) == 0
-        if kind == "execplus":
-            batched[node[1]][1].append(path)
-            return True
-        return False
+    if opts["delete"]:
+        if opts["prune"] and not opts["explicit_depth"]:
+            fatal("The -delete action automatically turns on -depth, but -prune does nothing when -depth is in "
+                  "effect.  If you want to carry on anyway, just explicitly use the -depth option.")
+        opts["depth"] = True
+    if opts["follow"]:
+        follow = "L"
+
+    class Entry:
+        __slots__ = ("path", "depth", "st", "lst", "start", "pruned")
+
+        def __init__(self, path, depth, st, lst, start):
+            self.path, self.depth, self.st, self.lst, self.start = path, depth, st, lst, start
+            self.pruned = False
+
+        def other(self):
+            # -xtype's view: the link itself under -L, what it points to otherwise.
+            if follow == "L":
+                return self.lst
+            if stat.S_ISLNK(self.lst.st_mode):
+                try:
+                    return os.stat(self.path)
+                except OSError:
+                    return self.lst
+            return self.lst
 
     # The shims live in the folder so the shell can reach them, and they are
     # emphatically not part of anybody's folder — sync.ts says the same thing
@@ -5173,42 +6003,84 @@ def cmd_find(argv):
     # place five files nobody wrote turn up. `find .ajar` still works if you
     # name it, exactly as a hidden directory should.
     HIDDEN = ".ajar"
+    maxdepth, mindepth = opts["maxdepth"], opts["mindepth"]
 
-    def walk(root, depth):
-        nonlocal status
-        if depth > 0 and os.path.basename(root) == HIDDEN:
-            return
-        try:
-            st = os.lstat(root)
-        except OSError as e:
-            sys.stderr.write(f"find: '{root}': {e.strerror}\n")
-            status = 1
-            return
-        if depth >= mindepth and (maxdepth is None or depth <= maxdepth):
-            matched = evaluate(tree, root, st)
-            if printing and matched:
-                sys.stdout.write(root + "\n")
-        if stat.S_ISDIR(st.st_mode) and (maxdepth is None or depth < maxdepth):
+    run = tree
+
+    def walk(top):
+        # An explicit stack rather than recursion: a deep tree must not run
+        # out of python's.
+        stack = [("visit", top, 0, ())]
+        root_dev = None
+        while stack:
+            item = stack.pop()
+            if item[0] == "post":
+                run(item[1])
+                continue
+            _, path, depth, ancestors = item
+            if depth > 0 and os.path.basename(path) == HIDDEN:
+                continue
             try:
-                names = sorted(os.listdir(root))
-            except OSError as e:
-                sys.stderr.write(f"find: '{root}': {e.strerror}\n")
-                status = 1
-                return
-            for name in names:
-                walk(os.path.join(root, name), depth + 1)
+                lst = os.lstat(path)
+            except OSError as err:
+                if not (depth > 0 and err.errno == errno.ENOENT and opts["ignore_race"]):
+                    error(f"'{path}': {err.strerror}")
+                continue
+            st = lst
+            following = follow == "L" or (follow == "H" and depth == 0)
+            if following and stat.S_ISLNK(lst.st_mode):
+                try:
+                    st = os.stat(path)
+                except OSError as err:
+                    if err.errno == errno.ELOOP:
+                        error(f"'{path}': {err.strerror}")
+                        continue
+            if depth == 0:
+                root_dev = st.st_dev
+            is_dir = stat.S_ISDIR(st.st_mode)
+            ident = (st.st_dev, st.st_ino)
+            if is_dir and following and st.st_ino:
+                for ancestor_path, ancestor_id in ancestors:
+                    if ancestor_id == ident:
+                        error(f"File system loop detected; '{path}' is part of the same file system loop as "
+                              f"'{ancestor_path}'.")
+                        break
+                else:
+                    ancestor_path = None
+                if ancestor_path is not None:
+                    continue
+            e = Entry(path, depth, st, lst, top)
+            descend = is_dir and (maxdepth is None or depth < maxdepth)
+            if opts["xdev"] and depth > 0 and st.st_dev != root_dev:
+                descend = False
+            evaluate = depth >= mindepth
+            if evaluate and not opts["depth"]:
+                run(e)
+                if e.pruned:
+                    descend = False
+            if evaluate and opts["depth"]:
+                stack.append(("post", e))
+            if descend:
+                try:
+                    names = sorted(os.listdir(path))
+                except OSError as err:
+                    error(f"'{path}': {err.strerror}")
+                    continue
+                below = ancestors + ((path, ident),)
+                for name in reversed(names):
+                    stack.append(("visit", os.path.join(path, name), depth + 1, below))
 
-    for p in paths:
-        walk(p, 0)
-
-    for cmd, names in batched:
-        if not names:
-            continue
-        line = [a for a in cmd if a != "{}"] + names
-        if spawn(line) != 0:
-            status = 1
-
-    return status
+    try:
+        for p in paths:
+            walk(p)
+    except Quit:
+        pass
+    for batch in batches:
+        flush_batch(batch)
+    for s in streams.values():
+        s.flush()
+    out.flush()
+    return state["status"]
 
 
 COMMANDS = {
