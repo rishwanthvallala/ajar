@@ -2985,7 +2985,12 @@ def cmd_xargs(argv):
         fail(f"Cannot open input file '{input_file}': {e.strerror}")
     # The command gets /dev/null for its input, as GNU's does, unless the
     # items came from a file (-a) and stdin is still free for it.
-    child_stdin = subprocess.DEVNULL if (input_file is None or input_file == "-") else None
+    child_stdin = None
+    if input_file is None or input_file == "-":
+        try:
+            child_stdin = open(os.devnull, "rb")
+        except OSError:
+            pass   # stdin has been read to its end already, which is nearly as good
     if open_tty:
         try:
             child_stdin = open("/dev/tty", "rb")
@@ -6531,7 +6536,9 @@ def cmd_find(argv):
         parts.append(field("user", str(lookup("user", st.st_uid) or st.st_uid), True) + " ")
         parts.append(field("group", str(lookup("group", st.st_gid) or st.st_gid), True) + " ")
         if stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode):
-            parts.append(f"{os.major(st.st_rdev):3d}, {os.minor(st.st_rdev):3d}")
+            major = getattr(os, "major", lambda d: (d >> 8) & 0xFFF)
+            minor = getattr(os, "minor", lambda d: (d & 0xFF) | ((d >> 12) & 0xFFF00))
+            parts.append(f"{major(st.st_rdev):3d}, {minor(st.st_rdev):3d}")
         else:
             parts.append(field("size", str(st.st_size)))
         tm = time.localtime(st.st_mtime)
