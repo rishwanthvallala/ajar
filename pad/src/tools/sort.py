@@ -14,11 +14,11 @@ That was not always so. Until 20 October only the last -k was used, a key's
 own `n` was a traceback, -f lower-cased where GNU upper-cases, -u kept the
 smallest of equal lines rather than the first, and a file's CRs were dropped.
 
-What it does not do — -c, -C, -m, --debug, --files0-from, --random-source —
-is refused rather than quietly ignored, because a sort that silently drops an
-option is worse than one that admits it cannot. -S, -T, --parallel,
---batch-size and --compress-program are accepted: they tune GNU's memory,
-temporary files and threads, and change nothing about what comes out.
+What it does not do — --debug, --files0-from, --random-source — is refused
+rather than quietly ignored, because a sort that silently drops an option is
+worse than one that admits it cannot. -S, -T, --parallel, --batch-size and
+--compress-program are accepted: they tune GNU's memory, temporary files and
+threads, and change nothing about what comes out.
 """
 
 import os
@@ -29,7 +29,7 @@ from operator import itemgetter
 
 SUPPORTED = (
     "-b -d -f -g -h -i -M -n -R -r -V --sort=WORD -k KEYDEF -t SEP -s -u -z "
-    "-o FILE, and -S -T --parallel --batch-size --compress-program, which change nothing here"
+    "-c -C -m -o FILE, and -S -T --parallel --batch-size --compress-program, which change nothing here"
 )
 
 # What GNU sort treats as blank: space and tab, and newline, which only a
@@ -55,7 +55,7 @@ def die(message, code=2):
 LONG = {
     "batch-size": (True, "batch-size"),
     "buffer-size": (True, "S"),
-    "check": ("optional", None),
+    "check": ("optional", "check"),
     "compress-program": (True, "compress-program"),
     "debug": (False, None),
     "dictionary-order": (False, "d"),
@@ -68,7 +68,7 @@ LONG = {
     "ignore-leading-blanks": (False, "b"),
     "ignore-nonprinting": (False, "i"),
     "key": (True, "k"),
-    "merge": (False, None),
+    "merge": (False, "m"),
     "month-sort": (False, "M"),
     "numeric-sort": (False, "n"),
     "output": (True, "o"),
@@ -84,9 +84,10 @@ LONG = {
     "version-sort": (False, "V"),
     "zero-terminated": (False, "z"),
 }
-FLAGS = set("bdfghiMnrRsuVz")
+FLAGS = set("bcCdfghimMnrRsuVz")
 VALUED = set("koStT")
 SORT_WORDS = {"general-numeric": "g", "human-numeric": "h", "month": "M", "numeric": "n", "random": "R", "version": "V"}
+CHECK_WORDS = {"diagnose-first": "c", "quiet": "C", "silent": "C"}
 
 
 def resolve(word, choices, ambiguous):
@@ -186,6 +187,8 @@ class Options:
         self.keys = []
         self.tab = None
         self.out = None
+        self.check = None       # "c" says where, "C" only exits 1
+        self.merge = False
         self.stable = False
         self.unique = False
         self.zero = False
@@ -194,6 +197,24 @@ class Options:
 def apply(opts, name, value):
     if name in "bdfghiMnRrV" and len(name) == 1:
         set_ordering(name, opts.whole, "both")
+    elif name in ("c", "C", "check"):
+        mode = name
+        if name == "check":
+            mode = "c"
+            if value is not None:
+                word = resolve(value, CHECK_WORDS, lambda _: f"ambiguous argument '{value}' for '--check'")
+                if word is None:
+                    sys.stderr.write(
+                        f"sort: invalid argument '{value}' for '--check'\nValid arguments are:\n"
+                        "  - 'quiet', 'silent'\n  - 'diagnose-first'\n"
+                    )
+                    raise SystemExit(1)
+                mode = CHECK_WORDS[word]
+        if opts.check and opts.check != mode:
+            die("options '-cC' are incompatible")
+        opts.check = mode
+    elif name == "m":
+        opts.merge = True
     elif name == "s":
         opts.stable = True
     elif name == "u":
@@ -601,6 +622,14 @@ class Order:
             return [(line,) for line in lines]
         return list(zip(*[list(map(v, lines)) for v in self.values], lines))
 
+    def compare(self, a, b):
+        for i, backwards in enumerate(self.directions):
+            x, y = a[i], b[i]
+            if x != y:
+                less = x < y
+                return (1 if less else -1) if backwards else (-1 if less else 1)
+        return 0
+
     def sort(self, records):
         # One stable sort per run of keys that go the same way, least
         # significant first: a key that is reversed and one that is not
@@ -658,6 +687,11 @@ def main(argv):
     keys = settle_keys(opts)
     terminator = b"\0" if opts.zero else b"\n"
     files = files or ["-"]
+    if opts.check:
+        if opts.out is not None:
+            die(f"options '-{opts.check}o' are incompatible")
+        if len(files) > 1:
+            die(f"extra operand '{files[1]}' not allowed with -{opts.check}")
 
     # As GNU: every input readable, and the output openable, before any is read.
     for name in files:
@@ -677,7 +711,25 @@ def main(argv):
     inputs = [read_lines(name, terminator) for name in files]
     order = Order(keys, opts)
 
-    if not keys:
+    if opts.check:
+        records = order.records(inputs[0])
+        for n in range(1, len(records)):
+            c = order.compare(records[n - 1], records[n])
+            if c > 0 or (c == 0 and opts.unique):
+                if opts.check == "c":
+                    sys.stderr.flush()
+                    sys.stderr.buffer.write(
+                        b"sort: %s:%d: disorder: %s\n" % (os.fsencode(files[0]), n + 1, records[n][-1])
+                    )
+                return 1
+        return 0
+
+    if opts.merge:
+        import heapq
+        from functools import cmp_to_key
+
+        records = list(heapq.merge(*map(order.records, inputs), key=cmp_to_key(order.compare)))
+    elif not keys:
         # The common case, and the cheapest: whole lines as bytes.
         lines = [line for chunk in inputs for line in chunk]
         lines.sort(reverse=opts.whole.reverse)
