@@ -217,6 +217,42 @@ def cmd_du(argv):
 
 
 # ---------------------------------------------------------------- stat
+def shell_quote(name):
+    """A name quoted the way GNU tools quote one (gnulib's shell-escape-always).
+
+    'a b', "it's", and 'a'$'\\n''b' for a name with a control character in it.
+    """
+    if not name:
+        return "''"
+    printable = all(ch.isprintable() for ch in name)
+    if printable and "'" not in name:
+        return f"'{name}'"
+    if printable and not any(ch in name for ch in "\"$`\\!"):
+        return f'"{name}"'
+    out, run = [], []
+    named = {"\a": "a", "\b": "b", "\t": "t", "\n": "n", "\v": "v", "\f": "f", "\r": "r"}
+
+    def flush():
+        if run:
+            out.append("'" + "".join(run) + "'")
+            run.clear()
+
+    for ch in name:
+        if ch == "'":
+            flush()
+            out.append("\\'")
+        elif not ch.isprintable():
+            flush()
+            if ch in named:
+                out.append(f"$'\\{named[ch]}'")
+            else:
+                out.append("$'" + "".join(f"\\{b:03o}" for b in ch.encode("utf-8", "surrogateescape")) + "'")
+        else:
+            run.append(ch)
+    flush()
+    return "".join(out)
+
+
 def cmd_stat(argv):
     fmt, files = None, []
     i = 0
@@ -255,38 +291,361 @@ def cmd_stat(argv):
 
 # ---------------------------------------------------------------- split
 def cmd_split(argv):
-    lines, size, prefix, files = 1000, None, "x", []
-    i = 0
+    """GNU split: -l, -b, -C and -n in all its forms, on bytes.
+
+    Read and written as bytes: a CR, or a byte that is not UTF-8, is data like
+    any other. The chunking is GNU's own code ported — split.c's
+    bytes_split, line_bytes_split, lines_chunk_split and lines_rr — so the
+    pieces come out the sizes GNU makes them, empty ones included. With no -a
+    the suffixes widen as GNU's do: after xyz comes xzaaa.
+    """
+    import re
+
+    def fail(message, hint=False):
+        sys.stderr.write(f"split: {message}\n" + ("Try 'split --help' for more information.\n" if hint else ""))
+        raise SystemExit(1)
+
+    def size_of(text, what):
+        # xstrtoimax with split's suffixes: b is 512, K/k and KiB 1024, KB 1000, and on up.
+        m = re.fullmatch(r"(\d+)(?:([bkKmMGTPEZYRQ])(B|iB)?)?", text)
+        if m and not (m.group(2) == "b" and m.group(3)):
+            n, letter, tail = int(m.group(1)), m.group(2), m.group(3)
+            if letter == "b":
+                n *= 512
+            elif letter:
+                n *= (1000 if tail == "B" else 1024) ** ("KMGTPEZYRQ".index(letter.upper()) + 1)
+            if n > 0:
+                return n
+        fail(f"invalid number of {what}: '{text}'")
+
+    def whole(text, what):
+        if not text.isdigit() or int(text) == 0:
+            fail(f"invalid number of {what}: '{text}'")
+        return int(text)
+
+    mode, amount, chunk = None, 1000, (0, 0)
+    alphabet, width, width_given, extra, elide, verbose, sep = "abcdefghijklmnopqrstuvwxyz", 2, False, "", False, False, b"\n"
+    operands, i = [], 0
+
+    def set_mode(new, value):
+        nonlocal mode, amount
+        if mode is not None and mode != new:
+            fail("cannot split in more than one way", hint=True)
+        mode, amount = new, value
+
+    def set_chunks(text):
+        nonlocal chunk
+        kind, _, rest = text.partition("/") if text[:2] in ("l/", "r/") else ("", "", text)
+        k, slash, n = rest.partition("/")
+        if not slash:
+            k, n = "0", k
+        n = whole(n, "chunks")
+        if not k.isdigit() or (slash and not 0 < int(k) <= n):
+            fail(f"invalid chunk number: '{k}'")
+        set_mode({"": "chunks", "l": "linechunks", "r": "rr"}[kind], n)
+        chunk = (int(k), n)
+
+    longs = {"--bytes": "b", "--line-bytes": "C", "--lines": "l", "--number": "n", "--suffix-length": "a",
+             "--separator": "t", "--additional-suffix": "S"}
     while i < len(argv):
         a = argv[i]
-        if a.startswith("-l"):
-            lines = int(a[2:] or argv[(i := i + 1)])
-            size = None
-        elif a.startswith("-b"):
-            size = int(a[2:] or argv[(i := i + 1)])
-        elif a.startswith("-") and a != "-":
-            die("split", f"unsupported option '{a}'. Supported: -l N -b N")
+        if a == "--":
+            operands.extend(argv[i + 1 :])
+            break
+        if not a.startswith("-") or a == "-":
+            operands.append(a)
+            i += 1
+            continue
+        pairs = []
+        if a.startswith("--"):
+            key, eq, value = a.partition("=")
+            if key in longs:
+                if not eq:
+                    i += 1
+                    if i >= len(argv):
+                        fail(f"option '{key}' requires an argument", hint=True)
+                    value = argv[i]
+                pairs.append((longs[key], value))
+            elif key in ("--numeric-suffixes", "--hex-suffixes") and not eq:
+                pairs.append(("d" if key == "--numeric-suffixes" else "x", None))
+            elif key in ("--elide-empty-files", "--verbose", "--unbuffered") and not eq:
+                pairs.append(({"--elide-empty-files": "e", "--verbose": "V", "--unbuffered": "u"}[key], None))
+            else:
+                die("split", f"unsupported option '{a}'. Supported: -l N -b SIZE -C SIZE -n CHUNKS -a N -d -x -e -t SEP -u --additional-suffix=SUF --verbose")
+        elif a[1:].isdigit():
+            pairs.append(("l", a[1:]))  # the obsolete -NUM, which is -l NUM
         else:
-            files.append(a)
+            j = 1
+            while j < len(a):
+                f = a[j]
+                if f in "bClnat":
+                    value = a[j + 1 :]
+                    if not value:
+                        i += 1
+                        if i >= len(argv):
+                            fail(f"option requires an argument -- '{f}'", hint=True)
+                        value = argv[i]
+                    pairs.append((f, value))
+                    break
+                if f not in "dexu":
+                    die("split", f"unsupported option '-{f}'. Supported: -l N -b SIZE -C SIZE -n CHUNKS -a N -d -x -e -t SEP -u --additional-suffix=SUF --verbose")
+                pairs.append((f, None))
+                j += 1
+        for f, value in pairs:
+            if f == "l":
+                set_mode("lines", whole(value, "lines"))
+            elif f == "b":
+                set_mode("bytes", size_of(value, "bytes"))
+            elif f == "C":
+                set_mode("linebytes", size_of(value, "bytes"))
+            elif f == "n":
+                set_chunks(value)
+            elif f == "a":
+                if not value.isdigit():
+                    fail(f"invalid suffix length: '{value}'")
+                width, width_given = (int(value), True) if int(value) else (2, False)
+            elif f == "d":
+                alphabet = "0123456789"
+            elif f == "x":
+                alphabet = "0123456789abcdef"
+            elif f == "e":
+                elide = True
+            elif f == "V":
+                verbose = True
+            elif f == "S":
+                if "/" in value:
+                    fail(f"invalid suffix '{value}', contains directory separator")
+                extra = value
+            elif f == "t":
+                raw = os.fsencode(value)
+                if raw == b"\\0":
+                    raw = b"\0"
+                if len(raw) != 1:
+                    fail(f"multi-character separator '{value}'" if raw else "empty record separator")
+                sep = raw
         i += 1
-    source = files[0] if files else "-"
-    if len(files) > 1:
-        prefix = files[1]
+    if len(operands) > 2:
+        fail(f"extra operand '{operands[2]}'", hint=True)
+    source = operands[0] if operands else "-"
+    prefix = operands[1] if len(operands) > 1 else "x"
+    mode = mode or "lines"
 
-    def name_for(index):
-        return f"{prefix}{chr(97 + index // 26)}{chr(97 + index % 26)}"
+    auto = not width_given and mode in ("lines", "bytes", "linebytes")
+    if mode in ("chunks", "linechunks", "rr"):
+        needed, last = 1, chunk[1] - 1
+        while last >= len(alphabet):
+            needed, last = needed + 1, last // len(alphabet)
+        if width_given and width < needed:
+            fail(f"the suffix length needs to be at least {needed}")
+        width = max(width, needed)
 
-    text = read_text(source, "split")
-    chunks = []
-    if size is not None:
-        chunks = [text[i : i + size] for i in range(0, len(text), size)] or [""]
+    def names():
+        # GNU's widening: with no -a, the suffixes that would start with the
+        # alphabet's last letter are not used; that letter joins the prefix
+        # and the suffix grows by one instead.
+        size, head = width, ""
+        while True:
+            count = (len(alphabet) - 1) * len(alphabet) ** (size - 1) if auto and size else len(alphabet) ** size
+            for k in range(count):
+                digits = []
+                for _ in range(size):
+                    k, d = divmod(k, len(alphabet))
+                    digits.append(alphabet[d])
+                yield prefix + head + "".join(reversed(digits)) + extra
+            if not auto:
+                fail("output file suffixes exhausted")
+            size, head = size + 1, head + alphabet[-1]
+
+    try:
+        if source == "-":
+            data, here = sys.stdin.buffer.read(), os.fstat(0)
+        else:
+            with open(source, "rb") as f:
+                data, here = f.read(), os.fstat(f.fileno())
+    except IsADirectoryError as e:
+        fail(f"read error on '{source}': {e.strerror}")
+    except OSError as e:
+        fail(f"cannot open '{source}' for reading: {e.strerror}")
+
+    generated = names()
+    current = [None]
+
+    def open_next():
+        name = next(generated)
+        return open_next_named(name, here, verbose)
+
+    def cwrite(new, piece):
+        # split.c's cwrite(): a new file when asked for one (unless -e and it
+        # would stay empty), then the bytes, if there are any.
+        if new:
+            if piece is None and elide:
+                return
+            if current[0]:
+                current[0].close()
+            current[0] = open_next()
+        if piece:
+            current[0].write(piece)
+
+    k, n = chunk
+    if mode == "lines":
+        lines = data.split(sep)
+        tail = lines.pop()
+        rows = [line + sep for line in lines] + ([tail] if tail else [])
+        for start in range(0, len(rows), amount):
+            cwrite(True, b"".join(rows[start : start + amount]))
+    elif mode == "bytes":
+        split_bytes(data, amount, 0, 0, cwrite)
+    elif mode == "chunks" and not k:
+        split_bytes(data, len(data) // n, len(data) % n, n, cwrite)
+    elif mode == "chunks":
+        size = len(data)
+        start = (k - 1) * (size // n) + min(k - 1, size % n)
+        end = size if k == n else k * (size // n) + min(k, size % n)
+        sys.stdout.buffer.write(data[start:end])
+    elif mode == "linebytes":
+        split_line_bytes(data, amount, sep, cwrite)
+    elif mode == "linechunks":
+        split_line_chunks(data, k, n, sep, cwrite, sys.stdout.buffer.write)
     else:
-        rows = text.splitlines(keepends=True)
-        chunks = ["".join(rows[i : i + lines]) for i in range(0, len(rows), lines)] or [""]
-    for index, chunk in enumerate(chunks):
-        with open(name_for(index), "w", errors="surrogateescape") as f:
-            f.write(chunk)
+        lines = data.split(sep)
+        tail = lines.pop()
+        rows = [line + sep for line in lines] + ([tail] if tail else [])
+        if k:
+            sys.stdout.buffer.write(b"".join(rows[k - 1 :: n]))
+        else:
+            files = [next(generated) for _ in range(n)]
+            outputs = {}
+            for index, row in enumerate(rows):
+                which = index % n
+                if which not in outputs:
+                    outputs[which] = open_next_named(files[which], here, verbose)
+                outputs[which].write(row)
+            for which in range(n):
+                if which not in outputs and not elide:
+                    outputs[which] = open_next_named(files[which], here, verbose)
+            for f in outputs.values():
+                f.close()
+    if current[0]:
+        current[0].close()
     return 0
+
+
+def open_next_named(name, here, verbose):
+    """One of split's output files, opened — and refused if it is the input itself, as GNU refuses it."""
+    try:
+        if stat.S_ISREG(here.st_mode) and os.path.samestat(here, os.stat(name)):
+            sys.stderr.write(f"split: '{name}' would overwrite input; aborting\n")
+            raise SystemExit(1)
+    except FileNotFoundError:
+        pass
+    if verbose:
+        sys.stdout.write(f"creating file {shell_quote(name)}\n")
+        sys.stdout.flush()
+    try:
+        return open(name, "wb")
+    except OSError as e:
+        sys.stderr.write(f"split: {name}: {e.strerror}\n")
+        raise SystemExit(1)
+
+
+def split_bytes(data, n_bytes, rem_bytes, max_files, cwrite):
+    """split.c's bytes_split(), for -b and -n N, with the whole input as one read."""
+    new, opened, pos, left = True, 0, 0, len(data)
+    to_write = n_bytes + (0 < rem_bytes)
+    if to_write:
+        while 0 < to_write <= left:
+            cwrite(new, data[pos : pos + to_write])
+            opened += new
+            new = not max_files or opened < max_files
+            pos, left = pos + to_write, left - to_write
+            to_write = n_bytes + (opened < rem_bytes)
+        if left > 0:
+            cwrite(new, data[pos:])
+            opened += new
+    while opened < max_files:
+        cwrite(True, None)
+        opened += 1
+
+
+def split_line_bytes(data, n_bytes, sep, cwrite):
+    """split.c's line_bytes_split(), for -C: whole lines up to SIZE bytes a file."""
+    n_out, hold, split_line = 0, bytearray(), False
+    sob, n_left = 0, len(data)
+    while n_left:
+        split_rest, eoc = 0, False
+        if n_bytes - n_out - len(hold) <= n_left:
+            split_rest, eoc = n_bytes - n_out - len(hold), True
+            eol = data.rfind(sep, sob, sob + split_rest)
+        else:
+            eol = data.rfind(sep, sob, sob + n_left)
+        if hold and not (eol < 0 and n_out):
+            cwrite(n_out == 0, bytes(hold))
+            n_out += len(hold)
+            hold.clear()
+        if eol >= 0:
+            split_line = True
+            n_write = eol - sob + 1
+            cwrite(n_out == 0, data[sob : sob + n_write])
+            n_out, n_left, sob = n_out + n_write, n_left - n_write, sob + n_write
+            if eoc:
+                split_rest -= n_write
+        if n_left and not split_line:
+            n_write = split_rest if eoc else n_left
+            cwrite(n_out == 0, data[sob : sob + n_write])
+            n_out, n_left, sob = n_out + n_write, n_left - n_write, sob + n_write
+            if eoc:
+                split_rest -= n_write
+        if (eoc and split_rest) or (not eoc and n_left):
+            n_buf = split_rest if eoc else n_left
+            hold += data[sob : sob + n_buf]
+            n_left, sob = n_left - n_buf, sob + n_buf
+        if eoc:
+            n_out, split_line = 0, False
+    if hold:
+        cwrite(n_out == 0, bytes(hold))
+
+
+def split_line_chunks(data, k, n, sep, cwrite, to_stdout):
+    """split.c's lines_chunk_split(), for -n l/N and l/K/N: N pieces by size, ending on line ends."""
+    size = len(data)
+    rem_bytes, chunk_size = size % n, size // n
+    chunk_no, chunk_end, n_written, new, truncated = 1, chunk_size + (0 < rem_bytes), 0, True, False
+    if k > 1 and size > 0:
+        start = (k - 1) * chunk_size + min(k - 1, rem_bytes) - 1
+        n_written, chunk_no, chunk_end = start, k - 1, start + 1
+    while n_written < size:
+        bp, eob = n_written, size
+        while bp != eob:
+            skip = min(eob - bp, max(0, chunk_end - 1 - n_written))
+            found = data.find(sep, bp + skip, eob)
+            nxt = found >= 0
+            bp_out = found + 1 if nxt else eob
+            if k == chunk_no:
+                to_stdout(data[bp:bp_out])
+            elif not k:
+                cwrite(new, data[bp:bp_out])
+            n_written += bp_out - bp
+            bp = bp_out
+            new = nxt
+            while nxt or chunk_end <= n_written:
+                if not nxt and bp == eob:
+                    truncated = True
+                    break
+                if k == chunk_no:
+                    return
+                chunk_end += chunk_size + (chunk_no < rem_bytes)
+                chunk_no += 1
+                if chunk_end <= n_written:
+                    if not k:
+                        cwrite(True, None)
+                else:
+                    nxt = False
+    if truncated:
+        chunk_no += 1
+    if not k:
+        while chunk_no <= n:
+            cwrite(True, None)
+            chunk_no += 1
 
 
 # ---------------------------------------------------------------- xargs
