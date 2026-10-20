@@ -150,6 +150,12 @@ of the encoding it names; if the stored file has moved on, the whole write is
 refused with 409 and the browser sends the full file instead. Reads and writes
 return each file's hash so the browser knows what it has.
 
+A file sent whole may carry `base` too, since 20 October: the hash of the
+version it replaces, and the write is refused with 409 when that is not what is
+stored — a file gone counts as moved on. The page sends it for every file it
+knows the stored copy of, and merges on a 409 as it does for edits. Without
+it a write is what it always was.
+
 The edit is applied without loading the file (`pad/splice.rs`): the stored JSON
 string is read in 64 KiB pieces and copied through, the edit put in where it
 falls, and the result hashed on the way. Edits to one file go in order, and a

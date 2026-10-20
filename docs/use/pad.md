@@ -3,7 +3,8 @@
 A folder you can open, edit and run in a browser tab, with nobody's machine
 involved but the one you are sitting at.
 
-Live at **[code.rishwanth.dev](https://code.rishwanth.dev)**.
+Live at **[code.rishwanth.dev](https://code.rishwanth.dev)**, and this guide is
+there too, at [code.rishwanth.dev/help](https://code.rishwanth.dev/help).
 
 ## Start
 

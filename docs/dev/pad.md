@@ -1445,6 +1445,18 @@ the new name, where they were in it, and puts typing of theirs not yet saved
 onto it (`refresh`; review of 17 October, M1). Until then they were moved to
 another file, and that typing was lost with the old one.
 
+Two things that fix got wrong, found against production on 19 October and fixed
+on the 20th. It took every moved file's text for typing, whether or not
+anything had been typed in it, and carried the difference onto the file as the
+mover left it — so `mv app.py src/app.py && sed -i …` in one place was undone by
+a page merely open in another (C3). Typing is now what this page holds beyond
+what it last knew stored, and only that is carried. And it took a file deleted
+while another of its name was made elsewhere for a move, and put the old text
+into the new file (C5): a file of the same name, its text changed, is now taken
+for the moved one only while it is still recognisably that file — most of its
+lines in common, or a short one most of its text at the same start and end
+(`alike`). `pair-check.mjs` runs both, and fails both against the code before.
+
 ## Naming in the tree
 
 New file, New folder and F2 type the name into the tree, where the thing will
@@ -1555,7 +1567,11 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 - **A 409** — a save of edits against a version the store no longer holds —
   reads the store's version and merges this page's change onto it
   (`App.writeOverStale`, `carryOver`), never sends the whole file over it,
-  which lost the newer version while saying "saved" (DC-03).
+  which lost the newer version while saying "saved" (DC-03). A file sent
+  whole carries the hash of the version it was typed over too, since 20
+  October, and is refused and merged the same way: a page whose room was out
+  of reach — so it heard of nobody's saves — wrote its copy over a newer one,
+  and said "saved" (review of 19 October, C6).
 - **A 413 or 507** keeps the files unsaved (`dirty`) without retrying on its
   own — the next edit tries again (DC-04).
 - **While saving fails**, the unsaved text and the stored text it was typed
@@ -1609,3 +1625,28 @@ What the reviewer's second look at the deployed pad found, and what changed:
   (`pointer: coarse`, under 30 rem tall, landscape) — a desktop window zoomed
   to the same shape keeps its splitter. `check-pad-layout.cjs` opens one at
   844×390.
+
+## After the second verification, 18 October (night)
+
+- **Run pressed before the app exists.** On a first visit the workspace is
+  drawn and the page then waits for its service worker before `App` is made,
+  and a press in that wait was still lost. `bootstrap.ts` answers the button
+  from its first paint now: a press marks it (`data-wanted`) and says so on
+  the status line, and `App.start` runs it once the pad is open.
+  `user-check.mjs` holds `sw.js` back in a browser of its own and clicks.
+- **A JavaScript syntax error** is said at its own line and marked there. The
+  runtime's node gave the line one past — it counts the wrapper it parses each
+  file in — and then printed its parser's own frames and its `pos`, `loc` and
+  `raisedAt`; `RuntimeNotices` puts the line right and leaves the rest out,
+  and `problemsIn` marks `SyntaxError: … (line:column)` in the file `node`
+  ran. Marks are made again once a command's files are the page's, so a file
+  the same line made is marked too.
+- **`/help` is the user's guide**, `docs/use/pad.md` built in (`help.ts`), in
+  the type a pad's Markdown has. It was a name kept for the site that said it
+  was no pad's address, and the guide — F6 with it — was on no page. Its links
+  to the rest of the documentation go to the repository.
+- **`clang++ --version`**, `--help` and the rest that ask the compiler about
+  itself run as they are (`tools/cxx.py`): through `-###`, the answer was
+  taken for its header and left out.
+- **Comments in the dark theme** are VS Code's own green, 5.2:1 on the
+  editor's background, where Monaco's came to 4.39:1 (`theme.ts`).

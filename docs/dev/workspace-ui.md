@@ -79,7 +79,9 @@ prefix: `ajar.theme` / `pad.theme` (`system`, `light` or `dark`) and
   against that surface since 18 October (review M6): line numbers `#5d6673`
   light and `#9aa3b0` dark, the current line's `#1f2937` and `#e6e9ee`, and
   the final empty line's dimmed number `#6e7681` and `#7d8592` (4.6:1 and
-  4.7:1), where Monaco's own dim was 1.8:1 and 2.2:1. Each
+  4.7:1), where Monaco's own dim was 1.8:1 and 2.2:1; and since 20 October
+  comments, `#008000` light and `#6a9955` dark (5.1:1 and 5.2:1), where
+  Monaco's dark green was 4.39:1 on this darker surface. Each
   product's terminal takes `--surface` from the stylesheet — the pad's since
   September, ajar's since 7 October. ajar's landing page has its own theme
   switch since 7 October, writing the same `ajar.theme`. The
