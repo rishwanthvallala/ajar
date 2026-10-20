@@ -62,21 +62,18 @@ export async function startPad(): Promise<void> {
   }
 
   const ui = new PadWorkspace(root, name);
-  // Run answered from its first paint. On a first visit the page waits here
-  // for its service worker before the app that answers the button exists,
-  // and a press then was lost without a word (review of 18 October, N1's
-  // first-paint window); it is remembered, and run once the pad is open.
-  ui.elements.run.onclick = () => {
-    ui.elements.run.dataset.wanted = "1";
-    ui.elements.status.textContent = "opening… — Run starts as soon as the pad is open";
-  };
-  await mirrorPackages();
+  // The service worker that serves the runtime's packages, registered now
+  // and waited for by the runtime alone (App.ensureRuntime). Until 20 October
+  // the page waited here, before there was an app or an editor, and on a
+  // first visit that was the worker's whole install.
+  const mirrored = mirrorPackages();
   let app: App | null = null;
   const leave = () => {
     app?.dispose();
     ui.dispose();
   };
   app = new App(name, new Store("", codeFor), ui.elements, ui, {
+    mirrored,
     onPrivate: (why, deadLink) => {
       leave();
       app = null;

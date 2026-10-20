@@ -22,7 +22,8 @@ import { PreviewBrowser } from "./preview";
 import { at, interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
 import { neededBy, quoted, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
-import { TerminalSession } from "./terminals";
+import type { TerminalSession } from "./terminals";
+import { loadEditor } from "./editor-load";
 import { ICONS } from "./icons";
 import { openOpenShare, openShare } from "./share";
 import { button, clearBusy, confirmDialog, el, modal, nameDialog, toast, toastRegions } from "./ui";
@@ -111,6 +112,17 @@ print(f"wrote {len(rows)} rows to out.csv")
 
 type Status = "" | "loading" | "running" | "saving" | "error";
 
+/**
+ * Once what is on the page now has been drawn. A tab nobody is looking at
+ * draws nothing, so there it is soon instead.
+ */
+function painted(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+    setTimeout(resolve, 250);
+  });
+}
+
 export interface AppHooks {
   /**
    * The pad is not this browser's to see, now or any more — private, deleted,
@@ -118,6 +130,12 @@ export interface AppHooks {
    * nothing, because its link was reset or turned off.
    */
   onPrivate?: (why: "private" | "gone" | "invalid", deadLink?: boolean) => void;
+  /**
+   * The service worker that serves the runtime's packages, controlling the
+   * page (runtime.ts `mirrorPackages`). The runtime waits for it, so its first
+   * download goes through it; nothing else does.
+   */
+  mirrored?: Promise<unknown>;
 }
 
 /**
@@ -268,7 +286,12 @@ export class App {
   private split = false;
   /** Languages installed into the sandbox so far; a shell older than the latest cannot see it. */
   private installs = 0;
-  private xterm: Promise<{ Terminal: typeof import("@xterm/xterm").Terminal; FitAddon: typeof import("@xterm/addon-fit").FitAddon }> | null = null;
+  /** The terminal's code — xterm, and the shell's with its tools — fetched once the editor is on screen. */
+  private xterm: Promise<{
+    Terminal: typeof import("@xterm/xterm").Terminal;
+    FitAddon: typeof import("@xterm/addon-fit").FitAddon;
+    TerminalSession: typeof import("./terminals").TerminalSession;
+  }> | null = null;
   private tree: FileTree | null = null;
   /** What the folder's servers show, made when the runtime starts. */
   private preview: PreviewBrowser | null = null;
@@ -315,6 +338,8 @@ export class App {
   /** Latest durable revision applied by this tab. */
   private storeSeq = 0;
   private prefetched = false;
+  /** See `AppHooks.mirrored`. */
+  private readonly mirrored: Promise<unknown>;
   /** The runtime has started, not merely been asked for. */
   private runtimeReady = false;
   /** Makes the sandbox's http requests with the browser's fetch: fetch-bridge.ts. */
@@ -334,9 +359,10 @@ export class App {
   private runPressed = 0;
   /**
    * Until the pad is open: its files read, the editor and the terminal up.
-   * Run pressed then — the button is there from the first paint — was
-   * dropped without a word until 18 October (review N1); now it is
-   * remembered (`runWanted`) and runs once the pad is open.
+   * Run pressed then — the button is there from the first paint, and the
+   * editor takes typing before the terminal is there — was dropped without a
+   * word until 18 October (review N1); now it is remembered (`runWanted`) and
+   * runs once the pad is open.
    */
   private opening = true;
   private runWanted = false;
@@ -473,6 +499,7 @@ export class App {
     private readonly ui?: PadWorkspace,
     private readonly hooks: AppHooks = {},
   ) {
+    this.mirrored = hooks.mirrored ?? Promise.resolve();
     // A write that went past one this page never read: read the pad, all of it.
     this.store.onBehind = (pad) => {
       if (pad === this.name) void this.refresh(true);
@@ -509,11 +536,6 @@ export class App {
   }
 
   async start(): Promise<void> {
-    // Pressed before this existed (bootstrap.ts): remembered there.
-    if (this.el.run.dataset.wanted) {
-      delete this.el.run.dataset.wanted;
-      this.runWanted = true;
-    }
     // Answered from the start; `wire` puts the full handler on later.
     this.el.run.onclick = () => void this.run();
     try {
@@ -575,14 +597,28 @@ export class App {
     this.renderFiles();
     this.wire();
     this.acceptDrops();
-    await this.openTerminal();
-    if (this.disposed) return;
     this.recoverJournal();
-    void this.showLastRun();
-    this.expose();
     this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
     this.welcomeCopy();
     this.editor?.focus();
+    // The editor first, taking what is typed or pasted, and the terminal
+    // once it has been drawn: until 20 October the editor took no keys until
+    // the terminal's code had been fetched and the terminal opened, and its
+    // first frame waited for that work too. Opening a pad to paste into is
+    // most of what people do with it. See "Opening a pad to paste into" in
+    // docs/dev/pad.md.
+    await painted();
+    if (this.disposed) return;
+    try {
+      await this.openTerminal();
+    } catch {
+      // Fetched again by the next terminal asked for.
+      this.xterm = null;
+      this.say("error", "the terminal did not load — reload the page to try again");
+    }
+    if (this.disposed) return;
+    void this.showLastRun();
+    this.expose();
     // Last, so the runtime is seeded with every file above and nothing it does
     // competes with putting the editor on screen. See `warm`.
     this.warm();
@@ -1065,13 +1101,8 @@ export class App {
   // ---------------------------------------------------------------- editor
 
   private async openEditor(): Promise<void> {
-    const [monaco, { errorHandler }] = await Promise.all([
-      import("monaco-editor/esm/vs/editor/editor.api"),
-      import("monaco-editor/esm/vs/base/common/errors.js"),
-      // Colours, and the editor features that come with them — see
-      // monaco-languages.ts.
-      import("./monaco-languages"),
-    ]);
+    // Asked for by main.ts as the page began, so usually here already.
+    const [monaco, { errorHandler }] = await loadEditor();
     // Monaco asks for workers by language. Only the plain editor worker can
     // run here, so every request gets that one — the language services are not
     // bundled and could not start anyway.
@@ -1973,7 +2004,7 @@ export class App {
   private warm(): void {
     if (this.prefetched) return;
     this.prefetched = true;
-    prefetch();
+    void this.mirrored.then(prefetch);
     // The shell too. With python already up, opening it — bash, then a round
     // of setup commands — was most of what was left of the first Run: 1.0 s
     // from the button on a return visit, measured, against 0.3 s for a second
@@ -1986,6 +2017,9 @@ export class App {
 
   private ensureRuntime(): Promise<Runtime> {
     this.runtime ??= (async () => {
+      // Its packages through the service worker, which a first visit may
+      // still be installing (bootstrap.ts).
+      await this.mirrored;
       const files = seedFiles(this.known, this.texts, this.docs);
       const binaries = new Map([...this.binaries].filter(([path]) => !ignored(path)));
       // wisp carries egress *and* the http ingress the preview needs, so it
@@ -2626,10 +2660,16 @@ export class App {
    * first's, which the workspace made; the rest are made here.
    */
   private async addTerminal(element?: HTMLElement): Promise<TerminalSession> {
-    const { Terminal, FitAddon } = await (this.xterm ??= (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
+    const { Terminal, FitAddon, TerminalSession } = await (this.xterm ??= (async () => {
+      const [{ Terminal }, { FitAddon }, { TerminalSession }] = await Promise.all([
+        import("@xterm/xterm"),
+        import("@xterm/addon-fit"),
+        // The shell, and the tools it writes into the sandbox: 400 KB the
+        // editor does not need, and the page's opening fetched until 20 October.
+        import("./terminals"),
+      ]);
       await import("@xterm/xterm/css/xterm.css");
-      return { Terminal, FitAddon };
+      return { Terminal, FitAddon, TerminalSession };
     })());
     const number = (this.sessions.at(-1)?.number ?? 0) + 1;
     const host = element ?? Object.assign(document.createElement("div"), { className: "terminal", id: `terminal-${number}` });
