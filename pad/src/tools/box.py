@@ -1454,12 +1454,23 @@ def cmd_zip(argv):
                     z.writestr(info, data, compress_type=info.compress_type)
             for new_info, new_data, method in built.values():
                 z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
-        os.chmod(temporary, stat.S_IMODE(archive_stat.st_mode) if archive_stat else 0o666 & ~zip_umask())
+        keep_mode_and_times(temporary, stat.S_IMODE(archive_stat.st_mode) if archive_stat else 0o666 & ~zip_umask(), None)
         os.replace(temporary, archive)
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
     return 0
+
+
+def keep_mode_and_times(path, mode, times_ns):
+    """chmod and utime where the filesystem allows; the tools carry on where it does not, and so does this."""
+    try:
+        if mode is not None:
+            os.chmod(path, mode)
+        if times_ns is not None:
+            os.utime(path, ns=times_ns)
+    except OSError:
+        pass
 
 
 def zip_time(seconds):
@@ -1682,10 +1693,8 @@ def cmd_unzip(argv):
             print(f"{verb:>8}ing: {shown:<22}  ")
         with open(target, "wb") as f:
             f.write(data)
-        if mode & 0o777:
-            os.chmod(target, stat.S_IMODE(mode) & 0o777)
-        stamp = zip_mtime(info)
-        os.utime(target, (stamp, stamp))
+        stamp = int(zip_mtime(info) * 10**9)
+        keep_mode_and_times(target, stat.S_IMODE(mode) & 0o777 or None, (stamp, stamp))
     if links and not quiet:
         print("finishing deferred symbolic links:")
     for target, shown, points_at in links:
@@ -1698,10 +1707,8 @@ def cmd_unzip(argv):
             sys.stderr.write(f"error:  cannot create symlink {shown}: {e.strerror}\n")
             status = max(status, 1)
     for target, info, mode in reversed(directories):
-        if mode & 0o777:
-            os.chmod(target, stat.S_IMODE(mode) & 0o777)
-        stamp = zip_mtime(info)
-        os.utime(target, (stamp, stamp))
+        stamp = int(zip_mtime(info) * 10**9)
+        keep_mode_and_times(target, stat.S_IMODE(mode) & 0o777 or None, (stamp, stamp))
     cautions()
     return status
 
@@ -2619,8 +2626,7 @@ def compressor(argv, tool, module, suffix):
             os.remove(out_name)
         with open(out_name, "wb") as f:
             f.write(body)
-        os.chmod(out_name, stat.S_IMODE(st.st_mode))
-        os.utime(out_name, ns=(st.st_atime_ns, st.st_mtime_ns))
+        keep_mode_and_times(out_name, stat.S_IMODE(st.st_mode), (st.st_atime_ns, st.st_mtime_ns))
         if not keep:
             os.remove(name)
     return result()
