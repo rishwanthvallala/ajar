@@ -6038,7 +6038,10 @@ def cmd_find(argv):
     out = sys.stdout.buffer
     start_ns = time.time_ns()
     state = {"status": 0}
-    warnings = sys.stdin.isatty()
+    try:
+        warnings = sys.stdin.isatty()   # GNU warns only at a terminal, unless -warn
+    except (AttributeError, ValueError, OSError):
+        warnings = False
 
     def fatal(message):
         out.flush()
@@ -6077,7 +6080,7 @@ def cmd_find(argv):
     tokens = argv[i:]
 
     opts = dict(maxdepth=None, mindepth=0, depth=False, xdev=False, ignore_race=False, regextype="emacs",
-                day_start=None, prune=False, delete=False, explicit_depth=False, follow=False)
+                day_start=None, prune=False, delete=False, explicit_depth=False, follow=False, warnings=warnings)
     acts = []           # whether the expression does something itself
     batches = []        # -exec ... + commands with the names they have gathered
     streams = {}        # -fprint files, opened as GNU opens them: while parsing
@@ -6580,7 +6583,7 @@ def cmd_find(argv):
         pass
 
     def global_option(name):
-        if seen_test and warnings:
+        if seen_test and opts["warnings"]:
             sys.stderr.write(f"find: warning: you have specified the global option {name} after the argument "
                              f"{seen_test[0]}, but global options are not positional, i.e., {name} affects tests "
                              "specified before it as well as those specified after it.  Please specify global "
@@ -6906,7 +6909,7 @@ def cmd_find(argv):
             return lambda e: True
         if t in ("-depth", "-d"):
             global_option(t)
-            if t == "-d" and warnings:
+            if t == "-d" and opts["warnings"]:
                 sys.stderr.write("find: warning: the -d option is deprecated; please use -depth instead, because "
                                  "the latter is a POSIX-compliant feature.\n")
             opts["depth"] = opts["explicit_depth"] = True
@@ -6918,6 +6921,8 @@ def cmd_find(argv):
         if t in ("-noleaf", "-warn", "-nowarn", "-ignore_readdir_race", "-noignore_readdir_race"):
             if t.endswith("ignore_readdir_race"):
                 opts["ignore_race"] = t == "-ignore_readdir_race"
+            if t in ("-warn", "-nowarn"):
+                opts["warnings"] = t == "-warn"
             return lambda e: True
         if t == "-follow":
             opts["follow"] = True
