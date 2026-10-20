@@ -354,39 +354,270 @@ def shell_quote(name):
 
 
 def cmd_stat(argv):
-    fmt, files = None, []
+    """GNU stat on files: its default layout, -c, --printf, -t and -L, and its %-directives.
+
+    Without -L it describes a symlink rather than what the link points to, as
+    stat does. Python's stat has no birth time, so %w is '-' and %W is 0 —
+    what GNU prints where a system keeps none.
+    """
+    fmt, printf, terse, follow, files = None, False, False, False, []
+
+    def usage_error(message):
+        sys.stderr.write(f"stat: {message}\nTry 'stat --help' for more information.\n")
+        raise SystemExit(1)
+
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("-c", "--format"):
-            i += 1
-            fmt = argv[i]
-        elif a.startswith("--format="):
-            fmt = a.split("=", 1)[1]
+        if a == "--":
+            files.extend(argv[i + 1 :])
+            break
+        if a.startswith("--"):
+            key, eq, value = a.partition("=")
+            if key in ("--format", "--printf"):
+                if not eq:
+                    i += 1
+                    if i >= len(argv):
+                        usage_error(f"option '{key}' requires an argument")
+                    value = argv[i]
+                fmt, printf = value, key == "--printf"
+            elif key in ("--dereference", "--terse") and not eq:
+                follow, terse = follow or key == "--dereference", terse or key == "--terse"
+            else:
+                die("stat", f"unsupported option '{a}'. Supported: -c FORMAT --printf=FORMAT -t -L")
         elif a.startswith("-") and a != "-":
-            die("stat", f"unsupported option '{a}'. Supported: -c FORMAT")
+            for j, f in enumerate(a[1:], start=1):
+                if f == "L":
+                    follow = True
+                elif f == "t":
+                    terse = True
+                elif f == "c":
+                    value = a[j + 1 :]
+                    if not value:
+                        i += 1
+                        if i >= len(argv):
+                            usage_error("option requires an argument -- 'c'")
+                        value = argv[i]
+                    fmt, printf = value, False
+                    break
+                else:
+                    die("stat", f"unsupported option '-{f}'. Supported: -c FORMAT --printf=FORMAT -t -L")
         else:
             files.append(a)
         i += 1
     if not files:
-        die("stat", "needs a file")
+        usage_error("missing operand")
+
+    status = 0
     for name in files:
         try:
-            info = os.stat(name)
+            st = os.fstat(0) if name == "-" else os.stat(name) if follow else os.lstat(name)
         except OSError as e:
-            die("stat", f"cannot stat '{name}': {e.strerror}", code=1)
-        kind = "directory" if os.path.isdir(name) else "regular file"
-        if fmt:
-            print(
-                fmt.replace("%n", name)
-                .replace("%s", str(info.st_size))
-                .replace("%F", kind)
-                .replace("%f", oct(info.st_mode)[2:])
-                .replace("%a", oct(info.st_mode & 0o777)[2:])
-            )
+            sys.stderr.write(f"stat: cannot statx {shell_quote(name)}: {e.strerror}\n")
+            status = 1
+            continue
+        tail = b""
+        if fmt is not None:
+            text, escapes, tail = fmt, printf, b"" if printf else b"\n"
+        elif terse:
+            text, escapes = "%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o\n", False
         else:
-            print(f"  File: {name}\n  Size: {info.st_size}\t{kind}")
-    return 0
+            special = stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode)
+            text = (
+                "  Size: %-10s\tBlocks: %-10b IO Block: %-6o %F\n"
+                + ("Device: %Hd,%Ld\tInode: %-11i Links: %-5h Device type: %Hr,%Lr\n" if special
+                   else "Device: %Hd,%Ld\tInode: %-11i Links: %h\n")
+                + "Access: (%04a/%10.10A)  Uid: (%5u/%8U)   Gid: (%5g/%8G)\n"
+                + "Access: %x\nModify: %y\nChange: %z\n Birth: %w\n"
+            )
+            escapes = False
+            # The default layout names the file as it is, unquoted.
+            target = f" -> {os.readlink(name)}" if stat.S_ISLNK(st.st_mode) else ""
+            sys.stdout.buffer.write(f"  File: {name}{target}\n".encode("utf-8", "surrogateescape"))
+        sys.stdout.buffer.write(stat_format(text, name, st, escapes) + tail)
+    return status
+
+
+def stat_format(fmt, name, st, escapes):
+    """GNU stat's print_it(): the %-directives, with printf's flags, width and precision."""
+    import time
+
+    out = bytearray()
+
+    def put(text):
+        out.extend(text.encode("utf-8", "surrogateescape"))
+
+    def device(number):
+        if hasattr(os, "major"):
+            return os.major(number), os.minor(number)
+        return (number >> 8) & 0xFFF, (number & 0xFF) | ((number >> 12) & 0xFFF00)
+
+    def when(field):
+        ns = getattr(st, f"st_{field}time_ns")
+        return divmod(ns, 10**9)
+
+    def human_time(field):
+        sec, ns = when(field)
+        moment = time.localtime(sec)
+        return time.strftime("%Y-%m-%d %H:%M:%S", moment) + f".{ns:09d} " + time.strftime("%z", moment)
+
+    def epoch(spec, sec, ns):
+        flags, _, precision = spec.partition(".")
+        if not _:
+            return ("%" + flags + "d") % sec
+        places = int(precision) if precision.isdigit() else 9
+        if not places:
+            return ("%" + flags.rstrip("0123456789") + "d") % sec
+        width_text = flags.lstrip("-+ #0")
+        width = int(width_text) if width_text else 0
+        flags = flags[: len(flags) - len(width_text)]
+        seconds_width = 0 if "-" in flags else width - 1 - places
+        text = ("%" + flags.replace("-", "") + (str(seconds_width) if seconds_width > 1 else "") + "d") % sec
+        text += "." + f"{ns:09d}"[: min(places, 9)] + "0" * max(0, places - 9)
+        return text.ljust(width) if "-" in flags else text
+
+    def name_of(table, number):
+        try:
+            module = __import__(table)
+            return (module.getpwuid(number).pw_name if table == "pwd" else module.getgrgid(number).gr_name)
+        except (ImportError, KeyError, OSError):
+            return "UNKNOWN"
+
+    def mount_point():
+        here = os.path.abspath(name)
+        if not stat.S_ISDIR(st.st_mode):
+            here = os.path.dirname(here)
+        try:
+            dev = os.stat(here).st_dev
+            while here != os.path.dirname(here) and os.stat(os.path.dirname(here)).st_dev == dev:
+                here = os.path.dirname(here)
+        except OSError:
+            return "?"
+        return here
+
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch == "\\" and escapes:
+            i += 1
+            nxt = fmt[i : i + 1]
+            if nxt and nxt in "01234567":
+                digits = nxt
+                while len(digits) < 3 and fmt[i + len(digits) : i + len(digits) + 1] in tuple("01234567"):
+                    digits += fmt[i + len(digits)]
+                out.append(int(digits, 8) & 0xFF)
+                i += len(digits)
+                continue
+            if nxt == "x" and fmt[i + 1 : i + 2] and fmt[i + 1] in "0123456789abcdefABCDEF":
+                digits = fmt[i + 1]
+                if fmt[i + 2 : i + 3] and fmt[i + 2] in "0123456789abcdefABCDEF":
+                    digits += fmt[i + 2]
+                out.append(int(digits, 16))
+                i += 1 + len(digits)
+                continue
+            if not nxt:
+                sys.stderr.write("stat: warning: backslash at end of format\n")
+                put("\\")
+                continue
+            named = {"a": "\a", "b": "\b", "e": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
+            if nxt not in named:
+                sys.stderr.write(f"stat: warning: unrecognized escape '\\{nxt}'\n")
+            put(named.get(nxt, nxt))
+            i += 1
+            continue
+        if ch != "%":
+            put(ch)
+            i += 1
+            continue
+        j = i + 1
+        while j < len(fmt) and fmt[j] in "'-+ #0I":
+            j += 1
+        while j < len(fmt) and fmt[j].isdigit():
+            j += 1
+        if j < len(fmt) and fmt[j] == ".":
+            j += 1
+            while j < len(fmt) and fmt[j].isdigit():
+                j += 1
+        spec = fmt[i + 1 : j].replace("'", "").replace("I", "")
+        code = fmt[j : j + 1]
+        if code in ("", "%"):
+            if fmt[i + 1 : j]:
+                sys.stderr.write(f"stat: '{fmt[i : j + 1]}': invalid directive\n")
+                raise SystemExit(1)
+            put("%")
+            i = j + (1 if code else 0)
+            continue
+        if code in "HL" and fmt[j + 1 : j + 2] in ("d", "r"):
+            major, minor = device(st.st_dev if fmt[j + 1] == "d" else st.st_rdev)
+            put(("%" + spec + "d") % (major if code == "H" else minor))
+            i = j + 2
+            continue
+        i = j + 1
+        mode = st.st_mode
+        number = {
+            "a": ("o", stat.S_IMODE(mode)), "b": ("d", getattr(st, "st_blocks", 0)), "B": ("d", 512),
+            "d": ("d", st.st_dev), "D": ("x", st.st_dev), "f": ("x", mode), "g": ("d", st.st_gid),
+            "h": ("d", st.st_nlink), "i": ("d", st.st_ino), "o": ("d", getattr(st, "st_blksize", 0)),
+            "s": ("d", st.st_size), "u": ("d", st.st_uid), "r": ("d", getattr(st, "st_rdev", 0)),
+            "R": ("x", getattr(st, "st_rdev", 0)), "t": ("x", device(getattr(st, "st_rdev", 0))[0]),
+            "T": ("x", device(getattr(st, "st_rdev", 0))[1]),
+        }
+        if code in number:
+            conversion, value = number[code]
+            if conversion == "o" and "#" in spec:
+                # C's alternate octal is 0644, where python's is 0o644.
+                flags = spec.split(".")[0]
+                width = int(flags.lstrip("-+ #0") or 0)
+                digits = "%o" % value
+                digits = digits if digits.startswith("0") else "0" + digits
+                pad = "0" if "0" in flags[: len(flags) - len(flags.lstrip("-+ #0"))] and "-" not in flags else " "
+                put(digits.ljust(width) if "-" in flags else digits.rjust(width, pad))
+            else:
+                put(("%" + spec + conversion) % value)
+            continue
+        if code in "XYZ":
+            put(epoch(spec, *when({"X": "a", "Y": "m", "Z": "c"}[code])))
+            continue
+        if code == "W":
+            put(epoch(spec, 0, 0))
+            continue
+        if code == "N":
+            text = shell_quote(name)
+            if stat.S_ISLNK(mode):
+                text += " -> " + shell_quote(os.readlink(name))
+        elif code == "n":
+            text = name
+        elif code == "F":
+            text = stat_type(st)
+        elif code == "A":
+            text = stat.filemode(mode)
+        elif code == "U":
+            text = name_of("pwd", st.st_uid)
+        elif code == "G":
+            text = name_of("grp", st.st_gid)
+        elif code in "xyz":
+            text = human_time({"x": "a", "y": "m", "z": "c"}[code])
+        elif code == "w":
+            text = "-"
+        elif code == "m":
+            text = mount_point()
+        else:
+            put("?")
+            continue
+        put(("%" + spec + "s") % text)
+    return bytes(out)
+
+
+def stat_type(st):
+    mode = st.st_mode
+    if stat.S_ISREG(mode):
+        return "regular empty file" if st.st_size == 0 else "regular file"
+    for test, kind in ((stat.S_ISDIR, "directory"), (stat.S_ISLNK, "symbolic link"), (stat.S_ISFIFO, "fifo"),
+                       (stat.S_ISSOCK, "socket"), (stat.S_ISCHR, "character special file"),
+                       (stat.S_ISBLK, "block special file")):
+        if test(mode):
+            return kind
+    return "weird file"
 
 
 # ---------------------------------------------------------------- split
