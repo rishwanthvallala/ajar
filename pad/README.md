@@ -54,7 +54,7 @@ npm run check --workspace=ajar-pad
 | `public/privacy.html` | `/privacy` |
 | `src/workspace.ts` | The pad's layout, built on the shared `WorkspaceShell` |
 | `src/workspace-preview.ts` | The layout on its own, for `?preview=workspace` and the layout checks |
-| `src/tools/awk.py` | An awk, because none is published for this runtime |
+| `src/tools/awk.wasm` | awk — The One True Awk, built for this runtime by `scripts/build-awk.mjs` (pins and recipe in `scripts/awk/`), as none is published for it |
 | `src/tools/sort.py`, `tail.py` | Advertised by the shipped coreutils and not compiled into it |
 | `src/tools/box.py` | Twenty-three more, dispatched on the first argument — including `find`, which shadows the shipped one |
 | `src/tools/edit.py` | A terminal editor, aliased as `nano` — curses cannot start here |

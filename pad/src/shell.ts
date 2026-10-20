@@ -31,7 +31,6 @@
 // `?raw` so the python stays python — embedded in a template literal the
 // TypeScript lexer objects to its escape sequences, and every `\` has to be
 // doubled by hand forever after.
-import AWK_PY from "./tools/awk.py?raw";
 import SORT_PY from "./tools/sort.py?raw";
 import TAIL_PY from "./tools/tail.py?raw";
 import BOX_PY from "./tools/box.py?raw";
@@ -41,6 +40,9 @@ import PADFETCH_PY from "./tools/_padfetch.py?raw";
 import CURL_PY from "./tools/curl.py?raw";
 import GO_PY from "./tools/go.py?raw";
 import CXX_PY from "./tools/cxx.py?raw";
+// Built by scripts/build-awk.mjs, and committed: a URL to it in the build, so
+// its bytes are one fetch the browser caches rather than part of the bundle.
+import AWK_WASM from "./tools/awk.wasm?url";
 import { CLANG_ALIASES, CXX_COMMANDS } from "./toolchains";
 import type { Runtime } from "./runtime";
 
@@ -48,20 +50,46 @@ import type { Runtime } from "./runtime";
 /**
  * Commands python stands in for, and why each one is here.
  *
- * `awk` has no port at all. `sort` and `tail` do — they are advertised by the
- * shipped coreutils and are not actually compiled into it, so `sort file`
- * answers "file: function/utility not found". Both are things people type
- * constantly, and `ls | sort` failing is not something to leave standing.
+ * `sort` and `tail` are advertised by the shipped coreutils and are not
+ * actually compiled into it, so `sort file` answers "file:
+ * function/utility not found". Both are things people type constantly, and
+ * `ls | sort` failing is not something to leave standing.
  *
  * Each costs a python start, measured at 214ms against 39ms for a native
  * command. That is worth paying for a command that otherwise does not exist,
  * and not worth paying for one that works.
  */
 export const TOOLS = {
-  awk: ".ajar/awk.py",
   sort: ".ajar/sort.py",
   tail: ".ajar/tail.py",
 } as const;
+
+/**
+ * awk: The One True Awk — Kernighan's, the awk of the AWK book — built for
+ * this runtime by scripts/build-awk.mjs, as no awk is published for it. A
+ * WASIX program, so `system()`, `print | "cmd"` and `"cmd" | getline` start
+ * their commands as any awk's do. It replaced a translator into python that
+ * said of itself "it is not awk", and was right: ranges, `print length`,
+ * `2^10` and `print > "file"` were all quietly wrong in it.
+ *
+ * And it starts as fast as a native command: 2 to 6 ms an invocation in the
+ * browser against 85 for a python shim (20 October). Its limit is recursion,
+ * about 500 calls deep before the browser's own stack runs out — a trap, exit
+ * 11 and no message, and nothing of awk's memory written over (its stack is
+ * first in memory, 8 MiB of it). Native, the same awk gets about 6,000 deep
+ * on an 8 MiB stack, and mawk refuses 1,000.
+ */
+export const AWK = ".ajar/awk.wasm";
+let awkFetched: Promise<Uint8Array> | null = null;
+/** Fetched once a page — asked again only after a failure — and written into every shell's sandbox. */
+function awkWasm(): Promise<Uint8Array> {
+  awkFetched ??= fetch(AWK_WASM).then(async (res) => {
+    if (!res.ok) throw new Error(`awk.wasm: ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  });
+  awkFetched.catch(() => (awkFetched = null));
+  return awkFetched;
+}
 
 /**
  * The rest, dispatched out of one file on its first argument.
@@ -342,6 +370,12 @@ export class Shell {
     size: { columns: number; rows: number },
     onOutput: (text: string) => void,
   ): Promise<Shell> {
+    // Asked for now, while the shell starts. A page that cannot fetch it
+    // still gets a terminal; `awk` then says it is not there.
+    const awk = awkWasm().catch((e: Error) => {
+      console.warn(`awk is missing from this shell: ${e.message}`);
+      return null;
+    });
     const proc = await rt.spawnShell(size.columns, size.rows);
     const shell = new Shell(proc, onOutput);
     void shell.drain();
@@ -361,8 +395,8 @@ export class Shell {
     shell.silent = true;
     await shell.run("stty -echo 2>/dev/null");
 
-    // `awk`, backed by python, because no awk is published for this runtime —
-    // grep, sed and find are real ports; this one is not.
+    // The commands the pad provides itself — python shims, and awk, a
+    // program of our own (AWK) — each an alias to its file.
     //
     // An alias, and that is the only mechanism that works. Measured:
     //
@@ -378,11 +412,13 @@ export class Shell {
     // `expand_aliases` because this shell is not interactive in bash's sense.
     //
     // Absolute path: an alias is expanded wherever the user has cd'd to.
-    const sources = { awk: AWK_PY, sort: SORT_PY, tail: TAIL_PY };
+    const sources = { sort: SORT_PY, tail: TAIL_PY };
     await shell.run("shopt -s expand_aliases");
     for (const name of Object.keys(TOOLS) as (keyof typeof TOOLS)[]) {
       await rt.write(TOOLS[name], sources[name]);
     }
+    const awkBytes = await awk;
+    if (awkBytes) await rt.writeBytes(AWK, awkBytes);
     await rt.write(BOX, BOX_PY);
     await rt.write(EDIT, EDIT_PY);
     await rt.write(SITE, SITE_PY);
@@ -398,6 +434,8 @@ export class Shell {
       ...Object.keys(TOOLS).map(
         (name) => `alias ${name}='python /workspace/${TOOLS[name as keyof typeof TOOLS]}'`,
       ),
+      // A program run by its path, which this bash does without a hang.
+      `alias awk='/workspace/${AWK}'`,
       ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
       `alias curl='python /workspace/${CURL}'`,

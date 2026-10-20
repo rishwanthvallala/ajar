@@ -6,7 +6,7 @@ is not among the functions compiled into it — `sort file` answers
 `wasmer/coreutils@1.0.25` is the same build. The package that would fix it
 properly, `kilyanni/coreutils` (GNU 9.11), cannot be installed from here.
 
-So this stands in, the way `awk.py` does, and for everything it accepts it is
+So this stands in, and for everything it accepts it is
 GNU sort 9.4 in the C locale — the only locale this sandbox has: lines are
 bytes and compared as bytes, every -k key counts, in order, with its own
 modifiers, and lines equal by every key fall back to comparing whole lines.
