@@ -461,7 +461,9 @@ pub struct Write {
     pub content: Option<String>,
     #[serde(default = "utf8")]
     pub encoding: Encoding,
-    /// The hash of the stored file `edits` apply to.
+    /// The hash of the stored file `edits` apply to — or, beside `content`,
+    /// of the one the whole file replaces, and the write is refused (stale)
+    /// when that is not what is stored.
     #[serde(default)]
     pub base: Option<String>,
     #[serde(default, deserialize_with = "edits")]
@@ -2096,6 +2098,19 @@ impl Store {
                 return Err(Error::Stale);
             }
         }
+        // A whole file sent with the hash of the version it was typed over is
+        // refused, as an edit to the wrong version is, when that version has
+        // moved on: the page merges and sends it again, rather than writing
+        // over somebody's work. A page whose room was out of reach did, and
+        // said "saved" (review of 19 October, C6). Without a hash, a write is
+        // what it always was.
+        for w in writes {
+            if let (Some(_), Some(base)) = (&w.content, &w.base) {
+                if new.get(&w.path).map(|r| &r.blob) != Some(base) {
+                    return Err(Error::Stale);
+                }
+            }
+        }
 
         let mut changed = Vec::new();
         for ((w, staged), &last) in writes.iter().zip(staged.iter_mut()).zip(&last) {
@@ -3627,6 +3642,36 @@ mod tests {
                 insert: insert.into(),
             }]),
         }
+    }
+
+    #[test]
+    fn a_whole_file_sent_over_a_version_that_moved_on_is_refused() {
+        // Review of 19 October, C6: a page with no room saved its copy over
+        // somebody else's newer save. Sent with the hash it was typed over,
+        // it is refused instead, and the page merges.
+        let (s, _d) = store();
+        s.write("p", &[put("notes.py", "x = 1\n")]).unwrap();
+        let first = hash(&s, "p", "notes.py");
+        s.write("p", &[put("notes.py", "x = 1\ndef from_b(): pass\n")])
+            .unwrap();
+        let mut over = put("notes.py", "# from w\nx = 1\n");
+        over.base = Some(first);
+        assert!(matches!(s.write("p", &[over]), Err(Error::Stale)));
+        assert!(s.get("p").unwrap().unwrap().files["notes.py"]
+            .content
+            .contains("from_b"));
+        // Over the version that is stored, it goes in.
+        let mut fresh = put("notes.py", "# from w\nx = 1\ndef from_b(): pass\n");
+        fresh.base = Some(hash(&s, "p", "notes.py"));
+        s.write("p", &[fresh]).unwrap();
+        assert!(s.get("p").unwrap().unwrap().files["notes.py"]
+            .content
+            .starts_with("# from w"));
+        // A file gone since is not there to replace either.
+        s.write("p", &[delete("notes.py")]).unwrap();
+        let mut gone = put("notes.py", "back");
+        gone.base = Some("0".repeat(64));
+        assert!(matches!(s.write("p", &[gone]), Err(Error::Stale)));
     }
 
     #[test]
