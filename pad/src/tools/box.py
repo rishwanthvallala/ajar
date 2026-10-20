@@ -3379,29 +3379,191 @@ def cmd_patch(argv):
 
 
 # ---------------------------------------------------------------- cmp
+#
+# Bytes, as GNU cmp compares them. Reading the files as text, as this did,
+# translated CRLF to LF on the way in, so a file and its CRLF copy came out
+# "identical" — the one question cmp exists to answer.
+def _cmp_number(text):
+    import re
+
+    m = re.fullmatch(r"(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(?:([kKMGTPEZY])(iB|B|D)?)?", text or "")
+    if not m:
+        return None
+    value = int(m.group(1), 0)
+    if m.group(2):
+        power = "KMGTPEZY".index(m.group(2).upper()) + 1
+        value *= (1000 if m.group(3) in ("B", "D") else 1024) ** power
+    return value
+
+
 def cmp_files(argv):
-    silent, files = False, []
-    for a in argv:
-        if a in ("-s", "--silent", "--quiet"):
-            silent = True
-        elif a.startswith("-") and a != "-":
-            die("cmp", f"unsupported option '{a}'. Supported: -s")
-        else:
-            files.append(a)
-    if len(files) != 2:
-        die("cmp", "needs exactly two files")
-    left, right = (read_text(f, "cmp") for f in files)
-    if left == right:
+    L = {"print-bytes": (0, "b"), "ignore-initial": (1, "i"), "verbose": (0, "l"), "bytes": (1, "n"),
+         "quiet": (0, "s"), "silent": (0, "s"), "help": (0, "help"), "version": (0, "v")}
+    options, operands, _ = _getopt_long("cmp", argv, "bci:ln:sv", L)
+
+    def usage_error(message):
+        sys.stderr.write(f"cmp: {message}\ncmp: Try 'cmp --help' for more information.\n")
+        raise SystemExit(2)
+
+    print_bytes, kind, limit = False, None, -1
+    skip = [0, 0]
+
+    def specify(new):
+        nonlocal kind
+        if kind and kind != new:
+            usage_error("options -l and -s are incompatible")
+        kind = new
+
+    def skip_value(text, f):
+        value = _cmp_number(text)
+        if value is None:
+            usage_error(f"invalid --ignore-initial value '{text}'")
+        skip[f] = max(skip[f], value)
+
+    for key, value in options:
+        if key in ("b", "c"):
+            print_bytes = True
+        elif key == "i":
+            first, colon, second = value.partition(":")
+            skip_value(first, 0)
+            if colon:
+                skip_value(second, 1)
+            else:
+                skip[1] = max(skip[1], skip[0])
+        elif key == "l":
+            specify("all")
+        elif key == "s":
+            specify("status")
+        elif key == "n":
+            n = _cmp_number(value)
+            if n is None:
+                usage_error(f"invalid --bytes value '{value}'")
+            if not (0 <= limit < n):
+                limit = n
+        elif key == "help":
+            print("Usage: cmp [OPTION]... FILE1 [FILE2 [SKIP1 [SKIP2]]]\nCompare two files byte by byte.\n\n"
+                  "This is pad's cmp, which follows GNU diffutils 3.10.")
+            return 0
+        elif key == "v":
+            print("cmp (pad, following GNU diffutils) 3.10")
+            return 0
+    kind = kind or "first"
+    if not operands:
+        usage_error(f"missing operand after '{argv[-1] if argv else 'cmp'}'")
+    files = [operands[0], operands[1] if len(operands) > 1 else "-"]
+    for f, text in enumerate(operands[2:4]):
+        skip_value(text, f)
+    if len(operands) > 4:
+        usage_error(f"extra operand '{operands[4]}'")
+    if files[0] == files[1] and skip[0] == skip[1]:
         return 0
-    if not silent:
-        for index, (a, b) in enumerate(zip(left, right), start=1):
-            if a != b:
-                line = left.count("\n", 0, index - 1) + 1
-                print(f"{files[0]} {files[1]} differ: char {index}, line {line}")
-                return 1
-        shorter = files[0] if len(left) < len(right) else files[1]
-        sys.stderr.write(f"cmp: EOF on {shorter}\n")
-    return 1
+
+    data, sizes = [], []
+    for f in (0, 1):
+        try:
+            if files[f] == "-":
+                raw = sys.stdin.buffer.read()
+                st = os.fstat(0)
+            else:
+                with open(files[f], "rb") as handle:
+                    st = os.fstat(handle.fileno())
+                    raw = handle.read()
+            raw = raw[skip[f]:]
+        except OSError as e:
+            if kind != "status":
+                sys.stderr.write(f"cmp: {files[f]}: {e.strerror}\n")
+            return 2
+        data.append(raw)
+        sizes.append(max(0, st.st_size - skip[f]) if stat.S_ISREG(st.st_mode) else None)
+
+    if kind == "status":
+        if sizes[0] is not None and sizes[1] is not None and sizes[0] != sizes[1] and (
+                limit < 0 or min(sizes) < limit):
+            return 1
+    elif kind == "first" or kind == "all":
+        # GNU says nothing at all when its output goes to /dev/null.
+        try:
+            out_st, null_st = os.fstat(1), os.stat(os.devnull)
+            if stat.S_ISCHR(out_st.st_mode) and out_st.st_rdev and out_st.st_rdev == null_st.st_rdev:
+                kind = "quiet-" + kind
+        except OSError:
+            pass
+    d0, d1 = data
+    if limit >= 0:
+        d0, d1 = d0[:limit], d1[:limit]
+    smaller = min(len(d0), len(d1))
+    first = 0
+    if d0[:smaller] != d1[:smaller]:
+        lo, hi = 0, smaller   # the first differing byte, by halving
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if d0[lo:mid] != d1[lo:mid]:
+                hi = mid
+            else:
+                lo = mid
+        first = lo
+    else:
+        first = smaller
+
+    def show(c):
+        s = ""
+        if not 32 <= c < 127:
+            if c >= 128:
+                s, c = "M-", c - 128
+            if c < 32:
+                s, c = s + "^", c + 64
+            elif c == 127:
+                s, c = s + "^", ord("?")
+        return s + chr(c)
+
+    out = sys.stdout
+    if first < smaller:
+        if kind == "status" or kind.startswith("quiet-"):
+            return 1
+        if kind == "first":
+            line = d0.count(b"\n", 0, first) + 1
+            name0, name1 = files
+            if print_bytes:
+                c0, c1 = d0[first], d1[first]
+                out.write(f"{name0} {name1} differ: byte {first + 1}, line {line} is "
+                          f"{c0:3o} {show(c0)} {c1:3o} {show(c1)}\n")
+            else:
+                word = "char" if _c_locale("LC_MESSAGES") else "byte"
+                out.write(f"{name0} {name1} differ: {word} {first + 1}, line {line}\n")
+            return 1
+        width_max = limit if limit >= 0 else (1 << 63) - 1
+        for size in sizes:
+            if size is not None:
+                width_max = min(width_max, size)
+        width = len(str(width_max))
+        lines = []
+        for i in range(first, smaller):
+            c0, c1 = d0[i], d1[i]
+            if c0 != c1:
+                if print_bytes:
+                    lines.append(f"{i + 1:>{width}} {c0:3o} {show(c0):<4} {c1:3o} {show(c1)}\n")
+                else:
+                    lines.append(f"{i + 1:>{width}} {c0:3o} {c1:3o}\n")
+        out.write("".join(lines))
+        differing = True
+    else:
+        differing = False
+    if len(d0) != len(d1):
+        if kind != "status" and not (differing and kind.startswith("quiet-")):
+            out.flush()
+            shorter = files[0] if len(d0) < len(d1) else files[1]
+            if smaller == 0:
+                sys.stderr.write(f"cmp: EOF on {shorter} which is empty\n")
+            elif kind == "first":
+                newlines = d0.count(b"\n", 0, smaller)
+                if d0[smaller - 1] == 10:
+                    sys.stderr.write(f"cmp: EOF on {shorter} after byte {smaller}, line {newlines}\n")
+                else:
+                    sys.stderr.write(f"cmp: EOF on {shorter} after byte {smaller}, in line {newlines + 1}\n")
+            else:
+                sys.stderr.write(f"cmp: EOF on {shorter} after byte {smaller}\n")
+        return 1
+    return 1 if differing else 0
 
 
 # ------------------------------------------------------------ hexdump / xxd
