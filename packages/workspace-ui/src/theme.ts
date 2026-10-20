@@ -88,15 +88,20 @@ export function defineEditorThemes(editor: EditorThemes): void {
   // number at 40 % — came to 1.8:1 in light and 2.2:1 in dark, which axe
   // still reported after the rest were fixed (18 October). Its own grey here,
   // dimmer than the rest and at AA: 4.6:1 and 4.7:1.
-  for (const [name, base, columns, delimiter, surface, lineNumber, lineNumberActive, lineNumberDimmed] of [
-    ["ajar-light", "vs", COLUMNS.light, "5d6673", "#ffffff", "#5d6673", "#1f2937", "#6e7681"],
-    ["ajar-dark", "vs-dark", COLUMNS.dark, "9aa3b0", "#161a22", "#9aa3b0", "#e6e9ee", "#7d8592"],
+  //
+  // And comments: Monaco's dark green, #608b4e, came to 4.39:1 on this darker
+  // background (review of 18 October). VS Code's own, 5.2:1 here; the light
+  // theme's green is 5.1:1 on white already.
+  for (const [name, base, columns, delimiter, surface, lineNumber, lineNumberActive, lineNumberDimmed, comment] of [
+    ["ajar-light", "vs", COLUMNS.light, "5d6673", "#ffffff", "#5d6673", "#1f2937", "#6e7681", "008000"],
+    ["ajar-dark", "vs-dark", COLUMNS.dark, "9aa3b0", "#161a22", "#9aa3b0", "#e6e9ee", "#7d8592", "6a9955"],
   ] as const) {
     editor.defineTheme(name, {
       base,
       inherit: true,
       rules: [
         ...columns.map((foreground, i) => ({ token: `column${i}`, foreground })),
+        { token: "comment", foreground: comment },
         { token: "delimiter.csv", foreground: delimiter },
         { token: "delimiter.tsv", foreground: delimiter },
       ],
