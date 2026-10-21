@@ -258,8 +258,8 @@ import.meta.url)`, and that worker statically imports two siblings. A bundler
 flattens the layout, the siblings 404, and **every command hangs forever with
 nothing thrown**. It is vendored verbatim — see `vendor-wasmer-sdk` in
 `pad/vite.config.ts` — under a folder named for a hash of its files,
-`/vendor/wasmer/<hash>/`, and wisp beside it the same way: Caddy keeps
-everything under `/vendor` for a year without asking again (below).
+`/vendor/wasmer/<hash>/`, because Caddy keeps everything under `/vendor` for a
+year without asking again (below).
 
 **`spawnShell` must pass only `terminal`.** Naming stdin/stdout/stderr
 alongside it replaces the pty with pipes, and the shell stops behaving like a
@@ -1352,12 +1352,11 @@ browser holding a year-old list was pointed at files a later deploy removed.
 They revalidate each visit, as does `own.json`, Java's and C++'s, beside them
 (every `/packages/*.json`; `deploy/caddy/check.sh` asserts the first two).
 
-**The vendored SDK and wisp are in folders named for what is in them,** since
-21 October: `/vendor/wasmer/<hash>/` and `/vendor/wisp/<hash>/`, twelve hex
-digits of a hash of the files the build copies, which a new version changes and
-nothing else does. Until then they were `/vendor/wasmer/` and `/vendor/wisp/`
-for every version, kept for a year, which the code review of 16 September had
-said (F36). A browser that had kept files of the SDK from before 0.18 (16
+**The vendored SDK is in a folder named for what is in it,** since 21
+October: `/vendor/wasmer/<hash>/`, twelve hex digits of a hash of the files the
+build copies, which a new version changes and nothing else does. Until then it
+was `/vendor/wasmer/` for every version, kept for a year, which the code review
+of 16 September had said (F36). A browser that had kept files of the SDK from before 0.18 (16
 October) and fetched one of them afresh ran 0.18's WebAssembly against the
 old glue:
 `WebAssembly.instantiate(): Import #1 "./wasmer_sdk_js_bg.js"
@@ -1372,6 +1371,20 @@ had not loaded it yet, gets 404 for it and needs a reload.
 The preview origin's `/wasmer-host.js` is one file of the SDK's, with no imports
 of its own; the build copies it to `/vendor/wasmer/service-worker-host.js` too,
 where the Caddyfile can find it without knowing the version.
+
+**Wisp is not, and why that broke the live pad for half an hour.** Wisp was
+named for its version the same way, which changed the page's import map — the
+one inline script, which the Caddyfile's Content-Security-Policy allows by its
+SHA-256. The browser refused the changed map, so the SDK's
+`import("@mercuryworkshop/wisp-js/client")` had nothing to resolve it, and every
+first command said `Failed to resolve module specifier
+"@mercuryworkshop/wisp-js/client"` and started nothing. No check here sends the
+policy, so all of them passed; a live first visit found it. Wisp is back at
+`/vendor/wisp/src/`, so its staleness is still open (F36): a wisp-js upgrade
+needs the map's new path and its new hash in the policy together.
+**`deploy.sh` refuses a build whose page has an inline script the policy does
+not name,** saying each hash, so a change like that stops before the server
+rather than after it.
 
 **The page is asked for again each visit,** since the same day: the Caddyfile
 serves `index.html` and the few files beside it `no-cache`, an empty 304 when
