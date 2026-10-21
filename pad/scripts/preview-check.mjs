@@ -29,7 +29,9 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 const LIVE = process.env.PAD_ORIGIN ?? null;
 
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
-const VENDOR = join(ROOT, "vendor/wasmer/dist");
+// The SDK's half of the preview, where the build puts it for the preview
+// origin: beside the SDK's own folder, which is named for its version.
+const VENDOR = join(ROOT, "vendor/wasmer");
 // The preview origin's worker and control-page script, as the build copies
 // them from pad/preview/ and as Caddy serves them in production.
 const PREVIEW = join(ROOT, "vendor/preview");

@@ -13,13 +13,17 @@
 // See docs/dev/networking.md.
 
 import { createServer } from "node:http";
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { createRequire } from "node:module";
 const { chromium } = createRequire(import.meta.url)("playwright");
 
 const ROOT = new URL("../dist/", import.meta.url).pathname;
-const VENDOR = join(ROOT, "vendor/wasmer/dist");
+// The SDK's folder is named for its version (vite.config.ts); the host half
+// of the preview sits beside it under a name that is not.
+const SDK_DIR = join(ROOT, "vendor/wasmer");
+const VENDOR = join(SDK_DIR, readdirSync(SDK_DIR).find((n) => /^[0-9a-f]{12}$/.test(n)) ?? "missing", "dist");
 const PORT = 5240;
 const HOST_PORT = 5241;
 const WHICH = process.argv[2] ?? "raw";
@@ -58,7 +62,7 @@ const host = createServer(async (req, res) => {
     }
     if (path === "/host.js") {
       res.setHeader("Content-Type", "text/javascript");
-      return res.end(await readFile(join(VENDOR, "service-worker-host.js")));
+      return res.end(await readFile(join(SDK_DIR, "service-worker-host.js")));
     }
     if (path === "/wasmer-service-worker.js") {
       res.setHeader("Content-Type", "text/javascript");

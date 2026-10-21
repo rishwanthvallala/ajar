@@ -1,4 +1,6 @@
-import { cp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { cp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
@@ -37,10 +39,33 @@ const isolation: Plugin = {
  *
  * Copying the package's own directory layout and importing from that URL keeps
  * every relative path true. The cost is one unbundled dependency.
+ *
+ * Under a folder named for what is in it, as the hashed assets are, because
+ * the Caddyfile keeps everything under /vendor for a year and never asks
+ * again. It was one folder, /vendor/wasmer, until 21 October: a browser that
+ * had kept the SDK from before 0.18 (16 October) and fetched one file of it
+ * afresh ran 0.18's WebAssembly against the old glue — `WebAssembly.
+ * instantiate(): Import #1 "./wasmer_sdk_js_bg.js" "__wbg___wasmerHost
+ * FileSystem_…": function import requires a callable` — and no Run started
+ * again in it. The code review of 16 September had said so (F36).
  */
-const SDK_URL = "/vendor/wasmer";
 const sdkEntry = createRequire(import.meta.url).resolve("@wasmer/sdk");
 const sdkRoot = new URL("../", pathToFileURL(sdkEntry));
+
+/** Twelve hex digits of a hash of every file under `dirs` of `root`, with their names. */
+function contentHash(root: URL, dirs: string[]): string {
+  const hash = createHash("sha256");
+  const walk = (dir: URL, rel: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (entry.isDirectory()) walk(new URL(`${entry.name}/`, dir), `${rel}${entry.name}/`);
+      else hash.update(`${rel}${entry.name}\0`).update(readFileSync(new URL(entry.name, dir)));
+    }
+  };
+  for (const dir of dirs) walk(new URL(`${dir}/`, root), `${dir}/`);
+  return hash.digest("hex").slice(0, 12);
+}
+
+const SDK_URL = `/vendor/wasmer/${contentHash(sdkRoot, ["dist", "pkg"])}`;
 // The SDK's WISP transport is the one file in it that assumes a bundler:
 // `wisp-network.js` opens with a bare `import … from
 // "@mercuryworkshop/wisp-js/client"`, and nothing resolves that in a browser.
@@ -60,14 +85,27 @@ const sdkRoot = new URL("../", pathToFileURL(sdkEntry));
 const WISP_PKG = "@mercuryworkshop/wisp-js";
 const wispEntry = createRequire(import.meta.url).resolve(`${WISP_PKG}/client`);
 const wispRoot = new URL("../", pathToFileURL(wispEntry));
+// Named for what is in it, as the SDK is. The pages' import maps say
+// /vendor/wisp/src/, and the build puts this in (`transformIndexHtml`).
+const WISP_URL = `/vendor/wisp/${contentHash(wispRoot, ["src"])}`;
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",
   async buildStart() {
-    const to = new URL("./public/vendor/wasmer/", import.meta.url);
+    // Only this version's, so the build carries one copy and no stale ones.
+    const wasmer = new URL("./public/vendor/wasmer/", import.meta.url);
+    await rm(wasmer, { recursive: true, force: true });
+    const to = new URL(`.${SDK_URL.slice("/vendor/wasmer".length)}/`, wasmer);
     for (const dir of ["dist", "pkg"]) {
       await cp(new URL(`${dir}/`, sdkRoot), new URL(`${dir}/`, to), { recursive: true });
     }
-    const wispTo = new URL("./public/vendor/wisp/src/", import.meta.url);
+    // The SDK's half of the preview (the Caddyfile's /wasmer-host.js), at a
+    // name the preview origin can find without knowing the version. It is
+    // one file with no imports of its own, and served there asked again
+    // each time.
+    await cp(new URL("dist/service-worker-host.js", sdkRoot), new URL("service-worker-host.js", wasmer));
+    const wisp = new URL("./public/vendor/wisp/", import.meta.url);
+    await rm(wisp, { recursive: true, force: true });
+    const wispTo = new URL(`.${WISP_URL.slice("/vendor/wisp".length)}/src/`, wisp);
     await cp(new URL("src/", wispRoot), wispTo, { recursive: true });
     // The substitution the package expects a bundler to make, and says so in
     // the file itself: compat.mjs pulls in `ws`, `crypto`, `node:net` and
@@ -79,6 +117,9 @@ const vendorSdk: Plugin = {
     // served only by preview.rishwanth.dev, from here — see the Caddyfile —
     // and under vendor/ because that name is already one no pad can take.
     await cp(new URL("./preview/", import.meta.url), new URL("./public/vendor/preview/", import.meta.url), { recursive: true });
+  },
+  transformIndexHtml(html) {
+    return html.replaceAll('"/vendor/wisp/src/', `"${WISP_URL}/src/`);
   },
 };
 
