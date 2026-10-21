@@ -1347,9 +1347,16 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     holding = null;
     release();
     // What was pasted, printed: the terminal also shows the last run kept for
-    // the pad as it opens, which here is another section's.
-    const ran = await first.waitForFunction(() => /pasted before the terminal\s/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 240_000 }).then(() => true, () => false);
-    expect("Run pressed before the pad is open is said, and runs what was pasted once it is", !before && /Run starts/.test(told) && ran, JSON.stringify({ before, told, ran }));
+    // the pad as it opens, which here is another section's. A browser of its
+    // own fetches the whole runtime, and on CI, with no mirror, from Wasmer's
+    // CDN: 240 s ran out there once on 21 October, so it has longer, and says
+    // what it saw if that runs out too.
+    const ran = await first.waitForFunction(() => /pasted before the terminal\s/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 480_000 }).then(() => true, () => false);
+    const seen = ran ? {} : await first.evaluate(() => ({
+      status: document.getElementById("status")?.textContent ?? "",
+      terminal: (document.querySelector("#terminal .xterm-rows")?.innerText ?? "").trim().slice(-300),
+    }));
+    expect("Run pressed before the pad is open is said, and runs what was pasted once it is", !before && /Run starts/.test(told) && ran, JSON.stringify({ before, told, ran, ...seen }));
     // The worker's own counts: a response it gives keeps the address asked
     // for, so the network log cannot tell (app-check.mjs). It sees the
     // downloads with no mirror here too, as on CI, and passes them on.
