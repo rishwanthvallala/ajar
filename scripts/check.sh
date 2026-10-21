@@ -38,6 +38,12 @@ part_web() {
   echo "── frontend builds ────────────────────────────────────"
   npm run build
 
+  # The pad page's inline scripts against the Caddyfile's policy, which allows
+  # each by its hash: a build that changed one passed every check here and
+  # started no command in the live pad (21 October). deploy.sh asks the same.
+  echo "── the pad page's inline scripts, against the CSP ────"
+  node pad/scripts/csp-check.mjs
+
   # Deleting a workspace and forgetting the Dockerfile is a build that only
   # breaks at release time. This is the cheap half of `docker build`.
   echo "── dockerfile: every COPY source exists ──────────────"

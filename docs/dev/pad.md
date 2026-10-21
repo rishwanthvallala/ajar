@@ -1382,9 +1382,9 @@ first command said `Failed to resolve module specifier
 policy, so all of them passed; a live first visit found it. Wisp is back at
 `/vendor/wisp/src/`, so its staleness is still open (F36): a wisp-js upgrade
 needs the map's new path and its new hash in the policy together.
-**`deploy.sh` refuses a build whose page has an inline script the policy does
-not name,** saying each hash, so a change like that stops before the server
-rather than after it.
+**`pad/scripts/csp-check.mjs` fails a build whose page has an inline script
+the policy does not name,** saying each hash: `scripts/check.sh` runs it after
+the build, so CI fails, and `deploy.sh` before it ships one.
 
 **The page is asked for again each visit,** since the same day: the Caddyfile
 serves `index.html` and the few files beside it `no-cache`, an empty 304 when
