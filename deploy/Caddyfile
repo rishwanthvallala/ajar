@@ -124,9 +124,12 @@ code.rishwanth.dev {
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-huRNSawQCIrJA7BFNQFHfGUw3jJ4uVqTxVQU2nhRHi8='; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://code.rishwanth.dev https:; frame-src https://preview.rishwanth.dev; frame-ancestors 'none'; base-uri 'none'"
 	}
 
-	# The wasm packages are content-addressed by the registry and the vendored
-	# SDK is rebuilt under a new hash whenever it changes, so nothing here is
-	# worth revalidating. This is most of what makes a second visit free.
+	# The wasm packages are content-addressed by the registry, and the vendored
+	# SDK and wisp are copied under a folder named for a hash of what is in
+	# them (vite.config.ts), so nothing here is worth revalidating. This is
+	# most of what makes a second visit free. The SDK was one folder for every
+	# version until 21 October, and a browser that had kept files of the one
+	# before 0.18 ran them against 0.18's: no Run started in it again.
 	#
 	# Except the two lists beside the packages: which file is which package,
 	# and what the registry answered for each. They change when a package does,
@@ -324,6 +327,13 @@ code.rishwanth.dev {
 	}
 	handle {
 		root * /srv/ajar/pad
+		# The page, and the few files beside it, asked again each visit — an
+		# empty 304 when nothing changed. With no Cache-Control a browser
+		# keeps a page as long as it guesses, a tenth of the time since it last
+		# changed, and a page kept past a deploy asks for scripts the deploy
+		# removed and for the SDK the deploy replaced.
+		@revalidated not path /assets/* /vendor/* /packages/*
+		header @revalidated Cache-Control "no-cache"
 		# Any path that is not a file is a folder name, and the page reads
 		# it off the URL.
 		try_files {path} /index.html
@@ -412,7 +422,9 @@ preview.rishwanth.dev {
 	handle /wasmer-host.js {
 		header Content-Type "text/javascript; charset=utf-8"
 		header Cache-Control "no-cache"
-		root * /srv/ajar/pad/vendor/wasmer/dist
+		# Beside the SDK's folder, which is named for its version: one file, with
+		# no imports of its own, copied there by the build for this.
+		root * /srv/ajar/pad/vendor/wasmer
 		rewrite * /service-worker-host.js
 		file_server
 	}

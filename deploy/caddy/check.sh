@@ -33,6 +33,7 @@ echo small > "$tmp/pad/packages/small.webc"
 echo '{}' > "$tmp/pad/packages/manifest.json"
 echo '{}' > "$tmp/pad/packages/registry.json"
 echo 'export {}' > "$tmp/pad/vendor/sdk.js"
+echo 'export {}' > "$tmp/pad/assets/app.js"
 echo '<!doctype html><title>pad</title>' > "$tmp/pad/index.html"
 echo '<!doctype html><title>Privacy — pad</title>' > "$tmp/pad/privacy.html"
 
@@ -111,6 +112,13 @@ cachecontrol() {
 }
 cc=$(cachecontrol /packages/small.webc)
 echo "$cc" | grep -q immutable && ok "a package is immutable" || bad "a package: $cc"
+for page in /some-pad /index.html; do
+    cc=$(cachecontrol "$page")
+    echo "$cc" | grep -qi 'no-cache' && ! echo "$cc" | grep -q immutable &&
+        ok "the page at $page is asked again each visit ($cc)" || bad "the page at $page: $cc"
+done
+cc=$(cachecontrol /assets/app.js)
+echo "$cc" | grep -q immutable && ! echo "$cc" | grep -qi 'no-cache' && ok "a script beside it is still immutable" || bad "a script: $cc"
 for list in manifest.json registry.json; do
     cc=$(cachecontrol "/packages/$list")
     echo "$cc" | grep -qi 'no-cache' && ! echo "$cc" | grep -q immutable &&
