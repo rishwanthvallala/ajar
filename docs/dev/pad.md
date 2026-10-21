@@ -1372,14 +1372,17 @@ The preview origin's `/wasmer-host.js` is one file of the SDK's, with no imports
 of its own; the build copies it to `/vendor/wasmer/service-worker-host.js` too,
 where the Caddyfile can find it without knowing the version.
 
-**Wisp is not, and why that broke the live pad for half an hour.** Wisp was
+**Wisp is not, and why that broke the live pad for 65 minutes.** Wisp was
 named for its version the same way, which changed the page's import map — the
 one inline script, which the Caddyfile's Content-Security-Policy allows by its
 SHA-256. The browser refused the changed map, so the SDK's
 `import("@mercuryworkshop/wisp-js/client")` had nothing to resolve it, and every
 first command said `Failed to resolve module specifier
 "@mercuryworkshop/wisp-js/client"` and started nothing. No check here sends the
-policy, so all of them passed; a live first visit found it. Wisp is back at
+policy, so all of them passed; a live first visit found it. From the deploy at
+18:05 UTC to the one at 19:10 that put it right: two runs in between failed on
+checks the change could not reach, and one waited for macOS runners GitHub
+did not have. Wisp is back at
 `/vendor/wisp/src/`, so its staleness is still open (F36): a wisp-js upgrade
 needs the map's new path and its new hash in the policy together.
 **`pad/scripts/csp-check.mjs` fails a build whose page has an inline script

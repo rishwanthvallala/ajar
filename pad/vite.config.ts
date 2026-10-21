@@ -89,7 +89,7 @@ const wispRoot = new URL("../", pathToFileURL(wispEntry));
 // and the Caddyfile's Content-Security-Policy allows that one inline script
 // by its hash. Put in, the version changed the map and the browser refused
 // it, and with it the SDK's import of wisp — no command started, on 21
-// October, for half an hour. deploy.sh now refuses a build whose inline
+// October, for 65 minutes. deploy.sh now refuses a build whose inline
 // scripts the policy would refuse.
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",

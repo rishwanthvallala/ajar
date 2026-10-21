@@ -189,7 +189,7 @@ Production marks `/vendor/*` and `/packages/*` immutable for a year. But SDK/WIS
 
 **Fix/regression:** version the whole vendor directory, preserving relative imports, and revalidate the mutable manifest. Keep immutable caching for content-addressed assets. Test two deployments in one browser profile without clearing HTTP cache; the second must use its SDK and manifest.
 
-**Mostly fixed.** The manifest and the registry's recorded answers revalidate since 12 October. The SDK is under a folder named for a hash of its files since 21 October, after a browser holding the SDK from before 0.18 ran 0.18's WebAssembly against the old glue and could start no runtime; the page itself is served `no-cache`. Wisp is still at a fixed path: the page's import map names it, and the Content-Security-Policy pins that map by its hash, so versioning it broke the live pad for half an hour that day. See "The vendored SDK is in a folder named for what is in it" in [dev/pad.md](dev/pad.md).
+**Mostly fixed.** The manifest and the registry's recorded answers revalidate since 12 October. The SDK is under a folder named for a hash of its files since 21 October, after a browser holding the SDK from before 0.18 ran 0.18's WebAssembly against the old glue and could start no runtime; the page itself is served `no-cache`. Wisp is still at a fixed path: the page's import map names it, and the Content-Security-Policy pins that map by its hash, so versioning it broke the live pad for 65 minutes that day. See "The vendored SDK is in a folder named for what is in it" in [dev/pad.md](dev/pad.md).
 
 ## Previously recorded issues still open
 
