@@ -1025,7 +1025,10 @@ async fn uploads_that_stop_part_way_hold_up_no_save() {
     // their headers and part of a body held both, for as long as they liked,
     // and every save behind them waited.
     let mut relay = Relay::new("");
-    relay.state.body_idle = std::time::Duration::from_millis(800);
+    // Long enough apart that a save's own time on a busy CI runner, with its
+    // fsync, is not mistaken for waiting: at 800 ms for the uploads and 500
+    // for the save, the save ran out on 21 October with nothing held up.
+    relay.state.body_idle = std::time::Duration::from_secs(3);
     let json = ("content-type", "application/json");
     let stopped: Vec<_> = (0..crate::MAX_CONCURRENT_PAD_WRITES + 2)
         .map(|i| {
@@ -1045,7 +1048,7 @@ async fn uploads_that_stop_part_way_hold_up_no_save() {
 
     // Answered while they are still stuck, well inside the time they have.
     let saved = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(2),
         relay.call(write(
             "p",
             &[],
