@@ -175,8 +175,14 @@ async function renameInTree(path, name) {
 }
 
 let failures = 0;
+const failed = [];
 const ok = (m) => console.log(`  ok   ${m}`);
-const fail = (m, detail) => { failures++; console.log(`  FAIL ${m}${detail ? `\n         ${detail}` : ""}`); };
+const fail = (m, detail) => {
+  failures++;
+  const line = `  FAIL ${m}${detail ? `\n         ${String(detail).slice(0, 400)}` : ""}`;
+  failed.push(line);
+  console.log(line);
+};
 const expect = (m, pass, detail) => (pass ? ok(m) : fail(m, detail));
 
 const rows = async () => (await page.evaluate(() => document.querySelector("#terminal .xterm-rows")?.innerText ?? ""))
@@ -1502,5 +1508,8 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   bin.close();
 }
 
+// Again, last: CI keeps only the end of a step's output (scripts/ci-annotate.sh),
+// and a failure early in this long list was cut off with nothing to say what.
+if (failed.length) console.log(`\n  failed:\n${failed.join("\n")}`);
 console.log(failures ? `\n  ${failures} failed` : "\n  the pad does what a person expects");
 process.exit(failures ? 1 : 0);
