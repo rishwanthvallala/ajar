@@ -134,6 +134,7 @@ async function agree(a, b, want, label) {
   const fine = sa.doc === want && sb.doc === want && sa.screen === sa.doc && sb.screen === sb.doc;
   if (fine) ok(label);
   else fail(`${label} — ${JSON.stringify({ want, A: sa.doc, B: sb.doc, A_shows: sa.screen, B_shows: sb.screen })}`);
+  return fine;
 }
 
 try {
@@ -328,12 +329,25 @@ try {
     await setAll(a, "x = 1\ny = 2\n");
     await wait(a, 1200);
     await caretAt(a, 2, 6);
+    // Where the caret went, and what moved it: on CI on 21 October the
+    // typing was split by the line's end, once in a few runs, the same in
+    // both places — the caret one place past where the change left it.
+    await a.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0];
+      window.__caret = [];
+      const t0 = performance.now();
+      ed.onDidChangeCursorPosition((e) => window.__caret.push(`${Math.round(performance.now() - t0)}ms ${e.position.lineNumber}:${e.position.column} reason=${e.reason} ${e.source}`));
+    });
     await Promise.all([
       a.keyboard.type("abcdefghijklmnop", { delay: 60 }),
       (async () => { await wait(b, 300); await term("sed -i 's/x = 1/x = 42/' main.py"); await wait(b, 150); await idle(); })(),
     ]);
     await wait(a, 2500);
-    await agree(a, b, "x = 42\ny = 2abcdefghijklmnop\n", "a command that changes the open file keeps its change and the other place's typing");
+    if (!(await agree(a, b, "x = 42\ny = 2abcdefghijklmnop\n", "a command that changes the open file keeps its change and the other place's typing"))) {
+      // Typing moves it one column at a time; anything else is the change.
+      const moves = await a.evaluate(() => window.__caret.filter((m) => !/ reason=0 keyboard$/.test(m)));
+      console.log(`         A's caret, other than typing: ${moves.join(" · ").slice(0, 900)}`);
+    }
 
     // The same, with the command still running when the typing arrives: the
     // other place's keystrokes were written into this sandbox as they came,
