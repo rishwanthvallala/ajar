@@ -190,6 +190,26 @@ CADDY_BIN=$(GOARCH="$CADDY_ARCH" deploy/caddy/build.sh)
 
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"
 
+# Every inline script of the pad's page, allowed by the Caddyfile's
+# Content-Security-Policy, which names each by its hash. On 21 October the
+# build changed the import map, the browser refused it — and with it the SDK's
+# import of wisp — and no command started for anyone until the next deploy.
+unallowed=$(node -e '
+  const fs = require("fs"), crypto = require("crypto");
+  const csp = fs.readFileSync("deploy/Caddyfile", "utf8");
+  const html = fs.readFileSync("pad/dist/index.html", "utf8");
+  for (const [, attrs, body] of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)) {
+    if (/\bsrc=/.test(attrs)) continue;
+    const hash = crypto.createHash("sha256").update(body).digest("base64");
+    if (!csp.includes(`sha256-${hash}`)) console.log(`sha256-${hash} (${body.trim().slice(0, 60).replace(/\s+/g, " ")}…)`);
+  }')
+if [ -n "$unallowed" ]; then
+    echo "  pad/dist/index.html has inline scripts the Content-Security-Policy would refuse:" >&2
+    echo "$unallowed" | sed 's/^/    /' >&2
+    echo "  add each hash to script-src in deploy/Caddyfile, or leave the script as it was" >&2
+    exit 1
+fi
+
 # ------------------------------------------------------------ bootstrap
 
 if [ "$MODE" = "--bootstrap" ]; then

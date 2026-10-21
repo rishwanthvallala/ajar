@@ -85,9 +85,12 @@ const SDK_URL = `/vendor/wasmer/${contentHash(sdkRoot, ["dist", "pkg"])}`;
 const WISP_PKG = "@mercuryworkshop/wisp-js";
 const wispEntry = createRequire(import.meta.url).resolve(`${WISP_PKG}/client`);
 const wispRoot = new URL("../", pathToFileURL(wispEntry));
-// Named for what is in it, as the SDK is. The pages' import maps say
-// /vendor/wisp/src/, and the build puts this in (`transformIndexHtml`).
-const WISP_URL = `/vendor/wisp/${contentHash(wispRoot, ["src"])}`;
+// Not named for its version, as the SDK is: the pages' import map names it,
+// and the Caddyfile's Content-Security-Policy allows that one inline script
+// by its hash. Put in, the version changed the map and the browser refused
+// it, and with it the SDK's import of wisp — no command started, on 21
+// October, for half an hour. deploy.sh now refuses a build whose inline
+// scripts the policy would refuse.
 const vendorSdk: Plugin = {
   name: "vendor-wasmer-sdk",
   async buildStart() {
@@ -105,7 +108,7 @@ const vendorSdk: Plugin = {
     await cp(new URL("dist/service-worker-host.js", sdkRoot), new URL("service-worker-host.js", wasmer));
     const wisp = new URL("./public/vendor/wisp/", import.meta.url);
     await rm(wisp, { recursive: true, force: true });
-    const wispTo = new URL(`.${WISP_URL.slice("/vendor/wisp".length)}/src/`, wisp);
+    const wispTo = new URL("./src/", wisp);
     await cp(new URL("src/", wispRoot), wispTo, { recursive: true });
     // The substitution the package expects a bundler to make, and says so in
     // the file itself: compat.mjs pulls in `ws`, `crypto`, `node:net` and
@@ -117,9 +120,6 @@ const vendorSdk: Plugin = {
     // served only by preview.rishwanth.dev, from here — see the Caddyfile —
     // and under vendor/ because that name is already one no pad can take.
     await cp(new URL("./preview/", import.meta.url), new URL("./public/vendor/preview/", import.meta.url), { recursive: true });
-  },
-  transformIndexHtml(html) {
-    return html.replaceAll('"/vendor/wisp/src/', `"${WISP_URL}/src/`);
   },
 };
 

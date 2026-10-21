@@ -125,8 +125,9 @@ code.rishwanth.dev {
 	}
 
 	# The wasm packages are content-addressed by the registry, and the vendored
-	# SDK and wisp are copied under a folder named for a hash of what is in
-	# them (vite.config.ts), so nothing here is worth revalidating. This is
+	# SDK is copied under a folder named for a hash of what is in it
+	# (vite.config.ts), so nothing here is worth revalidating — except wisp,
+	# which the import map names and the policy above pins by its hash. This is
 	# most of what makes a second visit free. The SDK was one folder for every
 	# version until 21 October, and a browser that had kept files of the one
 	# before 0.18 ran them against 0.18's: no Run started in it again.
