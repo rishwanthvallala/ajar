@@ -257,7 +257,9 @@ the sandbox's from it.
 import.meta.url)`, and that worker statically imports two siblings. A bundler
 flattens the layout, the siblings 404, and **every command hangs forever with
 nothing thrown**. It is vendored verbatim — see `vendor-wasmer-sdk` in
-`pad/vite.config.ts`.
+`pad/vite.config.ts` — under a folder named for a hash of its files,
+`/vendor/wasmer/<hash>/`, and wisp beside it the same way: Caddy keeps
+everything under `/vendor` for a year without asking again (below).
 
 **`spawnShell` must pass only `terminal`.** Naming stdin/stdout/stderr
 alongside it replaces the pty with pipes, and the shell stops behaving like a
@@ -1349,6 +1351,35 @@ immutable with the packages: they change when a package does, and a returning
 browser holding a year-old list was pointed at files a later deploy removed.
 They revalidate each visit, as does `own.json`, Java's and C++'s, beside them
 (every `/packages/*.json`; `deploy/caddy/check.sh` asserts the first two).
+
+**The vendored SDK and wisp are in folders named for what is in them,** since
+21 October: `/vendor/wasmer/<hash>/` and `/vendor/wisp/<hash>/`, twelve hex
+digits of a hash of the files the build copies, which a new version changes and
+nothing else does. Until then they were `/vendor/wasmer/` and `/vendor/wisp/`
+for every version, kept for a year, which the code review of 16 September had
+said (F36). A browser that had kept files of the SDK from before 0.18 (16
+October) and fetched one of them afresh ran 0.18's WebAssembly against the
+old glue:
+`WebAssembly.instantiate(): Import #1 "./wasmer_sdk_js_bg.js"
+"__wbg___wasmerHostFileSystem_…": function import requires a callable`, on the
+status line, and no Run or command started in that browser again. Production's
+own files matched; the browser's did not. A new folder is a new address, so a
+browser in that state fetches the whole SDK again on its next visit. The build
+removes the folders of other versions, and `deploy.sh`'s `rsync --delete` the
+copies on the server, so a tab open across a deploy that changes the SDK, and
+had not loaded it yet, gets 404 for it and needs a reload.
+
+The preview origin's `/wasmer-host.js` is one file of the SDK's, with no imports
+of its own; the build copies it to `/vendor/wasmer/service-worker-host.js` too,
+where the Caddyfile can find it without knowing the version.
+
+**The page is asked for again each visit,** since the same day: the Caddyfile
+serves `index.html` and the few files beside it `no-cache`, an empty 304 when
+nothing changed. With no `Cache-Control` at all, as before, a browser may keep
+a page as long as it guesses — commonly a tenth of the time since it last
+changed — and a page kept past a deploy asks for scripts the deploy removed and
+an SDK it replaced. `deploy/caddy/check.sh` asserts both, and that a script
+under `/assets` is still immutable.
 
 The URL list is **observed, not derived**: `pad/scripts/fetch-packages.mjs`
 runs the app once and records what it asks for. Asking the registry for each

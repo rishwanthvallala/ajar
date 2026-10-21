@@ -229,7 +229,8 @@ could script it, read its storage and reach its service worker.
 
 The preview origin serves the SDK's host script, taken from the vendored SDK
 the pad already ships so it can never be a different version from the client
-talking to it; since 16 October the pad's own control-page script and service
+talking to it — the build's copy beside the SDK's version-named folder,
+`vendor/wasmer/service-worker-host.js`, since 21 October; since 16 October the pad's own control-page script and service
 worker, `pad/preview/` copied by the build, the worker in place of the SDK's;
 a one-line control page written inline in the Caddyfile; and 404 for
 everything else. Nothing is stored there and

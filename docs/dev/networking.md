@@ -353,7 +353,8 @@ SDK refuses to route anywhere else.
 
 The Caddy block serves the SDK's control-page script from the vendored SDK the
 pad already ships, so it is never a different version from the client talking
-to it. It also serves the pad's own worker and relay (`pad/preview/`, copied
+to it: `vendor/wasmer/service-worker-host.js`, which the build copies beside the
+SDK's folder, named for its version since 21 October. It also serves the pad's own worker and relay (`pad/preview/`, copied
 under `vendor/preview/` by the build) and the one-line control page that loads
 both, written inline. Until 16 October the worker was the SDK's too. Nothing is
 stored and nothing is proxied: with no pad open, that origin answers 404.
