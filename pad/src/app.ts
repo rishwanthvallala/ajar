@@ -12,6 +12,7 @@ import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDe
 
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode, size } from "./access";
 import { applied, carryOver, type Edit, putBack } from "./carry";
+import { Suggestions } from "./complete";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
@@ -262,6 +263,7 @@ function closest(candidates: readonly string[], result: string): string | undefi
 export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
+  private suggestions: Suggestions | null = null;
   private monaco: typeof Monaco | null = null;
   /** The pad's text files: a model for those the editor has needed, text for the rest (`Texts`). */
   private texts = new Texts<Monaco.editor.ITextModel>((path, text) => this.makeModel(path, text));
@@ -489,6 +491,7 @@ export class App {
       format: HTMLButtonElement;
       indent: HTMLButtonElement;
       markdown: HTMLButtonElement;
+      suggest: HTMLButtonElement;
       previewPane: HTMLElement;
       imagePane: HTMLElement;
       markdownPane: HTMLElement;
@@ -1180,6 +1183,8 @@ export class App {
       contextMenuOrder: 0,
       run: () => void this.run(),
     });
+    // Grey text as you type, from a model in this tab — see complete.ts.
+    this.suggestions = new Suggestions(monaco, this.editor, this.el.suggest);
     this.editor.addAction({
       id: "pad.starter",
       label: "Insert Starter Code",
@@ -4395,6 +4400,7 @@ export class App {
     for (const doc of this.docs.values()) doc.destroy();
     this.docs.clear();
     this.texts.clear();
+    this.suggestions?.dispose();
     this.editor?.dispose();
     for (const session of this.sessions) session.dispose();
   }

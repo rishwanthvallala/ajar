@@ -1,0 +1,38 @@
+{
+  "name": "M1-qat",
+  "notes": "Production model v1 of the autocomplete study (pad/autocomplete, README \u00a72.7): 35.6M parameters, 10 layers x 512, 4-bit weights. Eval v2, 18,060 places in code written in 2026, this package's code: 31.55% exact with the evaluation's prompt, 31.21% with the editor's (prompt.ts Prompter, 192 tokens of headroom). confidence: the cut at which 50/60/70/80% of shown completions are exactly right, measured with the editor's prompt on that set.",
+  "shape": {
+    "V": 16384,
+    "d": 512,
+    "L": 10,
+    "nh": 8,
+    "nkv": 2,
+    "ffn": 1344
+  },
+  "tokens": {
+    "used": 16263,
+    "fimSuffix": 16259,
+    "fimMiddle": 16258,
+    "stop": [
+      16256,
+      16257,
+      16258,
+      16259,
+      16260,
+      16261,
+      16262
+    ]
+  },
+  "prompt": {
+    "ctx": 1024,
+    "maxNew": 40,
+    "suffixTokens": 256,
+    "prefixChars": 6000
+  },
+  "confidence": {
+    "50": -3.2341,
+    "60": -2.1821,
+    "70": -1.4262,
+    "80": -0.829
+  }
+}

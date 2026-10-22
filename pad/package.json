@@ -10,6 +10,7 @@
     "probe": "npm run build && node scripts/probe-packages.mjs"
   },
   "dependencies": {
+    "@ajar/complete": "0.0.0",
     "@ajar/workspace-ui": "0.0.0",
     "@wasm-fmt/clang-format": "23.1.1",
     "@wasm-fmt/gofmt": "0.7.3",

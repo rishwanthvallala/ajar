@@ -25,6 +25,8 @@ export interface PadElements {
   indent: HTMLButtonElement;
   /** A Markdown file formatted, or not; hidden for other files. */
   markdown: HTMLButtonElement;
+  /** Suggestions as you type, on or off (complete.ts). */
+  suggest: HTMLButtonElement;
   previewPane: HTMLElement;
   imagePane: HTMLElement;
   /** Where a Markdown file shows formatted, beside the editor or over it. */
@@ -101,7 +103,10 @@ export class PadWorkspace {
     const markdown = tool("markdown-view", "Preview");
     markdown.hidden = true;
     markdown.setAttribute("aria-pressed", "false");
-    this.tools.append(format, markdown, indent);
+    // Shown by complete.ts once the editor is up and it knows the setting.
+    const suggest = tool("suggest", "Suggest");
+    suggest.hidden = true;
+    this.tools.append(format, markdown, indent, suggest);
     this.shell.el("editor-actions").append(this.tools, backToEditor);
     this.shell.el("close-file").hidden = true;
 
@@ -157,6 +162,7 @@ export class PadWorkspace {
       format,
       indent,
       markdown,
+      suggest,
       previewPane,
       imagePane,
       markdownPane,

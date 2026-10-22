@@ -161,6 +161,12 @@ for own in ajar/java:build-java ajar/cxx:build-cxx; do
         exit 1
     fi
 done
+# The suggestion model, likewise not in git. Not a refusal: without it the
+# pad has no Suggest switch and is otherwise the same.
+if [ ! -f pad/public/packages/ajar-complete.json ]; then
+    echo "  pad/public/packages has no suggestion model; the pad ships without suggestions. To add it:" >&2
+    echo "      node packages/complete/scripts/install-model.mjs <model.bin> <tokenizer.json>" >&2
+fi
 # The preview origin is compiled in: the pad has to know which origin may
 # serve what a visitor runs, and an empty value disables previews entirely,
 # which is the right behaviour for a deploy without that subdomain.

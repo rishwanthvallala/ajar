@@ -158,6 +158,21 @@ else with the link. A file that is not text — an image, a chart a script
 saved, a `.zip` — is listed in *italics*: it is in everyone's terminal folder
 and you can download, move or delete it, but the editor does not open it.
 
+### Suggestions as you type
+
+While you type, the editor suggests the rest of the line in grey, reading the
+code above the cursor and below it. **Tab** takes it; keep typing, or press
+**Escape**, to leave it. It is shown only when it is likely to be right —
+about seven times in ten it is exactly what you would have typed — so on many
+lines it stays quiet.
+
+The suggestions come from a small model that runs in your tab: your code is
+not sent anywhere for them. The model is a 17 MB download the first time you
+type in a pad, once per browser, and the **Suggest** switch beside Format
+turns it off. It does not load on a phone, or with your browser's data saver
+on. They are yours alone: nobody else on the pad sees your grey text, only
+what you take.
+
 ### More than one terminal
 
 **New terminal**, above the terminal, opens another: its own shell, in the

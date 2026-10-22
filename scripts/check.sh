@@ -164,6 +164,9 @@ part_pad-more() {
     node pad/scripts/accounts-check.mjs
     echo "── ui: two places in one pad ─────────────────────────"
     node pad/scripts/pair-check.mjs
+    # Skips without the model in pad/public/packages, which CI does not have.
+    echo "── ui: suggestions as you type ───────────────────────"
+    node pad/scripts/complete-check.mjs
     # Last, because it needs a build of its own: the preview origin is
     # compiled in, and this one is the check's local host. The dist it leaves
     # is that build; deploy.sh makes its own.

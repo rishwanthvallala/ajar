@@ -164,6 +164,8 @@ body { background: var(--bg); color: var(--ink); }
   .pad-shell #viewer.md-shown > .md-view { left: 50%; border-left: 1px solid var(--rule); }
 }
 .pad-shell .editor-tool.on { border-color: var(--rule); background: var(--surface-2); color: var(--ink); }
+/* Suggest switched off reads as Colours does. */
+.pad-shell .editor-tool.off { color: var(--muted); text-decoration: line-through; }
 .pad-shell .md-note { margin: 1.5rem; color: var(--muted); font-size: 0.875rem; }
 /* The help page (help.ts) is the guide in the same type. */
 .help { padding: 1rem 0 2rem; background: var(--surface); color: var(--ink); }

@@ -11,6 +11,7 @@ workspace shell (`packages/workspace-ui`) with the first.
 npm ci                                 # from the repository root
 npm run build:pad && node pad/scripts/fetch-packages.mjs   # mirrors the wasm, ~66 MB every visit needs and about 1 GB with the languages, with .zst and .gz copies; needs cargo, for the trimmer it builds; once
 node pad/scripts/build-java.mjs && node pad/scripts/build-cxx.mjs   # Java and C++, packages of our own that no registry has; Java's needs podman; once
+node packages/complete/scripts/install-model.mjs model.bin tokenizer.json   # the suggestion model, 19 MB; optional
 npm run dev:pad
 cargo run -p ajar-relay -- --bind 127.0.0.1:8787 --pad-dir ./ajar-pads
 npm run check --workspace=ajar-pad
@@ -43,6 +44,7 @@ npm run check --workspace=ajar-pad
 | `src/problems.ts` | The files and lines a run's errors point at: links in the terminal, marks in the editor |
 | `src/requirements.ts` | What a typed `pip install` adds to `requirements.txt` |
 | `src/usage.ts` | A run's language, sent for the usage counts |
+| `src/complete.ts` | Suggestions as you type: when the model loads, and the Suggest switch (the model is `packages/complete`) |
 | `src/app.ts` | Everything wired together |
 | `src/main.ts` | The page's entry: the stored theme first, then the layout preview or `bootstrap.ts` |
 | `src/bootstrap.ts` | Sends `/dashboard` (and `/login`, `/signup`, `/account`, `/settings`, which go there) and `/admin` to their pages, takes a link's code out of the address bar, mints or reads the name, then starts the app |
@@ -67,6 +69,7 @@ npm run check --workspace=ajar-pad
 | `src/check.ts` | What has to be true for any of this to work, asserted in a real browser |
 | `scripts/browser-check.mjs` | Runs that page under headless Chromium and reports what it found |
 | `scripts/app-check.mjs` | The product as a person uses it — locally, or against live with `PAD_ORIGIN` |
+| `scripts/complete-check.mjs` | Suggestions as a person meets them; skips without the model |
 | `scripts/terminal-check.mjs` | The terminal by real key presses |
 | `scripts/user-check.mjs` | Mistakes, ctrl-c, Stop, `nano`, the editor, zips — the pad as a person uses it |
 | `scripts/accounts-check.mjs` | Owner, editor and viewer in three browsers, against a real relay and a stand-in OAuth provider |

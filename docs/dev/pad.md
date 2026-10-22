@@ -1764,6 +1764,46 @@ Format and Spaces sit beside Colours, quiet as it is; Format only where
 something formats the file. Format Document and Insert Starter Code are also
 Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 
+## Suggestions as you type
+
+Grey text at the cursor — the rest of the line — from a model that runs in
+the tab: `packages/complete`, wired in by `complete.ts`. The model is the
+autocomplete study's (`pad/autocomplete`, README §2.7): 36M parameters, 4-bit,
+18.95 MB, its own WebAssembly engine in a worker. Its README has the API and
+the numbers; what matters for the pad:
+
+- **When it loads.** At the first key typed in the editor, so a visitor who
+  only reads a pad never fetches it — 16.95 MB as zstd — and never on a phone
+  or with Save-Data. Once it has loaded in a browser (`pad.suggest.loaded`) it
+  starts with the editor, from Cache Storage, in about 0.1 s.
+- **Where it comes from.** `/packages/ajar-complete.json` and the two
+  content-named files it names, beside the mirrored wasm packages and under
+  the same rules: immutable, precompressed, rate-limited per file, kept out of
+  git, carried by `deploy.sh` and back by `from-ci.sh`. `ajar-` is the prefix
+  `fetch-packages.mjs` leaves alone when it prunes.
+  `packages/complete/scripts/install-model.mjs` writes them. A deploy without
+  them has no Suggest switch (deploy.sh says so) and is otherwise the same.
+- **The page.** Cross-origin isolation lets the engine run long prompts on
+  four threads (150 ms rather than 430 for a cursor somewhere new); the
+  policy needs nothing new — workers and wasm from `'self'` were already
+  allowed. The engine, its three other builds and the worker are Vite
+  assets, hashed under `/assets`.
+- **What it does to typing.** Nothing on the page's thread but building the
+  request: the prompt, the model and the decoding are the worker's. A warm
+  keystroke is answered in about 10 ms, and a newer one stops an older one
+  between chunks, read from shared memory. The provider asks for no debounce.
+- **Others on the pad.** Grey text is Monaco's, not the document's: nothing
+  reaches the shared document until Tab, and then as typing does.
+- **Off.** Suggest beside Format, per browser (`pad.suggest`), drawn struck
+  through like Colours when off. Read-only files (too large to share live)
+  get no suggestions.
+
+Checked by `pad/scripts/complete-check.mjs` (in `check.sh pad-more`; it skips
+without the model, as CI is): nothing fetched before a key, the model
+compressed on the wire, grey text while typing, Tab taking it into the file
+and the save, a second browser seeing only what was taken, the reload from
+Cache Storage, and the switch.
+
 ## What it does not do
 
 - **An anonymous pad has no locks.** Deliberate — the trade for a clean
