@@ -1802,6 +1802,18 @@ the numbers; what matters for the pad:
   through like Colours when off. Read-only files (too large to share live)
   get no suggestions.
 
+**What it costs an opening, measured 23 October** with `open-perf.mjs paste`
+and a first visit that types a key and waits for the model, so the return
+visits start it with the editor; three return visits, against the same build
+without the model. Locally: keys at 0.06 s and the shell at 0.67–0.69 s,
+against 0.06 and 0.66–0.77; suggestions ready at 0.12–0.16 s. On the slow link
+(20 Mbit/s, 80 ms, the CPU four times slower): keys at 0.27–0.28 s, the
+terminal at 0.34–0.36 and the shell at 5.6 s, against 0.27–0.31, 0.33–0.37
+and 5.6–5.9; suggestions ready at 0.45–0.48 s. Nothing measurable. A paste is
+Ctrl/Cmd+V, which the first-key trigger leaves out, so somebody who only
+pastes never fetches the model; somebody who types on a first visit fetches it
+beside the runtime, and on a slow link their first Run waits for both.
+
 Checked by `pad/scripts/complete-check.mjs` (in `check.sh pad-more`; it skips
 without the model, as CI is): nothing fetched before a key, the model
 compressed on the wire, grey text while typing, Tab taking it into the file
