@@ -100,9 +100,13 @@ page.on("pageerror", (e) => noise.push(`pageerror: ${e.message.slice(0, 200)}`))
 page.on("requestfailed", (r) => noise.push(`request failed: ${r.url().slice(-60)}`));
 
 let timedOut = false;
+// The page fetches the whole runtime first, and on CI, with no mirror, from
+// Wasmer's CDN: 180 s ran out there on 23 October with the page past `sort`
+// and nothing wrong, so it has longer.
+const BUDGET_MS = 420_000;
 await page.goto(`http://127.0.0.1:${PORT}/check.html`, { waitUntil: "domcontentloaded" });
 await page
-  .waitForFunction(() => (window.__results ?? []).includes("DONE"), null, { timeout: 180_000 })
+  .waitForFunction(() => (window.__results ?? []).includes("DONE"), null, { timeout: BUDGET_MS })
   .catch(() => { timedOut = true; });
 
 const results = await page.evaluate(() => window.__results ?? []);
@@ -119,7 +123,10 @@ for (const line of results.filter((l) => l !== "DONE")) console.log(`  ${line.le
 
 const failed = results.filter((l) => l.startsWith("FAIL"));
 if (timedOut) {
-  console.log("\n  the page never finished — see the notes above\n");
+  // Again, last: the results fill what CI keeps of the log, and the notes —
+  // a request that failed, the runtime's own words — are what say why.
+  for (const n of noise.slice(-15)) console.log(`  note: ${n.length > 200 ? `${n.slice(0, 200)}…` : n}`);
+  console.log(`\n  the page never finished in ${BUDGET_MS / 1000} s; the last case it finished is the last line above the notes\n`);
   process.exit(1);
 }
 if (failed.length) {
