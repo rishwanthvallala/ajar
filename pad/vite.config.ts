@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { cp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -123,6 +123,16 @@ const vendorSdk: Plugin = {
   },
 };
 
+/**
+ * Whether this build serves the suggestion model (pad/src/complete.ts): it is
+ * not in git, and packages/complete/scripts/install-model.mjs puts its manifest
+ * here. A deploy from CI copies the server's packages in before it builds, so
+ * the build knows what the server has. Without it the page shows no Suggest
+ * switch at all; asked for at the first key instead, the switch offered a
+ * download and then vanished as typing began.
+ */
+const SUGGEST = existsSync(new URL("./public/packages/ajar-complete.json", import.meta.url));
+
 export default defineConfig({
   plugins: [isolation, vendorSdk],
   server: {
@@ -144,7 +154,7 @@ export default defineConfig({
       },
     },
   },
-  define: { __SDK_URL__: JSON.stringify(SDK_URL) },
+  define: { __SDK_URL__: JSON.stringify(SDK_URL), __SUGGEST__: JSON.stringify(SUGGEST) },
   build: {
     sourcemap: false,
     target: "es2022",

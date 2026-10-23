@@ -1782,7 +1782,11 @@ the numbers; what matters for the pad:
   git, carried by `deploy.sh` and back by `from-ci.sh`. `ajar-` is the prefix
   `fetch-packages.mjs` leaves alone when it prunes.
   `packages/complete/scripts/install-model.mjs` writes them. A deploy without
-  them has no Suggest switch (deploy.sh says so) and is otherwise the same.
+  them has no Suggest switch (deploy.sh says so) and is otherwise the same:
+  the build looks for the manifest (`__SUGGEST__` in `vite.config.ts`), and a
+  deploy from CI copies the server's packages in before it builds. Until 23
+  October the page found out at the first key, so the switch offered the
+  download and then vanished as typing began, on every visit.
 - **The page.** Cross-origin isolation lets the engine run long prompts on
   four threads (150 ms rather than 430 for a cursor somewhere new); the
   policy needs nothing new — workers and wasm from `'self'` were already

@@ -13,9 +13,13 @@ import { attachCompleter } from "@ajar/complete/monaco";
  * on a phone or with Save-Data on. Once it has loaded here it comes from Cache
  * Storage, in about a tenth of a second, and starts with the editor.
  *
- * "Suggest" beside Format switches it off and on for this browser. A deploy
- * without the model (no ajar-complete.json) takes the switch away.
+ * "Suggest" beside Format switches it off and on for this browser. A build
+ * without the model (no ajar-complete.json in its packages) has no switch at
+ * all: `__SUGGEST__`, from vite.config.ts. Asked for at the first key, as it
+ * was, the switch offered the download and then vanished as typing began, on
+ * every visit.
  */
+declare const __SUGGEST__: boolean;
 const MANIFEST = "/packages/ajar-complete.json";
 const SWITCH_KEY = "pad.suggest";
 /** Set once the model has loaded in this browser: from then on it is in Cache Storage. */
@@ -44,7 +48,7 @@ export class Suggestions {
     this.button = button;
     this.on = read(SWITCH_KEY) !== "off";
     button.onclick = () => this.toggle();
-    if (!suitable()) return;
+    if (!__SUGGEST__ || !suitable()) return;
     button.hidden = false;
     if (this.on && read(LOADED_KEY) === "1") this.start();
     // A key that writes something: the first sign this visitor edits.
@@ -82,7 +86,7 @@ export class Suggestions {
       (e: Error) => {
         this.state = "failed";
         this.why = e.message;
-        // A deploy that carries no model: nothing to switch.
+        // A server without the model this build was made with: nothing to switch.
         if (/ajar-complete\.json: HTTP 404/.test(e.message)) this.button.hidden = true;
         this.paint();
         completer.dispose();
