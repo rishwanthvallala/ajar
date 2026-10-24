@@ -194,7 +194,7 @@ async function checkPadEditor() {
   ).catch(() => {});
   const language = (page) => page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getLanguageId());
   const open = async (page, name) => {
-    await page.locator(`#files .row.file:text-is("${name}")`).click();
+    await page.locator(`#files .row.file:has(> .name:text-is("${name}"))`).click();
     await page.waitForFunction((name) => document.querySelector("#viewer-title")?.textContent === name, name);
   };
   try {

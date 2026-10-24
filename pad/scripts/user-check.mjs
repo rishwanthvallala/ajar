@@ -611,8 +611,8 @@ try {
   // ---- deleting from the tree ----
   section = "deleting from the tree";
   answer = "yes";
-  await page.hover('#files .file-row:has(.row.file:text-is("run.sh"))');
-  await page.click('#files .file-row:has(.row.file:text-is("run.sh")) .delete');
+  await page.hover('#files .file-row:has(> .row.file > .name:text-is("run.sh"))');
+  await page.click('#files .file-row:has(> .row.file > .name:text-is("run.sh")) .delete');
   answer = null;
   const deleted = await page.waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "run.sh"), null, { timeout: 10_000 }).then(() => true, () => false);
   await typed("ls run.sh 2>&1 | tail -1");
@@ -735,7 +735,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     `${whole.name}: ${JSON.stringify(Object.keys(all.files))}`);
   expect("and its image byte for byte", inPad("logo.png")?.hex === "89504e470d0a1a0a0000000d", JSON.stringify(inPad("logo.png")));
   expect("and an empty folder, as its marker", inPad("kept-in-zip/.keep") === "", JSON.stringify(Object.keys(all.files).filter((p) => p.includes("kept"))));
-  await page.hover('#files .dir-row:has(.row.dir:text-is("src"))');
+  await page.hover('#files .dir-row:has(> .row.dir > .name:text-is("src"))');
   const folder = await got(() => page.locator('#files button[aria-label="Download src as a zip"]').click());
   const one = unzip(folder.to);
   expect("a folder downloads as a zip of that folder", folder.name === "src.zip" && JSON.stringify(Object.keys(one.files)) === '["src/util.py"]', `${folder.name}: ${JSON.stringify(one)}`);
@@ -860,6 +860,13 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 
   await renameInTree("naïve.txt", "notes/renamed.txt");
   expect("F2 renames in place, and a / in the name moves it into a folder — the keyboard's way to do it", await treeHas(["notes/renamed.txt"], ["naïve.txt"]), JSON.stringify(await paths()));
+
+  // The same by its button, for a pointer or a finger: until 24 October F2
+  // was the only way, and a phone has no F2.
+  await page.hover('#files .file-row:has(.row.file[data-path="notes/renamed.txt"])');
+  await page.locator('#files button[aria-label="Rename notes/renamed.txt"]').click();
+  await nameInTree("renamed-again.txt");
+  expect("Rename beside a file turns its row into its name, and the name typed is kept, in its folder", await treeHas(["notes/renamed-again.txt"], ["notes/renamed.txt"]), JSON.stringify(await paths()));
 
   // A name that is taken is said under the name as it is typed, and Enter
   // does not take it; Escape leaves both as they were.
@@ -1351,7 +1358,9 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     // own fetches the whole runtime, and on CI, with no mirror, from Wasmer's
     // CDN: 240 s ran out there once on 21 October, so it has longer, and says
     // what it saw if that runs out too.
-    const ran = await first.waitForFunction(() => /pasted before the terminal\s/.test(document.querySelector("#terminal .xterm-rows")?.textContent ?? ""), null, { timeout: 480_000 }).then(() => true, () => false);
+    // innerText, which ends each row with a line break: textContent runs
+    // rows together, and matched only when xterm padded this one with spaces.
+    const ran = await first.waitForFunction(() => /pasted before the terminal/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 480_000 }).then(() => true, () => false);
     const seen = ran ? {} : await first.evaluate(() => ({
       status: document.getElementById("status")?.textContent ?? "",
       terminal: (document.querySelector("#terminal .xterm-rows")?.innerText ?? "").trim().slice(-300),

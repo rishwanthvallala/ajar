@@ -502,7 +502,7 @@ try {
   await page.click("#terminal");
   await page.keyboard.type("echo seeded-by-the-room > notes.txt\n");
   await page.waitForFunction(() => [...document.querySelectorAll("#files .file")].some((b) => b.textContent === "notes.txt"), null, { timeout: 30_000 });
-  await page.click('#files .row.file:text-is("notes.txt")');
+  await page.click('#files .row.file:has(> .name:text-is("notes.txt"))');
   await page.waitForFunction(() => window.__pad?.active() === "notes.txt", null, { timeout: 10_000 });
   await new Promise((r) => setTimeout(r, 1500));
   await page.click(".monaco-editor .view-lines");
@@ -526,7 +526,7 @@ try {
   });
   await slow.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await slow.waitForSelector(".monaco-editor", { timeout: 30_000 });
-  await slow.click('#files .row.file:text-is("notes.txt")');
+  await slow.click('#files .row.file:has(> .name:text-is("notes.txt"))');
   // Who is here, then the document, each 1.5 s late — and room to spare.
   await new Promise((r) => setTimeout(r, 7000));
   await slow.click(".monaco-editor .view-lines");
@@ -553,7 +553,7 @@ try {
   is(converged, true, `a room that answers slowly still ends up with one document${there ? "" : " — the room never got the newcomer's line"}${here ? "" : " — the newcomer never got the room's"}`);
   await slow.close();
   // Back to the file the rest of this check works in.
-  await page.click('#files .row.file:text-is("main.py")');
+  await page.click('#files .row.file:has(> .name:text-is("main.py"))');
 
   // ---- deleting a file from the tree ----
   // For everyone: gone from the other browser's tree and from the server.
@@ -577,8 +577,8 @@ try {
     .waitForFunction(() => ![...document.querySelectorAll("#files .file")].some((b) => b.textContent === "out.csv"), null, { timeout })
     .then(() => true, () => false);
   page.once("dialog", (d) => d.accept());
-  await page.hover('#files .file-row:has(.row.file:text-is("out.csv"))');
-  await page.click('#files .file-row:has(.row.file:text-is("out.csv")) .delete');
+  await page.hover('#files .file-row:has(> .row.file > .name:text-is("out.csv"))');
+  await page.click('#files .file-row:has(> .row.file > .name:text-is("out.csv")) .delete');
   const [goneThere, goneWhileLoading] = await Promise.all([gone(third, 20_000), gone(loading, 15_000)]);
   is(goneThere, true, "a file deleted in one browser leaves the other's tree");
   is(goneWhileLoading, true, "and the tree of one whose runtime is still downloading");

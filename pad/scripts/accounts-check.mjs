@@ -511,6 +511,7 @@ try {
   await until(viewer, () => window.__pad?.text("main.py")?.includes("live-one"));
   ok("a viewer watches typing live");
   is(await viewer.evaluate(() => [...document.querySelectorAll("#files .row")].every((r) => !r.draggable)), true, "a viewer cannot drag anything in the tree");
+  is(await viewer.evaluate(() => document.querySelectorAll("#files .row-actions .rename").length), 0, "nor has a Rename button for anything");
 
   await typeAtEnd(viewer, "main.py", "# the-viewers-own\n");
   await until(viewer, () => window.__pad?.local().includes("main.py"));
