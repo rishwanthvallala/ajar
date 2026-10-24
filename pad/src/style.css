@@ -65,19 +65,19 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .row .chev svg { width: 0.6875rem; height: 0.6875rem; transition: transform 120ms; }
 .pad-shell .row.dir.open .chev svg { transform: rotate(90deg); }
 .pad-shell .row.dir { color: var(--ink-2); }
-/* A file's row and its delete button, side by side: a button cannot hold one. */
+/* A row and its buttons, side by side: a button cannot hold one. */
 .pad-shell .file-row { position: relative; display: flex; align-items: center; }
 .pad-shell .file-row > .row { flex: 1; min-width: 0; }
-.pad-shell .file-row > .delete, .pad-shell .file-row > .get { position: absolute; right: 0.3rem; opacity: 0; padding: 0.2rem; }
-/* Download beside delete on a file's row; alone on a folder's. */
-.pad-shell .file-row > .get { right: 1.75rem; }
-.pad-shell .file-row.dir-row > .get { right: 0.3rem; }
-/* A folder with its delete as well: download beside it, as on a file's row. */
-.pad-shell .file-row.dir-row:has(> .delete) > .get { right: 1.75rem; }
-.pad-shell .file-row.dir-row:has(> .delete) > .row { padding-right: 3.2rem; }
-.pad-shell .file-row > .get svg { width: 0.8125rem; height: 0.8125rem; }
-.pad-shell .file-row > .get:hover { color: var(--accent); background: var(--surface-2); }
-.pad-shell .file-row.dir-row > .row { padding-right: 1.75rem; }
+/* Its buttons — Rename, Download, Delete, as it has them — at its end, shown
+   on hover or focus, and the name then ends short of them (--actions: how
+   many the row has). The name in its own element: text straight in a flex
+   row takes no ellipsis, and ran on under the buttons. */
+.pad-shell .row > .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pad-shell .file-row:is(:hover, :focus-within) > .row { padding-right: calc(var(--actions, 0) * (1.5rem + 2px) + 0.3rem); }
+.pad-shell .row-actions { position: absolute; right: 0.3rem; display: flex; gap: 2px; }
+.pad-shell .row-actions > button { opacity: 0; padding: 0.2rem; }
+.pad-shell .row-actions svg { width: 0.8125rem; height: 0.8125rem; }
+.pad-shell .row-actions > :is(.get, .rename):hover { color: var(--accent); background: var(--surface-2); }
 .pad-shell .tree-bar-end { margin-left: auto; display: flex; gap: 2px; }
 /* A zip dragged over the files says where it will go. */
 .pad-shell .files.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
@@ -87,11 +87,14 @@ body { background: var(--bg); color: var(--ink); }
 .pad-shell .row.dragging { opacity: 0.45; }
 .pad-shell .row.dir.drop-into { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
 .pad-shell .tree.drop-into { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
-.pad-shell .file-row > .delete svg { width: 0.8125rem; height: 0.8125rem; }
-.pad-shell .file-row:hover > :is(.delete, .get), .pad-shell .file-row > :is(.delete, .get):focus-visible { opacity: 1; }
-.pad-shell .file-row > .delete:hover { color: var(--hard); background: var(--surface-2); }
-/* No hover to reveal it on a touch screen, so it is always there. */
-@media (hover: none) { .pad-shell .file-row > :is(.delete, .get) { opacity: 0.7; } }
+.pad-shell .file-row:hover > .row-actions > button, .pad-shell .row-actions > button:focus-visible { opacity: 1; }
+.pad-shell .row-actions > .delete:hover { color: var(--hard); background: var(--surface-2); }
+/* No hover to reveal them on a touch screen, so they are always there, and
+   so is the room for them. */
+@media (hover: none) {
+  .pad-shell .row-actions > button { opacity: 0.7; }
+  .pad-shell :is(.file-row, .file-row:hover, .file-row:focus-within) > .row { padding-right: calc(var(--actions, 0) * (1.5rem + 2px) + 0.3rem); }
+}
 /* The terminal's Screen reader button: as its neighbours, and marked when on. */
 .pad-shell .screen-reader { padding: 0.35rem 0.65rem; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); font-size: 0.75rem; cursor: pointer; }
 .pad-shell .screen-reader:hover { border-color: var(--accent); color: var(--accent); }
@@ -99,16 +102,12 @@ body { background: var(--bg); color: var(--ink); }
 /* What a finger and a pointer can hit (review of 17 October, M5): 24 px at
    least everywhere, as WCAG 2.2 asks, and 44 px on a touch screen, as phones
    do. The per-file buttons were 19 px; the header's 26 on a phone. */
-.pad-shell .file-row > :is(.delete, .get), .pad-shell .tree-bar button { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; }
-.pad-shell .file-row > .get, .pad-shell .file-row.dir-row:has(> .delete) > .get { right: calc(0.3rem + 1.5rem + 2px); }
-.pad-shell .file-row.dir-row > .get { right: 0.3rem; }
+.pad-shell .row-actions > button, .pad-shell .tree-bar button { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; }
 @media (pointer: coarse) {
   .shell.pad-shell { --tree-row: 2.75rem; }
   .pad-shell :is(.pad-action, .editor-tool, .side-toggle, .theme-toggle, .highlight-toggle, .terminal-actions button, .tree-bar button) { min-height: 2.75rem; min-width: 2.75rem; }
-  .pad-shell .file-row > :is(.delete, .get) { min-width: 2.5rem; min-height: 2.5rem; }
-  .pad-shell .file-row > .get, .pad-shell .file-row.dir-row:has(> .delete) > .get { right: calc(0.3rem + 2.5rem + 2px); }
-  .pad-shell .file-row.dir-row > .get { right: 0.3rem; }
-  .pad-shell .file-row.dir-row:has(> .delete) > .row { padding-right: 5.6rem; }
+  .pad-shell .row-actions > button { min-width: 2.5rem; min-height: 2.5rem; }
+  .pad-shell :is(.file-row, .file-row:hover, .file-row:focus-within) > .row { padding-right: calc(var(--actions, 0) * (2.5rem + 2px) + 0.3rem); }
 }
 /* A phone on its side: the headers thinner, so the terminal has rows to
    show — it had three. */

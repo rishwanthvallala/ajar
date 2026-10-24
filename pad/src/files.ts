@@ -155,6 +155,14 @@ function build(paths: string[], pending: string[]): Node {
   return root;
 }
 
+/** A row's name, in an element of its own, so it can end in an ellipsis before the row's buttons. */
+function nameOf(name: string): HTMLElement {
+  const span = document.createElement("span");
+  span.className = "name";
+  span.textContent = name;
+  return span;
+}
+
 const ICONS = {
   file: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 1.5V5a.5.5 0 0 0 .5.5H13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
   folder: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2a1 1 0 0 1 .7.3l1 1a1 1 0 0 0 .7.3h4.4A1.5 1.5 0 0 1 14 6.1v6.4A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5v-8Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
@@ -164,6 +172,7 @@ const ICONS = {
   chevron: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   download: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v8M4.8 7.3 8 10.5l3.2-3.2M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   upload: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5v-8M4.8 5.7 8 2.5l3.2 3.2M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  rename: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.6 2.6a1.4 1.4 0 0 1 2 2L5.4 11.8 2.5 12.5l.7-2.9 7.4-7Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.4 3.8l2 2M8.5 13.5h5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   trash: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.6 9a1.5 1.5 0 0 0 1.5 1.4h3.8a1.5 1.5 0 0 0 1.5-1.4L12 4M6.5 6.5v5M9.5 6.5v5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 } as const;
 
@@ -439,6 +448,24 @@ export class FileTree {
     return wrap;
   }
 
+  /**
+   * A row's buttons, at its end: Rename first, for those who may move things.
+   * Renaming was F2 alone until 24 October — nothing to see or to tap, so on
+   * a phone there was no way to rename at all.
+   */
+  private actions(path: string, folder: boolean, movable: boolean): HTMLElement {
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+    if (movable) {
+      const rename = this.iconButton("rename", `Rename ${path}`, () => this.rename(path, folder));
+      rename.classList.add("rename");
+      rename.title = "Rename (F2)";
+      rename.setAttribute("aria-keyshortcuts", "F2");
+      actions.append(rename);
+    }
+    return actions;
+  }
+
   private iconButton(icon: keyof typeof ICONS, label: string, onClick: () => void): HTMLElement {
     const b = document.createElement("button");
     b.className = "icon";
@@ -547,7 +574,7 @@ export class FileTree {
         const open = !this.collapsed.has(child.path);
         row.className = `row dir${open ? " open" : ""}`;
         row.innerHTML = `<span class="chev">${ICONS.chevron}</span><span class="ico">${ICONS.folder}</span>`;
-        row.append(child.name);
+        row.append(nameOf(child.name));
         row.onclick = () => {
           this.picked = child.path;
           if (open) this.collapsed.add(child.path);
@@ -557,17 +584,20 @@ export class FileTree {
           this.host.querySelector<HTMLElement>(`.row.dir[data-path="${CSS.escape(child.path)}"]`)?.focus({ preventScroll: true });
         };
         row.dataset.path = child.path;
-        // A folder's row with its one action beside it, as a file's has.
+        // A folder's row with its actions beside it, as a file's has.
         const wrap = document.createElement("div");
         wrap.className = "file-row dir-row";
+        const actions = this.actions(child.path, true, movable);
         const zip = this.iconButton("download", `Download ${child.path} as a zip`, () => this.events.onDownload(child.path, true));
         zip.classList.add("get");
-        wrap.append(row, zip);
+        actions.append(zip);
         if (this.events.onDeleteFolder && movable) {
           const del = this.iconButton("trash", `Delete ${child.path}`, () => this.events.onDeleteFolder?.(child.path));
           del.classList.add("delete");
-          wrap.append(del);
+          actions.append(del);
         }
+        wrap.append(row, actions);
+        wrap.style.setProperty("--actions", String(actions.childElementCount));
         into.append(wrap);
         if (open) this.draw(child, into, active, depth + 1);
       } else {
@@ -576,7 +606,7 @@ export class FileTree {
         row.className = `row file${child.path === active ? " on" : ""}${mine ? " local" : ""}${binary ? " binary" : ""}`;
         if (binary) row.title = imageType(child.path) ? "An image — opens to view" : "Not text — download it to open it";
         row.innerHTML = `<span class="chev"></span><span class="ico">${ICONS.file}</span>`;
-        row.append(child.name);
+        row.append(nameOf(child.name));
         if (mine) {
           const mark = document.createElement("span");
           mark.className = "local-mark";
@@ -593,11 +623,14 @@ export class FileTree {
         // and the row's text stays the file's name alone.
         const wrap = document.createElement("div");
         wrap.className = "file-row";
+        const actions = this.actions(child.path, false, movable);
         const get = this.iconButton("download", `Download ${child.path}`, () => this.events.onDownload(child.path, false));
         get.classList.add("get");
         const del = this.iconButton("trash", `Delete ${child.path}`, () => this.events.onDelete(child.path));
         del.classList.add("delete");
-        wrap.append(row, get, del);
+        actions.append(get, del);
+        wrap.append(row, actions);
+        wrap.style.setProperty("--actions", String(actions.childElementCount));
         into.append(wrap);
       }
     }
