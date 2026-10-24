@@ -94,9 +94,10 @@ meanwhile.
 
 **Moving files.** Drag a file or a folder in the file list onto a folder to
 move it inside, onto a file to put it beside that file, or onto the empty
-space below to bring it to the top. With the keyboard, F2 on a file or folder
-turns its row into its name, ready to type over: a `/` in the new name moves
-it into a folder, and one at the start moves it from the top. A move is for
+space below to bring it to the top. **Rename** (the pencil beside a file or
+folder, or F2 on it) turns its row into its name, ready to type over: a `/` in
+the new name moves it into a folder, and one at the start moves it from the
+top. A move is for
 everyone on the pad and takes typing you have not saved yet with it. Renamed,
 a file cannot take a name that is taken; dragged onto a file of the same name,
 it asks first whether to replace it. People viewing a pad cannot move

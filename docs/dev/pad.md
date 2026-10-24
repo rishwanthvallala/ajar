@@ -1642,8 +1642,8 @@ empty ones.
 
 ## Moving files
 
-Drag and drop in the tree (`files.ts`), and F2 with a new name for the
-keyboard; both end in `App.move`. A move is **one store write** holding the
+Drag and drop in the tree (`files.ts`), and a new name — Rename beside the
+row, or F2 on it — for the rest; both end in `App.move`. A move is **one store write** holding the
 new paths and `null` for the old ones, so nobody can read the pad between the
 two and see the file in both places or in neither. Then this page catches up
 the way an import does — the new paths' text, the editor following the open
@@ -1656,8 +1656,8 @@ The text that moves is `current(path)` — the live document when there is one �
 so typing not yet saved goes along. A folder's binary files, which only the
 store holds, go in the same write. Dragged onto a file that exists, it asks
 first; a folder into itself, or a file onto a folder's name, is refused in
-words. Renamed with F2, a name that is taken is refused under the name
-instead: a rename that replaced a file would do it by a typo.
+words. Renamed, a name that is taken is refused under the name instead: a
+rename that replaced a file would do it by a typo.
 
 The tree is not redrawn while a drag is under way: the row being dragged has to
 outlive it, so a collapsed folder does not open on hover as it would in an
@@ -1682,8 +1682,18 @@ lines in common, or a short one most of its text at the same start and end
 
 ## Naming in the tree
 
-New file, New folder and F2 type the name into the tree, where the thing will
-be, as an editor's explorer does; they were `prompt()`s, which asked for a
+**Rename is a button on every row, since 24 October** — a pencil, before
+Download and Delete, for those who may move things (`FileTree.actions`). It
+was F2 alone: nothing to see, and on a phone, with no F2, nothing at all. A
+row's buttons sit together at its end, shown on hover or focus and always on
+a touch screen, and the name then ends in an ellipsis short of them
+(`--actions`, how many the row has). The name has an element of its own for
+that: text straight in the row, which is a flex box, takes no ellipsis, and
+on a phone a long name ran on under the buttons. `user-check.mjs` renames a
+file by its button; `accounts-check.mjs` finds none for a viewer.
+
+New file, New folder and Rename (or F2) type the name into the tree, where the
+thing will be, as an editor's explorer does; they were `prompt()`s, which asked for a
 whole path and said nothing of where that was. The row is an input in a row
 like the others (`FileTree.startNaming`): a new file's goes first among the
 files of its folder, a folder's first among the folders, a rename's in place
