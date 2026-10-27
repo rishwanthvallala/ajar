@@ -147,6 +147,7 @@ part_pad() {
     node pad/scripts/browser-check.mjs
     node pad/scripts/terminal-check.mjs
     node pad/scripts/user-check.mjs
+    node pad/scripts/search-check.mjs
   fi
 }
 

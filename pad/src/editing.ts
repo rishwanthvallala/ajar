@@ -226,6 +226,17 @@ export class DocSession {
     }, "local");
   }
 
+  /** Several literal replacements, as one local transaction. Descending offsets stay valid. */
+  editMany(edits: readonly { at: number; remove: number; insert: string }[]): void {
+    const eol = eolOf(this.ytext.toString()) ?? "\n";
+    this.ydoc.transact(() => {
+      for (const edit of [...edits].sort((a, b) => b.at - a.at)) {
+        if (edit.remove) this.ytext.delete(edit.at, edit.remove);
+        if (edit.insert) this.ytext.insert(edit.at, withEol(edit.insert, eol));
+      }
+    }, "local");
+  }
+
   /** The text as it stands. */
   contents(): string {
     return this.ytext.toString();

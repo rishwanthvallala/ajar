@@ -92,6 +92,32 @@ each opens where you left it — scrolled to the same place, the cursor where it
 was, folds as they were — even if somebody else or a command changed it
 meanwhile.
 
+**Search the folder.** The magnifying glass beside **Files** opens Search —
+beside the Files button at the top on a phone. Choose **File names** to find
+a file by its name or path, or **File contents** to search the text in the
+pad. **In folder** searches just that folder and everything inside it; leave
+it at **Entire pad** to search everywhere. Text search has **Match case** and
+**Whole word** switches. It searches literal text on one line, including
+typing not saved yet. It runs in your browser, without uploading a query.
+
+On Windows and Linux, **Ctrl-P** finds files and **Ctrl-Shift-F** searches
+contents; on a Mac, **⌘P** and **⌘⇧F**. The magnifying glass works where the
+browser or OS reserves a shortcut. Up and Down select results, Enter opens
+one at the matching line, and Escape leaves Search (or closes the phone's
+drawer first). **Back to files** returns to the tree without losing the
+search. Ctrl-F still searches inside the editor's current file.
+
+**Replace**, in content search, is for people who can edit the pad. Enter the
+replacement, or leave it empty to remove matches, and choose **Preview
+replacements**. Each file's **Replace…** previews just that file. The preview
+shows changed lines before **Apply replacements** changes them for everyone.
+Files changed since the preview are skipped, as are text files too large to
+edit here. Replacements save as typing does; check the status if saving
+fails. There is no project-wide undo, and files apply individually. Search
+shows at most 5,000 matches; narrow the query or folder before replacing if
+it reaches that limit. Binary filenames can be found, but their contents
+cannot be searched or replaced.
+
 **Moving files.** Drag a file or a folder in the file list onto a folder to
 move it inside, onto a file to put it beside that file, or onto the empty
 space below to bring it to the top. **Rename** (the pencil beside a file or

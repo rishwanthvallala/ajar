@@ -242,7 +242,8 @@ export class WorkspaceShell {
     else { this.hidden = false; this.write("sidebar", "shown"); this.arrange(); this.schedule(); this.focusFile(); }
   }
   private focusFile() {
-    (this.el("sidebar").querySelector<HTMLElement>(".tree-row.active, .row.on, .tree-row, .row") ?? this.el("drawer-close")).focus();
+    const visible = (selector: string) => [...this.el("sidebar").querySelectorAll<HTMLElement>(selector)].find((el) => el.getClientRects().length > 0);
+    (visible(".tree-row.active, .row.on, .tree-row, .row") ?? visible("input:not(:disabled), select:not(:disabled), button:not(:disabled)") ?? this.el("drawer-close")).focus();
   }
   fileSelected() { const focus = this.drawer; this.setDrawer(false, false); return focus; }
   private setDrawer(open: boolean, restore = true) {
@@ -260,7 +261,7 @@ export class WorkspaceShell {
     if (!this.drawer) return;
     if (event.key === "Escape") { event.preventDefault(); this.setDrawer(false); return; }
     if (event.key !== "Tab") return;
-    const items = [...this.el("sidebar").querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"]')].filter(el => el.getClientRects().length > 0);
+    const items = [...this.el("sidebar").querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex="0"]')].filter(el => el.tabIndex >= 0 && el.getClientRects().length > 0);
     const first = items[0], last = items.at(-1);
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }

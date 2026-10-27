@@ -1774,6 +1774,38 @@ Format and Spaces sit beside Colours, quiet as it is; Format only where
 something formats the file. Format Document and Insert Starter Code are also
 Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 
+## Project search
+
+The magnifiers beside Files open `ProjectSearch` (`search.ts`) in the same
+sidebar, retaining the tree. The mobile entry opens the existing drawer.
+`search-keys.ts` owns platform labels and exact modifier matching; a capture
+listener handles shortcuts before Monaco or xterm, leaving modal dialogs,
+composition, AltGraph and unrelated combinations alone. The shared drawer's
+focus trap includes inputs and selectors.
+
+The lazy `search-worker.ts` index receives changed and deleted files; query
+generations discard stale results. `search-match.ts` performs escaped literal
+Unicode matching and supplies UTF-16 offsets, line numbers and bounded
+snippets. At most 5,000 results are returned. Queries wait 150 ms; batches
+yield between files. The index reads `App.current`, never creates models for
+search, and includes live text and viewer-local copies. File changes and
+document updates invalidate results. There is no query endpoint or storage.
+
+Replacement previews use exact text snapshots. The app obtains ready live
+documents, rejects oversized results, and checks access, command/workspace
+activity and current text again before each file. Bound models receive one
+batch of edits; inactive documents use `DocSession.editMany`, one Yjs local
+transaction, then update cached text/models. Both use normal save and journal
+paths. No multi-file atomicity or global undo is promised. A stale file is
+skipped rather than recomputed under the confirmation the user already gave.
+
+`node pad/scripts/search-check.mjs` exercises matching and the built UI against
+a portable in-memory store and peer relay. `SEARCH_BROWSER` selects Chromium,
+Firefox or WebKit. `SEARCH_RELAY=http://127.0.0.1:8787` uses a running real
+relay for persistence and the two-browser replacement checks. CI exercises
+Chromium on Windows/macOS/Linux plus Firefox/WebKit on Linux. Actual Safari
+still needs a manual smoke check; Playwright WebKit is not Safari.
+
 ## Suggestions as you type
 
 Grey text at the cursor — the rest of the line — from a model that runs in

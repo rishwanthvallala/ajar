@@ -49,6 +49,9 @@ function button(id: string, label: string, icon: string, title: string, primary 
 export class PadWorkspace {
   readonly shell: WorkspaceShell;
   readonly elements: PadElements;
+  readonly searchHost: HTMLElement;
+  readonly searchButtons: HTMLButtonElement[];
+  onSearch = () => {};
   private readonly tools: HTMLElement;
 
   constructor(root: HTMLElement, title: string, storage?: LayoutStorage | null) {
@@ -59,6 +62,27 @@ export class PadWorkspace {
       terminalActions: true,
     });
     this.shell.shell.classList.add("pad-shell");
+
+    const searchButton = (mobile: boolean) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `icon search-toggle${mobile ? " search-mobile" : ""}`;
+      b.setAttribute("aria-label", "Search files and contents");
+      b.setAttribute("aria-controls", "project-search");
+      b.setAttribute("aria-expanded", "false");
+      b.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m10 10 3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      b.onclick = () => this.onSearch();
+      return b;
+    };
+    this.searchButtons = [searchButton(false), searchButton(true)];
+    this.shell.el("sidebar").querySelector(".side-head strong")!.after(this.searchButtons[0]!);
+    this.shell.el("side-toggle").after(this.searchButtons[1]!);
+    this.searchHost = document.createElement("section");
+    this.searchHost.id = "project-search";
+    this.searchHost.className = "project-search";
+    this.searchHost.setAttribute("aria-label", "Project search");
+    this.searchHost.hidden = true;
+    this.shell.el("tree").after(this.searchHost);
 
     const titleText = document.createElement("span");
     titleText.id = "title";
@@ -223,6 +247,14 @@ export class PadWorkspace {
   }
 
   fileSelected() { return this.shell.fileSelected(); }
+  showSearch(open: boolean) {
+    this.elements.files.hidden = open;
+    this.searchHost.hidden = !open;
+    this.shell.el("sidebar").setAttribute("aria-label", open ? "Files and search" : "Files");
+    for (const b of this.searchButtons) b.setAttribute("aria-expanded", String(open));
+    if (open) this.shell.showFiles();
+    this.shell.requestLayout();
+  }
   onLayout(callback: () => void) { this.shell.onLayout = callback; }
   get highlight() { return this.shell.highlight; }
   onHighlightChange(callback: (on: boolean) => void) { this.shell.onHighlightChange = callback; }

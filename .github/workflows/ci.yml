@@ -22,6 +22,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Search and its native keyboard modifiers, without the WASIX runtime.
+  search:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            browser: chromium
+          - os: macos-latest
+            browser: chromium
+          - os: windows-latest
+            browser: chromium
+          - os: ubuntu-latest
+            browser: firefox
+          - os: ubuntu-latest
+            browser: webkit
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run build:pad
+      - run: node pad/scripts/search-check.mjs
+        env:
+          SEARCH_BROWSER: ${{ matrix.browser }}
+
   # fmt, clippy -D warnings, cargo test. The agent's sandbox differs by OS, so
   # both.
   rust:
@@ -193,7 +224,7 @@ jobs:
   # at a time, never cancelled half way through a swap. See deploy/from-ci.sh
   # and docs/dev/operations.md, "Deploying from CI".
   deploy:
-    needs: [rust, ajar, pad, pad-more, first-run, deploy-ready]
+    needs: [rust, ajar, pad, pad-more, search, first-run, deploy-ready]
     if: needs.deploy-ready.outputs.ok == '1'
     # The relay is aarch64: built natively here, not cross-compiled.
     runs-on: ubuntu-24.04-arm

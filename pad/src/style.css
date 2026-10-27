@@ -2,6 +2,40 @@
 html, body, #app { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--ink); }
 
+/* Project search shares the file sidebar; the magnifier sits immediately after Files. */
+.pad-shell .files[hidden], .pad-shell .project-search[hidden], .pad-shell .search-options[hidden], .pad-shell .search-replace[hidden] { display: none; }
+.pad-shell .search-toggle { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.pad-shell .search-toggle[aria-expanded="true"] { color: var(--accent); background: var(--surface-2); }
+.pad-shell .search-mobile { display: none !important; }
+.pad-shell.narrow .search-mobile { display: inline-flex !important; }
+.pad-shell .project-search { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.65rem; padding: 0.65rem; overflow: auto; font-size: 0.75rem; }
+.pad-shell .project-search > label { display: flex; flex-direction: column; gap: 0.3rem; }
+.pad-shell .project-search input:not([type="checkbox"]), .pad-shell .project-search select { min-width: 0; width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; padding: 0.45rem; }
+.pad-shell .search-options { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.pad-shell .search-options label { display: flex; align-items: center; gap: 0.25rem; }
+.pad-shell .search-replace summary { cursor: pointer; margin-bottom: 0.5rem; }
+.pad-shell .search-replace .btn { margin-top: 0.5rem; }
+.pad-shell .search-status { color: var(--muted); margin: 0; }
+.pad-shell .search-results { min-width: 0; }
+.pad-shell .search-group { margin-bottom: 0.65rem; }
+.pad-shell .search-file-head { display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.25rem; }
+.pad-shell .search-file-head strong { overflow-wrap: anywhere; flex: 1; }
+.pad-shell .search-file-head .btn { flex: none; font-size: 0.6875rem; padding: 0.2rem; }
+.pad-shell .search-hit { display: flex; width: 100%; gap: 0.5rem; border: 0; border-radius: 3px; background: transparent; color: var(--ink-2); padding: 0.4rem 0.2rem; text-align: left; cursor: pointer; font: 0.75rem/1.5 var(--mono); }
+.pad-shell .search-hit:hover, .pad-shell .search-hit:focus-visible { background: var(--surface-2); }
+.pad-shell .search-line { color: var(--muted); flex: none; }
+.pad-shell .search-snippet { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.pad-shell .search-hit mark { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+.pad-shell .project-search :focus-visible, .pad-shell .search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.search-preview .search-diff-before, .search-preview .search-diff-after { font: 0.75rem/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 0.25rem; }
+.search-preview .search-diff-before { background: color-mix(in srgb, var(--hard) 12%, var(--surface)); }
+.search-preview .search-diff-after { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.search-preview-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+@media (pointer: coarse) {
+  .pad-shell .search-toggle, .pad-shell .project-search button, .pad-shell .project-search input:not([type="checkbox"]), .pad-shell .project-search select { min-height: 2.75rem; min-width: 2.75rem; }
+  .pad-shell .project-search input:not([type="checkbox"]), .pad-shell .project-search select { font-size: 1rem; }
+}
+
 .pad-shell #workspace { font-family: var(--mono); }
 .pad-shell .dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--muted); }
 .pad-shell .status { color: var(--muted); }
