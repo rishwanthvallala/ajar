@@ -1780,7 +1780,10 @@ The magnifiers beside Files open `ProjectSearch` (`search.ts`) in the same
 sidebar, retaining the tree. The mobile entry opens the existing drawer.
 `search-keys.ts` owns platform labels and exact modifier matching; a capture
 listener handles shortcuts before Monaco or xterm, leaving modal dialogs,
-composition, AltGraph and unrelated combinations alone. The shared drawer's
+composition, AltGraph and unrelated combinations alone — and, off a Mac, the
+terminal: there Ctrl-P is bash's previous command and nano's previous line,
+and taking it opened Search instead (review of 28 October). A Mac's shortcuts
+are ⌘ ones, which the terminal does not use. The shared drawer's
 focus trap includes inputs and selectors.
 
 The lazy `search-worker.ts` index receives changed and deleted files; query

@@ -101,7 +101,9 @@ it at **Entire pad** to search everywhere. Text search has **Match case** and
 typing not saved yet. It runs in your browser, without uploading a query.
 
 On Windows and Linux, **Ctrl-P** finds files and **Ctrl-Shift-F** searches
-contents; on a Mac, **⌘P** and **⌘⇧F**. The magnifying glass works where the
+contents; on a Mac, **⌘P** and **⌘⇧F**. In the terminal on Windows and Linux
+those keys stay the terminal's — Ctrl-P is the shell's previous command — so
+click in the editor or the files first. The magnifying glass works where the
 browser or OS reserves a shortcut. Up and Down select results, Enter opens
 one at the matching line, and Escape leaves Search (or closes the phone's
 drawer first). **Back to files** returns to the tree without losing the

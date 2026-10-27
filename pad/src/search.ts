@@ -72,6 +72,10 @@ export class ProjectSearch {
     window.addEventListener("keydown", (event) => {
       if (document.querySelector("dialog[open]")) return;
       const mode = searchShortcut(event, this.apple);
+      // Off a Mac the shortcuts are Ctrl ones, and in the terminal Ctrl-P is
+      // the shell's previous command — nano's previous line — so they stay
+      // the terminal's there. A Mac's are ⌘, which the terminal does not use.
+      if (mode && !this.apple && (event.target as Element | null)?.closest?.(".xterm")) return;
       if (mode) {
         event.preventDefault(); event.stopImmediatePropagation();
         this.open(mode);

@@ -267,6 +267,29 @@ try {
   await page.getByRole("button", { name: "Back to files" }).click();
   console.log("ok   native OS shortcuts, result navigation and binary filename search");
 
+  // Off a Mac the shortcuts are Ctrl ones, and in the terminal Ctrl-P is the
+  // shell's previous command: there they stay the terminal's (review of 28
+  // October). The platform is set, so this holds on any runner.
+  {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await context.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "Linux x86_64" }));
+    const linux = await context.newPage();
+    linux.on("pageerror", (e) => { if (!/Canceled|^search-fixture-runtime-unavailable$/.test(e.message)) errors.push(e.message); });
+    await linux.goto(`${origin}/${name}`);
+    await linux.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 30_000 });
+    const query = linux.getByRole("searchbox", { name: "Search query" });
+    await linux.locator("#terminal .xterm-helper-textarea").focus();
+    await linux.keyboard.press("Control+P");
+    await linux.keyboard.press("Control+Shift+F");
+    await linux.waitForTimeout(300);
+    assert.equal(await query.isVisible(), false, "Ctrl-P and Ctrl-Shift-F in the terminal stay the terminal's");
+    await linux.evaluate(() => window.monaco.editor.getEditors()[0].focus());
+    await linux.keyboard.press("Control+P");
+    await query.waitFor({ state: "visible", timeout: 5000 });
+    await context.close();
+    console.log("ok   off a Mac, Ctrl-P and Ctrl-Shift-F in the terminal are left to it, and open Search elsewhere");
+  }
+
   // Another participant keeps main.py live while replacement edits it off screen here.
   const other = await open();
   await other.waitForFunction(() => window.__pad.docs().includes("main.py"));
