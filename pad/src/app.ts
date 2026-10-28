@@ -278,6 +278,8 @@ function closest(candidates: readonly string[], result: string): string | undefi
 
 export class App {
   private readonly events = new AbortController();
+  /** This tab, among a browser's: whose journal is whose (`journalKey`). */
+  private readonly tab = Math.random().toString(36).slice(2, 10);
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private suggestions: Suggestions | null = null;
   private search: ProjectSearch | null = null;
@@ -486,6 +488,14 @@ export class App {
    * meanwhile (`rejoin`).
    */
   private atDrop = new Map<string, { text: string; at: number }>();
+  /**
+   * Documents a stored change was merged into while this page was out of the
+   * room it had been in. The same change reaches the room's copy through the
+   * room, so back in it, the state exchange held it twice, once as this
+   * page's edit (review of 28 October): these rejoin instead, the room's
+   * copy taken and only what was typed here since the drop carried onto it.
+   */
+  private mergedAway = new Set<string>();
   /** In the room: from a welcome until the socket that earned it goes. */
   private inRoom = false;
   /** For each file this page kept when its access went, the stored text then. */
@@ -558,6 +568,11 @@ export class App {
   }
 
   async start(): Promise<void> {
+    // This tab's journal is its own for as long as it is open: another tab
+    // recovers only the journals of tabs whose lock is free.
+    void navigator.locks?.request(this.tabLock(this.tab), () => new Promise<void>((resolve) => {
+      this.events.signal.addEventListener("abort", () => resolve(), { once: true });
+    }));
     // Answered from the start; `wire` puts the full handler on later.
     this.el.run.onclick = () => void this.run();
     try {
@@ -619,7 +634,7 @@ export class App {
     this.renderFiles();
     this.wire();
     this.acceptDrops();
-    this.recoverJournal();
+    void this.recoverJournal();
     this.say("", this.viewer ? "" : pad.exists ? "" : "new folder — nothing saved yet");
     this.welcomeCopy();
     this.editor?.focus();
@@ -722,6 +737,10 @@ export class App {
         // while their text quietly differs. On the first connect there are no
         // documents yet and this does nothing.
         for (const [path, doc] of this.docs) {
+          if (this.mergedAway.delete(path)) {
+            void this.rejoin(path, doc);
+            continue;
+          }
           this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector(), path);
         }
         // The peer socket carries nudges, not history. Re-read the durable
@@ -855,6 +874,11 @@ export class App {
       if (state) this.viewStates.set(moves.get(followFrom)!, state);
     }
 
+    // Files whose live document, shared in the room, lacks what the store
+    // has: written by a page outside the room, which no room carries. Kept at
+    // what they were, so the next save is refused as stale and merges it in
+    // (`writeOverStale`); taken as known, that save went over it.
+    const held = new Map<string, string>();
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
@@ -883,7 +907,13 @@ export class App {
         const was = this.known.get(path);
         const now = doc.contents();
         const edit = was !== undefined && now !== content ? carryOver(was, content, now) : null;
-        if (edit) this.applyEdit(path, doc, edit);
+        if (edit) {
+          this.applyEdit(path, doc, edit);
+          if (!this.inRoom && this.atDrop.has(path)) this.mergedAway.add(path);
+        }
+      } else if (doc.ready) {
+        const was = this.known.get(path);
+        if (was !== undefined && applied(doc.contents(), carryOver(was, content, doc.contents())) !== doc.contents()) held.set(path, was);
       }
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
@@ -911,6 +941,7 @@ export class App {
     }
     this.applyingRemote = false;
     this.known = incoming;
+    for (const [path, was] of held) this.known.set(path, was);
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
     for (const [from, to] of moves) {
@@ -1770,6 +1801,25 @@ export class App {
   }
 
   /**
+   * Whole files and deletions, each with the version it was made from, for a
+   * relay that holds them to it: a text file this page knows with its hash,
+   * a new one with an empty one — "not there" — and a deletion with the hash
+   * of what it deletes. Command output, a rename and New file went with none
+   * until 28 October, over a teammate's newer save they had not read (review
+   * of 28 October). Binary files go as they did.
+   */
+  private async withBases(changes: Change[]): Promise<Change[]> {
+    if (!this.store.basesWork) return changes;
+    return Promise.all(changes.map(async (c) => {
+      if (c.base !== undefined || c.edits || c.encoding === "base64") return c;
+      const was = this.known.get(c.path);
+      if (was !== undefined) return { ...c, base: await storedHash(was) };
+      if (c.content === null || this.binaries.has(c.path)) return c;
+      return { ...c, base: "" };
+    }));
+  }
+
+  /**
    * Changes as edits where that is worth it: a text file of some size whose
    * stored version this page knows. The rest go whole, as does everything to
    * a relay that does not take edits.
@@ -1782,7 +1832,13 @@ export class App {
       const was = this.known.get(c.path);
       const edit = was !== undefined && was.length >= EDITS_FROM ? carryOver(was, c.content, was) : null;
       if (was === undefined) {
-        out.push(c);
+        // A file this page made: refused if somebody else has made one of
+        // that name meanwhile, which New file wrote nothing over (review of
+        // 28 October).
+        if (this.store.basesWork) {
+          out.push({ ...c, base: "" });
+          any = true;
+        } else out.push(c);
         continue;
       }
       if (!edit) {
@@ -1824,6 +1880,10 @@ export class App {
         }))
         .filter((c): c is { path: string; content: string } => c.content !== undefined)
         .filter((c) => this.known.get(c.path) !== c.content);
+      // A file taken back to what is stored — an undo after Replace, before
+      // its save — has nothing to save, and nothing to keep: kept, it came
+      // back at the next visit over the undo (review of 28 October).
+      this.unjournal(paths.filter((p) => this.known.get(p) !== undefined && this.known.get(p) === this.current(p)));
       if (changes.length === 0) return;
       try {
         // A large file goes as what changed in it, measured from the text the
@@ -1843,12 +1903,13 @@ export class App {
         this.unjournal(changes.map((c) => c.path));
         // Do not copy an older completed save over text edited while its
         // request was in flight. The later edit remains queued for saving.
-        if (this.runtime) {
-          const rt = await this.runtime;
-          for (const c of changes) {
-            if (this.current(c.path) === c.content) await rt.write(c.path, c.content);
-          }
-        }
+        // Into the sandbox once it is up, without holding the saves behind
+        // for it: on a first visit each waited here for the runtime's
+        // download, and "saved" with it — 11 s on production (review of 28
+        // October). What the sandbox reads is settled before a command runs.
+        void this.runtime?.then(async (rt) => {
+          for (const c of changes) if (this.current(c.path) === c.content) await rt.write(c.path, c.content);
+        }).catch(() => {});
         this.peers?.moved(seq);
         this.say("", "saved");
       } catch (e) {
@@ -1894,47 +1955,43 @@ export class App {
    * (audit DC-03). The merged text goes into the editor as well, and into
    * `changes`, which is what the caller records as known.
    */
-  private async writeOverStale(changes: Array<{ path: string; content: string }>, leaving: boolean): Promise<number> {
+  private async writeOverStale(changes: Change[], leaving: boolean): Promise<number> {
     for (let attempt = 1; ; attempt++) {
       const stored = (await this.store.read(this.name)).files;
       const sent: Change[] = [];
+      let reread = false;
       for (const c of changes) {
         const theirs = stored[c.path];
-        const base = this.known.get(c.path);
-        // Gone from the store, or not text there: sent whole, as before.
-        if (!theirs || theirs.encoding !== "utf8" || base === undefined) {
+        const text = theirs?.encoding === "utf8" ? theirs.content : undefined;
+        // Binary, here or there: whole, as before.
+        if (c.encoding === "base64" || (theirs && text === undefined)) {
           sent.push(c);
           continue;
         }
-        if (theirs.content !== base) {
-          let mine = c.content;
-          let merged = applied(theirs.content, carryOver(base, mine, theirs.content));
-          // In a room with somebody else, what the store has and this
-          // document lacks may only be on its way here: a teammate's typing,
-          // saved by their page a moment before it reached this one. Put in
-          // now, it arrives twice. A moment for it, then the document as it
-          // is then.
-          if (merged !== this.current(c.path) && this.docs.get(c.path)?.ready && this.peers?.shared && !leaving) {
-            await new Promise((resolve) => setTimeout(resolve, LIVE_SETTLE_MS));
-            mine = this.current(c.path) ?? mine;
-            merged = applied(theirs.content, carryOver(base, mine, theirs.content));
+        if (c.content === null) {
+          // A deletion: made of a file nobody has changed since, held to that
+          // version; of one somebody has, not made — theirs stays, read in.
+          if (text === undefined) continue;
+          if (text !== this.known.get(c.path)) {
+            reread = true;
+            continue;
           }
-          // Into what the editor holds now, typing since included.
-          const now = this.current(c.path);
-          if (now !== undefined && now !== merged) {
-            const edit = carryOver(mine, merged, now);
-            const doc = this.docs.get(c.path);
-            if (edit && doc?.ready) this.applyEdit(c.path, doc, edit);
-            else if (edit) this.setFile(c.path, applied(now, edit));
-          }
-          this.known.set(c.path, theirs.content);
-          c.content = merged;
+          sent.push({ ...c, base: await storedHash(text) });
+          continue;
         }
+        if (text === undefined) {
+          // Not there (any more): made, unless somebody makes it first.
+          sent.push(this.store.basesWork ? { ...c, base: "" } : c);
+          continue;
+        }
+        if (text !== (this.known.get(c.path) ?? "")) c.content = await this.mergeInto(c.path, text, c.content, leaving);
         // Over the version just read, and no other: a save landing between
         // that read and this write was written over until 28 October (review
         // of 19 October, item 5). Refused, it is read and merged again.
-        sent.push({ ...c, base: await storedHash(theirs.content) });
+        sent.push({ ...c, base: await storedHash(text) });
       }
+      if (reread) queueMicrotask(() => void this.refresh(true));
+      if (!sent.length) return this.storeSeq;
       try {
         return await this.store.write(this.name, sent, leaving);
       } catch (e) {
@@ -1943,14 +2000,63 @@ export class App {
     }
   }
 
-  /** Where this browser keeps typing saving could not deliver (`journal`). */
+  /**
+   * The store's version of a text file, `theirs`, merged into what this page
+   * has of it — `mine`, as sent, and the editor's as it is now — from what
+   * the page last knew stored (nothing, for a file it made). The editor takes
+   * the merge as an edit, the store's version becomes known, and the merge is
+   * returned, to be sent over it.
+   *
+   * In a room with somebody else, what the store has and this document lacks
+   * may only be on its way here: a teammate's typing, saved by their page a
+   * moment before it reached this one. Put in now, it arrives twice. A moment
+   * for it, then the document as it is then.
+   */
+  private async mergeInto(path: string, theirs: string, mine = this.current(path) ?? "", leaving = false): Promise<string> {
+    const base = this.known.get(path) ?? "";
+    let merged = applied(theirs, carryOver(base, mine, theirs));
+    if (merged !== this.current(path) && this.docs.get(path)?.ready && this.peers?.shared && !leaving) {
+      await new Promise((resolve) => setTimeout(resolve, LIVE_SETTLE_MS));
+      mine = this.current(path) ?? mine;
+      merged = applied(theirs, carryOver(base, mine, theirs));
+    }
+    // Into what the editor holds now, typing since included.
+    const now = this.current(path);
+    if (now !== undefined && now !== merged) {
+      const edit = carryOver(mine, merged, now);
+      const doc = this.docs.get(path);
+      if (edit && doc?.ready) {
+        this.applyEdit(path, doc, edit);
+        if (!this.inRoom && this.atDrop.has(path)) this.mergedAway.add(path);
+      } else if (edit) this.setFile(path, applied(now, edit));
+    }
+    this.known.set(path, theirs);
+    return merged;
+  }
+
+  /**
+   * Where this tab keeps typing saving could not deliver (`journal`): a key
+   * of its own. It was one key for every tab of a browser until 28 October,
+   * so the second of two tabs offline wrote over the first's typing, and a
+   * save that went in either cleared the other's (review of 19 October,
+   * item 7).
+   */
   private get journalKey(): string {
+    return `${this.journalPrefix}.${this.tab}`;
+  }
+
+  private get journalPrefix(): string {
     return `pad.unsaved.${this.name}`;
   }
 
-  private readJournal(): Record<string, { base: string | null; text: string }> {
+  /** The lock a tab holds while it is open, so another knows its journal is not to be taken. */
+  private tabLock(tab: string): string {
+    return `pad.tab.${this.name}.${tab}`;
+  }
+
+  private readJournal(key = this.journalKey): Record<string, { base: string | null; text: string }> {
     try {
-      return JSON.parse(localStorage.getItem(this.journalKey) ?? "{}") as Record<string, { base: string | null; text: string }>;
+      return JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, { base: string | null; text: string }>;
     } catch {
       return {};
     }
@@ -1993,24 +2099,48 @@ export class App {
    * What a last visit could not save, merged into the pad as it stands now —
    * each file's typing onto whatever was saved since — saved, and said.
    */
-  private recoverJournal(): void {
-    const kept = this.readJournal();
-    const paths = Object.keys(kept);
-    if (!paths.length || this.viewer) return;
-    const back: string[] = [];
-    for (const path of paths) {
-      const { base, text } = kept[path]!;
-      const now = this.known.get(path);
-      if (now === undefined && base !== null) continue;
-      const merged = now === undefined || base === null || base === now ? text : applied(now, carryOver(base, text, now));
-      if (merged === now) continue;
-      this.setFile(path, merged);
-      this.dirty.add(path);
-      back.push(path);
+  private async recoverJournal(): Promise<void> {
+    if (this.viewer) return;
+    // Every tab's that is closed now — whose lock is free — and the one key
+    // of every tab from before 28 October. A tab still open saves its own.
+    const prefix = this.journalPrefix;
+    const keys: string[] = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key !== this.journalKey && (key === prefix || key.startsWith(`${prefix}.`))) keys.push(key);
+      }
+    } catch {
+      return;
     }
-    this.unjournal(paths);
-    if (!back.length) return;
-    this.say("", `brought back what your last visit could not save: ${back.join(", ")}`);
+    const back = new Set<string>();
+    for (const key of keys) {
+      const tab = key.slice(prefix.length + 1);
+      if (tab && navigator.locks) {
+        const closed = await navigator.locks.request(this.tabLock(tab), { ifAvailable: true }, (lock) => lock !== null);
+        if (!closed) continue;
+      }
+      const kept = this.readJournal(key);
+      for (const [path, { base, text }] of Object.entries(kept)) {
+        const now = this.known.get(path);
+        if (now === undefined && base !== null) continue;
+        // Onto what is here now: another closed tab's typing in the same
+        // file, brought back a moment ago, included.
+        const here = this.current(path) ?? now;
+        const merged = here === undefined || base === null || base === here ? text : applied(here, carryOver(base, text, here));
+        if (merged === here) continue;
+        this.setFile(path, merged);
+        this.dirty.add(path);
+        back.add(path);
+      }
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // Taken in already; it is merged as unchanged if it comes again.
+      }
+    }
+    if (!back.size) return;
+    this.say("", `brought back what your last visit could not save: ${[...back].join(", ")}`);
     this.renderFiles();
     this.saveSoon();
   }
@@ -3511,7 +3641,15 @@ export class App {
       let seq = this.storeSeq;
       if (sendable.length) {
         try {
-          seq = await this.store.write(this.name, sendable);
+          // Each with the version it was made from: written over a teammate's
+          // newer save until 28 October.
+          const based = await this.withBases(sendable);
+          try {
+            seq = await this.store.write(this.name, based);
+          } catch (e) {
+            if (!(e instanceof StoreError && e.stale) || based === sendable) throw e;
+            seq = await this.writeOverStale(sendable, false);
+          }
         } catch (e) {
           // Refused: this page may not change the pad any more — its access
           // went while the command ran. What the command made is kept here,
@@ -3544,8 +3682,23 @@ export class App {
       }
       this.tellUnsaved(unsaved);
       this.storeSeq = Math.max(this.storeSeq, seq);
-      this.known = next;
-      this.binaries = nextBinaries;
+      // What was sent, merged if it had to be, is what the store has of it.
+      for (const c of sendable) {
+        if (c.content === null) next.delete(c.path);
+        else if (c.encoding !== "base64") next.set(c.path, c.content);
+      }
+      // Only what this command changed, onto what is known now: a read of the
+      // pad while it was saving took in newer versions of other files, and
+      // the snapshot from before put them back, so the next command's output
+      // went over a newer save (review of 19 October, item 6).
+      for (const c of found.changes) {
+        const text = next.get(c.path);
+        if (text !== undefined) this.known.set(c.path, text);
+        else this.known.delete(c.path);
+        const bytes = nextBinaries.get(c.path);
+        if (bytes !== undefined) this.binaries.set(c.path, bytes);
+        else this.binaries.delete(c.path);
+      }
       if (!sendable.length) return;
       if (!this.el.markdownPane.hidden && sendable.some((c) => c.encoding === "base64")) this.renderMarkdownSoon();
       for (const change of sendable) {
@@ -4037,7 +4190,7 @@ export class App {
    * documents and sandbox follow, and everyone else's next read does the same
    * for them. Like an import, it never waits for the sandbox to arrive.
    */
-  private async move(from: string, folder: boolean, toRaw: string): Promise<void> {
+  private async move(from: string, folder: boolean, toRaw: string, again = false): Promise<void> {
     if (this.viewer || this.moving || this.replacing) return;
     const to = toRaw.trim().replace(/^\/+|\/+$/g, "");
     if (!to || to === from) return;
@@ -4074,6 +4227,7 @@ export class App {
 
     this.moving = true;
     this.say("saving", `moving ${from}…`);
+    let stale = false;
     try {
       await this.queueWrite(async () => {
         // The text as it stands here, typing not yet saved included; a
@@ -4095,7 +4249,18 @@ export class App {
           ...markerPairs.map(([, t]) => ({ path: t, content: "" })),
           ...pairs.filter(([p]) => gone(p)).map(([p]) => ({ path: p, content: null })),
         ];
-        const seq = await this.store.write(this.name, changes);
+        // Each with the version it was made from. A file somebody changed
+        // since this page read it, or made at the new name, was written over
+        // until 28 October: their version deleted, this page's older copy put
+        // under the new name.
+        let seq: number;
+        try {
+          seq = await this.store.write(this.name, await this.withBases(changes));
+        } catch (e) {
+          if (!(e instanceof StoreError && e.stale) || again) throw e;
+          stale = true;
+          return;
+        }
         this.storeSeq = Math.max(this.storeSeq, seq);
         // Typed while the write was on its way, into the file's old document:
         // it goes with the file, to be saved next. Taken from before the
@@ -4169,12 +4334,24 @@ export class App {
         this.peers?.moved(seq);
         if (textPairs.some(([p]) => later.get(p) !== text.get(p))) this.saveSoon();
       });
-      this.say("", `moved ${from} to ${to}`);
+      if (!stale) this.say("", `moved ${from} to ${to}`);
     } catch (e) {
       this.say("error", (e as Error).message);
     } finally {
       this.moving = false;
     }
+    if (!stale) return;
+    // Somebody changed or made one of these since: the pad read again, their
+    // changes merged into the files being moved, and the move made once more,
+    // asked about again if it now replaces something.
+    await this.refresh(true);
+    const stored = (await this.store.read(this.name).catch(() => null))?.files ?? {};
+    for (const path of this.texts.keys()) {
+      if (path !== from && !(folder && path.startsWith(`${from}/`))) continue;
+      const theirs = stored[path];
+      if (theirs?.encoding === "utf8" && theirs.content !== this.known.get(path)) await this.mergeInto(path, theirs.content);
+    }
+    return this.move(from, folder, toRaw, true);
   }
 
   /** A zip dropped on the file list goes in as Upload a zip would take it. */

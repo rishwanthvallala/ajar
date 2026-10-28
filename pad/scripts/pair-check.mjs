@@ -230,6 +230,42 @@ try {
     await b.context().close();
   }
 
+  // The same, with one history: both in the room before A's dropped. B adds
+  // a line and saves; A types and saves, is refused as stale, and merges B's
+  // line into its document; back in the room, the state exchange carried B's
+  // line once from B and once as A's merge, twice in both documents and the
+  // store (review of 28 October, dup-both, for a file of any size).
+  {
+    const name = `pair-dropmerge-${Date.now().toString(36)}`;
+    const LINES = Array.from({ length: 20 }, (_, i) => `line_${i} = ${i}\n`).join("");
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: LINES }] }) });
+    const [a, b] = await pair(name);
+    const putAt = (page, line, text) => page.evaluate(([l, t]) => {
+      const ed = window.monaco.editor.getEditors()[0];
+      ed.executeEdits("typing", [{ range: { startLineNumber: l, startColumn: 1, endLineNumber: l, endColumn: 1 }, text: t }]);
+    }, [line, text]);
+    await a.evaluate(() => {
+      window.__cut = true;
+      for (const ws of window.__sockets) ws.close();
+    });
+    await wait(a, 1500);
+    await putAt(b, 21, "# typed by B while A was away\n");
+    await wait(b, 3000);
+    await putAt(a, 1, "## typed by A while away\n");
+    await wait(a, 3000);
+    await a.evaluate(() => {
+      window.__cut = false;
+    });
+    await wait(a, 15_000);
+    const count = (s, n) => (s ?? "").split(n).length - 1;
+    const stored = ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["main.py"] ?? {}).content;
+    const want = `## typed by A while away\n${LINES}# typed by B while A was away\n`;
+    if (count(stored, "# typed by B") === 1 && count(stored, "## typed by A") === 1) await agree(a, b, want, "a place back from a dropout, having merged the other's save meanwhile, has their line once — and so do they, and the store");
+    else fail(`a dropout with a merge meanwhile — ${JSON.stringify({ stored, A: await a.evaluate(() => window.__pad.text("main.py")), B: await b.evaluate(() => window.__pad.text("main.py")) })}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a file too large to edit together live ------------------------------
   // A live document reaches somebody arriving as one message, and the relay
   // takes 32 MB of those. A 40 MB file open in two places: the second never
@@ -701,6 +737,167 @@ try {
     else fail(`a page with no room, after reading the pad again — ${JSON.stringify({ stored, shows })}`);
     await w.context().close();
     await b.context().close();
+  }
+
+  // ---- command output, a rename and New file, over a save not yet read -----
+  // Review of 28 October: W's room is out of reach, so A hears of none of W's
+  // saves. A's command output, rename and New file went whole with no
+  // version, and wrote over W's: a line appended by A's command left W's
+  // line out, a rename put A's older copy under the new name, and New file
+  // wrote nothing over the todo.md W had made and typed in.
+  {
+    const name = `pair-writers-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.py", content: "x = 1\n" }, { path: "app.py", content: "DEBUG = True\n" }] }) });
+    const a = await place(name, "A");
+    const w = await (await browser.newContext()).newPage();
+    await w.addInitScript(() => {
+      const Real = window.WebSocket;
+      const Blocked = function () { return new Real("ws://127.0.0.1:9/"); };
+      Blocked.prototype = Real.prototype;
+      for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Blocked[k] = Real[k];
+      window.WebSocket = Blocked;
+    });
+    await w.goto(`${ORIGIN}/${name}`);
+    await w.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+    const openIn = async (page, path) => {
+      await page.locator(`#files .row.file[data-path="${path}"]`).click();
+      await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });
+      await wait(page, 500);
+    };
+    const putAtEnd = (page, text) => page.evaluate((t) => {
+      const ed = window.monaco.editor.getEditors()[0];
+      const end = ed.getModel().getLineCount();
+      ed.executeEdits("typing", [{ range: { startLineNumber: end, startColumn: 1, endLineNumber: end, endColumn: 1 }, text: t }]);
+    }, text);
+    const stored = async () => (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files;
+    const textOf = (files, path) => files[path]?.content;
+    // A's runtime up, so its command runs at once.
+    await a.locator("#terminal .xterm-helper-textarea").focus();
+    await a.keyboard.type("true");
+    await a.keyboard.press("Enter");
+    await a.waitForFunction(() => window.__pad?.shellBusy() === false && /\$ true/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 240_000 }).catch(() => {});
+
+    await openIn(w, "notes.py");
+    await putAtEnd(w, "# from W\n");
+    await wait(w, 3000);
+    await a.locator("#terminal .xterm-helper-textarea").focus();
+    await a.keyboard.type("printf '# appended by A\\n' >> notes.py");
+    await a.keyboard.press("Enter");
+    await wait(a, 300);
+    await a.waitForFunction(() => window.__pad?.shellBusy() === false, null, { timeout: 60_000 }).catch(() => {});
+    await wait(a, 4000);
+    const notes = textOf(await stored(), "notes.py") ?? "";
+    if (notes.includes("# from W") && notes.includes("# appended by A")) ok("a command's output in a file somebody saved since keeps their save");
+    else fail(`a command's output over a save not yet read — ${JSON.stringify(notes)}`);
+
+    await openIn(w, "app.py");
+    await putAtEnd(w, "PORT = 8000\n");
+    await wait(w, 3000);
+    await a.hover('#files .file-row:has(.row.file[data-path="app.py"])');
+    await a.locator('#files button[aria-label="Rename app.py"]').click();
+    await a.locator("#files input.name-input").fill("/src/app.py");
+    await a.locator("#files input.name-input").press("Enter");
+    await wait(a, 5000);
+    const afterMove = await stored();
+    if (textOf(afterMove, "src/app.py")?.includes("PORT = 8000") && !("app.py" in afterMove)) ok("and a rename of a file somebody saved since takes their save with it");
+    else fail(`a rename over a save not yet read — ${JSON.stringify({ moved: textOf(afterMove, "src/app.py"), left: textOf(afterMove, "app.py") })}`);
+
+    await w.locator('#files button[aria-label="New file"]').click();
+    await w.locator("#files input.name-input").fill("/todo.md");
+    await w.locator("#files input.name-input").press("Enter");
+    await w.waitForFunction(() => window.__pad.active() === "todo.md", null, { timeout: 10_000 });
+    await putAtEnd(w, "- [ ] ship it\n");
+    await wait(w, 3000);
+    await a.locator('#files button[aria-label="New file"]').click();
+    await a.locator("#files input.name-input").fill("/todo.md");
+    await a.locator("#files input.name-input").press("Enter");
+    await wait(a, 5000);
+    const todo = textOf(await stored(), "todo.md");
+    const aShows = await a.evaluate(() => window.__pad.text("todo.md"));
+    if (todo === "- [ ] ship it\n" && aShows === todo) ok("and New file of a name somebody else made and typed in keeps theirs, and shows it");
+    else fail(`New file over a file not yet read — ${JSON.stringify({ todo, aShows })}`);
+    await w.context().close();
+    await a.context().close();
+  }
+
+  // ---- what saving could not deliver, kept per tab, and given up when undone ---
+  // Review of 19 October, item 7, and of 28 October: one browser kept one
+  // journal per pad for all its tabs, so of two tabs offline typing in one
+  // file, the second's journal took the place of the first's; and an undo
+  // after Replace, before it saved, left the replacement in the journal, to
+  // come back over the undo at the next visit.
+  {
+    const name = `pair-journal-${Date.now().toString(36)}`;
+    const NOTES = "x = 1\ny = 2\n";
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.py", content: NOTES }] }) });
+    const context = await browser.newContext();
+    // No room, and no saves: each tab on its own, with only its journal.
+    await context.addInitScript(() => {
+      const Real = window.WebSocket;
+      const Blocked = function () { return new Real("ws://127.0.0.1:9/"); };
+      Blocked.prototype = Real.prototype;
+      for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Blocked[k] = Real[k];
+      window.WebSocket = Blocked;
+    });
+    const offline = (route) => (route.request().method() === "PUT" ? route.abort() : route.continue());
+    await context.route(`**/api/pad/${name}`, offline);
+    const tab = async () => {
+      const page = await context.newPage();
+      await page.goto(`${ORIGIN}/${name}`);
+      await page.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+      await page.waitForFunction(() => window.__pad.active() === "notes.py", null, { timeout: 10_000 });
+      return page;
+    };
+    const put = (page, line, text) => page.evaluate(([l, t]) => {
+      const ed = window.monaco.editor.getEditors()[0];
+      ed.executeEdits("typing", [{ range: { startLineNumber: l, startColumn: 1, endLineNumber: l, endColumn: 1 }, text: t }]);
+    }, [line, text]);
+    const one = await tab();
+    const two = await tab();
+    await put(one, 1, "# one\n");
+    await wait(one, 2500);
+    await put(two, 3, "# two\n");
+    await wait(two, 2500);
+    await one.close();
+    await two.close();
+    await context.unroute(`**/api/pad/${name}`, offline);
+    const back = await tab();
+    const both = await back.waitForFunction(() => /# one/.test(window.__pad.text("notes.py") ?? "") && /# two/.test(window.__pad.text("notes.py") ?? ""), null, { timeout: 15_000 }).then(() => true, () => false);
+    await wait(back, 2500);
+    const stored = ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["notes.py"] ?? {}).content;
+    if (both && stored === "# one\nx = 1\ny = 2\n# two\n") ok("two tabs' typing that could not be saved comes back, both, in the next tab");
+    else fail(`two tabs' unsaved typing — ${JSON.stringify({ both, stored, shows: await back.evaluate(() => window.__pad.text("notes.py")) })}`);
+    await back.close();
+
+    // Replace, then undo before it saves, then reload.
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.py", content: "name = 'alpha'\nprint(name)\n" }] }) });
+    const r = await tab();
+    await r.waitForFunction(() => window.__pad.text("notes.py") === "name = 'alpha'\nprint(name)\n", null, { timeout: 15_000 });
+    await r.locator(".search-toggle:visible").first().click();
+    await r.getByRole("searchbox", { name: "Search query" }).fill("alpha");
+    await r.waitForFunction(() => /match/.test(document.querySelector(".search-status")?.textContent ?? ""), null, { timeout: 15_000 });
+    await r.locator(".search-replace summary").click();
+    await r.getByRole("textbox", { name: "Replacement text" }).fill("beta");
+    await r.getByRole("button", { name: "Preview replacements", exact: true }).click();
+    await r.getByRole("button", { name: "Apply replacements", exact: true }).click();
+    // Once it is applied — and the replacement kept in case it cannot be
+    // saved — and before its save, half a second later.
+    await r.waitForFunction(() => /Applied/.test(document.querySelector("dialog[open] [role=status]")?.textContent ?? ""), null, { timeout: 10_000 });
+    await r.evaluate(() => {
+      document.querySelector("dialog[open]")?.close();
+      const ed = window.monaco.editor.getEditors()[0];
+      ed.focus();
+      ed.trigger("check", "undo", null);
+    });
+    await wait(r, 3000);
+    await r.reload();
+    await r.waitForFunction(() => window.__pad && window.__pad.text("notes.py") !== undefined, null, { timeout: 60_000 });
+    await wait(r, 2500);
+    const undone = await r.evaluate(() => window.__pad.text("notes.py"));
+    const storedNow = ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["notes.py"] ?? {}).content;
+    if (undone === "name = 'alpha'\nprint(name)\n" && storedNow === undone) ok("and a Replace undone before it saved stays undone after a reload");
+    else fail(`a Replace undone, then a reload — ${JSON.stringify({ undone, storedNow })}`);
+    await context.close();
   }
 
   // ---- a write somebody else made just before this page's own --------------

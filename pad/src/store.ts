@@ -321,6 +321,14 @@ export class Store {
    */
   editsWork = false;
 
+  /**
+   * Whether this relay holds a whole file or a deletion to the version its
+   * `base` names, and an empty `base` to a file not being there, as the relay
+   * says on every read (`x-pad-bases`). One from before took an empty base as
+   * stale every time, and a deletion's as nothing.
+   */
+  basesWork = false;
+
   /** Bytes one request carries at most. A field so a check can make it small. */
   requestBytes = REQUEST_BYTES;
 
@@ -413,6 +421,7 @@ export class Store {
       cache: "no-store",
     }, this.deadline);
     if (!res.ok) await refuse(res);
+    this.basesWork = res.headers.get("x-pad-bases") === "1";
     const pad = (await res.json()) as Pad;
     this.saw(name, pad.seq);
     if (Object.values(pad.files ?? {}).some((f) => typeof f.hash === "string")) this.editsWork = true;

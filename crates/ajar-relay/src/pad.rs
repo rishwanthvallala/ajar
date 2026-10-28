@@ -2104,11 +2104,25 @@ impl Store {
         // over somebody's work. A page whose room was out of reach did, and
         // said "saved" (review of 19 October, C6). Without a hash, a write is
         // what it always was.
+        //
+        // A deletion with a hash is held to it the same way: a page renaming
+        // a file that somebody had since changed deleted their version and
+        // put its own older copy under the new name. And an empty hash is a
+        // file that was not there: a page's New file wrote nothing over a
+        // file of that name somebody else had made and typed in (review of
+        // 28 October).
         for w in writes {
-            if let (Some(_), Some(base)) = (&w.content, &w.base) {
-                if new.get(&w.path).map(|r| &r.blob) != Some(base) {
-                    return Err(Error::Stale);
-                }
+            let (None, Some(base)) = (&w.edits, &w.base) else {
+                continue;
+            };
+            let stored = new.get(&w.path).map(|r| &r.blob);
+            let current = if base.is_empty() {
+                stored.is_none()
+            } else {
+                stored == Some(base)
+            };
+            if !current {
+                return Err(Error::Stale);
             }
         }
 
@@ -3672,6 +3686,41 @@ mod tests {
         let mut gone = put("notes.py", "back");
         gone.base = Some("0".repeat(64));
         assert!(matches!(s.write("p", &[gone]), Err(Error::Stale)));
+    }
+
+    #[test]
+    fn a_new_file_or_a_deletion_is_held_to_the_version_it_names() {
+        // Review of 28 October: New file wrote nothing over a file of that
+        // name somebody else had made, and a rename deleted a version it had
+        // never seen. An empty hash is "not there".
+        let (s, _d) = store();
+        let mut fresh = put("todo.md", "");
+        fresh.base = Some(String::new());
+        s.write("p", &[fresh.clone()]).unwrap();
+        s.write("p", &[put("todo.md", "- [ ] ship it\n")]).unwrap();
+        assert!(matches!(s.write("p", &[fresh]), Err(Error::Stale)));
+        assert_eq!(
+            s.get("p").unwrap().unwrap().files["todo.md"].content,
+            "- [ ] ship it\n"
+        );
+
+        let seen = hash(&s, "p", "todo.md");
+        s.write(
+            "p",
+            &[put("todo.md", "- [ ] ship it\n- [ ] tell everyone\n")],
+        )
+        .unwrap();
+        let mut away = delete("todo.md");
+        away.base = Some(seen);
+        assert!(matches!(s.write("p", &[away]), Err(Error::Stale)));
+        assert!(s.get("p").unwrap().unwrap().files.contains_key("todo.md"));
+        // Named as it is, it goes; and a deletion with no hash is what it was.
+        let mut current = delete("todo.md");
+        current.base = Some(hash(&s, "p", "todo.md"));
+        s.write("p", &[current]).unwrap();
+        assert!(!s.get("p").unwrap().unwrap().files.contains_key("todo.md"));
+        s.write("p", &[put("x.txt", "x")]).unwrap();
+        s.write("p", &[delete("x.txt")]).unwrap();
     }
 
     #[test]
