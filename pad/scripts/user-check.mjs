@@ -1216,20 +1216,26 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     "print('png written')",
   ].join("\n");
   await clear();
-  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py`);
-  await typed("printf '\\033]7777;pad-image=/workspace/dot.png\\007'; echo asked");
+  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py && printf '\\033]7777;pad-image=/workspace/dot.png\\007'; echo asked`);
   const shownByEscape = await page.waitForFunction(() => {
     const img = document.querySelector("#image-pane:not([hidden]) img");
     return img && img.naturalWidth === 4 && document.querySelector("#editor")?.hidden;
   }, null, { timeout: 15_000 }).then(() => true, () => false);
-  // Not on screen apart from the command that printed it.
-  const escapeHidden = (await rows()).filter((l) => !l.startsWith("$")).every((l) => !/7777|pad-image/.test(l));
+  // Inspect output after Python's marker, excluding the long command's echo
+  // (which wraps onto lines without a prompt).
+  const imageRows = await rows();
+  const imageOutput = imageRows.findLastIndex((line) => line.trim() === "png written");
+  const escapeHidden = imageOutput >= 0 && imageRows.slice(imageOutput + 1).every((line) => !/7777|pad-image/.test(line));
+  const REDRAW_PNG = MAKE_PNG.replace("* 4", "* 2").replace("4, 3, 8", "2, 3, 8");
+  await typed(`echo ${Buffer.from(REDRAW_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py && printf '\\033]7777;pad-image=/workspace/dot.png\\007'`);
+  const redrawn = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 2, null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("a regenerated plot refreshes its already active tab", redrawn, await status());
   await page.click("#back-to-editor");
   const editorBack = await page.locator("#editor").isVisible() && await page.locator("#image-pane").isHidden();
   expect("an image a program names with the pad's escape shows in place of the editor, the escape itself unprinted, and Back to editor returns", shownByEscape && escapeHidden && editorBack, `escape ${shownByEscape}, unprinted ${escapeHidden}, back ${editorBack}`);
   await page.waitForSelector('#files .row.file[data-path="dot.png"]', { timeout: 20_000 }).catch(() => {});
   await page.click('#files .row.file[data-path="dot.png"]');
-  const shownByTree = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 4, null, { timeout: 10_000 }).then(() => true, () => false);
+  const shownByTree = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 2, null, { timeout: 10_000 }).then(() => true, () => false);
   await open("main.py");
   const leftForText = await page.locator("#image-pane").isHidden() && await page.locator("#editor").isVisible();
   expect("and an image file opened from the tree shows too, until a text file is opened", shownByTree && leftForText, `tree ${shownByTree}, text again ${leftForText}`);

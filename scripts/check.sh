@@ -35,6 +35,7 @@ part_web() {
   echo "── frontend typecheck ─────────────────────────────────"
   npm run typecheck
   npm run test:editor-layout
+  npm run test:editor-recovery
 
   echo "── frontend builds ────────────────────────────────────"
   npm run build

@@ -281,6 +281,8 @@ export class App {
   private loadingFiles = false;
   private readonly orphaned = new Set<string>();
   private readonly orphanedKept = new Set<string>();
+  /** Plots announced by the terminal before command publication stores them. */
+  private readonly pendingImages = new Set<string>();
   private switchingGroup = false;
   private suggestions: Suggestions | null = null;
   private search: ProjectSearch | null = null;
@@ -926,8 +928,8 @@ export class App {
     this.known = incoming;
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
+    this.renameEditorTabs(moves);
     for (const [from, to] of moves) {
-      this.renameEditorTabs(from, to);
       // What was typed here before the move reached here, onto the file as it
       // now is: an edit like typing, which saves and reaches the room.
       const carried = typedBefore.get(from);
@@ -1305,6 +1307,7 @@ export class App {
       const previousPath = hosts.editor.dataset.active;
       if (previous && previousPath) { const state = held.editor.saveViewState(); if (state) held.states.set(previousPath, state); }
       this.imageShown = hosts.imagePane.hidden ? null : hosts.imagePane.dataset.path ?? null;
+      this.ui.setImage(this.imageShown);
       this.active = previousPath ?? "";
       if (path && path === previousPath && this.texts.existing(path) === held.editor.getModel() && hosts.imagePane.hidden) {
         this.active = path; this.ui.setActiveFile(path); this.paintTools(); this.paintStarter(); this.paintRun(); this.paintBanner(); this.renderFiles();
@@ -1313,10 +1316,11 @@ export class App {
         return;
       }
       if (path && this.texts.has(path)) this.showSelected(path);
-      else if (path && this.binaries.has(path)) { this.active = path; hosts.editor.dataset.active = path; void this.showImageSelected(path, view.id); }
+      else if (path && (this.binaries.has(path) || this.pendingImages.has(path))) { this.active = path; hosts.editor.dataset.active = path; void this.showImageSelected(path, view.id); }
       else {
         held.detach?.(); held.detach = null; held.attached = null; held.editor.setModel(null); hosts.editor.hidden = true;
         hosts.markdownPane.hidden = true; hosts.imagePane.hidden = true; this.active = ""; this.ui.setActiveFile(""); this.paintTools(); this.paintRun(); this.renderFiles();
+        this.imageShown = null; this.ui.setImage(null);
       }
     } finally { this.switchingGroup = false; }
   }
@@ -1680,20 +1684,26 @@ export class App {
     actions.append(save, discard); note.append(actions);
   }
 
-  private renameEditorTabs(from: string, to: string): void {
-    for (const modes of [this.defaultFormatted, ...this.markdownModes.values()]) if (modes.delete(from)) modes.add(to);
-    if (!this.ui) return;
-    for (const held of this.editorViews.values()) {
-      if (held.editor.getModel() === this.texts.existing(from)) { const state = held.editor.saveViewState(); if (state) held.states.set(to, state); }
-      const state = held.states.get(from); if (state && !held.states.has(to)) held.states.set(to, state);
-      held.states.delete(from);
+  private renameEditorTabs(moves: Iterable<readonly [string, string]>): void {
+    const pairs = [...moves];
+    for (const [from, to] of pairs) {
+      for (const modes of [this.defaultFormatted, ...this.markdownModes.values()]) if (modes.delete(from)) modes.add(to);
+      for (const held of this.editorViews.values()) {
+        if (held.editor.getModel() === this.texts.existing(from)) { const state = held.editor.saveViewState(); if (state) held.states.set(to, state); }
+        const state = held.states.get(from); if (state && !held.states.has(to)) held.states.set(to, state);
+        held.states.delete(from);
+      }
     }
-    this.ui.groups.rename(from, to);
+    // Render/select callbacks may prune missing files: all moved tabs must
+    // already have their new names before any of those callbacks run.
+    if (pairs.length) this.ui?.groups.renameMany(pairs);
   }
 
   private renderFiles(): void {
-    if (!this.loadingFiles && this.ui && [...this.ui.groups.paths].some(path => !this.texts.has(path) && !this.binaries.has(path))) {
-      this.ui.groups.prune(path => this.texts.has(path) || this.binaries.has(path));
+    for (const path of this.pendingImages) if (this.texts.has(path) || this.binaries.has(path)) this.pendingImages.delete(path);
+    const exists = (path: string) => this.texts.has(path) || this.binaries.has(path) || this.pendingImages.has(path);
+    if (!this.loadingFiles && this.ui && [...this.ui.groups.paths].some(path => !exists(path))) {
+      this.ui.groups.prune(exists);
     }
     this.search?.invalidate();
     this.tree ??= new FileTree(this.el.files, {
@@ -2296,7 +2306,13 @@ export class App {
    */
   private async showImage(path: string): Promise<void> {
     if (this.ui) {
+      if (!imageType(path)) return;
+      if (!this.binaries.has(path)) this.pendingImages.add(path);
+      const alreadySelected = this.ui.groups.current.active === path;
       this.ui.groups.open(path);
+      // Opening a new tab renders via selectGroup. An already active tab
+      // needs an explicit refresh to read a regenerated plot's latest bytes.
+      if (alreadySelected) await this.showImageSelected(path, this.ui.groups.current.id);
       if (this.ui.fileSelected()) this.ui.groups.currentView.element.focus();
       return;
     }
@@ -2316,7 +2332,10 @@ export class App {
       if (bytes) base64 = toBase64(bytes);
     }
     if (this.disposed || (view && this.ui?.groups.model.group(group)?.active !== path)) return;
-    if (!base64) return this.say("error", `${path} could not be read`);
+    if (!base64) {
+      this.pendingImages.delete(path); this.renderFiles();
+      return this.say("error", `${path} could not be read`);
+    }
     if (this.preview?.isOpen) await this.togglePreview();
     const img = document.createElement("img");
     img.alt = path;
@@ -2338,11 +2357,12 @@ export class App {
       if (!this.ui || this.ui.groups.current.id === group) this.say("", `${path} is not an image the browser can show — download it with the arrow beside it`);
     };
     hosts.imagePane.replaceChildren(img, caption);
+    hosts.editor.dataset.active = path;
     hosts.imagePane.dataset.path = path;
     hosts.imagePane.hidden = false;
     hosts.editor.hidden = true;
     hosts.markdownPane.hidden = true;
-    if (!this.ui || this.ui.groups.current.id === group) { this.imageShown = path; this.ui?.setImage(path); this.renderFiles(); this.paintRun(); }
+    if (!this.ui || this.ui.groups.current.id === group) { this.active = path; this.imageShown = path; this.ui?.setActiveFile(path); this.ui?.setImage(path); this.renderFiles(); this.paintRun(); }
   }
 
   private closeImage(): void {
@@ -3501,14 +3521,17 @@ export class App {
     const parted = dropped && (!seeded || dropped.at > seeded.at) ? dropped : seeded;
     const base = parted?.text ?? this.known.get(path) ?? mine;
     this.atDrop.delete(path);
-    const shown = this.active === path;
     this.closeDoc(path);
     const room = await this.readyDoc(path);
     if (this.docs.get(path) !== room) return;
     const made = carryOver(base, mine, room.contents());
     if (made) this.applyEdit(path, room, made);
     else this.setFile(path, room.contents());
-    if (shown && this.active === path) this.show(path);
+    // Rejoining replaces the document behind every pane showing this model,
+    // including panes outside the focused group. attach binds the shared
+    // model once and restores each view's cursor/presence attachment.
+    const model = this.texts.existing(path);
+    if (model) await this.attach(path, model);
   }
 
   /**
@@ -3538,6 +3561,14 @@ export class App {
       // Read nothing back before what the page has already written is there.
       await rt.settled();
       const found = await diff(rt, this.known, this.binaries);
+      // A remotely deleted file kept for local recovery still exists in the
+      // sandbox. It must stay out of both publication and the store baseline,
+      // or an unrelated command would recreate it for everyone.
+      found.changes = found.changes.filter((change) => !this.orphaned.has(change.path));
+      for (const path of this.orphaned) {
+        found.next.delete(path);
+        found.nextBinaries.delete(path);
+      }
       // Read back: what a command changed is in `found` now, and a document
       // may be written into the sandbox again whatever it holds.
       if (!this.anyBusy) this.commandOut = false;
@@ -3666,7 +3697,9 @@ export class App {
       for (const change of sendable) {
         // Gone, or now binary: either way, no longer the editor's.
         if (change.content === null || change.encoding === "base64") {
-          if (this.active === change.path) {
+          // Publishing an image already displayed in its tab must not switch
+          // back to text. Only a deletion or a former text model needs that.
+          if (this.active === change.path && (change.content === null || this.texts.has(change.path))) {
             const other = [...this.texts.keys()].filter((p) => p !== change.path).sort()[0];
             if (other) this.show(other);
           }
@@ -4246,7 +4279,7 @@ export class App {
             if (later.get(p) === text.get(p)) this.dirty.delete(t);
             else this.dirty.add(t);
           }
-          for (const [p, t] of pairs) this.renameEditorTabs(p, t);
+          this.renameEditorTabs(pairs);
           // Onto the new path before the old model goes from under the editor,
           // and where it was in the file with it.
           const followed = textPairs.find(([p]) => p === active)?.[1];

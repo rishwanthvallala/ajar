@@ -19,6 +19,7 @@
     "build:pad": "npm run build --workspace=ajar-pad",
     "build": "npm run build --workspace=ajar-web && npm run build --workspace=ajar-pad",
     "test:editor-layout": "node --test scripts/editor-layout.test.mjs",
+    "test:editor-recovery": "node --test scripts/editor-recovery.test.cjs",
     "test:review": "node scripts/review-repros.cjs",
     "test:ui": "npm run build && node scripts/test-ui.cjs"
   }

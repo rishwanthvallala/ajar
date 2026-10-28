@@ -9,6 +9,8 @@ const files = {
   'main.py': { content: mainText, encoding: 'utf8', seq: 1 },
   'util.py': { content: 'value = 42\n', encoding: 'utf8', seq: 1 },
   'other/util.py': { content: 'value = 99\n', encoding: 'utf8', seq: 1 },
+  'folder/a.py': { content: 'first = 1\n', encoding: 'utf8', seq: 1 },
+  'folder/b.py': { content: 'second = 2\n', encoding: 'utf8', seq: 1 },
   'README.md': { content: '# Hello\n\n[Utility](util.py)\n', encoding: 'utf8', seq: 1 },
   'plot.png': { content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=', encoding: 'base64', seq: 1 },
 };
@@ -92,6 +94,14 @@ async function run() {
       await page.locator('#files .row.file[data-path="plot.png"]').click();
       await page.locator('.editor-group.focused .image-view img').waitFor({ state: 'visible' });
       assert.equal(await first.locator('.monaco-editor').isVisible(), true, 'image does not replace the other group');
+      assert.equal(await page.locator('#highlight-toggle').isVisible(), false, 'image focus hides Colours');
+      await first.getByRole('tab', { name: 'main.py', exact: true }).click();
+      assert.equal(await page.locator('#highlight-toggle').isVisible(), true, 'focusing an existing text pane restores Colours');
+      assert.equal(await page.locator('#format-file').isVisible(), true, 'focusing an existing text pane restores Format');
+      assert.equal(await page.locator('.editor-tools').isVisible(), true, 'text focus restores the shared tools, including available suggestions');
+      assert.equal(await page.locator('#back-to-editor').isVisible(), false, 'text focus hides Back to editor');
+      await second.getByRole('tab', { name: 'plot.png', exact: true }).click();
+      assert.equal(await page.locator('#highlight-toggle').isVisible(), false, 'returning to the image restores image controls');
       await page.locator('.editor-group.focused').getByRole('tab', { name: 'main.py', exact: true }).click();
       await page.locator('.editor-group.focused').getByRole('button', { name: 'Editor group actions' }).click();
       await page.getByRole('menuitem', { name: /^Split down / }).click();
@@ -157,6 +167,20 @@ async function run() {
         assert(await page.evaluate(`window.__pad.text('util.py').includes('# retained')`), 'deleted file keeps pending typing');
         assert(await page.evaluate(`!window.dispatchEvent(new Event('beforeunload',{cancelable:true}))`), 'retained file protects against leaving');
         assert(await page.evaluate(`${focusedEditor}.getOption(window.monaco.editor.EditorOption.readOnly)`), 'retained file is read-only');
+        if (!(await page.locator('#files .row.file[data-path="folder/a.py"]').isVisible())) await page.locator('#files .row.dir[data-path="folder"]').click();
+        await page.locator('#files .row.file[data-path="folder/a.py"]').click();
+        await second.getByRole('tab', {name:'main.py',exact:true}).click();
+        await page.locator('#files .row.file[data-path="folder/b.py"]').click();
+        const count = await page.locator('.editor-group').count();
+        for (const leaf of ['a.py', 'b.py']) {
+          storedFiles[`moved/${leaf}`] = storedFiles[`folder/${leaf}`];
+          delete storedFiles[`folder/${leaf}`];
+        }
+        seq++;
+        wire.send(Buffer.concat([Buffer.from([3,0,0,0,0,0,0,0,0]), Buffer.from(JSON.stringify({t:'moved',seq}))]));
+        await first.getByRole('tab', {name:'moved/a.py',exact:true}).waitFor();
+        await second.getByRole('tab', {name:'moved/b.py',exact:true}).waitFor();
+        assert.equal(await page.locator('.editor-group').count(), count, 'remote folder moves preserve all panes');
       }
       if (platform === 'Linux x86_64') {
         while (await page.getByRole('tab').count()) {

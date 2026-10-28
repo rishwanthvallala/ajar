@@ -63,7 +63,11 @@ export class EditorGroups {
     this.onChange();
   }
   split(direction: "right" | "down") { this.model.split(direction); this.render(); this.focusEditor(); }
-  rename(from: string, to: string) { this.model.rename(from, to); this.render(); }
+  rename(from: string, to: string) { this.renameMany([[from, to]]); }
+  renameMany(moves: Iterable<readonly [string, string]>) {
+    for (const [from, to] of moves) this.model.rename(from, to);
+    this.render();
+  }
   prune(exists: (path: string) => boolean) { this.model.prune(exists); this.render(); }
   /** Call after adapters have registered callbacks. */
   refresh() { this.selected.clear(); this.render(); }
