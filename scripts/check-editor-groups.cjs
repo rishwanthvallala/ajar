@@ -9,8 +9,8 @@ const files = {
   'main.py': { content: mainText, encoding: 'utf8', seq: 1 },
   'util.py': { content: 'value = 42\n', encoding: 'utf8', seq: 1 },
   'other/util.py': { content: 'value = 99\n', encoding: 'utf8', seq: 1 },
-  'folder/a.py': { content: 'first = 1\n', encoding: 'utf8', seq: 1 },
-  'folder/b.py': { content: 'second = 2\n', encoding: 'utf8', seq: 1 },
+  'folder/a.py': { content: Array.from({length:400}, (_, i) => `first = ${i}\n`).join(''), encoding: 'utf8', seq: 1 },
+  'folder/b.py': { content: Array.from({length:400}, (_, i) => `second = ${i}\n`).join(''), encoding: 'utf8', seq: 1 },
   'README.md': { content: '# Hello\n\n[Utility](util.py)\n', encoding: 'utf8', seq: 1 },
   'plot.png': { content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=', encoding: 'base64', seq: 1 },
 };
@@ -95,6 +95,11 @@ async function run() {
       await page.locator('.editor-group.focused .image-view img').waitFor({ state: 'visible' });
       assert.equal(await first.locator('.monaco-editor').isVisible(), true, 'image does not replace the other group');
       assert.equal(await page.locator('#highlight-toggle').isVisible(), false, 'image focus hides Colours');
+      storedFiles['collaborator.txt'] = {content:'saved in another browser\n',encoding:'utf8',seq:++seq};
+      wire.send(Buffer.concat([Buffer.from([3,0,0,0,0,0,0,0,0]), Buffer.from(JSON.stringify({t:'moved',seq}))]));
+      await page.locator('#files .row.file[data-path="collaborator.txt"]').waitFor();
+      assert.equal(await page.evaluate(() => window.__pad.active()), 'plot.png', 'a collaborator save keeps the image selected');
+      assert.equal(await second.locator('.image-view img').isVisible(), true, 'the image remains displayed after remote refresh');
       await first.getByRole('tab', { name: 'main.py', exact: true }).click();
       assert.equal(await page.locator('#highlight-toggle').isVisible(), true, 'focusing an existing text pane restores Colours');
       assert.equal(await page.locator('#format-file').isVisible(), true, 'focusing an existing text pane restores Format');
@@ -172,6 +177,23 @@ async function run() {
         await second.getByRole('tab', {name:'main.py',exact:true}).click();
         await page.locator('#files .row.file[data-path="folder/b.py"]').click();
         const count = await page.locator('.editor-group').count();
+        const paneIds = [await first.getAttribute('data-group'), await second.getAttribute('data-group')];
+        await page.evaluate(ids => {
+          ids.forEach((id, i) => {
+            const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('.editor-group')?.dataset.group === id);
+            editor.setPosition({lineNumber: 200 + i * 50, column: 3});
+            editor.revealLineInCenter(200 + i * 50);
+          });
+        }, paneIds);
+        const positions = await page.evaluate(ids => ids.map(id => {
+          const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('.editor-group')?.dataset.group === id);
+          return {cursor: editor.getPosition(), scroll: editor.getScrollTop()};
+        }), paneIds);
+        await page.evaluate(ids => ids.forEach((id, i) => {
+          const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('.editor-group')?.dataset.group === id);
+          const model = editor.getModel(), end = model.getPositionAt(model.getValueLength());
+          editor.executeEdits('test', [{range:new window.monaco.Range(end.lineNumber,end.column,end.lineNumber,end.column),text:`# LOCAL_MOVE_${i}`}]);
+        }), paneIds);
         for (const leaf of ['a.py', 'b.py']) {
           storedFiles[`moved/${leaf}`] = storedFiles[`folder/${leaf}`];
           delete storedFiles[`folder/${leaf}`];
@@ -181,6 +203,18 @@ async function run() {
         await first.getByRole('tab', {name:'moved/a.py',exact:true}).waitFor();
         await second.getByRole('tab', {name:'moved/b.py',exact:true}).waitFor();
         assert.equal(await page.locator('.editor-group').count(), count, 'remote folder moves preserve all panes');
+        await page.waitForFunction(({ids, positions}) => ids.every((id, i) => {
+          const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('.editor-group')?.dataset.group === id);
+          const cursor = editor?.getPosition();
+          return cursor?.lineNumber === positions[i].cursor.lineNumber && cursor?.column === positions[i].cursor.column && Math.abs(editor.getScrollTop() - positions[i].scroll) <= 1;
+        }), {ids:paneIds, positions});
+        await page.waitForFunction(() => window.__pad.text('moved/a.py')?.includes('# LOCAL_MOVE_0') && window.__pad.text('moved/b.py')?.includes('# LOCAL_MOVE_1'));
+        for (let i = 0; i < 100 && !['a.py','b.py'].every((leaf, n) => writes.some(w => w.path === `moved/${leaf}` && w.content?.includes(`# LOCAL_MOVE_${n}`))); i++) await page.waitForTimeout(25);
+        for (const [n, leaf] of ['a.py','b.py'].entries()) {
+          const saved = writes.find(w => w.path === `moved/${leaf}` && w.content?.includes(`# LOCAL_MOVE_${n}`));
+          assert(saved, 'pending typing is saved under the renamed path');
+          assert.equal(saved.content.split(`# LOCAL_MOVE_${n}`).length - 1, 1, 'the carried typing appears once');
+        }
       }
       if (platform === 'Linux x86_64') {
         while (await page.getByRole('tab').count()) {

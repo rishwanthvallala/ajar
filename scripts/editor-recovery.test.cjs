@@ -20,6 +20,7 @@ function load(file) {
     if (name === 'yjs' || name === 'y-protocols/awareness') return padRequire(name);
     if (['./carry', './sync', './texts', './editing', './images'].includes(name)) return load(`pad/src/${name.slice(2)}.ts`);
     if (name === './editor-layout') return load('packages/workspace-ui/src/editor-layout.ts');
+    if (name === './proto') return load('web/src/proto.ts');
     // Other UI/services aren't used by the methods under test.
     if (name === './peers') return { streamFor: () => 1 };
     return {};
@@ -36,6 +37,8 @@ const { Texts } = load('pad/src/texts.ts');
 const { DocSession } = load('pad/src/editing.ts');
 const { EditorLayoutModel } = load('packages/workspace-ui/src/editor-layout.ts');
 const { EditorGroups } = load('packages/workspace-ui/src/editor-groups.ts');
+const { SessionDocuments } = load('web/src/documents.ts');
+const { parseJson, DocKind, untag } = load('web/src/proto.ts');
 
 class Range {
   constructor(startLineNumber, startColumn, endLineNumber, endColumn) {
@@ -45,12 +48,13 @@ class Range {
 }
 function model(text) {
   const listeners = new Set();
+  let disposed = false;
   return {
     getValue: () => text,
     getValueLength: () => text.length,
     getEOL: () => '\n',
     getPositionAt: offset => ({ lineNumber: 1, column: offset + 1 }),
-    isDisposed: () => false,
+    isDisposed: () => disposed,
     onDidChangeContent(fn) { listeners.add(fn); return { dispose: () => listeners.delete(fn) }; },
     applyEdits(edits) {
       const changes = edits.map(e => ({ rangeOffset: e.range.startColumn - 1, rangeLength: e.range.endColumn - e.range.startColumn, text: e.text }));
@@ -58,7 +62,7 @@ function model(text) {
       for (const fn of listeners) fn({ changes });
     },
     pushEditOperations(_, edits) { this.applyEdits(edits); },
-    dispose() {},
+    dispose() { disposed = true; },
   };
 }
 function view(m) {
@@ -162,14 +166,193 @@ test('a remote folder move renames tabs in all groups before render callbacks pr
   layout.split('right'); layout.open('old/b.py'); const right = layout.current.id;
   a.editorViews.set(left, { ...view(a.texts.model('old/a.py')), states: new Map([['old/a.py', { cursor: 12 }]]) });
   a.editorViews.set(right, { ...view(a.texts.model('old/b.py')), states: new Map([['old/b.py', { cursor: 34 }]]) });
+  const liveStates = new Map([[left, { cursor: 56, scroll: 120 }], [right, { cursor: 78, scroll: 240 }]]);
+  for (const [id, held] of a.editorViews) held.editor.saveViewState = () => {
+    assert(!held.editor.getModel().isDisposed(), 'capture the live state before model disposal');
+    return liveStates.get(id);
+  };
+  a.editor = a.editorViews.get(left).editor;
   const groups = groupsFor(a, layout);
   await a.refresh();
   assert.equal(groups.model.groups.length, 2);
   assert.deepEqual(groups.model.group(left).tabs, ['new/a.py']);
   assert.deepEqual(groups.model.group(right).tabs, ['new/a.py', 'new/b.py']);
   assert.equal(groups.model.group(right).active, 'new/b.py');
-  assert.deepEqual(a.editorViews.get(right).states.get('new/b.py'), { cursor: 34 });
+  assert.deepEqual(a.editorViews.get(left).states.get('new/a.py'), liveStates.get(left));
+  assert.deepEqual(a.editorViews.get(right).states.get('new/b.py'), liveStates.get(right));
+  assert.deepEqual(a.viewStates.get('new/a.py'), liveStates.get(left));
   assert.equal(a.active, 'new/a.py');
+});
+
+for (const roomText of ['base', 'REMOTE base']) test(`remote rename carries pending typing before opening the destination (${roomText})`, async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = {createElement: () => ({remove() {}}), head: {appendChild() {}}};
+  const writes = [], attachments = [];
+  const a = fixture({
+    read: async () => ({seq:2,files:{'new.py':{content:'base',encoding:'utf8'}}}),
+    write: async (_, changes) => { writes.push(...changes); return 3; },
+  });
+  a.warm = a.saveSoon = a.say = a.unjournal = () => {};
+  a.texts = new Texts((path, text) => {
+    const m = model(text); m.onDidChangeContent(() => a.changed(path)); return m;
+  });
+  a.known.set('old.py', 'base'); a.texts.put('old.py', 'base LOCAL');
+  a.active = 'old.py';
+  const layout = new EditorLayoutModel(); layout.open('old.py'); layout.split('right');
+  const groups = groupsFor(a, layout);
+  for (const group of layout.groups) a.editorViews.set(group.id, {...view(a.texts.model('old.py')),states:new Map()});
+  a.readyDoc = async path => {
+    if (!a.docs.has(path)) {
+      const doc = new DocSession(1, path, {id:1,name:'test'}, kind => { if (kind === 'update') a.dirty.add(path); });
+      doc.seed(roomText); a.docs.set(path, doc);
+    }
+    return a.docs.get(path);
+  };
+  // Model the synchronous selection callbacks from renameMany: attach creates
+  // the destination document immediately, before its asynchronous binding.
+  groups.render = () => {
+    for (const group of layout.groups) {
+      const m = a.texts.model(group.active), held = a.editorViews.get(group.id);
+      held.editor.getModel = () => m;
+      attachments.push(a.attach(group.active, m));
+    }
+    a.renderFiles();
+  };
+  a.show = path => { a.active = path; groups.render(); };
+  try {
+    await a.refresh();
+    await Promise.all(attachments);
+    const expected = `${roomText} LOCAL`;
+    assert.equal(a.docs.get('new.py').contents(), expected, 'the live destination keeps the typing and peer changes');
+    for (const held of a.editorViews.values()) assert.equal(held.editor.getModel().getValue(), expected, 'both panes share the carried text');
+    await a.saveEdits();
+    assert.deepEqual(writes, [{path:'new.py',content:expected}], 'the carried edit is saved under the new path exactly once');
+    assert(!a.texts.has('old.py'));
+  } finally {
+    for (const doc of a.docs.values()) doc.destroy();
+    globalThis.document = previousDocument;
+  }
+});
+
+test('host return requests visible files and retained edits without reopening clean history', () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { getElementById: () => null };
+  let away = true;
+  const frames = [], accepted = [], refused = [];
+  const editor = {
+    path: 'current.ts', models: new Map(), viewers: new Map([['focused', { current: 'current.ts' }]]),
+    groups: { visiblePaths: new Set(['current.ts']), views: new Map() },
+    problem() {}, setReadOnly() {},
+  };
+  const manager = new SessionDocuments(editor, {
+    send(frame) {
+      frames.push(frame);
+      if (frame.streamId === 0 && parseJson(frame).t === 'open') {
+        const { path } = parseJson(frame);
+        (accepted.length < 16 ? accepted : refused).push(path);
+      }
+    },
+    online: () => true, away: () => away, readOnly: () => false,
+    copy: () => null, user: () => ({ id: 1, name: 'test' }), unsent() {},
+  });
+  const hold = (path, text, unconfirmed = []) => {
+    const file = manager.file(path);
+    file.held = { local: 'saved', sent: { confirmed: new Uint8Array(), unconfirmed, client: 1 } };
+    editor.models.set(path, { getValue: () => text });
+  };
+  try {
+    // Clean files remain cached after subscriptions have been released.
+    for (let i = 0; i < 32; i++) manager.file(`visited-${i}.ts`);
+    hold('clean-snapshot.ts', 'saved');
+    hold('closed-with-edits.ts', 'saved', [{ update: new Uint8Array([1]), to: 1 }]);
+    hold('typed-offline.ts', 'changed offline');
+    const live = manager.file('hidden-live-edits.ts');
+    live.doc = { docId: 99, waiting: true, fullState: () => new Uint8Array([7]), destroy() {} };
+    live.ready = true;
+    const cleanLive = manager.file('hidden-clean.ts');
+    cleanLive.doc = { docId: 100, waiting: false, fullState() { assert.fail('clean hidden state must not be resent'); }, destroy() {} };
+    cleanLive.ready = true;
+    manager.sync(); // Select a later file while the host is still away.
+    away = false;
+    manager.hostBack();
+    assert.deepEqual(accepted.sort(), ['closed-with-edits.ts', 'current.ts', 'typed-offline.ts']);
+    assert.deepEqual(refused, [], 'historical files do not consume the 16-document limit');
+    assert.equal(cleanLive.doc, null, 'clean hidden subscriptions are released');
+    const updates = frames.filter(frame => frame.streamId === 99);
+    assert.equal(updates.length, 1, 'unconfirmed live edits still resend their state');
+    assert.equal(untag(updates[0].payload)[0], DocKind.Update);
+    assert(!frames.some(frame => frame.streamId === 100));
+  } finally {
+    manager.dispose(); globalThis.document = previousDocument;
+  }
+});
+
+test('pane replacement frees host capacity before opening, including on host return', () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { getElementById: () => null };
+  try {
+    for (const method of ['sync', 'hostBack']) {
+      const visible = new Set([...Array.from({length:14}, (_, i) => `file-${i + 2}.ts`), 'next.ts']);
+      const subscribed = new Set(Array.from({length:16}, (_, i) => i));
+      const operations = [], refused = [];
+      const editor = {
+        path: 'next.ts', models: new Map(),
+        viewers: new Map([...visible].map(path => [path, {current:path}])),
+        groups: {visiblePaths:visible, views:new Map()}, setReadOnly() {},
+      };
+      const manager = new SessionDocuments(editor, {
+        send(frame) {
+          if (frame.streamId !== 0) return;
+          const msg = parseJson(frame);
+          if (msg.t === 'close') { operations.push(`close:${msg.doc_id}`); subscribed.delete(msg.doc_id); }
+          if (msg.t === 'open') {
+            operations.push(`open:${msg.path}`);
+            if (subscribed.size >= 16) refused.push(msg.path);
+            else subscribed.add(16);
+          }
+        },
+        online: () => true, away: () => false, readOnly: () => false,
+        copy: () => null, user: () => ({id:1,name:'test'}), unsent() {},
+      });
+      try {
+        for (let i = 0; i < 16; i++) {
+          const file = manager.file(`file-${i}.ts`);
+          file.doc = {docId:i, waiting:i === 1, fullState: () => new Uint8Array([7]), destroy() {}};
+          file.ready = true;
+        }
+        manager.file('next.ts');
+        manager[method]();
+        assert.deepEqual(operations, ['close:0', 'open:next.ts'], `${method} closes before opening at capacity`);
+        assert.deepEqual(refused, [], `${method} never causes a temporary capacity refusal`);
+        assert(manager.file('file-1.ts').doc, 'hidden unconfirmed edits keep their subscription');
+        assert.equal(subscribed.size, 16);
+      } finally { manager.dispose(); }
+    }
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('remote refresh preserves published and pending image tabs, falling back only for removed files', async () => {
+  for (const state of ['published', 'pending', 'deleted']) {
+    const files = {'util.py':{content:'changed remotely',encoding:'utf8'}};
+    if (state === 'published') files['plot.png'] = {content:'AAECAw==',encoding:'base64'};
+    const a = fixture({read: async () => ({seq:2,files})});
+    a.warm = () => {};
+    a.known.set('util.py', 'utility');
+    a.active = 'plot.png';
+    if (state === 'pending') a.pendingImages.add('plot.png');
+    else a.binaries.set('plot.png', 'AAECAw==');
+    const layout = new EditorLayoutModel(); layout.open('util.py');
+    const background = layout.current.id;
+    layout.split('right'); layout.open('plot.png');
+    const groups = groupsFor(a, layout);
+    a.show = path => { a.active = path; groups.open(path); };
+    await a.refresh();
+    const selected = state === 'deleted' ? 'util.py' : 'plot.png';
+    assert.equal(a.active, selected, `${state}: refresh preserves a valid selected file`);
+    assert.equal(groups.current.active, selected);
+    assert.equal(groups.model.group(background).active, 'util.py', 'the background pane is preserved');
+    assert.equal(a.texts.get('util.py').getValue(), 'changed remotely');
+  }
 });
 
 test('a plot announced before publication renders from runtime and refreshes when regenerated', async () => {

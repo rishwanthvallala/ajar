@@ -27,10 +27,11 @@ async function run() {
   const docs = new Map([['main.ts', new Y.Doc()], ['util.ts', new Y.Doc()]]), opened = [], closed = [], edits = [];
   docs.get('main.ts').getText('content').insert(0, 'const main = 1;\n'); docs.get('util.ts').getText('content').insert(0, 'const util = 2;\n');
   const ids = new Map([['main.ts', 11], ['util.ts', 12]]);
+  const subscriptions = new Set(), refused = [];
   try {
     const page = await browser.newPage({ viewport: { width: 1400, height: 900 } }), errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    let wire, acknowledge = true;
+    let wire, acknowledge = true, hostMissing = false;
     await page.routeWebSocket('**/ws', ws => {
       wire = ws;
       ws.onMessage(data => {
@@ -38,6 +39,7 @@ async function run() {
         if (id) {
           if (channel === 5 && raw[9] === 1) {
             const entry = [...ids].find(([, value]) => value === id);
+            if (hostMissing || !entry || !docs.has(entry[0])) return;
             Y.applyUpdate(docs.get(entry[0]), raw.subarray(10)); edits.push(entry[0]);
             if (acknowledge) ws.send(frame(5, raw.subarray(9), id));
           }
@@ -50,10 +52,21 @@ async function run() {
         }
         if (channel === 5 && msg.t === 'open') {
           opened.push(msg.path);
+          if (!docs.has(msg.path)) {
+            ws.send(frame(5, {t:'error',path:msg.path,message:'file no longer exists'}));
+            return;
+          }
+          const id = ids.get(msg.path);
+          if (!subscriptions.has(id) && subscriptions.size >= 16) {
+            refused.push(msg.path);
+            ws.send(frame(5, {t:'error',path:msg.path,message:'too many open documents'}));
+            return;
+          }
+          subscriptions.add(id);
           ws.send(frame(5, {t:'opened', doc_id:ids.get(msg.path), path:msg.path}));
           ws.send(frame(5, docPacket(docs.get(msg.path)), ids.get(msg.path)));
         }
-        if (channel === 5 && msg.t === 'close') closed.push(msg.doc_id);
+        if (channel === 5 && msg.t === 'close') { closed.push(msg.doc_id); subscriptions.delete(msg.doc_id); }
       });
     });
     await page.goto(`http://127.0.0.1:5173/j/editor-documents#k=${key.toString('base64url')}`);
@@ -113,8 +126,67 @@ async function run() {
     await open('main.ts');
     await page.locator('.editor-group.focused .view-lines').click(); await page.keyboard.type('CRLF');
     assert(main.toString().includes('CRLF') && main.toString().includes('\r\n'), 'reopening updates the cached model line ending');
+    // Historical files must not occupy the host's document slots when a
+    // later file is selected during a host outage.
+    const history = Array.from({length:18}, (_, i) => `visited-${i}.ts`);
+    for (const [i, path] of [...history, 'after-away.ts'].entries()) {
+      const doc = new Y.Doc(); doc.getText('content').insert(0, `const visited = ${i};\n`);
+      docs.set(path, doc); ids.set(path, 100 + i);
+    }
+    wire.send(frame(3, {t:'tree',entries:[...docs.keys()].map(path => ({path,kind:'file',size:30}))}));
+    for (const path of history) {
+      await open(path);
+      await page.locator('.editor-group.focused').getByRole('button', {name:`Close ${path}`,exact:true}).click();
+    }
+    wire.send(frame(1, {t:'host_away',grace_secs:60}));
+    await page.locator('#away').waitFor({state:'visible'});
+    await page.locator('.tree-row[data-path="after-away.ts"]').click();
+    await page.locator('.editor-group.focused').getByRole('tab', {name:'after-away.ts',exact:true}).waitFor();
+    const beforeBack = opened.length;
+    wire.send(frame(1, {t:'host_back'}));
+    await page.waitForFunction(() => document.querySelector('#viewer').dataset.editing === 'after-away.ts');
+    assert.deepEqual(opened.slice(beforeBack), ['after-away.ts'], 'host return opens only the newly visible file');
+    assert.deepEqual(refused, [], 'closed history never exhausts the 16-document limit');
+    // A tab closed with offline edits must become reachable again when the
+    // host refuses its deleted file. Exercise both recovery actions.
+    for (const [index, action] of ['save', 'discard'].entries()) {
+      const path = `recover-${action}.ts`, pending = `PENDING_${action.toUpperCase()}`;
+      const doc = new Y.Doc(); doc.getText('content').insert(0, 'const retained = true;\n');
+      docs.set(path, doc); ids.set(path, 200 + index);
+      wire.send(frame(3, {t:'tree',entries:[...docs.keys()].map(path => ({path,kind:'file',size:30}))}));
+      await open(path);
+      hostMissing = true;
+      wire.send(frame(1, {t:'host_away',grace_secs:60}));
+      await page.locator('#away').waitFor({state:'visible'});
+      await page.locator('.editor-group.focused .view-lines').click();
+      await page.keyboard.type(pending);
+      await page.locator('.editor-group.focused').getByRole('button', {name:`Close ${path}`,exact:true}).click();
+      assert.equal(await page.getByRole('tab', {name:path,exact:true}).count(), 0, 'the tab closes while its edits are retained');
+      doc.destroy(); docs.delete(path);
+      wire.send(frame(3, {t:'tree',entries:[...docs.keys()].map(path => ({path,kind:'file',size:30}))}));
+      hostMissing = false;
+      wire.send(frame(1, {t:'welcome',participant_id:2,participants:[],host_protocol:protocol}));
+      const recovery = page.locator('.editor-group.focused');
+      await recovery.getByRole('button', {name:'Save local copy',exact:true}).waitFor();
+      await recovery.getByRole('button', {name:'Discard local changes',exact:true}).waitFor();
+      assert.equal(await recovery.getByRole('tab', {name:path,exact:true}).count(), 1, 'refusal reopens a recovery tab without a tree entry');
+      assert.equal(await page.locator(`.tree-row[data-path="${path}"]`).count(), 0);
+      assert(await page.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), 'unresolved recovery still warns before leaving');
+      if (action === 'save') {
+        const downloaded = page.waitForEvent('download');
+        await recovery.getByRole('button', {name:'Save local copy',exact:true}).click();
+        const download = await downloaded;
+        assert.equal(download.suggestedFilename(), path);
+        assert(fs.readFileSync(await download.path(), 'utf8').includes(pending), 'download preserves the closed tab\'s unsent text');
+      } else {
+        page.once('dialog', dialog => dialog.accept());
+        await recovery.getByRole('button', {name:'Discard local changes',exact:true}).click();
+        assert.equal(await page.getByRole('tab', {name:path,exact:true}).count(), 0, 'discard removes the recovery tab');
+      }
+      assert(await page.evaluate(() => window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), 'resolving recovery clears the leave warning');
+    }
     assert.deepEqual(errors, []);
-    console.log('Session editor groups: shared subscription, independent files, permissions and pending-edit retention.');
+    console.log('Session editor groups: shared subscriptions, permissions, host-return capacity and closed-file recovery.');
   } finally { await browser.close(); for(const doc of docs.values()) doc.destroy(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

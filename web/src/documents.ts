@@ -51,6 +51,14 @@ export class SessionDocuments {
     this.syncing = true;
     try {
       const visible = this.editor.groups.visiblePaths;
+      // Free every clean hidden subscription before sending any replacement
+      // opens, so a pane switch also works at the host's document limit.
+      for (const file of this.files.values()) {
+        for (const [id, detach] of file.views) {
+          if (this.editor.viewers.get(id)?.current !== file.path || !visible.has(file.path)) { detach(); file.views.delete(id); }
+        }
+        if (file.doc && file.ready && !visible.has(file.path) && !file.doc.waiting && !this.options.away()) this.release(file, true);
+      }
       for (const path of visible) {
         if (![...this.editor.viewers.values()].some(viewer => viewer.current === path)) continue;
         const file = this.file(path);
@@ -58,14 +66,10 @@ export class SessionDocuments {
         else this.request(file);
       }
       for (const file of this.files.values()) {
-        for (const [id, detach] of file.views) {
-          if (this.editor.viewers.get(id)?.current !== file.path || !visible.has(file.path)) { detach(); file.views.delete(id); }
-        }
         if (file.doc && file.ready) {
           for (const [id, viewer] of this.editor.viewers) if (viewer.current === file.path && viewer.handles && !file.views.has(id)) file.views.set(id, file.doc.attachView(viewer.handles.editor, viewer.handles.model));
-          if (!visible.has(file.path) && !file.doc.waiting && !this.options.away()) this.release(file, true);
         }
-        if (!visible.has(file.path) && file.held) this.request(file);
+        if (!visible.has(file.path) && file.held && this.hasPendingEdits(file)) this.request(file);
         if (file.failed && file.held) this.recovery(file);
       }
       const active = this.editor.path ? this.files.get(this.editor.path) : null;
@@ -76,6 +80,9 @@ export class SessionDocuments {
   }
   /** A permanently refused file still offers a way to keep or discard its local typing. */
   private recovery(file: OpenFile) {
+    // A closed tab may no longer have a tree entry after reconnection. Keep
+    // its retained text reachable; other recovery tabs can stay in the strip.
+    if (!this.editor.groups.paths.has(file.path)) this.editor.groups.open(file.path);
     for (const [id, viewer] of this.editor.viewers) {
       if (viewer.current !== file.path) continue;
       const note = this.editor.groups.views.get(id)?.title;
@@ -99,7 +106,10 @@ export class SessionDocuments {
       actions.append(save, discard); note.append(actions);
     }
   }
-  private settle() { this.options.unsent([...this.files.values()].some(f => !!f.held?.sent.unconfirmed.length || !!f.doc?.waiting || (!!f.held && this.editor.models.get(f.path)?.getValue() !== f.held.local))); }
+  private hasPendingEdits(file: OpenFile) {
+    return !!file.doc?.waiting || !!file.held?.sent.unconfirmed.length || (!!file.held && this.editor.models.get(file.path)?.getValue() !== file.held.local);
+  }
+  private settle() { this.options.unsent([...this.files.values()].some(file => this.hasPendingEdits(file))); }
   private showCopy(file: OpenFile) {
     const text = this.options.copy()?.get(file.path);
     if (this.shownCopies.has(file.path) && this.shownCopies.get(file.path) === text) return;
@@ -121,9 +131,13 @@ export class SessionDocuments {
   }
   hostBack() {
     this.shownCopies.clear();
+    const visible = this.editor.groups.visiblePaths;
     for (const file of this.files.values()) {
+      // Cached files and clean recovery snapshots need no host subscription.
+      // Leave the host's document slots for panes in use and unsaved typing.
+      if (!visible.has(file.path) && !this.hasPendingEdits(file)) continue;
       if (file.doc) this.options.send(streamFrame(Channel.Doc, file.doc.docId, tagged(DocKind.Update, file.doc.fullState())));
-      else { file.requested = false; this.request(file); }
+      else file.requested = false;
     }
     this.sync();
   }

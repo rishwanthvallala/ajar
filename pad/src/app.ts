@@ -871,10 +871,6 @@ export class App {
       if (shown !== undefined && typed !== undefined && typed !== shown) typedBefore.set(from, { shown, typed });
     }
     const followFrom = moves.has(this.active) ? this.active : null;
-    if (followFrom && this.editor) {
-      const state = this.editor.saveViewState();
-      if (state) this.viewStates.set(moves.get(followFrom)!, state);
-    }
 
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
@@ -906,6 +902,8 @@ export class App {
         for (const held of this.editorViews.values()) if (held.editor.getModel() === this.texts.existing(path)) { held.editor.updateOptions({ readOnly: true }); this.paintOrphan(held, path); }
         continue;
       }
+      const movedTo = moves.get(path);
+      if (movedTo) this.rememberMovedViews(path, movedTo);
       this.dirty.delete(path);
       this.closeDoc(path);
       this.texts.delete(path);
@@ -928,7 +926,6 @@ export class App {
     this.known = incoming;
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
-    this.renameEditorTabs(moves);
     for (const [from, to] of moves) {
       // What was typed here before the move reached here, onto the file as it
       // now is: an edit like typing, which saves and reaches the room.
@@ -939,13 +936,19 @@ export class App {
       const model = this.texts.model(to)!;
       const edit = carryOver(carried.shown, carried.typed, model.getValue());
       if (!edit) continue;
+      // attach must compare against the destination before our carried edit,
+      // even if another peer supplies its live document after the tab opens.
+      if (!this.shownUnbound.has(to)) this.shownUnbound.set(to, model.getValue());
       const start = model.getPositionAt(edit.at);
       const end = model.getPositionAt(edit.at + edit.remove);
       model.applyEdits([{ range: new this.monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.insert }]);
     }
+    // Selection callbacks can create destination documents synchronously.
+    // Carry all pending edits before those callbacks run.
+    this.renameEditorTabs(moves);
     if (followFrom && this.texts.has(moves.get(followFrom)!)) {
       this.show(moves.get(followFrom)!);
-    } else if (!this.texts.has(this.active) && (!this.ui || this.ui.groups.current.active !== null)) {
+    } else if (!this.texts.has(this.active) && !this.binaries.has(this.active) && !this.pendingImages.has(this.active) && (!this.ui || this.ui.groups.current.active !== null)) {
       const first = [...this.texts.keys()].sort()[0];
       if (first) this.show(first);
     }
@@ -1684,12 +1687,26 @@ export class App {
     actions.append(save, discard); note.append(actions);
   }
 
+  /** Capture each pane while its old model still holds cursor/scroll state. */
+  private rememberMovedViews(from: string, to: string): void {
+    const model = this.texts.existing(from);
+    if (!model) return;
+    for (const held of this.editorViews.values()) if (held.editor.getModel() === model) {
+      const state = held.editor.saveViewState();
+      if (state) held.states.set(to, state);
+    }
+    if (this.editor?.getModel() === model) {
+      const state = this.editor.saveViewState();
+      if (state) this.viewStates.set(to, state);
+    }
+  }
+
   private renameEditorTabs(moves: Iterable<readonly [string, string]>): void {
     const pairs = [...moves];
     for (const [from, to] of pairs) {
+      this.rememberMovedViews(from, to);
       for (const modes of [this.defaultFormatted, ...this.markdownModes.values()]) if (modes.delete(from)) modes.add(to);
       for (const held of this.editorViews.values()) {
-        if (held.editor.getModel() === this.texts.existing(from)) { const state = held.editor.saveViewState(); if (state) held.states.set(to, state); }
         const state = held.states.get(from); if (state && !held.states.has(to)) held.states.set(to, state);
         held.states.delete(from);
       }
