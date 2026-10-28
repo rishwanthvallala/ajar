@@ -254,6 +254,8 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".search-hit").length === 3);
   await page.getByText("Match case", { exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll(".search-hit").length === 2);
+  // A named region: a name on a plain div was a serious axe finding (review of 28 October).
+  assert.equal(await page.locator(".search-results").getAttribute("role"), "region");
   console.log("ok   magnifier, worker results, folder boundaries, case/word controls, lazy models");
   await page.getByRole("searchbox").focus();
   await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter");

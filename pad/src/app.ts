@@ -507,6 +507,14 @@ export class App {
    * copy taken and only what was typed here since the drop carried onto it.
    */
   private mergedAway = new Set<string>();
+  /**
+   * Files somebody else renamed or moved, as their nudge said: which became
+   * which. Followed by name. Worked out from the text alone, a rename of a
+   * file typed into meanwhile — the typing in the new copy, not in what this
+   * page had stored — was a file gone and another arrived, and the editor
+   * typed in lost the keyboard and every key after (review of 28 October).
+   */
+  private renamedTo = new Map<string, string>();
   /** In the room: from a welcome until the socket that earned it goes. */
   private inRoom = false;
   /** For each file this page kept when its access went, the stored text then. */
@@ -716,7 +724,10 @@ export class App {
   private joinPeers(): void {
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
     this.peers = new Peers(url, this.name, {
-      onMoved: () => void this.refresh(),
+      onMoved: (_seq, renamed) => {
+        for (const [from, to] of renamed ?? []) this.renamedTo.set(from, to);
+        void this.refresh();
+      },
       onPresence: (_others, id) => {
         if (id === null) {
           // As the room is lost, and not again: every retry that fails while
@@ -867,6 +878,7 @@ export class App {
     // second after someone typed took their typing and sent them to main.py
     // (review of 17 October, M1).
     const moves = new Map<string, string>();
+    for (const [from, to] of this.renamedTo) if (!incoming.has(to) || incoming.has(from)) this.renamedTo.delete(from);
     {
       const arrived = [...incoming.keys()].filter((p) => !this.known.has(p));
       const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -874,6 +886,11 @@ export class App {
         if (incoming.has(from) || this.local.has(from) || ignored(from)) continue;
         const was = this.known.get(from);
         const free = arrived.filter((p) => ![...moves.values()].includes(p));
+        const said = this.renamedTo.get(from);
+        if (said !== undefined && free.includes(said)) {
+          moves.set(from, said);
+          continue;
+        }
         const same = free.filter((p) => incoming.get(p) === was);
         // The same text, under the same name if one has it; or, the text
         // since changed by the mover, the one file of that name that arrived —
@@ -892,6 +909,9 @@ export class App {
     // onto the file as the mover left it, it undid what they had changed in
     // it: a `mv` and a `sed` in one place reverted by a page merely open in
     // another (review of 19 October, C3).
+    // And what was stored of each, read again below for the file on screen,
+    // whatever was typed in it meanwhile.
+    const storedBefore = new Map([...moves.keys()].map((from) => [from, this.known.get(from)] as const));
     const typedBefore = new Map<string, { shown: string; typed: string }>();
     for (const from of moves.keys()) {
       const shown = this.known.get(from);
@@ -899,6 +919,12 @@ export class App {
       if (shown !== undefined && typed !== undefined && typed !== shown) typedBefore.set(from, { shown, typed });
     }
     const followFrom = moves.has(this.active) ? this.active : null;
+    // Typing in it when it moved: the editor keeps the keyboard, and the
+    // file it shows stays until the moved one is in its place. Its model was
+    // disposed first, under the editor, which let go of the keyboard; a
+    // person typing while someone renamed the file kept 9 of 38 keystrokes,
+    // the rest going nowhere (review of 28 October).
+    const typing = followFrom !== null && (this.editor?.hasTextFocus() ?? false);
     if (followFrom && this.editor) {
       const state = this.editor.saveViewState();
       if (state) this.viewStates.set(moves.get(followFrom)!, state);
@@ -952,6 +978,11 @@ export class App {
     for (const path of this.known.keys()) {
       if (incoming.has(path) || this.local.has(path)) continue;
       this.dirty.delete(path);
+      // The file on screen, moved: let go once the editor shows where it went.
+      if (path === followFrom && moves.has(path)) {
+        if (rt) await rt.removeAndPrune(path);
+        continue;
+      }
       this.closeDoc(path);
       this.texts.delete(path);
       // And the folders that leaves empty: kept, the next command would put
@@ -975,10 +1006,14 @@ export class App {
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
     for (const [from, to] of moves) {
+      this.renamedTo.delete(from);
       if (this.formatted.delete(from)) this.formatted.add(to);
       // What was typed here before the move reached here, onto the file as it
-      // now is: an edit like typing, which saves and reaches the room.
-      const carried = typedBefore.get(from);
+      // now is: an edit like typing, which saves and reaches the room. For
+      // the file on screen, up to now: it is still there to read.
+      const shown = storedBefore.get(from);
+      const typed = from === followFrom ? this.current(from) : typedBefore.get(from)?.typed;
+      const carried = shown !== undefined && typed !== undefined && typed !== shown ? { shown, typed } : undefined;
       if (!carried || !this.texts.has(to) || this.docs.has(to) || !this.monaco) continue;
       // Into its model, made for it if it has none, as the edit typing is:
       // the typing, measured from what was stored, onto the file as it is.
@@ -989,9 +1024,17 @@ export class App {
       const end = model.getPositionAt(edit.at + edit.remove);
       model.applyEdits([{ range: new this.monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.insert }]);
     }
-    if (followFrom && this.texts.has(moves.get(followFrom)!)) {
-      this.show(moves.get(followFrom)!);
-    } else if (!this.texts.has(this.active)) {
+    const followed = followFrom !== null && this.texts.has(moves.get(followFrom)!);
+    if (followed) {
+      this.show(moves.get(followFrom!)!);
+      if (typing) this.editor?.focus();
+    }
+    // The moved file on screen, kept until now: let go.
+    if (followFrom && !incoming.has(followFrom)) {
+      this.closeDoc(followFrom);
+      this.texts.delete(followFrom);
+    }
+    if (!followed && !this.texts.has(this.active)) {
       const first = [...this.texts.keys()].sort()[0];
       if (first) this.show(first);
     }
@@ -1242,6 +1285,24 @@ export class App {
       scrollBeyondLastLine: false,
       theme: editorTheme(),
     });
+    // Monaco's button for a phone's or a tablet's keyboard is a textarea
+    // with no name, which axe called critical on a phone (review of 28
+    // October). Monaco adds it a moment after the editor, and only where it
+    // takes the device for iOS, which is where this watches for it.
+    if (navigator.maxTouchPoints > 0 && /iPhone|iPad|Macintosh/.test(navigator.userAgent)) {
+      const label = () => {
+        const button = this.el.editor.querySelector("textarea.iPadShowKeyboard");
+        button?.setAttribute("aria-label", "Show the keyboard, to type in the editor");
+        return button !== null;
+      };
+      if (!label()) {
+        const watch = new MutationObserver(() => {
+          if (label()) watch.disconnect();
+        });
+        watch.observe(this.el.editor, { childList: true, subtree: true });
+        this.events.signal.addEventListener("abort", () => watch.disconnect(), { once: true });
+      }
+    }
     onThemeChange(() => {
       monaco.editor.setTheme(editorTheme());
       this.editor?.updateOptions({ fontSize: this.codeFontPx() });
@@ -4361,7 +4422,7 @@ export class App {
         }
         this.tree?.moved(from, to);
         this.renderFiles();
-        this.peers?.moved(seq);
+        this.peers?.moved(seq, pairs.filter(([p]) => gone(p)).map(([p, t]): [string, string] => [p, t]));
         if (textPairs.some(([p]) => later.get(p) !== text.get(p))) this.saveSoon();
       });
       if (!stale) this.say("", `moved ${from} to ${to}`);

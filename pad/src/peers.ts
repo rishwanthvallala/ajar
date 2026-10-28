@@ -174,7 +174,8 @@ function decode(buf: ArrayBuffer): Frame {
 
 export interface PeerEvents {
   /** Somebody changed the folder. The sequence they reached, if they said. */
-  onMoved: (seq: number) => void;
+  /** Somebody changed the folder; `renamed`, when they renamed or moved files, says which became which. */
+  onMoved: (seq: number, renamed?: [string, string][]) => void;
   /** How many other browsers are on this link, this one not counted. */
   onPresence: (others: number, id: number | null) => void;
   /** A document update, awareness change, or request for state. */
@@ -403,8 +404,11 @@ export class Peers {
       return;
     }
     if (f.channel === CH_FS) {
-      const msg = parse(f.payload) as { t: string; seq?: number };
-      if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0);
+      const msg = parse(f.payload) as { t: string; seq?: number; renamed?: unknown };
+      const renamed = Array.isArray(msg.renamed)
+        ? msg.renamed.filter((p): p is [string, string] => Array.isArray(p) && p.length === 2 && typeof p[0] === "string" && typeof p[1] === "string")
+        : undefined;
+      if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0, renamed);
       return;
     }
     if (f.channel === CH_DOC) {
@@ -429,10 +433,15 @@ export class Peers {
     return this.id !== null && this.ws?.readyState === WebSocket.OPEN && this.others.size > 0;
   }
 
-  /** Say that the folder moved. Silent when nobody else is here. */
-  moved(seq: number): void {
+  /**
+   * Say that the folder moved. Silent when nobody else is here. `renamed`:
+   * which files became which, for a rename or a move, so a place with one of
+   * them open follows it even when its text changed on the way — typed into
+   * meanwhile, by the very person it follows (review of 28 October).
+   */
+  moved(seq: number, renamed?: [string, string][]): void {
     if (this.others.size === 0) return;
-    this.send(CH_FS, json({ t: "moved", seq }));
+    this.send(CH_FS, json(renamed?.length ? { t: "moved", seq, renamed } : { t: "moved", seq }));
   }
 
   /**

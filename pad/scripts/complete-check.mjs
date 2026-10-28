@@ -140,6 +140,11 @@ try {
   const lines = ["def mean(values):", "return sum(values) / len(values)", "", "", "def median(values):", "ordered = sorted(values)", "middle = len(ordered) // 2", "return ordered[middle]"];
   let shown = 0;
   let taken = "";
+  // Ctrl+Right (⌘→ on a Mac) moves by a word, and to the line's end; with
+  // grey text showing, Monaco also had it take a word of that into the file,
+  // for everyone, with no Tab (review of 28 October: "def med" took "ian").
+  // Tried at the first grey text, the cursor put back after.
+  let right = null;
   const peer = await browser.newContext().then((c) => c.newPage());
   await peer.goto(`${ORIGIN}/${name}`, { waitUntil: "domcontentloaded" });
   await peer.waitForSelector(".monaco-editor", { timeout: 30_000 });
@@ -153,6 +158,17 @@ try {
       await page.waitForTimeout(120);
       const g = await ghost(page);
       if (g) shown++;
+      if (g && right === null) {
+        const before = await editorText(page);
+        const at = await page.evaluate(() => window.monaco.editor.getEditors()[0].getPosition());
+        await page.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "Control+ArrowRight");
+        await page.waitForTimeout(250);
+        const after = await editorText(page);
+        right = { kept: after === before, grey: g, took: after === before ? "" : after.slice(0, 200) };
+        await page.evaluate((p) => { const e = window.monaco.editor.getEditors()[0]; e.setPosition(p); e.focus(); }, at);
+        await page.waitForTimeout(150);
+        continue;
+      }
       if (g && line.slice(i).startsWith(g) && !taken) {
         // Grey text is not in the file, here or for the other browser.
         const before = await editorText(page);
@@ -171,6 +187,8 @@ try {
     await page.keyboard.press("Enter");
   }
   is(shown > 0, true, `grey text shows while typing (${shown} times over ${lines.join("").length} characters)`);
+  if (right?.kept) ok(`Ctrl+Right with grey text showing ("${right.grey}") takes none of it into the file`);
+  else fail(`Ctrl+Right with grey text showing — ${JSON.stringify(right)}`);
   is(taken !== "", true, "at least one suggestion matched what was being typed, and was taken");
   await page.waitForFunction(() => document.getElementById("status")?.textContent === "done", null, { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(1500);

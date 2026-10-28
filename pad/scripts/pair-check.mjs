@@ -643,6 +643,42 @@ try {
     await b.context().close();
   }
 
+  // ---- a file renamed while somebody types in it ---------------------------
+  // Review of 28 October, against production: B typed in notes.txt, a key
+  // every 100 ms, while A renamed it; B's editor followed the file and let go
+  // of the keyboard, and 9 of 38 keystrokes landed.
+  {
+    const name = `pair-renametyping-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.txt", content: "start\n" }, { path: "other.txt", content: "x\n" }] }) });
+    const [a, b] = await pair(name);
+    const openIn = async (page, path) => {
+      await page.locator(`#files .row.file[data-path="${path}"]`).click();
+      await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });
+      await wait(page, 500);
+    };
+    await openIn(a, "notes.txt");
+    await openIn(b, "notes.txt");
+    await caretAt(b, 2, 1);
+    const typed = "abcdefghijklmnopqrstuvwxyz0123456789AB";
+    await Promise.all([
+      b.keyboard.type(typed, { delay: 100 }),
+      (async () => {
+        await wait(a, 1200);
+        await a.hover('#files .file-row:has(.row.file[data-path="notes.txt"])');
+        await a.locator('#files button[aria-label="Rename notes.txt"]').click();
+        await a.locator("#files input.name-input").fill("notes-renamed.txt");
+        await a.locator("#files input.name-input").press("Enter");
+      })(),
+    ]);
+    await wait(b, 4000);
+    const landed = await b.evaluate(() => ({ active: window.__pad.active(), text: window.__pad.text("notes-renamed.txt"), focused: window.monaco.editor.getEditors()[0].hasTextFocus() }));
+    const stored = ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["notes-renamed.txt"] ?? {}).content;
+    if (landed.active === "notes-renamed.txt" && landed.focused && landed.text === `start\n${typed}` && stored === landed.text) ok("a file renamed while somebody types in it keeps every keystroke, and their editor the keyboard");
+    else fail(`a rename while somebody types — ${JSON.stringify({ ...landed, stored, want: `start\n${typed}` })}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a socket that goes quiet --------------------------------------------
   // Review of 28 October, liveness: a half-open socket — a laptop that slept,
   // a NAT that forgot it — stays OPEN in the browser while nothing comes,
