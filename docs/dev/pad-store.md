@@ -156,6 +156,16 @@ stored — a file gone counts as moved on. The page sends it for every file it
 knows the stored copy of, and merges on a 409 as it does for edits. Without
 it a write is what it always was.
 
+Since 28 October `base` holds a deletion to its version as well (a `null`
+content with a hash: refused if the file changed since), and an empty `base`
+means the file must not be there yet — what a page sends for a file it is
+making (New file, a command's output, a rename's new name), so that a file of
+that name a teammate saved meanwhile is merged rather than written over
+(`Store` preconditions in `pad.rs`). A relay that holds writes to these says
+so on every read, `x-pad-bases: 1`, and a page sends the empty base and a
+deletion's only to one that does (`Store.basesWork`): an older relay would
+have taken an empty base as a hash that never matches.
+
 The edit is applied without loading the file (`pad/splice.rs`): the stored JSON
 string is read in 64 KiB pieces and copied through, the edit put in where it
 falls, and the result hashed on the way. Edits to one file go in order, and a

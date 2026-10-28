@@ -191,7 +191,8 @@ and you can download, move or delete it, but the editor does not open it.
 
 While you type, the editor suggests the rest of the line in grey, reading the
 code above the cursor and below it. **Tab** takes it; keep typing, or press
-**Escape**, to leave it. It is shown only when it is likely to be right —
+**Escape**, to leave it. Nothing else takes it: Ctrl+Right (Cmd+Right on a
+Mac) moves the cursor as it always does. It is shown only when it is likely to be right —
 about seven times in ten it is exactly what you would have typed — so on many
 lines it stays quiet.
 
@@ -349,7 +350,9 @@ with a link code may view shows only that it is private.
 The top right shows a dot
 for each person here, yours ringed, with a count beside them — nothing shows
 while you are the only one there — and each person's cursor in the editor is
-the colour of their dot.
+the colour of their dot. **Offline** there means this page has lost its live
+connection: your typing still saves, but you do not see other people's until
+it is back, which it tries for on its own.
 
 Two people typing in the same file both get their changes — the text merges
 rather than one overwriting the other. Files a command creates show up for
@@ -363,7 +366,8 @@ it once the program is done.
 says so, and what you typed is kept in this browser until it can be saved.
 Leaving the page then asks first. If the tab closes anyway, the next time you
 open the pad in this browser your typing comes back, merged into whatever was
-saved since, and the status line says which files. A save made from an older
+saved since, and the status line says which files — each tab's, if you had
+the pad open in more than one. A save made from an older
 copy than the store has — two places editing without the live connection — is
 merged into the newer one, never written over it.
 
