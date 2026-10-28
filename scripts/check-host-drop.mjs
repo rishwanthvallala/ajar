@@ -96,7 +96,7 @@ async function main() {
   );
   const { session, key } = await linkOf(agent);
 
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ channel: process.env.AJAR_BROWSER_CHANNEL || process.env.PAD_BROWSER_CHANNEL || undefined, headless: true });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

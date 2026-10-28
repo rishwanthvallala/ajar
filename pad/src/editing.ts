@@ -148,7 +148,8 @@ export class DocSession {
   private seededEmpty = false;
   /** The text this document was seeded with, and when — what its own history starts from. */
   seededWith: { text: string; at: number } | null = null;
-  private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  private readonly views = new Map<monaco.editor.IStandaloneCodeEditor, { model: monaco.editor.ITextModel; decorations: monaco.editor.IEditorDecorationsCollection; dispose: () => void }>();
+  private boundModel: monaco.editor.ITextModel | null = null;
   private styleEl: HTMLStyleElement | null = null;
   private api: typeof monaco | null = null;
 
@@ -401,16 +402,18 @@ export class DocSession {
     applyAwarenessUpdate(this.awareness, bytes, "remote");
   }
 
-  /** Attach to an editor. Returns a function that detaches everything. */
-  // (The model is brought up to the document with `replaceText`, not
-  // `setValue`: a file that changed while somebody looked elsewhere opened
-  // again at its first line, wherever they had been.)
-  bind(
-    /** The loaded module. `Range` and the stickiness enum are values. */
-    api: typeof monaco,
-    editor: monaco.editor.IStandaloneCodeEditor,
-    model: monaco.editor.ITextModel,
-  ) {
+  /** Compatibility wrapper for single-view callers. */
+  bind(api: typeof monaco, editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
+    const unbind = this.bindModel(api, model);
+    const detach = this.attachView(editor, model);
+    return () => { detach(); unbind(); };
+  }
+
+  /** Exactly one text binding, regardless of the number of editor views. */
+  bindModel(api: typeof monaco, model: monaco.editor.ITextModel) {
+    if (this.boundModel === model && this.binding) return this.binding;
+    this.binding?.();
+    this.boundModel = model;
     this.api = api;
     // The document is the truth; the model starts from it — in the document's
     // line ending, which the model would otherwise impose its own over.
@@ -424,10 +427,9 @@ export class DocSession {
     // page from before this was handled, or written in from outside. Made
     // into what the editor can hold before anything is typed against it.
     if (model.getValue() !== text) this.mend(api, model);
-    this.decorations = editor.createDecorationsCollection([]);
 
     const onRemote = (event: Y.YTextEvent, tr: Y.Transaction) => {
-      if (tr.local) return;
+      if (tr.origin === model) return;
       this.applyingRemote = true;
       try {
         // Applied one operation at a time against the live model, with the
@@ -473,37 +475,47 @@ export class DocSession {
             this.ytext.insert(change.rangeOffset, change.text);
           }
         }
-      }, "local");
+      }, model);
     });
 
+    const binding = () => {
+      if (this.binding !== binding) return;
+      this.binding = null;
+      this.boundModel = null;
+      this.ytext.unobserve(onRemote);
+      onLocal.dispose();
+      for (const view of [...this.views.values()]) view.dispose();
+    };
+    this.binding = binding;
+    return binding;
+  }
+
+  /** Cursor and decorations belong to a view, never to the shared text binding. */
+  attachView(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
+    const old = this.views.get(editor);
+    if (old?.model === model) return old.dispose;
+    old?.dispose();
     const onCursor = editor.onDidChangeCursorSelection(() => {
+      if (!editor.hasTextFocus() || editor.getModel() !== model) return;
       const sel = editor.getSelection();
       if (!sel) return;
       const start = model.getOffsetAt(sel.getStartPosition());
       const end = model.getOffsetAt(sel.getEndPosition());
       this.awareness.setLocalStateField("cursor", { index: start, length: end - start });
     });
-
     const onAwareness = () => this.drawCursors(model);
-    this.awareness.on("change", onAwareness);
-    this.drawCursors(model);
-
-    // Once only. The page unbinds a file it moves off, and destroying the
-    // document unbinds again; a second unobserve made Yjs log an error on
-    // every disconnect.
-    const binding = () => {
-      if (this.binding !== binding) return;
-      this.binding = null;
-      this.ytext.unobserve(onRemote);
-      onLocal.dispose();
+    const dispose = () => {
+      if (this.views.get(editor)?.dispose !== dispose) return;
+      this.views.get(editor)?.decorations.clear();
+      this.views.delete(editor);
       onCursor.dispose();
       this.awareness.off("change", onAwareness);
-      this.decorations?.clear();
-      this.styleEl?.remove();
-      this.styleEl = null;
+      if (!this.views.size) { this.styleEl?.remove(); this.styleEl = null; this.awareness.setLocalStateField("cursor", null); }
     };
-    this.binding = binding;
-    return binding;
+    this.views.set(editor, { model, decorations: editor.createDecorationsCollection([]), dispose });
+    this.awareness.on("change", onAwareness);
+    this.drawCursors(model);
+    return dispose;
   }
 
   /**
@@ -540,7 +552,7 @@ export class DocSession {
   /** Everyone else's cursor and selection, as editor decorations. */
   private drawCursors(model: monaco.editor.ITextModel) {
     const api = this.api;
-    if (!this.decorations || !api) return;
+    if (!this.views.size || !api) return;
     const decorations: monaco.editor.IModelDeltaDecoration[] = [];
     const rules: string[] = [];
 
@@ -590,7 +602,7 @@ export class DocSession {
       document.head.appendChild(this.styleEl);
     }
     this.styleEl.textContent = rules.join("\n");
-    this.decorations.set(decorations);
+    for (const view of this.views.values()) if (view.model === model) view.decorations.set(decorations);
   }
 
   destroy() {

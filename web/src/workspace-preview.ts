@@ -51,8 +51,8 @@ export function renderPreview(app: HTMLElement): () => void {
       tree.setActive(path);
       const viewer = await workspace.editor.open(path);
       if (!viewer || disposed || version !== request) return;
-      viewer.show(path, contents[path] ?? "", false, disconnected);
-      unbind = viewer.handles?.model.onDidChangeContent(() => { contents[path] = viewer.handles?.model.getValue() ?? ""; }) ?? null;
+      const model = await workspace.editor.show(path, workspace.editor.models.get(path)?.getValue() ?? contents[path] ?? "", false, disconnected);
+      unbind = model?.onDidChangeContent(() => { contents[path] = model.getValue(); }) ?? null;
       if (focus) workspace.editor.focus();
     }
     const tree = new FileTree(workspace.el("tree"), path => { void open(path); });
@@ -61,7 +61,10 @@ export function renderPreview(app: HTMLElement): () => void {
       ...Object.entries(files).map(([path, text]) => ({ path, kind: "file" as const, size: text.length })),
     ];
     tree.setEntries(entries);
+    workspace.editor.onSelect = path => tree.setActive(path);
     workspace.el("filecount").textContent = `${entries.filter(e => e.kind === "file").length} files`;
+    workspace.editor.groups.prune(path => entries.some(entry => entry.path === path && entry.kind === "file"));
+    workspace.editor.groups.refresh();
     workspace.el("close-file").onclick = () => {
       ++request; unbind?.dispose(); unbind = null;
       workspace.editor.close(); tree.setActive(null); workspace.editor.focus();

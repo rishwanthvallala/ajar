@@ -71,10 +71,11 @@ server.on("upgrade", (req, socket, head) => {
 });
 await new Promise((r) => server.listen(PORT, r));
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
 const results = [];
-const ok = (m) => results.push(`ok   ${m}`);
-const fail = (m) => results.push(`FAIL ${m}`);
+const record = (line) => { results.push(line); if (process.env.PAIR_PROGRESS) console.log(`  ${line}`); };
+const ok = (m) => record(`ok   ${m}`);
+const fail = (m) => record(`FAIL ${m}`);
 const errors = [];
 
 async function place(name, label) {
@@ -451,6 +452,8 @@ try {
     const filled = await b.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue() === "a,b\n1,2\n", null, { timeout: 10_000 }).then(() => true, () => false);
     if (filled) ok("a file opened while empty, then written by a command, opens with what the command wrote");
     else fail(`a file opened while empty, then written by a command, opens with what the command wrote — it shows ${JSON.stringify((await state(b)).screen)}`);
+    await a.context().close();
+    await b.context().close();
   }
 
   // ---- history: an earlier version, gone back to from one place -----------
@@ -484,7 +487,7 @@ try {
     const history = await (await fetch(`${ORIGIN}/api/pad/${name}/history`)).json();
     const keptFirst = history.length === 2 && (await (await fetch(`${ORIGIN}/api/pad/${name}/history/${history[0].id}`)).json()).files["main.py"]?.content === "print('changed')\n";
     if (back && storedRight && keptFirst) ok("and the store holds it — a file added since gone — with what it replaced kept as a version");
-    else fail(`a restore is stored, with what it replaced kept — ${JSON.stringify({ back, stored: Object.keys(stored), main: stored["main.py"]?.content, versions: history.length, keptFirst })}`);
+    else fail(`a restore is stored, with what it replaced kept — ${JSON.stringify({ back, stored: Object.keys(stored), main: stored["main.py"]?.content, versions: history.length, keptFirst, status: await a.locator("#status").textContent() })}`);
     await a.context().close();
     await b.context().close();
   }
@@ -700,7 +703,7 @@ try {
   await rm(dir, { recursive: true, force: true }).catch(() => {});
 }
 for (const e of errors) fail(`page error: ${e}`);
-for (const line of results) console.log(`  ${line}`);
+if (!process.env.PAIR_PROGRESS) for (const line of results) console.log(`  ${line}`);
 const failed = results.filter((l) => l.startsWith("FAIL"));
 if (failed.length) {
   console.log(`\n  ${failed.length} failed`);

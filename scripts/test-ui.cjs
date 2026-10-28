@@ -81,7 +81,7 @@ function run(file, env = {}) {
 async function checkBoots() {
   const { chromium } = webRequire("playwright");
   const browser = await chromium.launch({
-    channel: process.platform === "win32" ? "msedge" : undefined,
+    channel: process.env.AJAR_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
     headless: true,
   });
   try {
@@ -175,7 +175,7 @@ async function checkBoots() {
 async function checkPadEditor() {
   const { chromium } = webRequire("playwright");
   const browser = await chromium.launch({
-    channel: process.platform === "win32" ? "msedge" : undefined,
+    channel: process.env.AJAR_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
     headless: true,
   });
   const serve = async (page, files) => {
@@ -293,7 +293,7 @@ async function requireBrowser() {
   const { chromium } = webRequire("playwright");
   try {
     const browser = await chromium.launch({
-      channel: process.platform === "win32" ? "msedge" : undefined,
+      channel: process.env.AJAR_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
       headless: true,
     });
     await browser.close();
@@ -337,6 +337,8 @@ async function main() {
   });
   await checkBoots();
   await checkPadEditor();
+  await run(path.join(root, "scripts", "check-editor-groups.cjs"));
+  await run(path.join(root, "scripts", "check-editor-documents.cjs"));
 }
 
 main()

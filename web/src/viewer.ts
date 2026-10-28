@@ -9,6 +9,7 @@ import "monaco-editor/basic-languages/monaco.contribution";
 import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDelimited } from "@ajar/workspace-ui";
 import { replaceText } from "./replace";
 import { codeFontPx } from "./scale";
+import { eolOf } from "@ajar/workspace-ui/eol";
 // monaco-editor 0.56 exposes workers through its exports map, which rewrites
 // `./editor/…` to `./esm/vs/editor/…`. Importing the esm path directly
 // resolves to a doubled prefix and fails only at build time.
@@ -34,6 +35,17 @@ self.MonacoEnvironment = {
 registerDelimited(monaco.languages);
 defineEditorThemes(monaco.editor);
 
+export function fileModel(path: string, text: string, highlight: boolean) {
+  return monaco.editor.createModel(text, highlight ? languageFor(monaco.languages.getLanguages(), path) : "plaintext");
+}
+
+/** A cached model must adopt a freshly reopened document's line ending too. */
+export function updateFileModel(model: monaco.editor.ITextModel, text: string) {
+  const eol = eolOf(text) ?? "\n";
+  if (model.getEOL() !== eol) model.setEOL(eol === "\r\n" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+  replaceText(model, text);
+}
+
 export class Viewer {
   private editor: monaco.editor.IStandaloneCodeEditor | null = null;
   private path: string | null = null;
@@ -51,6 +63,7 @@ export class Viewer {
     private titleEl: HTMLElement,
     /** Whether the workspace has syntax colours switched on. */
     private highlight: () => boolean = () => true,
+    private models = new Map<string, monaco.editor.ITextModel>(),
   ) {
     onThemeChange(() => monaco.editor.setTheme(editorTheme()), this.events.signal);
   }
@@ -107,13 +120,15 @@ export class Viewer {
       // the live one. Only what differs is replaced, so the reader stays
       // where they were — a fresh model put them at line 1, and the next
       // keystroke landed there.
-      replaceText(current, text);
+      updateFileModel(current, text);
       this.editor.updateOptions({ readOnly });
       this.title(path, truncated ? "truncated at 1 MB" : note, truncated);
       return;
     }
 
-    const model = monaco.editor.createModel(text, this.languageOf(path));
+    let model = this.models.get(path);
+    if (!model) { model = fileModel(path, text, this.highlight()); this.models.set(path, model); }
+    else updateFileModel(model, text);
     if (!this.editor) {
       this.editor = monaco.editor.create(this.host, {
         model,
@@ -128,11 +143,10 @@ export class Viewer {
           'ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace',
       });
     } else {
-      const previous = this.editor.getModel();
       this.editor.setModel(model);
-      previous?.dispose();
       this.editor.updateOptions({ readOnly });
     }
+    monaco.editor.setModelLanguage(model, this.languageOf(path));
     this.shown = path;
     const back = this.viewStates.get(path);
     if (back) this.editor.restoreViewState(back);
@@ -170,6 +184,9 @@ export class Viewer {
     this.editor?.layout();
   }
 
+  saveState() { return this.editor?.saveViewState() ?? null; }
+  restoreState(state: monaco.editor.ICodeEditorViewState) { this.editor?.restoreViewState(state); }
+
   clear() {
     const model = this.editor?.getModel();
     if (this.editor && model && this.shown) {
@@ -179,7 +196,7 @@ export class Viewer {
     this.path = null;
     this.shown = null;
     this.editor?.setModel(null);
-    model?.dispose();
+
   }
 
   dispose() {

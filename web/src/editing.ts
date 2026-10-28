@@ -4,8 +4,8 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
-import { onThemeChange } from "@ajar/workspace-ui";
 import { colourFor } from "./colours";
+import { onThemeChange } from "@ajar/workspace-ui";
 import { replaceText } from "./replace";
 import { carryOver } from "./carry";
 import { eolOf } from "@ajar/workspace-ui/eol";
@@ -80,7 +80,8 @@ export class DocSession {
   readonly awareness: Awareness;
   private binding: (() => void) | null = null;
   private applyingRemote = false;
-  private decorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  private readonly views = new Map<monaco.editor.IStandaloneCodeEditor, { model: monaco.editor.ITextModel; decorations: monaco.editor.IEditorDecorationsCollection; dispose: () => void }>();
+  private boundModel: monaco.editor.ITextModel | null = null;
   private styleEl: HTMLStyleElement | null = null;
   /**
    * The document as far as the host has confirmed it. The host passes every
@@ -195,8 +196,18 @@ export class DocSession {
     if (gone.length) removeAwarenessStates(this.awareness, gone, "remote");
   }
 
-  /** Attach to an editor. Returns a function that detaches everything. */
+  /** Compatibility wrapper for single-view callers. */
   bind(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
+    const unbind = this.bindModel(model);
+    const detach = this.attachView(editor, model);
+    return () => { detach(); unbind(); };
+  }
+
+  /** Exactly one text binding, regardless of the number of editor views. */
+  bindModel(model: monaco.editor.ITextModel) {
+    if (this.boundModel === model && this.binding) return this.binding;
+    this.binding?.();
+    this.boundModel = model;
     // The document is the truth; the model starts from it — brought there by
     // an edit rather than `setValue`, which would send the view to line 1 —
     // and in its line ending. A file with no line breaks yet took Monaco's
@@ -209,10 +220,9 @@ export class DocSession {
       model.setEOL(eol === "\r\n" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
     }
     replaceText(model, this.ytext.toString());
-    this.decorations = editor.createDecorationsCollection([]);
 
     const onRemote = (event: Y.YTextEvent, tr: Y.Transaction) => {
-      if (tr.local) return;
+      if (tr.origin === model) return;
       this.applyingRemote = true;
       try {
         // Applied one operation at a time against the live model, with the
@@ -258,40 +268,55 @@ export class DocSession {
             this.ytext.insert(change.rangeOffset, change.text);
           }
         }
-      }, "local");
+      }, model);
     });
 
+    const themed = new AbortController();
+    onThemeChange(() => this.drawCursors(model), themed.signal);
+    const binding = () => {
+      if (this.binding !== binding) return;
+      this.binding = null;
+      this.boundModel = null;
+      themed.abort();
+      this.ytext.unobserve(onRemote);
+      onLocal.dispose();
+      for (const view of [...this.views.values()]) view.dispose();
+    };
+    this.binding = binding;
+    return binding;
+  }
+
+  /** Cursor and decorations belong to a view, never to the shared text binding. */
+  attachView(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
+    const old = this.views.get(editor);
+    if (old?.model === model) return old.dispose;
+    old?.dispose();
     const onCursor = editor.onDidChangeCursorSelection(() => {
+      if (!editor.hasTextFocus() || editor.getModel() !== model) return;
       const sel = editor.getSelection();
       if (!sel) return;
       const start = model.getOffsetAt(sel.getStartPosition());
       const end = model.getOffsetAt(sel.getEndPosition());
       this.awareness.setLocalStateField("cursor", { index: start, length: end - start });
     });
-
     const onAwareness = () => this.drawCursors(model);
-    this.awareness.on("change", onAwareness);
-    this.drawCursors(model);
-    // Their colours follow the theme.
-    const themed = new AbortController();
-    onThemeChange(onAwareness, themed.signal);
-
-    this.binding = () => {
-      this.ytext.unobserve(onRemote);
-      onLocal.dispose();
+    const dispose = () => {
+      if (this.views.get(editor)?.dispose !== dispose) return;
+      this.views.get(editor)?.decorations.clear();
+      this.views.delete(editor);
       onCursor.dispose();
       this.awareness.off("change", onAwareness);
-      themed.abort();
-      this.decorations?.clear();
-      this.styleEl?.remove();
-      this.styleEl = null;
+      if (!this.views.size) { this.styleEl?.remove(); this.styleEl = null; this.awareness.setLocalStateField("cursor", null); }
     };
-    return this.binding;
+    this.views.set(editor, { model, decorations: editor.createDecorationsCollection([]), dispose });
+    this.awareness.on("change", onAwareness);
+    this.drawCursors(model);
+    return dispose;
   }
 
   /** Everyone else's cursor and selection, as editor decorations. */
   private drawCursors(model: monaco.editor.ITextModel) {
-    if (!this.decorations) return;
+    if (!this.views.size) return;
     const decorations: monaco.editor.IModelDeltaDecoration[] = [];
     const rules: string[] = [];
 
@@ -338,7 +363,7 @@ export class DocSession {
       document.head.appendChild(this.styleEl);
     }
     this.styleEl.textContent = rules.join("\n");
-    this.decorations.set(decorations);
+    for (const view of this.views.values()) if (view.model === model) view.decorations.set(decorations);
   }
 
   destroy() {

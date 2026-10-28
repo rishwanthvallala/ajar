@@ -1,4 +1,4 @@
-import { WorkspaceShell, type LayoutStorage } from "@ajar/workspace-ui";
+import { WorkspaceShell, EditorGroups, type EditorGroupView, type LayoutStorage } from "@ajar/workspace-ui";
 
 import { ICONS } from "./icons";
 
@@ -49,6 +49,9 @@ function button(id: string, label: string, icon: string, title: string, primary 
 export class PadWorkspace {
   readonly shell: WorkspaceShell;
   readonly elements: PadElements;
+  readonly groups: EditorGroups;
+  private readonly layoutStorage: LayoutStorage | null;
+  private readonly viewKey: string;
   readonly searchHost: HTMLElement;
   readonly searchButtons: HTMLButtonElement[];
   onSearch = () => {};
@@ -194,7 +197,43 @@ export class PadWorkspace {
       presence,
       title: titleText,
     };
+    const groupContent = document.createElement("div");
+    groupContent.append(editor, markdownPane, imagePane);
+    let preferences = storage;
+    if (preferences === undefined) { try { preferences = localStorage; } catch { preferences = null; } }
+    this.layoutStorage = preferences ?? null;
+    this.viewKey = `pad.editors.${title}.views`;
+    viewer.classList.add("has-editor-groups");
+    this.groups = new EditorGroups(viewer, { content: groupContent, storage: preferences, key: `pad.editors.${title}` });
+    viewer.append(previewPane);
+    this.groups.onChange = () => this.shell.requestLayout();
+
   }
+
+  readViewStates(id: string): Record<string, unknown> {
+    try { const value = JSON.parse(this.layoutStorage?.getItem(this.viewKey) ?? "{}"); return value?.[id] ?? {}; } catch { return {}; }
+  }
+  readMarkdownModes(id: string): string[] {
+    try { const paths = JSON.parse(this.layoutStorage?.getItem(`${this.viewKey}.markdown`) ?? "{}")[id]; return Array.isArray(paths) ? paths.filter(path => typeof path === "string") : []; } catch { return []; }
+  }
+  saveViewStates(value: Record<string, Record<string, unknown>>, markdown: Record<string, string[]>) {
+    try { this.layoutStorage?.setItem(this.viewKey, JSON.stringify(value)); this.layoutStorage?.setItem(`${this.viewKey}.markdown`, JSON.stringify(markdown)); } catch { /* Layout still works for this visit. */ }
+  }
+
+  /** Each group owns its tool hosts; elements always points at the focused group. */
+  groupHosts(view: EditorGroupView) {
+    let editor = view.content.querySelector<HTMLElement>(".editor");
+    let markdownPane = view.content.querySelector<HTMLElement>(".md-view");
+    let imagePane = view.content.querySelector<HTMLElement>(".image-view");
+    if (!editor) {
+      editor = document.createElement("div"); editor.className = "editor";
+      markdownPane = document.createElement("article"); markdownPane.className = "md-view"; markdownPane.tabIndex = 0; markdownPane.hidden = true;
+      imagePane = document.createElement("div"); imagePane.className = "image-view"; imagePane.hidden = true;
+      view.content.append(editor, markdownPane, imagePane);
+    }
+    return { editor, markdownPane: markdownPane!, imagePane: imagePane! };
+  }
+  useGroup(view: EditorGroupView) { const hosts = this.groupHosts(view); Object.assign(this.elements, hosts); return hosts; }
 
   setActiveFile(path: string) {
     const title = this.shell.el("viewer-title");
@@ -233,6 +272,8 @@ export class PadWorkspace {
     this.shell.el("highlight-toggle").hidden = open;
     this.tools.hidden = open;
     this.shell.el("viewer-title").textContent = open ? "Server preview" : this.elements.editor.dataset.active ?? "No file selected";
+    this.groups.root.hidden = open;
+    this.groups.switcher.hidden = open || this.groups.model.groups.length < 2;
     this.shell.requestLayout();
   }
 
@@ -258,5 +299,5 @@ export class PadWorkspace {
   onLayout(callback: () => void) { this.shell.onLayout = callback; }
   get highlight() { return this.shell.highlight; }
   onHighlightChange(callback: (on: boolean) => void) { this.shell.onHighlightChange = callback; }
-  dispose() { this.shell.dispose(); }
+  dispose() { this.groups.dispose(); this.shell.dispose(); }
 }

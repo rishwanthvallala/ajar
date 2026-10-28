@@ -10,14 +10,12 @@ import { colourFor } from "./colours";
 import { Connection, ConnState } from "./connection";
 import { FileTree } from "./tree";
 import { Workspace } from "./workspace";
-import type { DocSession, Held } from "./editing";
+import { SessionDocuments } from "./documents";
 import type { Sealer } from "./sealed";
 import { codeFontPx } from "./scale";
 import {
   Channel,
   Control,
-  Doc,
-  DocKind,
   Frame,
   Fs,
   isStream,
@@ -30,10 +28,8 @@ import {
   SNAPSHOT_STREAM,
   Store,
   streamFrame,
-  tagged,
   TARGET_ALL,
   textEncoder,
-  untag,
   PROTOCOL_VERSION,
 } from "./proto";
 
@@ -341,8 +337,6 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   let awayTimer: ReturnType<typeof setInterval> | null = null;
   /** What the away banner says about the saved copy, once the relay answers. */
   let copyNote = "";
-  /** The file on screen from the saved copy, to swap for the live one later. */
-  let fromCopy: string | null = null;
   /**
    * Terminals the host has named since we last lost touch with it, or null
    * when nothing is being checked. The host names every live one and then
@@ -367,42 +361,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
    */
   let unsent = false;
   const fileCountEl = document.getElementById("filecount")!;
-  const viewerEl = document.getElementById("viewer")!;
-  let selection = 0;
   let disposed = false;
-  let focusSelectedFile = false;
-
-  /** The file currently open for editing, if any. */
-  let editing: DocSession | null = null;
-  let detach: (() => void) | null = null;
-  /**
-   * The file being opened again after a new socket, and the typing to hand
-   * back to the host's copy of it. `onScreen` while the editor still holds
-   * that typing, and takes more of it, until the copy is back. `kept` when it
-   * is typing held back for the file while it was off screen: all of `held`
-   * goes back, not only what differs from it.
-   */
-  let reconnectingDocument: { path: string; held: Held; onScreen: boolean; kept?: boolean } | null = null;
-  /** Typing into it meanwhile, which has gone nowhere yet. */
-  let holding: { dispose(): void } | null = null;
-  /**
-   * Files that were being opened again, typed into, and then left before the
-   * host's copy came back: asked for whenever the host can answer, handed
-   * back, and closed.
-   */
-  const heldBack = new Map<string, Held>();
-  /** Of those, the ones the host has answered, by the document id it gave, until their state arrives. */
-  const handingBack = new Map<number, { path: string; held: Held }>();
-  /**
-   * Document bytes that arrived before the editor was ready.
-   *
-   * The host sends a document's full state immediately after `opened`, but
-   * binding it means loading Monaco and the editing module first. Without
-   * this the initial state lands in the gap and the file opens empty.
-   */
-  const earlyDocFrames: Array<[number, DocKind, Uint8Array]> = [];
-  /** Why the host would not let the file on screen be edited, for its read-only copy. */
-  let refusedBecause: { path: string; why: string } | null = null;
+  let editorsRestored = false;
   // ---- downloads ------------------------------------------------------
   // A file comes as itself; a folder, or everything, as a zip the host makes.
   // It arrives in pieces, each acknowledged, so the host never sends more
@@ -482,152 +442,26 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   };
   document.getElementById("editor-actions")?.appendChild(downloadFile);
 
-  /** Documents typed into while the host was away. */
-  const typedAway = new Set<DocSession>();
-  /** Of those, the ones no longer on screen, waiting to be handed back. */
-  const parked: DocSession[] = [];
-  /** Typing that was waiting for a host that came back on a different footing. */
-  function dropParked() {
-    for (const doc of parked.splice(0)) doc.destroy();
-    typedAway.clear();
-  }
-
-  /** A document bound for the editor, waiting for its first state. */
-  let awaitingState: { docId: number; resolve: () => void } | null = null;
-
-  function closeDocument() {
-    // Left before the host's copy came back, with typing for it: kept, off
-    // screen, until it can be handed back. Dropped here, it was gone.
-    const typed = heldTyping();
-    if (typed) holdBack(reconnectingDocument!.path, typed);
-    reconnectingDocument = null;
-    stopHolding();
-    discardDocument(true);
-  }
-
-  /** What there is to hand back to the file being opened again, or null if nothing was typed. */
-  function heldTyping(): Held | null {
-    if (!reconnectingDocument) return null;
-    // Typing kept off screen is already in `held.local`, so it differs from
-    // nothing: compared, it read as nothing typed, and was dropped when the
-    // file was on screen again as the host came back (12 October).
-    if (reconnectingDocument.kept) return reconnectingDocument.held;
-    const { path, held, onScreen } = reconnectingDocument;
-    const v = workspace.editor.viewer;
-    const local = onScreen && v?.handles && v.shownPath === path ? v.handles.model.getValue() : held.local;
-    return local !== held.local || held.sent.unconfirmed.length ? { sent: held.sent, local } : null;
-  }
-
-  function askFor(path: string) {
-    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
-  }
-
-  /** Typing for a file no longer on screen, asked for now if the host can answer. */
-  function holdBack(path: string, held: Held) {
-    heldBack.set(path, held);
-    if (connState === "open" && !hostAway) askFor(path);
-  }
-
-  /** Every file with typing held back, asked for again: the last ask went nowhere. */
-  function askForHeldBack() {
-    for (const { path, held } of handingBack.values()) heldBack.set(path, held);
-    handingBack.clear();
-    for (const path of heldBack.keys()) askFor(path);
-  }
-
-  /** Typing into the file being opened again is unsent until it is handed back. */
-  function holdTyping() {
-    stopHolding();
-    holding = workspace.editor.viewer?.handles?.model.onDidChangeContent(() => setUnsent(true)) ?? null;
-  }
-
-  function stopHolding() {
-    holding?.dispose();
-    holding = null;
-  }
-
-  function discardDocument(notifyHost: boolean) {
-    earlyDocFrames.length = 0;
-    if (!editing) return;
-    if (notifyHost && hostAway && typedAway.has(editing)) {
-      // Typed into while the host was away, and none of it has reached them.
-      // Closing it now would throw that away, so it is kept — off screen —
-      // and handed back, then closed, when they return.
-      detach?.();
-      parked.push(editing);
-      editing = null;
-      detach = null;
-      delete viewerEl.dataset.editing;
-      return;
-    }
-    if (notifyHost) {
-      conn.send(
-        jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: editing.docId } satisfies Doc),
-      );
-    }
-    detach?.();
-    editing.destroy();
-    editing = null;
-    detach = null;
-    delete viewerEl.dataset.editing;
-  }
-
-  const tree = new FileTree(document.getElementById("tree")!, async (path) => {
-    const version = ++selection;
-    downloadFile.hidden = false;
-    focusSelectedFile = workspace.fileSelected();
-    tree.setActive(path);
-    closeDocument();
-    // Load the editor before asking for content, so the reply can never
-    // arrive before there is somewhere to put it.
-    const v = await workspace.editor.open(path);
-    if (!v || version !== selection || disposed) return;
-    // With the host away, the saved copy is all there is — and it is
-    // read-only, because nothing can be written back to a host that is gone.
-    // Asking the host would only be dropped by the relay, and the file would
-    // sit there loading for as long as the host was gone.
-    if (hostAway) {
-      showFromCopy(path);
-      if (focusSelectedFile) workspace.editor.focus();
-      requestAnimationFrame(() => {
-        v.layout();
-        layout();
-      });
-      return;
-    }
-    // Ask to edit. The host refuses anything binary or oversized, and we
-    // fall back to reading it.
-    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
-    // The pane was hidden a moment ago, so it has no size yet.
-    requestAnimationFrame(() => {
-      v.layout();
-      layout();
-    });
+  const documents = new SessionDocuments(workspace.editor, {
+    send: frame => conn.send(frame), online: () => connState === "open", away: () => hostAway,
+    readOnly: () => readOnly, user: () => ({ id: me, name }), unsent: setUnsent, copy: () => offlineFiles,
   });
-
-  /** The open file from the saved copy, or why it cannot be. */
-  function showFromCopy(path: string) {
-    const v = workspace.editor.viewer;
-    if (!v || v.current !== path) return;
-    fromCopy = path;
-    const text = offlineFiles?.get(path);
-    if (text !== undefined) v.show(path, text, false, true, "saved copy, read-only while the host is away");
-    else if (offlineFiles) v.problem(path, "not in the saved copy — it opens when the host is back");
-    else v.problem(path, "the host is away — waiting for the saved copy");
-  }
-
+  const tree = new FileTree(document.getElementById("tree")!, async path => {
+    const focus = workspace.fileSelected();
+    await workspace.editor.open(path);
+    documents.retry(path);
+    if (focus) workspace.editor.focus();
+    requestAnimationFrame(layout);
+  });
+  workspace.editor.onSelect = path => {
+    tree.setActive(path); downloadFile.hidden = !path;
+    documents.sync();
+  };
+  workspace.editor.onViews = () => documents.sync();
   tree.onFocusMove = labelDownloadAll;
   labelDownloadAll();
-
   (document.getElementById("close-file") as HTMLButtonElement).onclick = () => {
-    ++selection;
-    downloadFile.hidden = true;
-    fromCopy = null;
-    closeDocument();
-    workspace.editor.close();
-    workspace.editor.focus();
-    tree.setActive(null);
-    requestAnimationFrame(layout);
+    workspace.editor.close(); workspace.editor.focus(); requestAnimationFrame(layout);
   };
 
   const tabs = new Map<number, TerminalTab>();
@@ -680,7 +514,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     connDetail = detail;
     paintStatus();
     // Typing the host has not sent back may have gone down with the socket.
-    if (s === "reconnecting" && editing?.waiting) setUnsent(true);
+    if (s === "reconnecting") documents.disconnected();
   }
 
   /**
@@ -713,34 +547,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     e.preventDefault();
     e.returnValue = "";
   }
-  /** No longer unsent, once nothing typed is waiting anywhere. */
-  function settleUnsent() {
-    if (connState !== "open" || hostAway || reconnectingDocument) return;
-    if (parked.length || heldBack.size || handingBack.size) return;
-    setUnsent(false);
-  }
-
-  /**
-   * The host is back, or might be: out of the away state. Returns the file it
-   * asked for again, the one on screen from the saved copy, if there was one.
-   */
-  function leaveAway(): string | null {
-    if (!hostAway) return null;
+  function leaveAway() {
+    if (!hostAway) return;
     hostAway = false;
     if (awayTimer) clearInterval(awayTimer);
-    awayTimer = null;
-    offlineFiles = null;
-    paintAway();
-    paintStatus();
-    // A file read from the saved copy is the live one again — and may have
-    // changed. The reader stays where they were in it.
-    const stale = fromCopy;
-    fromCopy = null;
-    if (stale && !editing && workspace.editor.path === stale) {
-      conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path: stale } satisfies Doc));
-      return stale;
-    }
-    return null;
+    awayTimer = null; offlineFiles = null;
+    paintAway(); paintStatus();
   }
 
   let welcomedOnce = false;
@@ -847,13 +659,6 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
             awayEl.hidden = false;
           }, 10_000);
           paintStatus();
-          // Their document ids belonged to the last socket. What was typed
-          // into them goes by file instead, asked for again below.
-          for (const doc of parked.splice(0)) {
-            if (doc.waiting) heldBack.set(doc.path, { sent: doc.sent(), local: doc.ytext.toString() });
-            doc.destroy();
-          }
-          typedAway.clear();
           if (!hostAway) awayEl.hidden = true;
           // A new socket: any terminal that ended while we were gone is
           // still a tab here. The host is about to name the live ones.
@@ -867,25 +672,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           conn.send(
             jsonFrame(Channel.Presence, TARGET_ALL, { t: "iam", name, resume } satisfies Presence),
           );
-          // The open file is asked for again, and what was typed into it that
-          // the host may not have is handed back to the copy it answers with.
-          if (editing && !reconnectingDocument) {
-            reconnectingDocument = {
-              path: editing.path,
-              held: { sent: editing.sent(), local: editing.ytext.toString() },
-              onScreen: true,
-            };
-          }
-          if (reconnectingDocument) {
-            // The last socket's document — or, after a second blip, one
-            // answering the last socket's ask and still waiting for its state.
-            if (editing) discardDocument(false);
-            if (reconnectingDocument.onScreen) holdTyping();
-            if (reconnectingDocument.held.sent.unconfirmed.length) setUnsent(true);
-            askFor(reconnectingDocument.path);
-          }
-          askForHeldBack();
-          settleUnsent();
+          documents.welcome();
           break;
         }
         case "joined":
@@ -893,7 +680,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           break;
         case "left":
           watching.delete(msg.participant_id);
-          editing?.forget(msg.participant_id);
+          documents.forget(msg.participant_id);
           drawTabs();
           break;
         case "host_away":
@@ -909,15 +696,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           // Fall back to the copy the relay keeps, so the folder does not
           // simply go dead while we wait.
           conn.send(jsonFrame(Channel.Store, TARGET_ALL, { t: "fetch" } satisfies Store));
-          // A file asked for in the instant before is never going to arrive.
-          // One being opened again after a blip of our own keeps what is on
-          // screen instead: typing may be in it, and the saved copy went
-          // over it. It is asked for again when the host is back.
-          if (!editing && workspace.editor.path && !reconnectingDocument?.onScreen) showFromCopy(workspace.editor.path);
+          documents.copyChanged();
           break;
         case "host_back": {
           if (hostAway) toast("The host is back.");
-          const reopened = leaveAway();
+          leaveAway();
           // The host names its terminals again on the way back.
           announced = new Set();
           // Everything said while the host was away was dropped by the relay,
@@ -927,27 +710,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           // state as nothing it did not already have.
           conn.send(jsonFrame(Channel.Presence, TARGET_ALL, { t: "iam", name, resume } satisfies Presence));
           reportPresence();
-          if (editing) {
-            conn.send(
-              streamFrame(Channel.Doc, editing.docId, tagged(DocKind.Update, editing.fullState())),
-            );
-          }
-          // Files typed into in the gap and then left: theirs too, then closed —
-          // except one on screen again, from the saved copy, and asked for
-          // just now. The host answers that ask with this same document, and
-          // closing it after dropped us as a reader of the file we were by
-          // then editing: what we typed next went nowhere (11 October).
-          for (const doc of parked.splice(0)) {
-            conn.send(streamFrame(Channel.Doc, doc.docId, tagged(DocKind.Update, doc.fullState())));
-            if (doc.path !== reopened) conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: doc.docId } satisfies Doc));
-            doc.destroy();
-          }
-          typedAway.clear();
-          // And files asked for again after a blip of our own, whose ask
-          // went with the host.
-          if (!editing && reconnectingDocument?.onScreen) askFor(reconnectingDocument.path);
-          askForHeldBack();
-          settleUnsent();
+          documents.hostBack();
           break;
         }
         case "locked":
@@ -1019,17 +782,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         const flipped = readOnly !== msg.read_only;
         readOnly = msg.read_only;
         readOnlyEl.hidden = !readOnly;
-        // Edits the host refused while this was on never reached anyone, and
-        // every later edit depends on them: the host would park those for
-        // ever and this page would quietly disagree with everyone else's. The
-        // file is opened again, from the host's copy, whichever way it went.
-        if (flipped && editing) {
-          const path = editing.path;
-          discardDocument(true);
-          // Nothing typed until it is bound again would be kept.
-          workspace.editor.viewer?.setReadOnly(true);
-          conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "open", path } satisfies Doc));
-        }
+        if (flipped) documents.permissionsChanged();
         readOnlyEl.title = readOnly ? "The host has made this session read-only: you can watch and read, not type or edit." : "";
         if (flipped && firstTerminalSettled) {
           toast(readOnly ? "The host made this session read-only: you can watch and read, not type or edit." : "You can type and edit again.");
@@ -1039,7 +792,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         // The host drops edits while this is on; the editor says so by not
         // taking them, rather than letting someone type into a file that
         // will not keep it.
-        if (editing) workspace.editor.viewer?.setReadOnly(readOnly);
+
         // Arriving to "No terminals yet" meant a click before anything worked,
         // and a shell is what most people came for. The host sends every live
         // terminal before this message, on one ordered stream, so an empty set
@@ -1068,74 +821,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       return;
     }
 
-    if (f.channel === Channel.Doc) {
-      if (f.streamId === 0) {
-        const msg = parseJson<Doc>(f);
-        if (msg.t === "opened") {
-          // A file left with typing held back for it: handed back once its
-          // state arrives, then closed — or, on screen again by now, as it
-          // opens there.
-          const back = heldBack.get(msg.path);
-          heldBack.delete(msg.path);
-          if (back && workspace.editor.path !== msg.path) {
-            handingBack.set(msg.doc_id, { path: msg.path, held: back });
-          } else {
-            if (back) reconnectingDocument ??= { path: msg.path, held: back, onScreen: false, kept: true };
-            void startEditing(msg.doc_id, msg.path);
-          }
-        } else if (msg.t === "closed") {
-          // The host ended the document: its file was deleted, moved, turned
-          // binary or grew past the limit, so nothing more can be saved.
-          // Typing into it used to carry on, and go nowhere.
-          const kept = parked.findIndex((d) => d.docId === msg.doc_id);
-          if (kept >= 0) parked.splice(kept, 1)[0]!.destroy();
-          if (editing?.docId !== msg.doc_id) return;
-          const path = editing.path;
-          discardDocument(false);
-          workspace.editor.viewer?.stranded(path, msg.reason);
-        } else if (msg.t === "error") {
-          // Typing held for it has nowhere to go now, and is said to be lost
-          // rather than asked for again for ever.
-          let lost = heldBack.delete(msg.path);
-          if (reconnectingDocument?.path === msg.path) {
-            lost ||= heldTyping() !== null;
-            reconnectingDocument = null;
-            stopHolding();
-          }
-          if (lost) {
-            toast(`What was typed in ${msg.path} could not be saved: ${msg.message}.`);
-            settleUnsent();
-          }
-          // Not editable — binary, or too large. Show it read-only and say
-          // why rather than silently doing nothing.
-          if (workspace.editor.path !== msg.path) return;
-          refusedBecause = { path: msg.path, why: msg.message };
-          workspace.editor.viewer?.problem(msg.path, msg.message);
-          conn.send(jsonFrame(Channel.Fs, TARGET_ALL, { t: "read", path: msg.path } satisfies Fs));
-        }
-        return;
-      }
-      const split = untag(f.payload);
-      if (!split) return;
-      const [kind, body] = split;
-      const back = handingBack.get(f.streamId);
-      if (back) {
-        // The host sends a document's whole state straight after `opened`.
-        if (kind !== DocKind.Update) return;
-        handingBack.delete(f.streamId);
-        void handBackOffScreen(f.streamId, back.path, back.held, body);
-        return;
-      }
-      if (editing && editing.docId === f.streamId) {
-        if (kind === DocKind.Update) {
-          editing.applyUpdate(body);
-          if (awaitingState?.docId === f.streamId) awaitingState.resolve();
-        } else editing.applyAwareness(body);
-      } else if (earlyDocFrames.length < 256) {
-        earlyDocFrames.push([f.streamId, kind, body]);
-      }
-      return;
-    }
+    if (f.channel === Channel.Doc) { void documents.frame(f); return; }
 
     if (f.channel === Channel.Store) {
       if (f.streamId === SNAPSHOT_STREAM) {
@@ -1146,7 +832,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           offlineFiles = new Map();
           copyNote = " No copy of the files was kept, so they open again when the host is back.";
           paintAway();
-          if (fromCopy && workspace.editor.path === fromCopy) showFromCopy(fromCopy);
+          documents.copyChanged();
         }
       }
       return;
@@ -1168,6 +854,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           break;
         case "tree":
           tree.setEntries(msg.entries);
+          if (!editorsRestored) {
+            editorsRestored = true;
+            const paths = new Set(msg.entries.filter(entry => entry.kind === "file").map(entry => entry.path));
+            workspace.editor.groups.prune(path => paths.has(path)); workspace.editor.groups.refresh(); documents.sync();
+          }
           fileCountEl.textContent = fileCount(tree.count);
           break;
         case "patch":
@@ -1175,16 +866,10 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           fileCountEl.textContent = fileCount(tree.count);
           break;
         case "content":
-          if (msg.binary) workspace.editor.viewer?.problem(msg.path, "binary file");
-          else {
-            // Shown to read because it could not be edited: still say why.
-            const why = refusedBecause?.path === msg.path ? refusedBecause.why : undefined;
-            workspace.editor.viewer?.show(msg.path, msg.text, msg.truncated, true, why && `read-only: ${why}`);
-          }
-          if (focusSelectedFile && workspace.editor.path === msg.path) { workspace.editor.focus(); focusSelectedFile = false; }
+          documents.content(msg.path, msg.text, msg.truncated, msg.binary);
           break;
         case "read_error":
-          workspace.editor.viewer?.problem(msg.path, msg.message);
+          workspace.editor.problem(msg.path, msg.message);
           break;
       }
     }
@@ -1353,7 +1038,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       for (const id of panes) {
         if (id !== null) tabs.get(id)?.fit.fit();
       }
-      workspace.editor.viewer?.layout();
+      workspace.editor.layout();
     });
   }
 
@@ -1380,113 +1065,6 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
    * the relay has no idea what a participant is, and we would like to keep
    * it that way.
    */
-  /**
-   * Bind a document to the editor. The host has already sent `opened`; the
-   * full state arrives immediately after and lands via applyUpdate.
-   */
-  async function startEditing(docId: number, path: string) {
-    const v = workspace.editor.viewer;
-    const version = selection;
-    if (!v || v.current !== path || disposed) return;
-    const { DocSession } = await import("./editing");
-    if (version !== selection || v.current !== path || disposed) return;
-    // Asked for twice — as a file with typing held back, and as the one on
-    // screen from the saved copy — it is answered twice, with one document.
-    if (editing?.docId === docId) return;
-
-    const doc = new DocSession(docId, path, { id: me, name }, (kind, bytes) => {
-      if (kind === "update" && (hostAway || connState !== "open")) {
-        setUnsent(true);
-        if (hostAway) typedAway.add(doc);
-      }
-      conn.send(
-        streamFrame(
-          Channel.Doc,
-          docId,
-          tagged(kind === "update" ? DocKind.Update : DocKind.Awareness, bytes),
-        ),
-      );
-    });
-    editing = doc;
-
-    // Anything that arrived while Monaco was loading — including the full
-    // initial state — applies now, before the model is built from it.
-    let hasState = false;
-    for (const [id, kind, body] of earlyDocFrames.splice(0)) {
-      if (id !== docId) continue;
-      if (kind === DocKind.Update) {
-        doc.applyUpdate(body);
-        hasState = true;
-      } else doc.applyAwareness(body);
-    }
-    // And if it has not arrived yet, it is on its way: the host sends it
-    // straight after `opened`. Building the model before it lands showed an
-    // empty file, then the whole text as one insert — which put the view at
-    // line 1, every reconnect, wherever the reader had been.
-    if (!hasState) {
-      await new Promise<void>((resolve) => {
-        awaitingState = { docId, resolve };
-        setTimeout(resolve, 5000);
-      });
-      awaitingState = null;
-      if (editing !== doc || version !== selection || v.current !== path || disposed) return;
-    }
-
-    if (reconnectingDocument?.path === path) {
-      // Only the change typed while it was away, onto the host's fresh state,
-      // rather than the page's whole copy over everyone's edits since. The
-      // model kept the file on screen between the old document going and
-      // this one arriving, and took whatever was typed into it meanwhile.
-      const typed = heldTyping();
-      reconnectingDocument = null;
-      stopHolding();
-      if (typed) doc.handBack(typed);
-      settleUnsent();
-    }
-    fromCopy = null;
-
-    // The model has to exist before the document can drive it.
-    const text = doc.ytext.toString();
-    v.show(path, text, false, readOnly);
-    const handles = v.handles;
-    if (!handles) return;
-    // Monaco keeps one line ending per model and drops a byte-order mark, so
-    // for some files the editor's text is not the document's. Every offset
-    // would then be off — an edit made after the BOM landed a character
-    // early on disk — so such a file is shown, read-only, and not edited.
-    if (handles.model.getValue() !== text) {
-      discardDocument(true);
-      v.show(path, text, false, true, "read-only: mixed line endings or a byte-order mark");
-      return;
-    }
-    doc.onDrift = () => {
-      if (editing !== doc) return;
-      const now = doc.ytext.toString();
-      discardDocument(true);
-      v.show(path, now, false, true, "read-only: its line endings changed — reopen it to edit");
-    };
-    detach = doc.bind(handles.editor, handles.model);
-    // Which file is being edited, not merely shown — for anything outside
-    // that needs to tell the two apart, the browser checks among them.
-    viewerEl.dataset.editing = path;
-    v.setReadOnly(readOnly);
-    if (focusSelectedFile) { workspace.editor.focus(); focusSelectedFile = false; }
-  }
-
-  /** Typing held back for a file no longer on screen, into the host's copy of it, which is then closed. */
-  async function handBackOffScreen(docId: number, path: string, held: Held, state: Uint8Array) {
-    const { DocSession } = await import("./editing");
-    if (disposed) return;
-    const doc = new DocSession(docId, path, { id: me, name }, (kind, bytes) => {
-      if (kind === "update") conn.send(streamFrame(Channel.Doc, docId, tagged(DocKind.Update, bytes)));
-    });
-    doc.applyUpdate(state);
-    doc.handBack(held);
-    conn.send(jsonFrame(Channel.Doc, TARGET_ALL, { t: "close", doc_id: docId } satisfies Doc));
-    doc.destroy();
-    settleUnsent();
-  }
-
   /** The stored copy arrives sealed; the key is the one from the link. */
   async function useOfflineCopy(sealed: Uint8Array<ArrayBuffer>) {
     if (!sealer) return;
@@ -1507,7 +1085,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         ? ` ${offlineFiles.size} of ${all} files are still readable from a saved copy — large and binary files aren't kept.`
         : ` All ${all} files are still readable from a saved copy.`;
     paintAway();
-    if (fromCopy && workspace.editor.path === fromCopy) showFromCopy(fromCopy);
+    documents.copyChanged();
   }
 
   function reportPresence() {
@@ -1554,18 +1132,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   splitBtn.onclick = toggleSplit;
   function dispose() {
     if (disposed) return;
-    ++selection;
-    // Nothing is held back from a page that is going.
-    reconnectingDocument = null;
-    closeDocument();
+    documents.dispose();
     disposed = true;
     if (awayTimer) clearInterval(awayTimer);
     awayTimer = null;
     if (waitingTimer) clearTimeout(waitingTimer);
     waitingTimer = null;
-    dropParked();
-    heldBack.clear();
-    handingBack.clear();
     setUnsent(false);
     tree.dispose();
     workspace.dispose();

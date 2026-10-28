@@ -147,6 +147,7 @@ const CLOSED = LIVE ? "https://example.com/" : `http://bin.test:${BIN_PORT}/clos
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-")));
 const context = await chromium.launchPersistentContext(profile, {
+  channel: process.env.PAD_BROWSER_CHANNEL || undefined,
   headless: true,
   viewport: { width: 1280, height: 800 },
   args: ["--host-resolver-rules=MAP bin.test 127.0.0.1"],
@@ -786,10 +787,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   const pngHex = sentPng?.encoding === "base64" ? Buffer.from(sentPng.content, "base64").toString("hex") : JSON.stringify(sentPng);
   expect("a binary file a command makes is in the tree as one, and sent as its bytes", binaryRows && pngHex === "89504e470d0a1a0a0000fffe", pngHex);
   await page.locator('#files .row.file[data-path="b.png"]').click();
-  // An image by name, and not by its bytes: the viewer says so and leaves
-  // the editor, rather than putting a broken picture or garbage on screen.
+  // An image by name, and not by its bytes: its tab offers an explanation
+  // and a download, without putting a broken picture or garbage in the editor.
   const notShown = await page.waitForFunction(() => /b\.png is not (text|an image)/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 5000 }).then(() => true, () => false);
-  expect("clicking it says it cannot be shown, rather than opening garbage", notShown && (await page.locator("#editor").isVisible()), `"${await status()}"`);
+  expect("clicking it says it cannot be shown, rather than opening garbage", notShown && (await page.locator(".editor-group.focused .image-view").isVisible()) && (await page.locator(".editor-group.focused .image-view").getByRole("button", { name: "Download b.png", exact: true }).isVisible()), `"${await status()}"`);
   await page.hover('#files .file-row:has(.row.file[data-path="b.png"])');
   const gotPng = await got(() => page.locator('#files button[aria-label="Download b.png"]').click());
   expect("and downloads byte for byte", (await readFile(gotPng.to)).toString("hex") === "89504e470d0a1a0a0000fffe", (await readFile(gotPng.to)).toString("hex"));
@@ -1333,7 +1334,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   if (!LIVE) {
     let release;
     holding = new Promise((r) => (release = r));
-    const cold = await chromium.launch();
+    const cold = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
     const first = await (await cold.newContext()).newPage();
     await first.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
     const typeable = await first.waitForFunction(() => window.monaco?.editor.getEditors()[0]?.hasTextFocus(), null, { timeout: 60_000 }).then(() => true, () => false);

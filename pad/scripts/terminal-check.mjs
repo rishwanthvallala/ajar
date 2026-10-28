@@ -53,7 +53,7 @@ if (!LIVE) await new Promise((r) => server.listen(PORT, r));
 const ORIGIN = LIVE ?? `http://127.0.0.1:${PORT}`;
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-terminal-")));
-const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1280, height: 800 } });
+const context = await chromium.launchPersistentContext(profile, { channel: process.env.PAD_BROWSER_CHANNEL || undefined, headless: true, viewport: { width: 1280, height: 800 } });
 const page = context.pages()[0] ?? (await context.newPage());
 
 let failures = 0;

@@ -3,6 +3,8 @@ import { applyTheme, parseTheme, THEME_CHOICES, type ThemeChoice } from "./theme
 export { applyStoredTheme, defineEditorThemes, editorTheme, isDark, onThemeChange, type ThemeChoice } from "./theme";
 export { languageFor, type Language } from "./languages";
 export { registerDelimited } from "./delimited";
+export { EditorGroups, type EditorGroupView } from "./editor-groups";
+export { EditorLayoutModel, type EditorLayout, type EditorGroup, type EditorNode } from "./editor-layout";
 
 export type LayoutStorage = Pick<Storage, "getItem" | "setItem">;
 

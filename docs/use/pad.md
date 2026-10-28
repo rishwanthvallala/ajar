@@ -22,6 +22,23 @@ Make files and folders, edit them, and run shell commands. A new file or
 folder is saved as soon as you make it, empty or not, and so is an empty
 folder a command makes.
 
+**Editor tabs and groups.** Opening a file keeps a tab in the focused editor
+group. Use the split icon for another pane beside it, or the **⋯** menu for
+**Split down**. Each group has its own tabs; the same file can appear in more
+than one, sharing edits and undo history while keeping separate cursors and
+scroll positions. Drag tabs to reorder them, move them between groups, or drop
+one at a pane's right or bottom edge to split. The menu also offers moves and
+closing other tabs, all tabs, or a group. Layout and open tabs are remembered
+for this workspace in this browser. On a phone, the group picker shows one
+pane at a time.
+
+While focus is in an editor group, **⌘W** closes its current tab on macOS
+(**Ctrl-W** on Windows/Linux); `⌘\` splits right (`Ctrl-\`), and adding
+Shift splits down. **⌘1–9** focuses a group (**Ctrl-1–9**).
+**Ctrl-PageUp/PageDown** cycles tabs on every OS. A tab strip also supports
+arrows, Home, End, Delete, and Shift-F10 for its menu. Terminal keys stay with
+the terminal.
+
 **Making a file.** New file, above the file list, opens a row in the list
 where the file will be, and you type its name there: in the folder you clicked
 last, or beside the file that is open. Enter makes it, Escape does not, and a

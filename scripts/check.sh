@@ -34,6 +34,7 @@ part_rust() {
 part_web() {
   echo "── frontend typecheck ─────────────────────────────────"
   npm run typecheck
+  npm run test:editor-layout
 
   echo "── frontend builds ────────────────────────────────────"
   npm run build

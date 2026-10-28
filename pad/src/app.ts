@@ -42,6 +42,7 @@ import { isMarkdown, linkFor, MARKDOWN_MAX, renderMarkdown, slug } from "./markd
 import { countRun, languageOfFile, languageOfLine } from "./usage";
 import { pipInstalled, requirementLines, requirementName } from "./requirements";
 import type { PadWorkspace } from "./workspace";
+import type { EditorGroupView } from "@ajar/workspace-ui";
 
 /**
  * The longest a newcomer waits for the room to send a file's document. Most
@@ -262,9 +263,25 @@ function closest(candidates: readonly string[], result: string): string | undefi
   return best;
 }
 
+interface PadEditorView {
+  view: EditorGroupView;
+  editor: Monaco.editor.IStandaloneCodeEditor;
+  canFormat: Monaco.editor.IContextKey<boolean>;
+  canStart: Monaco.editor.IContextKey<boolean>;
+  states: Map<string, Monaco.editor.ICodeEditorViewState>;
+  detach: (() => void) | null;
+  attached: string | null;
+}
+
 export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
+  private readonly editorViews = new Map<string, PadEditorView>();
+  private groupId = "";
+  private loadingFiles = false;
+  private readonly orphaned = new Set<string>();
+  private readonly orphanedKept = new Set<string>();
+  private switchingGroup = false;
   private suggestions: Suggestions | null = null;
   private search: ProjectSearch | null = null;
   private replacing = false;
@@ -304,11 +321,19 @@ export class App {
   private preview: PreviewBrowser | null = null;
   /** The image shown in place of the editor, if one is. */
   private imageShown: string | null = null;
-  /** Markdown files shown formatted (markdown.ts), by path, for as long as the page is open. */
-  private formatted = new Set<string>();
+  private readonly defaultFormatted = new Set<string>();
+  private readonly markdownModes = new Map<string, Set<string>>();
+  /** Preview mode belongs to a tab in a group, so the same file can show source beside preview. */
+  private get formatted(): Set<string> {
+    if (!this.ui) return this.defaultFormatted;
+    const id = this.groupId || this.ui.groups.current.id;
+    let modes = this.markdownModes.get(id);
+    if (!modes) { modes = new Set(this.ui.readMarkdownModes(id)); this.markdownModes.set(id, modes); }
+    return modes;
+  }
   private markdownTimer: ReturnType<typeof setTimeout> | null = null;
   /** The newest render asked for: one finishing after a newer was asked is dropped. */
-  private markdownAsked = 0;
+  private markdownAsked = new WeakMap<HTMLElement, number>();
   /** The command each terminal ran last, typed or Run's: whether its output is a language's to read for problems. */
   private commandOf = new WeakMap<TerminalSession, string>();
   /** Files the last run marked problems in (`markProblems`). */
@@ -414,7 +439,7 @@ export class App {
    * Messages name their file now; this is for those from older pages.
    */
   private byStream = new Map<number, Set<string>>();
-  private unbind: (() => void) | null = null;
+
   /** Documents waiting on another browser to send their state. */
   private awaiting = new Map<string, (answered: boolean) => void>();
   /** For each of those, who has not answered yet. */
@@ -513,12 +538,13 @@ export class App {
       if (pad === this.name) void this.refresh(true);
     };
     this.ui?.onLayout(() => {
+      for (const view of this.editorViews.values()) view.editor.layout();
       this.editor?.layout();
       this.fitTerminals();
     });
     this.ui?.onHighlightChange(() => {
       this.relanguage();
-      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon(0);
+      this.renderMarkdownSoon(0);
     });
   }
 
@@ -592,6 +618,7 @@ export class App {
     await this.openEditor();
     // Turned away while the editor loaded: there is no page to fill any more.
     if (this.disposed) return;
+    this.loadingFiles = true;
     if (files.length === 0) {
       // A folder nobody has written to opens with something runnable in it, so
       // the first thing a visitor can do is press Run and watch it work.
@@ -599,8 +626,13 @@ export class App {
       this.starter = true;
     } else {
       for (const [path, f] of files) this.setFile(path, f.content);
-      this.show(files[0]![0]);
     }
+    this.loadingFiles = false;
+    if (this.ui?.groups.restored) {
+      this.ui.groups.prune(path => this.texts.has(path) || this.binaries.has(path));
+      this.ui.groups.refresh();
+      this.selectGroup(this.ui.groups.currentView, this.ui.groups.current.active);
+    } else this.show(files[0]?.[0] ?? "main.py");
 
     this.renderFiles();
     this.wire();
@@ -811,7 +843,8 @@ export class App {
         if (incoming.has(from) || this.local.has(from) || ignored(from)) continue;
         const was = this.known.get(from);
         const free = arrived.filter((p) => ![...moves.values()].includes(p));
-        const same = free.filter((p) => incoming.get(p) === was);
+        const live = this.current(from);
+        const same = free.filter((p) => incoming.get(p) === was || (live !== undefined && incoming.get(p) === live));
         // The same text, under the same name if one has it; or, the text
         // since changed by the mover, the one file of that name that arrived —
         // if it is still recognisably that file. A file deleted and another
@@ -864,6 +897,13 @@ export class App {
     }
     for (const path of this.known.keys()) {
       if (incoming.has(path) || this.local.has(path)) continue;
+      const text = this.current(path);
+      if (!moves.has(path) && text !== undefined && text !== this.known.get(path)) {
+        this.journal([path]); this.closeDoc(path); this.dirty.delete(path);
+        this.orphaned.add(path); this.local.add(path);
+        for (const held of this.editorViews.values()) if (held.editor.getModel() === this.texts.existing(path)) { held.editor.updateOptions({ readOnly: true }); this.paintOrphan(held, path); }
+        continue;
+      }
       this.dirty.delete(path);
       this.closeDoc(path);
       this.texts.delete(path);
@@ -887,7 +927,7 @@ export class App {
     this.binaries = incomingBinaries;
     this.storeSeq = pad.seq;
     for (const [from, to] of moves) {
-      if (this.formatted.delete(from)) this.formatted.add(to);
+      this.renameEditorTabs(from, to);
       // What was typed here before the move reached here, onto the file as it
       // now is: an edit like typing, which saves and reaches the room.
       const carried = typedBefore.get(from);
@@ -903,7 +943,7 @@ export class App {
     }
     if (followFrom && this.texts.has(moves.get(followFrom)!)) {
       this.show(moves.get(followFrom)!);
-    } else if (!this.texts.has(this.active)) {
+    } else if (!this.texts.has(this.active) && (!this.ui || this.ui.groups.current.active !== null)) {
       const first = [...this.texts.keys()].sort()[0];
       if (first) this.show(first);
     }
@@ -1027,10 +1067,7 @@ export class App {
   private closeDoc(path: string): void {
     const doc = this.docs.get(path);
     if (!doc) return;
-    if (this.active === path) {
-      this.unbind?.();
-      this.unbind = null;
-    }
+    for (const view of this.editorViews.values()) if (view.attached === path) { view.detach?.(); view.detach = null; view.attached = null; }
     this.docs.delete(path);
     this.docReady.delete(path);
     this.shownUnbound.delete(path);
@@ -1147,23 +1184,48 @@ export class App {
     (window as unknown as { monaco: typeof Monaco }).monaco = monaco;
     registerDelimited(monaco.languages);
     defineEditorThemes(monaco.editor);
-    this.editor = monaco.editor.create(this.el.editor, {
+    const createEditor = () => monaco.editor.create(this.el.editor, {
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: this.codeFontPx(),
       scrollBeyondLastLine: false,
       theme: editorTheme(),
     });
+    const first = this.ui?.groups.currentView;
+    if (first) this.ui!.useGroup(first);
+    this.editor = createEditor();
     onThemeChange(() => {
       monaco.editor.setTheme(editorTheme());
+      for (const view of this.editorViews.values()) view.editor.updateOptions({ fontSize: this.codeFontPx() });
       this.editor?.updateOptions({ fontSize: this.codeFontPx() });
       // A code block's colours are numbered by the theme they were made in.
-      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon(0);
+      this.renderMarkdownSoon(0);
     }, this.events.signal);
+    this.configureEditor();
+    if (first) this.rememberGroup(first);
+    if (this.ui) {
+      const groups = this.ui.groups;
+      groups.onSelect = (view, path) => this.selectGroup(view, path);
+      groups.onFocusEditor = () => this.editor?.focus();
+      groups.onRemove = view => {
+        const held = this.editorViews.get(view.id);
+        if (!held) return;
+        held.detach?.(); held.editor.dispose(); this.editorViews.delete(view.id);
+      };
+      groups.onChange = () => {
+        if (!this.switchingGroup && this.groupId !== groups.current.id) this.selectGroup(groups.currentView, groups.current.active);
+        this.ui?.shell.requestLayout();
+      };
+    }
+  }
+
+  private configureEditor(): void {
+    const monaco = this.monaco!, editor = this.editor!;
+    if (!this.editor) return;
     this.editor.onDidChangeModelContent(() => {
       this.warm();
-      this.paintStarter();
-      if (!this.el.markdownPane.hidden) this.renderMarkdownSoon();
+      if (this.editor === editor) this.paintStarter();
+      this.renderMarkdownSoon();
     });
     // Monaco's Format Document, with its key and its place in the menu, for
     // the formatters here (format.ts) — its own are in the workers that
@@ -1191,7 +1253,7 @@ export class App {
       run: () => void this.run(),
     });
     // Grey text as you type, from a model in this tab — see complete.ts.
-    this.suggestions = new Suggestions(monaco, this.editor, this.el.suggest);
+    this.suggestions ??= new Suggestions(monaco, this.editor, this.el.suggest);
     this.editor.addAction({
       id: "pad.starter",
       label: "Insert Starter Code",
@@ -1217,7 +1279,46 @@ export class App {
     }
     const fresh = !this.texts.has(path);
     if (this.texts.put(path, content) && !fresh) this.changed(path);
-    if (fresh && !this.active) this.show(path);
+  }
+
+  private rememberGroup(view: EditorGroupView): PadEditorView {
+    const held = { view, editor: this.editor!, canFormat: this.canFormat!, canStart: this.canStart!, states: new Map(Object.entries(this.ui?.readViewStates(view.id) ?? {}) as Array<[string, Monaco.editor.ICodeEditorViewState]>), detach: null, attached: null };
+    this.editorViews.set(view.id, held); this.groupId = view.id;
+    return held;
+  }
+
+  private selectGroup(view: EditorGroupView, path: string | null): void {
+    if (!this.ui || !this.monaco || this.disposed || this.loadingFiles) return;
+    this.switchingGroup = true;
+    try {
+      if (this.groupId !== view.id && this.starterHint) { this.editor?.removeContentWidget(this.starterHint.widget); this.starterHint = null; }
+      const hosts = this.ui.useGroup(view);
+      let held = this.editorViews.get(view.id);
+      if (!held) {
+        this.editor = this.monaco.editor.create(hosts.editor, { automaticLayout: true, minimap: { enabled: false }, fontSize: this.codeFontPx(), scrollBeyondLastLine: false, theme: editorTheme() });
+        this.configureEditor(); held = this.rememberGroup(view);
+      }
+      this.groupId = view.id; this.editor = held.editor; this.canFormat = held.canFormat; this.canStart = held.canStart;
+      this.suggestions?.setEditor(held.editor);
+      // Keep the compatibility file-view cache, with group-specific positions taking precedence.
+      const previous = held.editor.getModel();
+      const previousPath = hosts.editor.dataset.active;
+      if (previous && previousPath) { const state = held.editor.saveViewState(); if (state) held.states.set(previousPath, state); }
+      this.imageShown = hosts.imagePane.hidden ? null : hosts.imagePane.dataset.path ?? null;
+      this.active = previousPath ?? "";
+      if (path && path === previousPath && this.texts.existing(path) === held.editor.getModel() && hosts.imagePane.hidden) {
+        this.active = path; this.ui.setActiveFile(path); this.paintTools(); this.paintStarter(); this.paintRun(); this.paintBanner(); this.renderFiles();
+        if (this.orphaned.has(path)) this.paintOrphan(held, path);
+        void this.attach(path, this.texts.model(path)!);
+        return;
+      }
+      if (path && this.texts.has(path)) this.showSelected(path);
+      else if (path && this.binaries.has(path)) { this.active = path; hosts.editor.dataset.active = path; void this.showImageSelected(path, view.id); }
+      else {
+        held.detach?.(); held.detach = null; held.attached = null; held.editor.setModel(null); hosts.editor.hidden = true;
+        hosts.markdownPane.hidden = true; hosts.imagePane.hidden = true; this.active = ""; this.ui.setActiveFile(""); this.paintTools(); this.paintRun(); this.renderFiles();
+      }
+    } finally { this.switchingGroup = false; }
   }
 
   /** A file's model, made the first time something needs one: `Texts`. */
@@ -1236,6 +1337,7 @@ export class App {
   private changed(path: string): void {
     this.warm();
     this.search?.invalidate();
+    if (this.orphaned.has(path)) return;
     // A change the page just wrote in on somebody else's behalf is not an
     // edit to send back. Without this every remote update bounces straight
     // home and two browsers push the same content at each other forever.
@@ -1269,6 +1371,17 @@ export class App {
   }
 
   private show(path: string): void {
+    if (this.loadingFiles) return;
+    if (this.ui && !this.switchingGroup) {
+      this.ui.groups.open(path);
+      if (this.active !== path || this.editor?.getModel() !== this.texts.existing(path)) this.selectGroup(this.ui.groups.currentView, path);
+      else void this.attach(path, this.texts.model(path)!);
+      return;
+    }
+    this.showSelected(path);
+  }
+
+  private showSelected(path: string): void {
     const model = this.texts.model(path);
     if (!model || !this.editor || !this.monaco) return;
     if (this.imageShown !== null) this.closeImage();
@@ -1283,15 +1396,18 @@ export class App {
     this.el.editor.dataset.active = path;
     this.ui?.setActiveFile(path);
     this.editor.setModel(model);
-    const back = this.viewStates.get(path);
-    if (back) this.editor.restoreViewState(back);
-    this.unbind?.();
-    this.unbind = null;
+    const back = this.editorViews.get(this.groupId)?.states.get(path) ?? this.viewStates.get(path);
+    if (back) { try { this.editor.restoreViewState(back); } catch { this.editorViews.get(this.groupId)?.states.delete(path); } }
+    const group = this.editorViews.get(this.groupId);
+    if (group?.attached !== path) { group?.detach?.(); if (group) { group.detach = null; group.attached = null; } }
+    this.el.editor.hidden = false;
     const solo = this.solo(path);
     // Only when it changes: setting an option, even to what it was, has the
     // editor work its options out again.
     if (this.editor.getOption(this.monaco.editor.EditorOption.readOnly) !== solo) this.editor.updateOptions({ readOnly: solo });
-    if (solo) {
+    if (this.orphaned.has(path) && group) this.paintOrphan(group, path);
+    else if (group) group.view.title.hidden = true;
+    if (solo && !this.orphaned.has(path)) {
       const mb = Math.round(model.getValueLength() / (1024 * 1024));
       this.say("", `${path} is about ${mb} MB, too large to edit together live — read-only here; change it from the terminal`);
     }
@@ -1399,35 +1515,24 @@ export class App {
     // what the file looked like before anything was typed.
     if (!this.shownUnbound.has(path)) this.shownUnbound.set(path, model.getValue());
     const doc = await this.readyDoc(path);
-    // Somebody may have clicked another file while this was waiting.
-    if (this.active !== path || !this.editor || !this.monaco) return;
-    const shown = this.shownUnbound.get(path) ?? model.getValue();
-    this.shownUnbound.delete(path);
-    const typed = model.getValue();
-    this.unbind?.();
-    // Binding puts the document's text in the editor, over whatever was typed
-    // while it was on its way. That typing goes back in as an ordinary edit,
-    // so it reaches everybody and is saved like any other.
-    this.unbind = doc.bind(this.monaco, this.editor, model);
-    // A document this browser seeded, and nobody has changed since, is this
-    // browser's own text: what it lacks of the typing is all there is to
-    // carry. One from somebody else carries what was typed since it was shown.
-    // Compared as the editor held it — Monaco sets a file's byte-order mark
-    // aside when it makes the model, so the typing never had one, and against
-    // the document's that read as the mark deleted.
-    const seed = this.seeds.get(path);
-    this.seeds.delete(path);
-    const now = model.getValue();
-    const edit = carryOver(seed !== undefined && seed === now ? now.replace(/^\uFEFF/, "") : shown, typed, now);
-    if (!edit) return;
-    const from = model.getPositionAt(edit.at);
-    const to = model.getPositionAt(edit.at + edit.remove);
-    model.pushEditOperations(
-      [],
-      [{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: edit.insert }],
-      () => null,
-    );
-    this.editor.setPosition(model.getPositionAt(edit.at + edit.insert.length));
+    if (this.disposed || this.docs.get(path) !== doc || model.isDisposed() || !this.monaco) return;
+    if (!doc.bound) {
+      const shown = this.shownUnbound.get(path) ?? model.getValue();
+      this.shownUnbound.delete(path);
+      const typed = model.getValue();
+      doc.bindModel(this.monaco, model);
+      const seed = this.seeds.get(path); this.seeds.delete(path);
+      const now = model.getValue();
+      const edit = carryOver(seed !== undefined && seed === now ? now.replace(/^\uFEFF/, "") : shown, typed, now);
+      if (edit) {
+        const from = model.getPositionAt(edit.at), to = model.getPositionAt(edit.at + edit.remove);
+        model.pushEditOperations([], [{ range: new this.monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: edit.insert }], () => null);
+      }
+    }
+    if (!this.ui && this.editor?.getModel() === model) doc.attachView(this.editor, model);
+    for (const held of this.editorViews.values()) if (held.editor.getModel() === model && held.attached !== path) {
+      held.detach?.(); held.detach = doc.attachView(held.editor, model); held.attached = path;
+    }
   }
 
   // ------------------------------------------------------- format, starters
@@ -1563,7 +1668,33 @@ export class App {
     editor.focus();
   }
 
+  private paintOrphan(held: PadEditorView, path: string): void {
+    const note = held.view.title;
+    note.hidden = false; note.classList.add("problem");
+    note.textContent = `${path} was removed from the pad — local changes retained, read-only`;
+    const actions = document.createElement("span"); actions.className = "document-recovery";
+    const save = document.createElement("button"); save.type = "button"; save.textContent = "Save local copy";
+    save.onclick = () => { void this.download(path, false).then(() => { this.orphanedKept.add(path); this.unjournal([path]); }); };
+    const discard = document.createElement("button"); discard.type = "button"; discard.textContent = "Discard local changes";
+    discard.onclick = () => { if (confirm(`Discard the retained changes to ${path}?`)) void this.discard(path); };
+    actions.append(save, discard); note.append(actions);
+  }
+
+  private renameEditorTabs(from: string, to: string): void {
+    for (const modes of [this.defaultFormatted, ...this.markdownModes.values()]) if (modes.delete(from)) modes.add(to);
+    if (!this.ui) return;
+    for (const held of this.editorViews.values()) {
+      if (held.editor.getModel() === this.texts.existing(from)) { const state = held.editor.saveViewState(); if (state) held.states.set(to, state); }
+      const state = held.states.get(from); if (state && !held.states.has(to)) held.states.set(to, state);
+      held.states.delete(from);
+    }
+    this.ui.groups.rename(from, to);
+  }
+
   private renderFiles(): void {
+    if (!this.loadingFiles && this.ui && [...this.ui.groups.paths].some(path => !this.texts.has(path) && !this.binaries.has(path))) {
+      this.ui.groups.prune(path => this.texts.has(path) || this.binaries.has(path));
+    }
     this.search?.invalidate();
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => {
@@ -1787,6 +1918,7 @@ export class App {
     // on CI's macOS runner on 2 October.
     return this.queueWrite(async () => {
       const changes = paths
+        .filter(path => !this.orphaned.has(path))
         .map((path) => ({
           path,
           // The document is the truth for a file somebody has open; the model
@@ -1816,7 +1948,9 @@ export class App {
         this.unjournal(changes.map((c) => c.path));
         // Do not copy an older completed save over text edited while its
         // request was in flight. The later edit remains queued for saving.
-        if (this.runtime) {
+        // Runtime startup catches up from current documents itself; waiting
+        // for its download here would block every later file's autosave.
+        if (this.runtimeReady && this.runtime) {
           const rt = await this.runtime;
           for (const c of changes) {
             if (this.current(c.path) === c.content) await rt.write(c.path, c.content);
@@ -1946,14 +2080,19 @@ export class App {
     for (const path of paths) {
       const { base, text } = kept[path]!;
       const now = this.known.get(path);
-      if (now === undefined && base !== null) continue;
+      if (now === undefined && base !== null) {
+        this.setFile(path, text); this.orphaned.add(path); this.local.add(path);
+        this.ui?.groups.open(path);
+        continue;
+      }
       const merged = now === undefined || base === null || base === now ? text : applied(now, carryOver(base, text, now));
       if (merged === now) continue;
       this.setFile(path, merged);
       this.dirty.add(path);
       back.push(path);
     }
-    this.unjournal(paths);
+    this.unjournal(paths.filter(path => !this.orphaned.has(path)));
+    if (this.orphaned.size) this.renderFiles();
     if (!back.length) return;
     this.say("", `brought back what your last visit could not save: ${back.join(", ")}`);
     this.renderFiles();
@@ -2156,6 +2295,19 @@ export class App {
    * run is the same file with new bytes.
    */
   private async showImage(path: string): Promise<void> {
+    if (this.ui) {
+      this.ui.groups.open(path);
+      if (this.ui.fileSelected()) this.ui.groups.currentView.element.focus();
+      return;
+    }
+    await this.showImageSelected(path);
+  }
+
+  private async showImageSelected(path: string, group = this.groupId): Promise<void> {
+    const view = this.ui?.groups.views.get(group);
+    const hosts = view ? this.ui!.groupHosts(view) : this.el;
+    const held = this.editorViews.get(group);
+    if (held) { held.detach?.(); held.detach = null; held.attached = null; }
     const type = imageType(path);
     if (!type) return;
     let base64 = this.binaries.get(path) ?? null;
@@ -2163,6 +2315,7 @@ export class App {
       const bytes = await (await this.runtime).readBytes(path).catch(() => null);
       if (bytes) base64 = toBase64(bytes);
     }
+    if (this.disposed || (view && this.ui?.groups.model.group(group)?.active !== path)) return;
     if (!base64) return this.say("error", `${path} could not be read`);
     if (this.preview?.isOpen) await this.togglePreview();
     const img = document.createElement("img");
@@ -2174,18 +2327,22 @@ export class App {
     img.onload = () => {
       caption.textContent = `${path} · ${img.naturalWidth} × ${img.naturalHeight} · ${Math.max(1, Math.round((base64!.length * 3) / 4 / 1024))} KB`;
     };
-    // Named like an image and not one the browser can read: said, and the
-    // editor left as it was rather than a broken picture in its place.
+    // A failed image stays in its own tab with a useful explanation and download.
     img.onerror = () => {
-      if (this.imageShown !== path) return;
-      this.closeImage();
-      this.say("", `${path} is not an image the browser can show — download it with the arrow beside it`);
+      if (hosts.imagePane.dataset.path !== path) return;
+      const note = document.createElement("p"); note.className = "image-caption";
+      note.textContent = `${path} is not an image the browser can show`;
+      const download = document.createElement("button"); download.className = "quiet-button"; download.textContent = `Download ${path.split("/").pop()}`;
+      download.onclick = () => void this.download(path, false);
+      hosts.imagePane.replaceChildren(note, download);
+      if (!this.ui || this.ui.groups.current.id === group) this.say("", `${path} is not an image the browser can show — download it with the arrow beside it`);
     };
-    this.el.imagePane.replaceChildren(img, caption);
-    this.el.imagePane.hidden = false;
-    this.el.editor.hidden = true;
-    this.imageShown = path;
-    this.ui?.setImage(path);
+    hosts.imagePane.replaceChildren(img, caption);
+    hosts.imagePane.dataset.path = path;
+    hosts.imagePane.hidden = false;
+    hosts.editor.hidden = true;
+    hosts.markdownPane.hidden = true;
+    if (!this.ui || this.ui.groups.current.id === group) { this.imageShown = path; this.ui?.setImage(path); this.renderFiles(); this.paintRun(); }
   }
 
   private closeImage(): void {
@@ -2355,6 +2512,7 @@ export class App {
     if (!path || !isMarkdown(path)) return;
     if (!this.formatted.delete(path)) this.formatted.add(path);
     this.paintMarkdown();
+    this.renderMarkdownSoon(0);
     this.paintTools();
   }
 
@@ -2369,7 +2527,7 @@ export class App {
     this.el.markdownPane.hidden = !on;
     this.el.markdownPane.parentElement?.classList.toggle("md-shown", on);
     if (on) return this.renderMarkdownSoon(0);
-    this.markdownAsked++;
+    this.markdownAsked.set(this.el.markdownPane, (this.markdownAsked.get(this.el.markdownPane) ?? 0) + 1);
     this.markdownAnchor = null;
     this.el.markdownPane.replaceChildren();
   }
@@ -2379,16 +2537,20 @@ export class App {
     if (this.markdownTimer) clearTimeout(this.markdownTimer);
     this.markdownTimer = setTimeout(() => {
       this.markdownTimer = null;
-      void this.renderMarkdown();
+      if (this.ui) {
+        for (const held of this.editorViews.values()) {
+          const path = this.ui.groups.model.group(held.view.id)?.active;
+          const pane = this.ui.groupHosts(held.view).markdownPane;
+          if (path && !pane.hidden) void this.renderMarkdown(path, pane);
+        }
+      } else void this.renderMarkdown();
     }, delay);
   }
 
-  private async renderMarkdown(): Promise<void> {
-    const path = this.active;
+  private async renderMarkdown(path = this.active, pane = this.el.markdownPane): Promise<void> {
     const file = this.texts.get(path);
-    const pane = this.el.markdownPane;
     if (!file || pane.hidden) return;
-    const asked = ++this.markdownAsked;
+    const asked = (this.markdownAsked.get(pane) ?? 0) + 1; this.markdownAsked.set(pane, asked);
     pane.setAttribute("aria-label", `${path}, formatted`);
     const note = (text: string) => pane.replaceChildren(Object.assign(document.createElement("p"), { className: "md-note", textContent: text }));
     if (file.getValueLength() > MARKDOWN_MAX) return note(`${path} is more than ${MARKDOWN_MAX / 1024 / 1024} MB, too long to show formatted.`);
@@ -2401,15 +2563,15 @@ export class App {
         colorize: (code, language) => this.colorize(code, language),
       });
     } catch (e) {
-      if (asked === this.markdownAsked) note(`${path} could not be formatted: ${e instanceof Error ? e.message : String(e)}`);
+      if (asked === this.markdownAsked.get(pane)) note(`${path} could not be formatted: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
-    if (asked !== this.markdownAsked || this.active !== path || pane.hidden) return;
+    if (asked !== this.markdownAsked.get(pane) || pane.hidden || pane.parentElement?.querySelector<HTMLElement>(".editor")?.dataset.active !== path) return;
     const body = document.createElement("div");
     body.className = "md-body";
     body.append(fragment);
     pane.replaceChildren(body);
-    const anchor = this.markdownAnchor;
+    const anchor = pane === this.el.markdownPane ? this.markdownAnchor : null;
     if (anchor && (anchor.path !== path || this.scrollMarkdownTo(anchor.id))) this.markdownAnchor = null;
   }
 
@@ -3144,6 +3306,7 @@ export class App {
     // words on this prompt; the banner has already said what they would lose.
     addEventListener("beforeunload", (e) => {
       if (this.viewer && this.local.size > 0) e.preventDefault();
+      if ([...this.orphaned].some(path => !this.orphanedKept.has(path))) e.preventDefault();
       // An editor's typing that saving has been failing to deliver: kept in
       // this browser too (`journal`), but asked about, as a viewer's is.
       if (!this.viewer && this.saveTrouble && this.dirty.size > 0) e.preventDefault();
@@ -3153,18 +3316,25 @@ export class App {
     // in the room saved it. Hidden is the last moment a page can count on,
     // and closing is the last at all.
     addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") this.flushSaves();
+      if (document.visibilityState === "hidden") { this.saveEditorViews(); this.flushSaves(); }
     }, { signal: this.events.signal });
-    addEventListener("pagehide", () => this.flushSaves(), { signal: this.events.signal });
+    addEventListener("pagehide", () => { this.saveEditorViews(); this.flushSaves(); }, { signal: this.events.signal });
     this.el.preview.onclick = () => void this.togglePreview();
-    this.el.backToEditor.onclick = () => (this.imageShown !== null ? this.closeImage() : void this.togglePreview());
+    this.el.backToEditor.onclick = () => {
+      if (this.imageShown !== null) { if (this.ui) this.ui.groups.close(); else this.closeImage(); }
+      else void this.togglePreview();
+    };
     this.el.format.onclick = () => void this.formatActive();
     this.el.indent.onclick = () => this.setIndent(this.indent === 4 ? 2 : 4);
     this.el.markdown.onclick = () => this.toggleMarkdown();
     // Middle clicks too: a link to a pad file followed by the browser would
     // open a pad of that name.
     for (const kind of ["click", "auxclick"] as const) {
-      this.el.markdownPane.addEventListener(kind, (e) => this.followMarkdownLink(e), { signal: this.events.signal });
+      (this.ui?.shell.el("viewer") ?? this.el.markdownPane).addEventListener(kind, (e) => {
+        const group = (e.target as Element).closest<HTMLElement>(".editor-group")?.dataset.group;
+        if (group) this.ui?.groups.focus(group);
+        this.followMarkdownLink(e);
+      }, { signal: this.events.signal });
     }
     this.paintTools();
     addEventListener("keydown", (e) => {
@@ -3200,9 +3370,10 @@ export class App {
       this.say("loading", "opening… — Run starts as soon as the pad is open");
       return;
     }
-    const program = interpreterFor(this.active);
+    const ran = this.active;
+    const program = interpreterFor(ran);
     // A language fetched the first time it is used — C, Go, Node, PHP.
-    const runner = program ? null : runnerFor(this.active);
+    const runner = program ? null : runnerFor(ran);
     // Not over a command already running, typed or not: the button is Stop
     // then, and ⌘⏎ is ignored rather than answered with an error.
     // In the terminal in front, as typing it there would.
@@ -3235,7 +3406,7 @@ export class App {
       // one a person would type. /workspace is the folder — see runtime.ts.
       // In single quotes: in double ones a file called `$HOME.py` or
       // `a$(x).py`, which a pad holds happily, ran some other file.
-      const plain = runner ? runner.line : `${program} ${quoted(this.active)}`;
+      const plain = runner ? runner.line : `${program} ${quoted(ran)}`;
       if (runner) {
         const fresh = await this.prepare(session, plain);
         if (fresh) {
@@ -3248,9 +3419,8 @@ export class App {
       // Shown the way a typed one would be, because that is what it is: the
       // button is a shortcut for typing, not a second way to execute.
       session.console.announce(command);
-      countRun(languageOfFile(this.active), "run");
+      countRun(languageOfFile(ran), "run");
       this.commandOf.set(session, command);
-      const ran = this.active;
       let finished: Finished | null = null;
       try {
         if (program?.startsWith("python")) await this.installRequirements(rt, session, sh);
@@ -3960,7 +4130,7 @@ export class App {
         this.starter = false;
         this.peers?.moved(seq);
       });
-      if (!this.texts.has(this.active)) {
+      if (!this.texts.has(this.active) && (!this.ui || this.ui.groups.current.active !== null)) {
         const first = files.filter((f) => f.encoding === "utf8" && !isMarker(f.path, f.content)).map((f) => f.path).sort()[0] ?? [...this.texts.keys()].sort()[0];
         if (first) this.show(first);
       }
@@ -4076,7 +4246,7 @@ export class App {
             if (later.get(p) === text.get(p)) this.dirty.delete(t);
             else this.dirty.add(t);
           }
-          for (const [p, t] of textPairs) if (this.formatted.delete(p)) this.formatted.add(t);
+          for (const [p, t] of pairs) this.renameEditorTabs(p, t);
           // Onto the new path before the old model goes from under the editor,
           // and where it was in the file with it.
           const followed = textPairs.find(([p]) => p === active)?.[1];
@@ -4262,6 +4432,7 @@ export class App {
   private async discard(path: string): Promise<void> {
     if (!this.local.has(path)) return;
     this.local.delete(path);
+    this.orphaned.delete(path); this.orphanedKept.delete(path); this.unjournal([path]);
     this.dirty.delete(path);
     const stored = this.known.get(path);
     const rt = this.runtimeReady ? await this.runtime : null;
@@ -4486,6 +4657,7 @@ export class App {
    * it is already shared, and each change is its own message.
    */
   private solo(path: string): boolean {
+    if (this.orphaned.has(path)) return true;
     const model = this.texts.model(path);
     if (!model || this.docs.has(path)) return false;
     const units = model.getValueLength();
@@ -4536,19 +4708,35 @@ export class App {
     void this.refresh();
   }
 
+  private saveEditorViews(): void {
+    if (!this.ui) return;
+    const value: Record<string, Record<string, unknown>> = {};
+    for (const held of this.editorViews.values()) {
+      const path = this.ui.groupHosts(held.view).editor.dataset.active;
+      const state = held.editor.saveViewState();
+      if (path && state) held.states.set(path, state);
+      const tabs = this.ui.groups.model.group(held.view.id)?.tabs ?? [];
+      value[held.view.id] = Object.fromEntries([...held.states].filter(([path]) => tabs.includes(path)));
+    }
+    this.ui.saveViewStates(value, Object.fromEntries([...this.markdownModes].map(([id, paths]) => [id, [...paths]])));
+  }
+
   dispose(): void {
+    if (this.disposed) return;
+    this.saveEditorViews();
     this.disposed = true;
     this.search?.dispose();
     if (this.saveTimer) clearTimeout(this.saveTimer);
     for (const timer of this.stuck.values()) clearTimeout(timer);
     this.events.abort();
     this.peers?.close();
-    this.unbind?.();
     for (const doc of this.docs.values()) doc.destroy();
     this.docs.clear();
     this.texts.clear();
     this.suggestions?.dispose();
-    this.editor?.dispose();
+    for (const view of this.editorViews.values()) { view.detach?.(); view.editor.dispose(); }
+    if (!this.ui) this.editor?.dispose();
+    this.editorViews.clear();
     for (const session of this.sessions) session.dispose();
   }
 }
