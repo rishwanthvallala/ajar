@@ -63,6 +63,20 @@ const STUCK_WAIT = 1500;
 const EDITS_FROM = 16 * 1024;
 
 /**
+ * A save refused as stale is read, merged and sent again this many times in
+ * all, the store's version named each time, before it is said to have failed
+ * and left for the next save to try.
+ */
+const STALE_TRIES = 3;
+
+/**
+ * How long a merge waits, in a room with somebody else, for what the store
+ * has and the document does not to arrive through the room before putting it
+ * in itself (`writeOverStale`).
+ */
+const LIVE_SETTLE_MS = 600;
+
+/**
  * Bytes of text a file can hold and still be edited together live. Above it
  * the file opens read-only and is changed from the terminal; its changes
  * reach everyone through the store, as a binary file's do.
@@ -858,6 +872,19 @@ export class App {
       // has been typed since that copy was saved.
       const doc = this.docs.get(path);
       if (!doc) this.setFile(path, content);
+      // Unless nobody shares it live here: then the document has none of
+      // what the store has had since, and taking the store's version as
+      // known without it, the next save went over it with the right base
+      // and said "saved" — a page whose room was out of reach, re-reading
+      // after any other save, wiped a teammate's function (review of 28
+      // October, C6 again). Merged in now, as a save refused would be; with
+      // nobody else holding the document it goes in once.
+      else if (doc.ready && !this.peers?.shared) {
+        const was = this.known.get(path);
+        const now = doc.contents();
+        const edit = was !== undefined && now !== content ? carryOver(was, content, now) : null;
+        if (edit) this.applyEdit(path, doc, edit);
+      }
       // The sandbox too, or the next run uses the version this browser had
       // before the change arrived.
       if (rt) await this.intoSandbox(rt, path, () => doc?.contents() ?? content);
@@ -1868,24 +1895,52 @@ export class App {
    * `changes`, which is what the caller records as known.
    */
   private async writeOverStale(changes: Array<{ path: string; content: string }>, leaving: boolean): Promise<number> {
-    const stored = (await this.store.read(this.name)).files;
-    for (const c of changes) {
-      const theirs = stored[c.path];
-      const base = this.known.get(c.path);
-      if (!theirs || theirs.encoding !== "utf8" || base === undefined || theirs.content === base) continue;
-      const merged = applied(theirs.content, carryOver(base, c.content, theirs.content));
-      // Into what the editor holds now, typing since included.
-      const now = this.current(c.path);
-      if (now !== undefined && now !== merged) {
-        const edit = carryOver(c.content, merged, now);
-        const doc = this.docs.get(c.path);
-        if (edit && doc?.ready) this.applyEdit(c.path, doc, edit);
-        else if (edit) this.setFile(c.path, applied(now, edit));
+    for (let attempt = 1; ; attempt++) {
+      const stored = (await this.store.read(this.name)).files;
+      const sent: Change[] = [];
+      for (const c of changes) {
+        const theirs = stored[c.path];
+        const base = this.known.get(c.path);
+        // Gone from the store, or not text there: sent whole, as before.
+        if (!theirs || theirs.encoding !== "utf8" || base === undefined) {
+          sent.push(c);
+          continue;
+        }
+        if (theirs.content !== base) {
+          let mine = c.content;
+          let merged = applied(theirs.content, carryOver(base, mine, theirs.content));
+          // In a room with somebody else, what the store has and this
+          // document lacks may only be on its way here: a teammate's typing,
+          // saved by their page a moment before it reached this one. Put in
+          // now, it arrives twice. A moment for it, then the document as it
+          // is then.
+          if (merged !== this.current(c.path) && this.docs.get(c.path)?.ready && this.peers?.shared && !leaving) {
+            await new Promise((resolve) => setTimeout(resolve, LIVE_SETTLE_MS));
+            mine = this.current(c.path) ?? mine;
+            merged = applied(theirs.content, carryOver(base, mine, theirs.content));
+          }
+          // Into what the editor holds now, typing since included.
+          const now = this.current(c.path);
+          if (now !== undefined && now !== merged) {
+            const edit = carryOver(mine, merged, now);
+            const doc = this.docs.get(c.path);
+            if (edit && doc?.ready) this.applyEdit(c.path, doc, edit);
+            else if (edit) this.setFile(c.path, applied(now, edit));
+          }
+          this.known.set(c.path, theirs.content);
+          c.content = merged;
+        }
+        // Over the version just read, and no other: a save landing between
+        // that read and this write was written over until 28 October (review
+        // of 19 October, item 5). Refused, it is read and merged again.
+        sent.push({ ...c, base: await storedHash(theirs.content) });
       }
-      this.known.set(c.path, theirs.content);
-      c.content = merged;
+      try {
+        return await this.store.write(this.name, sent, leaving);
+      } catch (e) {
+        if (!(e instanceof StoreError && e.stale) || attempt >= STALE_TRIES) throw e;
+      }
     }
-    return this.store.write(this.name, changes, leaving);
   }
 
   /** Where this browser keeps typing saving could not deliver (`journal`). */

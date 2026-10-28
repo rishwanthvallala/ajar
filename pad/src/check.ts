@@ -1264,6 +1264,16 @@ async function main() {
     // An emoji changed on one side and a letter added on the other: no half
     // of one anywhere.
     is(merge("a👍b", "a🔥b", "a👍bc"), "a🔥bc", "an emoji changed here and a letter added there are both kept, the emoji whole");
+    // A teammate's page saved the shared document with a line of this page's
+    // half typed, and this page's save, refused as stale, merged its whole
+    // line onto that: the line and its start, both (review of 28 October, N1).
+    const N1 = "import time\n\ndef main():\n    x = 1\n    y = 2\n";
+    const typedHere = "abcimport time\n\ndef main():\n    # other note\n    x = 1\n    y = 2\n";
+    is(merge(N1, typedHere, "abcimport time\n\ndef main():\n    # oth    x = 1\n    y = 2\n"), typedHere, "a line half typed in a teammate's save goes in once, whole");
+    is(merge(N1, "import time\n\ndef main():\n    # oth    x = 1\n    y = 2\n", typedHere.replace("abc", "")), typedHere.replace("abc", ""), "and the other way round, the store further on");
+    is(merge("hello world\n", "hello wor\n", "hello w\n"), "hello w\n", "a deletion caught part way: the further one");
+    is(merge("x = 1\n", "## opened\nx = 1\n", "def f():\n    return 42\nx = 1\n"), "def f():\n    return 42\n## opened\nx = 1\n", "two blocks put in at one place keep their line breaks");
+    is(merge("a\nb\nc\n", "a\nNEW\nb\nc\n", "a\nB!\nc\n"), "a\nNEW\nB!\nc\n", "a line put in before a line somebody changed: both");
     // What putBack writes when the pad already has the change: nothing.
     is(putBack(new Map([["p.txt", { base: "a\n", mine: "b\n" }]]), new Map([["p.txt", "b\n"]])).length, 0, "a file the pad already holds the change in is not written again");
   }

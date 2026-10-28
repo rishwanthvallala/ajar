@@ -377,6 +377,16 @@ export class Peers {
     return this.others.size === 0;
   }
 
+  /**
+   * In the room, and somebody else with it: their documents and this page's
+   * are one, and what either types reaches the other through it. Not while
+   * the socket is down or the room has not answered, when `others` is empty
+   * anyway, and a page is on its own however many share the link.
+   */
+  get shared(): boolean {
+    return this.id !== null && this.ws?.readyState === WebSocket.OPEN && this.others.size > 0;
+  }
+
   /** Say that the folder moved. Silent when nobody else is here. */
   moved(seq: number): void {
     if (this.others.size === 0) return;

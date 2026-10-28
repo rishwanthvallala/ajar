@@ -597,6 +597,112 @@ try {
     await b.context().close();
   }
 
+  // ---- a save refused as stale, in a room with somebody else ---------------
+  // Review of 28 October, N1, against production: B pressed Run on a 12 s
+  // program — a running page puts off reading the pad again — and typed a
+  // comment while A typed at the top. B's saves went over an old version, were
+  // refused and merged, and the merge put the comment in twice, the second
+  // time as the part A's page had saved: `    # other note\n    # oth    x = 1`,
+  // in both editors and the store, 2 runs of 2.
+  {
+    const name = `pair-stale-${Date.now().toString(36)}`;
+    const BASE = "import time\n\ndef main():\n    x = 1\n    y = 2\n    return x + y\n\ntime.sleep(12)\nprint(main())\n";
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: BASE }] }) });
+    const [a, b] = await pair(name);
+    // Each page's runtime up first: a page's saves after its first wait for it.
+    for (const page of [a, b]) {
+      await page.locator("#terminal .xterm-helper-textarea").focus();
+      await page.keyboard.type("true");
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => window.__pad?.shellBusy() === false && /\$ true/.test(document.querySelector("#terminal .xterm-rows")?.innerText ?? ""), null, { timeout: 240_000 }).catch(() => {});
+    }
+    await wait(a, 1500);
+    await b.click("#run");
+    await wait(b, 1500);
+    await Promise.all([
+      (async () => {
+        for (const ch of "    # other note\n") {
+          await b.evaluate((c) => {
+            const ed = window.monaco.editor.getEditors()[0];
+            const m = ed.getModel();
+            const at = m.getPositionAt(m.getValue().indexOf("    x = 1"));
+            ed.executeEdits("typing", [{ range: { startLineNumber: at.lineNumber, startColumn: at.column, endLineNumber: at.lineNumber, endColumn: at.column }, text: c }]);
+          }, ch);
+          await wait(b, 120);
+        }
+      })(),
+      (async () => {
+        await wait(a, 700);
+        await caretAt(a, 1, 1);
+        await a.keyboard.type("abc", { delay: 20 });
+      })(),
+    ]);
+    await wait(a, 20_000);
+    const stored = ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["main.py"] ?? {}).content ?? "";
+    const want = BASE.replace("    x = 1", "    # other note\n    x = 1").replace("import", "abcimport");
+    const count = (s, n) => s.split(n).length - 1;
+    if (stored === want && count(stored, "    # o") === 1) await agree(a, b, want, "a save refused as stale while a program runs, in a room with somebody else, puts nothing in twice");
+    else fail(`a save refused as stale in a live room — ${JSON.stringify({ stored, want })}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
+  // ---- a page with no room, after it reads the pad again -------------------
+  // Review of 28 October, C6 again: a page whose room is out of reach read the
+  // pad again after a save of its own showed it was behind, took a teammate's
+  // newer version as known without putting it into its document, and its next
+  // save went over that version with the right base and said "saved".
+  {
+    const name = `pair-roomless-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.py", content: "x = 1\n" }, { path: "other.py", content: "y = 2\n" }] }) });
+    const b = await place(name, "B");
+    const w = await (await browser.newContext()).newPage();
+    await w.addInitScript(() => {
+      const Real = window.WebSocket;
+      const Blocked = function () { return new Real("ws://127.0.0.1:9/"); };
+      Blocked.prototype = Real.prototype;
+      for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Blocked[k] = Real[k];
+      window.WebSocket = Blocked;
+    });
+    await w.goto(`${ORIGIN}/${name}`);
+    await w.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+    const openIn = async (page, path) => {
+      await page.locator(`#files .row.file[data-path="${path}"]`).click();
+      await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });
+      await wait(page, 500);
+    };
+    const typeAt = async (page, line, text) => {
+      await page.evaluate((l) => { const ed = window.monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: l, column: 1 }); }, line);
+      await page.keyboard.type(text, { delay: 15 });
+    };
+    const storedText = async (path) => ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files[path] ?? {}).content;
+    await openIn(w, "notes.py");
+    await typeAt(w, 1, "## opened\n");
+    await wait(w, 3000);
+    await openIn(b, "notes.py");
+    // Put in as it stands: typed, the editor's own indenting adds to it.
+    await b.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0];
+      const end = ed.getModel().getLineCount();
+      ed.executeEdits("typing", [{ range: { startLineNumber: end, startColumn: 1, endLineNumber: end, endColumn: 1 }, text: "def from_b():\n    return 42\n" }]);
+    });
+    await wait(b, 3000);
+    // A save of another file in between: its number shows W it is behind,
+    // and W reads the pad again.
+    await openIn(w, "other.py");
+    await typeAt(w, 1, "# w\n");
+    await wait(w, 3000);
+    await openIn(w, "notes.py");
+    await typeAt(w, 1, "#");
+    await wait(w, 4000);
+    const stored = await storedText("notes.py");
+    const shows = await w.evaluate(() => window.__pad.text("notes.py"));
+    if (stored?.includes("def from_b():\n    return 42\n") && stored?.includes("## opened") && shows === stored) ok("a page with no room that reads the pad again keeps a teammate's newer save, and shows it");
+    else fail(`a page with no room, after reading the pad again — ${JSON.stringify({ stored, shows })}`);
+    await w.context().close();
+    await b.context().close();
+  }
+
   // ---- a write somebody else made just before this page's own --------------
   // Each write moves a pad on by one. A page took its save's number as how far
   // it had read, so a write that went in just before its own — whose nudge
