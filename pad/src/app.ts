@@ -13,6 +13,8 @@ import { defineEditorThemes, editorTheme, languageFor, onThemeChange, registerDe
 import { acceptCode, type Access, account, AccountError, codeFor, forgetCode, OPEN, restorePreviousCode, size } from "./access";
 import { applied, carryOver, type Edit, putBack } from "./carry";
 import { Suggestions } from "./complete";
+import { ProjectSearch } from "./search";
+import { replaced, type ReplacementFile, type ReplacementPlan, type SearchMatch } from "./search-match";
 import { colourFor, DocSession, replaceText, utf8Of } from "./editing";
 import { FileTree } from "./files";
 import { formatterFor, formatText, problemOf, usesTabs } from "./format";
@@ -264,6 +266,9 @@ export class App {
   private readonly events = new AbortController();
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private suggestions: Suggestions | null = null;
+  private search: ProjectSearch | null = null;
+  private replacing = false;
+  private restructuring = 0;
   private monaco: typeof Monaco | null = null;
   /** The pad's text files: a model for those the editor has needed, text for the rest (`Texts`). */
   private texts = new Texts<Monaco.editor.ITextModel>((path, text) => this.makeModel(path, text));
@@ -949,6 +954,7 @@ export class App {
       // from somebody else — which makes this the right place to decide that
       // something needs saving.
       if (kind === "update") {
+        this.search?.invalidate();
         this.dirty.add(path);
         this.saveSoon();
       }
@@ -1078,6 +1084,7 @@ export class App {
         return;
       }
       doc.applyUpdate(bytes);
+      this.search?.invalidate();
       if (this.viewer) this.unstick(path, doc);
       // Whoever was waiting for state has it now — if this was state. Any
       // update used to count, so a newcomer bound the empty document it had
@@ -1228,6 +1235,7 @@ export class App {
   /** A file's text changed, in its model or as text. */
   private changed(path: string): void {
     this.warm();
+    this.search?.invalidate();
     // A change the page just wrote in on somebody else's behalf is not an
     // edit to send back. Without this every remote update bounces straight
     // home and two browsers push the same content at each other forever.
@@ -1328,6 +1336,7 @@ export class App {
    * notes.py` should not have to press Run first to bring it into existence.
    */
   private addFile(name: string, open = true): void {
+    if (this.replacing) return;
     if (this.texts.has(name)) return open ? this.show(name) : undefined;
     if (this.viewer) this.local.add(name);
     this.setFile(name, "");
@@ -1355,6 +1364,7 @@ export class App {
    * A viewer's stays in their tab, as their files do.
    */
   private addFolder(name: string): void {
+    if (this.replacing) return;
     this.tree?.addPendingFolder(name);
     void this.runtime?.then((rt) => rt.write(`${name}/${MARKER}`, "").catch(() => {}));
     this.renderFiles();
@@ -1472,6 +1482,7 @@ export class App {
    * undo takes it back and it reaches everyone on the pad as typing does.
    */
   private async formatActive(): Promise<void> {
+    if (this.replacing) return;
     const editor = this.editor;
     const monaco = this.monaco;
     const path = this.active;
@@ -1553,6 +1564,7 @@ export class App {
   }
 
   private renderFiles(): void {
+    this.search?.invalidate();
     this.tree ??= new FileTree(this.el.files, {
       onOpen: (path) => {
         if (this.binaries.has(path) && !this.texts.has(path) && imageType(path)) return void this.showImage(path);
@@ -1600,6 +1612,7 @@ export class App {
    * compares, and would put this one straight back.
    */
   private async deleteFile(path: string): Promise<void> {
+    if (this.replacing) return;
     if (this.binaries.has(path) && !this.texts.has(path)) return this.deleteBinary(path);
     if (this.texts.size <= 1) {
       this.say("error", "a folder keeps at least one file");
@@ -1611,6 +1624,7 @@ export class App {
     }
     const where = this.viewer ? "Only in this tab — the pad keeps it." : "It goes for everyone with the link.";
     if (!confirm(`Delete ${path}? ${where}`)) return;
+    this.restructuring++;
     try {
       const rt = await this.ensureRuntime();
       // Onto another file before this one's model is disposed under the editor.
@@ -1624,7 +1638,7 @@ export class App {
       this.say("", `deleted ${path}`);
     } catch (e) {
       this.say("error", (e as Error).message);
-    }
+    } finally { this.restructuring--; }
   }
 
 
@@ -1635,6 +1649,7 @@ export class App {
    * removed from the terminal.
    */
   private async deleteFolder(path: string): Promise<void> {
+    if (this.replacing) return;
     if (this.viewer) return this.say("error", "only people who can edit can delete folders");
     if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish");
     const under = (p: string) => p.startsWith(`${path}/`);
@@ -1656,6 +1671,7 @@ export class App {
     });
     if (!yes) return;
     this.say("saving", `deleting ${path}…`);
+    this.restructuring++;
     try {
       await this.queueWrite(async () => {
         const seq = await this.store.write(this.name, [...text, ...binary, ...markers].map((p) => ({ path: p, content: null })));
@@ -1681,14 +1697,16 @@ export class App {
       this.say("", `deleted ${path}`);
     } catch (e) {
       this.say("error", (e as Error).message);
-    }
+    } finally { this.restructuring--; }
   }
 
   /** A binary file, the same way: gone from the sandbox, and the diff after publishes it. */
   private async deleteBinary(path: string): Promise<void> {
+    if (this.replacing) return;
     if (this.viewer) return this.say("error", "only people who can edit can delete the pad's files that are not text");
     if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish");
     if (!confirm(`Delete ${path}? It goes for everyone with the link.`)) return;
+    this.restructuring++;
     try {
       const rt = await this.ensureRuntime();
       await rt.remove(path);
@@ -1696,7 +1714,7 @@ export class App {
       this.say("", `deleted ${path}`);
     } catch (e) {
       this.say("error", (e as Error).message);
-    }
+    } finally { this.restructuring--; }
   }
 
   /**
@@ -2574,8 +2592,10 @@ export class App {
    * a version first.
    */
   private async restoreVersion(files: Pad["files"], at_ms: number): Promise<void> {
+    if (this.replacing) return;
     if (this.busy || this.anyBusy) return this.say("", "stop what is running first: a restore changes files it may be using");
     this.say("saving", "restoring…");
+    this.restructuring++;
     try {
       const rt = await this.ensureRuntime();
       await this.store.keepVersion(this.name);
@@ -2598,7 +2618,7 @@ export class App {
       this.say("", `restored to ${when(at_ms)}`);
     } catch (e) {
       this.say("error", `could not restore: ${(e as Error).message}`);
-    }
+    } finally { this.restructuring--; }
   }
 
   /** Swap the editor for the running servers, and back. */
@@ -2892,6 +2912,7 @@ export class App {
    * line.
    */
   private async prepare(session: TerminalSession, command: string): Promise<Shell | null> {
+    if (this.replacing) throw new Error("Wait for replacements to finish.");
     const rt = await this.ensureRuntime();
     // What the editor holds, in the sandbox before the line reads it, as Run
     // does: a file edited a moment ago is otherwise still being saved, and a
@@ -2988,7 +3009,129 @@ export class App {
 
   // ------------------------------------------------------------------- run
 
+  private openSearchResult(path: string, match?: SearchMatch, before?: string): void {
+    if (!this.texts.has(path)) {
+      if (this.binaries.has(path) && imageType(path)) void this.showImage(path);
+      else this.say("", `${path} is not text — download it from Files`);
+      this.ui?.fileSelected();
+      return;
+    }
+    if (match && this.current(path) !== before) {
+      this.search?.invalidate();
+      this.say("", `${path} changed — search results refreshed`);
+      return;
+    }
+    if (this.preview?.isOpen) void this.togglePreview();
+    this.show(path);
+    if (match && this.editor && this.monaco) {
+      const editor = this.editor, monaco = this.monaco;
+      const model = editor.getModel()!;
+      const selectMatch = () => {
+        // Monaco initially strips the BOM; binding can put it back into the
+        // model's text. Calculate the range from the model as it stands now.
+        const bom = match.line === 1 && before?.startsWith("\uFEFF") && !model.getValue().startsWith("\uFEFF");
+        const from = { lineNumber: match.line, column: match.column - (bom ? 1 : 0) };
+        const range = monaco.Range.fromPositions(from, { ...from, column: from.column + match.end - match.start });
+        editor.setSelection(range);
+        editor.revealRangeInCenterIfOutsideViewport(range);
+      };
+      selectMatch();
+      // Bind may have been waiting for live state. Never carry the old selection to another file.
+      if (!this.solo(path)) void this.readyDoc(path).then(() => {
+        if (this.active === path && this.editor === editor && editor.getModel() === model && this.current(path) === before) selectMatch();
+      }).catch(() => {});
+    }
+    this.ui?.fileSelected();
+    this.editor?.focus();
+  }
+
+  private replacementBlocked(): boolean {
+    const editable = this.access.role === "editor" || this.access.role === "owner";
+    return !editable || !!this.lost || this.disposed || this.opening || this.busy || this.anyBusy || this.importing || this.moving || this.formatting || this.restructuring > 0;
+  }
+
+  private async prepareReplacements(files: ReplacementFile[], replacement: string): Promise<ReplacementPlan> {
+    if (this.replacing || this.replacementBlocked()) throw new Error("Wait for running commands or workspace operations to finish; replacement requires edit access.");
+    const plan: ReplacementPlan = { files: [], replacement, skipped: [] };
+    const targets = await Promise.all(files.map(async (file) => {
+      if (this.current(file.path) !== file.before || tooBigToShare(file.before.length, () => file.before)) return null;
+      const doc = await this.readyDoc(file.path);
+      return doc.ready && this.current(file.path) === file.before ? file : null;
+    }));
+    for (let i = 0; i < files.length; i++) {
+      const file = targets[i];
+      if (!file || this.replacementBlocked()) {
+        plan.skipped.push(`${files[i]!.path} (changed, read-only, or no longer editable)`); continue;
+      }
+      const after = replaced(file.before, file.matches, replacement);
+      if (after === file.before) { plan.skipped.push(`${file.path} (unchanged)`); continue; }
+      if (tooBigToShare(after.length, () => after)) { plan.skipped.push(`${file.path} (replacement exceeds the editing limit)`); continue; }
+      plan.files.push(file);
+    }
+    return plan;
+  }
+
+  private async applyReplacements(plan: ReplacementPlan): Promise<string> {
+    if (this.replacing || this.replacementBlocked()) throw new Error("Replacement requires edit access and an idle workspace.");
+    this.replacing = true;
+    const skipped = [...plan.skipped];
+    let count = 0, files = 0;
+    let stopped = "";
+    try {
+      for (const file of plan.files) {
+        if (this.replacementBlocked() || this.current(file.path) !== file.before) {
+          skipped.push(`${file.path} (changed or no longer editable)`); continue;
+        }
+        const doc = this.docs.get(file.path);
+        if (!doc?.ready || doc.contents() !== file.before || tooBigToShare(file.before.length, () => file.before)) {
+          skipped.push(`${file.path} (changed or read-only)`); continue;
+        }
+        const edits = file.matches.map((m) => ({ at: m.start, remove: m.end - m.start, insert: plan.replacement }));
+        const model = this.texts.existing(file.path);
+        if (doc.bound && model && this.monaco) {
+          model.pushStackElement();
+          model.pushEditOperations([], edits.map((edit) => ({
+            range: this.monaco!.Range.fromPositions(model.getPositionAt(edit.at), model.getPositionAt(edit.at + edit.remove)), text: edit.insert,
+          })), () => null);
+          model.pushStackElement();
+        } else {
+          doc.editMany(edits);
+          this.setFile(file.path, doc.contents());
+        }
+        count += file.matches.length; files++;
+        // Yield between files so role changes and incoming document updates can take effect.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    } catch (e) { stopped = ` Stopped: ${(e as Error).message}. Some files may remain unchanged.`; }
+    finally {
+      if (files) { this.journal(this.dirty); this.saveSoon(); }
+      this.replacing = false; this.search?.invalidate();
+    }
+    const saving = this.saveTrouble ? " Some changes could not be saved; they remain in this browser." : " Changes save automatically; check the workspace status for save errors.";
+    const message = `Applied ${count} ${count === 1 ? "replacement" : "replacements"} in ${files} ${files === 1 ? "file" : "files"}.${skipped.length ? ` Skipped: ${skipped.join("; ")}.` : ""}${stopped}${saving}`;
+    this.say(stopped || this.saveTrouble ? "error" : "", message);
+    return message;
+  }
+
   private wire(): void {
+    if (this.ui) this.search = new ProjectSearch(this.ui, {
+      files: () => [
+        ...[...this.texts.keys()].map((path) => ({ path, text: this.current(path) })),
+        ...[...this.binaries.keys()].filter((p) => !this.texts.has(p) && !ignored(p)).map((path) => ({ path })),
+      ],
+      folders: () => {
+        const folders = new Set(this.keptFolders());
+        for (const path of [...this.texts.keys(), ...this.binaries.keys()]) {
+          const parts = path.split("/"); parts.pop();
+          while (parts.length) { folders.add(parts.join("/")); parts.pop(); }
+        }
+        return [...folders].sort();
+      },
+      canReplace: () => (this.access.role === "editor" || this.access.role === "owner") && !this.lost && !this.disposed,
+      open: (path, match, before) => this.openSearchResult(path, match, before),
+      prepare: (files, replacement) => this.prepareReplacements(files, replacement),
+      apply: (plan) => this.applyReplacements(plan),
+    });
     this.el.run.onclick = () => {
       const front = this.session;
       if (!front?.busy) return void this.run();
@@ -3051,6 +3194,7 @@ export class App {
   }
 
   private async run(): Promise<void> {
+    if (this.replacing) return;
     if (this.opening) {
       this.runWanted = true;
       this.say("loading", "opening… — Run starts as soon as the pad is open");
@@ -3517,6 +3661,7 @@ export class App {
     if (held && !this.promoted) toast("You can edit this pad now — reload to join in. Save your copy first, or your changes go.");
     this.promoted = held;
     this.access = next;
+    this.search?.invalidate();
     if (this.viewer && this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -3715,9 +3860,10 @@ export class App {
    * and asked about first if it would replace files that are already here.
    */
   private async importZip(given?: File): Promise<void> {
+    if (this.replacing) return;
     if (this.viewer || this.importing) return;
     const zip = given ?? (await pickZip());
-    if (!zip) return;
+    if (!zip || this.replacing) return;
     if (this.busy || this.anyBusy) return this.say("error", "wait for what is running to finish, then import");
     this.importing = true;
     try {
@@ -3837,7 +3983,7 @@ export class App {
    * for them. Like an import, it never waits for the sandbox to arrive.
    */
   private async move(from: string, folder: boolean, toRaw: string): Promise<void> {
-    if (this.viewer || this.moving) return;
+    if (this.viewer || this.moving || this.replacing) return;
     const to = toRaw.trim().replace(/^\/+|\/+$/g, "");
     if (!to || to === from) return;
     const safe = to.split("/").every((p) => p && p !== "." && p !== ".." && !/[\u0000-\u001f\\]/.test(p)) && new TextEncoder().encode(to).length <= 512;
@@ -4392,6 +4538,7 @@ export class App {
 
   dispose(): void {
     this.disposed = true;
+    this.search?.dispose();
     if (this.saveTimer) clearTimeout(this.saveTimer);
     for (const timer of this.stuck.values()) clearTimeout(timer);
     this.events.abort();

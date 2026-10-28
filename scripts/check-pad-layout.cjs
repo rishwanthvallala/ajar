@@ -130,9 +130,11 @@ async function main() {
         await page.getByRole("button", { name: "Files", exact: true }).click();
         assert.equal((await box(".main")).width, mainWidth, "Pad drawer does not compress tools");
         assert.equal(await page.locator("#sidebar").getAttribute("aria-modal"), "true");
-        await page.getByRole("button", { name: "Close files", exact: true }).focus();
+        await page.locator(".side-head .search-toggle").focus();
         await page.keyboard.press("Shift+Tab");
         assert(await page.evaluate(() => document.activeElement?.classList.contains("row")), "Pad drawer wraps focus");
+        await page.keyboard.press("Tab");
+        assert(await page.locator(".side-head .search-toggle").evaluate((node) => node === document.activeElement), "Pad drawer wraps back to the search icon");
         await page.keyboard.press("Escape");
         assert.equal(await page.evaluate(() => document.activeElement?.id), "side-toggle");
       }

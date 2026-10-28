@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "check:search": "node scripts/search-check.mjs",
     "build": "tsc --noEmit && vite build",
     "check": "npm run build && node scripts/browser-check.mjs && node scripts/app-check.mjs && node scripts/terminal-check.mjs && node scripts/user-check.mjs",
     "probe": "npm run build && node scripts/probe-packages.mjs"
@@ -37,6 +38,7 @@
     "@types/node": "^22.20.2",
     "playwright": "^1.60.0",
     "typescript": "^5.9.0",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "ws": "^8.22.0"
   }
 }
