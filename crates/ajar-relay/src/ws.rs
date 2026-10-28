@@ -63,6 +63,14 @@ const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
 /// Silence for this long — pongs count — and the socket is gone.
 const SILENT_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// What a pad page is sent with every ping, which a browser answers but
+/// never shows a page. A page hears it, so it can tell a socket that has
+/// gone quiet from a room where nobody is typing: on a half-open connection
+/// — a laptop that slept, a NAT that forgot it — the page said "2 here" and
+/// saw nothing for minutes (review of 28 October). Peers only: an agent's
+/// `Control` has no such message.
+const BEAT: &str = r#"{"t":"beat"}"#;
+
 fn viewer_may_send(frame: &Frame) -> bool {
     frame.channel == Channel::Doc
         && matches!(frame.payload.first(), Some(&DOC_WANT) | Some(&DOC_NONE))
@@ -77,6 +85,9 @@ pub async fn handle(
 ) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = outbox::channel();
+    // Set once this socket turns out to be a pad page's (`BEAT`).
+    let beats = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let beating = beats.clone();
 
     // Everything written to this socket goes through one task, so the routing
     // side never blocks on a slow reader. The queue behind it is bounded:
@@ -100,6 +111,17 @@ pub async fn handle(
                 _ = ping.tick() => {
                     if sink.send(Message::Ping(Default::default())).await.is_err() {
                         break;
+                    }
+                    if beating.load(std::sync::atomic::Ordering::Relaxed) {
+                        let beat = Frame {
+                            channel: Channel::Control,
+                            stream_id: 0,
+                            target: TARGET_ALL,
+                            payload: BEAT.as_bytes().to_vec(),
+                        };
+                        if sink.send(Message::Binary(Bytes::from(beat.encode()))).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -315,6 +337,9 @@ pub async fn handle(
     };
 
     info!(session = %session_id, participant = me.id, role = ?me.role, "joined");
+    if me.role == Role::Peer {
+        beats.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 
     let participants = registry
         .with(&session_id, |s| s.participants())

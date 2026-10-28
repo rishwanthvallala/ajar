@@ -35,6 +35,13 @@ const CH_DOC = 0x05;
 const MAX_PENDING = 512;
 
 /**
+ * How long a socket may hear nothing before it is taken for gone, once the
+ * relay has shown it beats (`Peers.beats`): past two of its 20 s beats, and
+ * short of the relay's own 60 s.
+ */
+const SILENT_MS = 50_000;
+
+/**
  * The largest document message this page sends. The relay takes 32 MB a
  * frame, and one over that does not close the socket: the relay stops reading
  * it, and everything this page sends after — every file's typing, the nudges
@@ -219,6 +226,17 @@ export class Peers {
     return [...this.others].sort((a, b) => a - b);
   }
   private closed = false;
+  /**
+   * When anything last came on the socket, and whether this relay sends a
+   * beat with each of its pings (ws.rs `BEAT`). A socket that has gone quiet
+   * — half-open, after a laptop slept or a NAT forgot it — stays OPEN here
+   * for minutes while nothing comes, and the page said "2 here" (review of
+   * 28 October). With beats, silence past `SILENT_MS` is a socket gone, and
+   * is dropped and dialled again; without them, a quiet room is only quiet.
+   */
+  private lastHeard = 0;
+  private beats = false;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private shut = false;
   /** The next try after a dropped socket, while one is waiting. */
@@ -255,6 +273,11 @@ export class Peers {
     const ws = new WebSocket(this.url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.lastHeard = Date.now();
+    this.watchdog ??= setInterval(() => {
+      const open = this.ws;
+      if (open && this.beats && open.readyState === WebSocket.OPEN && Date.now() - this.lastHeard > SILENT_MS) this.gone(open);
+    }, 10_000);
 
     ws.onopen = () => {
       // Not the end of backing off: a room that refuses the hello still opened
@@ -274,6 +297,7 @@ export class Peers {
     };
 
     ws.onmessage = (ev) => {
+      this.lastHeard = Date.now();
       if (!(ev.data instanceof ArrayBuffer)) return;
       try {
         this.receive(decode(ev.data));
@@ -282,26 +306,42 @@ export class Peers {
       }
     };
 
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.ws = null;
-      // The relay issues a new participant id on every join and refuses a
-      // frame stamped with any other, so the old one must not survive the
-      // socket that earned it.
-      if (this.id !== null) this.lost = true;
-      this.id = null;
-      this.others.clear();
-      this.events.onPresence(0, null);
-      if (this.closed) return;
-      const wait = Math.min(250 * 2 ** this.attempt, 8000);
-      this.attempt += 1;
-      this.retry = setTimeout(() => {
-        this.retry = null;
-        this.connect();
-      }, wait);
-    };
+    ws.onclose = () => this.gone(ws);
 
     ws.onerror = () => ws.close();
+  }
+
+  /**
+   * The socket is done with — closed, or found silent — and another is
+   * dialled after a wait. A silent one is not waited for: its close may
+   * never come.
+   */
+  private gone(ws: WebSocket): void {
+    if (this.ws !== ws) return;
+    if (ws.readyState !== WebSocket.CLOSED) {
+      ws.onclose = null;
+      ws.onmessage = null;
+      try {
+        ws.close();
+      } catch {
+        // Already on its way out.
+      }
+    }
+    this.ws = null;
+    // The relay issues a new participant id on every join and refuses a
+    // frame stamped with any other, so the old one must not survive the
+    // socket that earned it.
+    if (this.id !== null) this.lost = true;
+    this.id = null;
+    this.others.clear();
+    this.events.onPresence(0, null);
+    if (this.closed) return;
+    const wait = Math.min(250 * 2 ** this.attempt, 8000);
+    this.attempt += 1;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      this.connect();
+    }, wait);
   }
 
   private codeField(): { code?: string } {
@@ -334,6 +374,8 @@ export class Peers {
           if (!(this.lost && q.channel === CH_DOC)) this.send(q.channel, q.payload, q.streamId);
         }
         this.lost = false;
+      } else if (msg.t === "beat") {
+        this.beats = true;
       } else if (msg.t === "joined") {
         this.others.add((msg as { participant: { id: number } }).participant.id);
         this.events.onPresence(this.others.size, this.id);
@@ -424,6 +466,7 @@ export class Peers {
   close(): void {
     this.closed = true;
     if (this.retry) clearTimeout(this.retry);
+    if (this.watchdog) clearInterval(this.watchdog);
     this.ws?.close();
   }
 

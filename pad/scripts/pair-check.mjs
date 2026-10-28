@@ -89,6 +89,16 @@ async function place(name, label) {
     const Cuttable = function (url, protocols) {
       const ws = window.__cut ? new Real("ws://127.0.0.1:9/") : new Real(url, protocols);
       window.__sockets.push(ws);
+      // Silenced, a socket stays OPEN and hears nothing, as a half-open one
+      // does after a laptop sleeps.
+      let handler = null;
+      Object.defineProperty(ws, "onmessage", {
+        get: () => handler,
+        set: (h) => {
+          handler = h;
+          Real.prototype.__lookupSetter__("onmessage").call(ws, h ? (e) => { if (!ws.__silent) h(e); } : null);
+        },
+      });
       return ws;
     };
     Cuttable.prototype = Real.prototype;
@@ -633,6 +643,29 @@ try {
     await b.context().close();
   }
 
+  // ---- a socket that goes quiet --------------------------------------------
+  // Review of 28 October, liveness: a half-open socket — a laptop that slept,
+  // a NAT that forgot it — stays OPEN in the browser while nothing comes,
+  // and the page said "2 here" and saw nobody's typing for minutes. The
+  // relay sends a page a beat with each ping; a page that hears nothing for
+  // longer than two of them takes the socket for gone and dials again.
+  {
+    const name = `pair-quiet-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: "one\n" }] }) });
+    const [a, b] = await pair(name);
+    // A beat heard first, so A knows this relay sends them.
+    await wait(a, 22_000);
+    const before = await a.evaluate(() => window.__sockets.length);
+    await a.evaluate(() => { for (const ws of window.__sockets) ws.__silent = true; });
+    await caretAt(b, 2, 1);
+    await b.keyboard.type("typed while A heard nothing\n");
+    const back = await a.waitForFunction((n) => window.__sockets.length > n && /typed while A heard nothing/.test(window.__pad.text("main.py") ?? ""), before, { timeout: 90_000 }).then(() => true, () => false);
+    if (back) await agree(a, b, "one\ntyped while A heard nothing\n", "a page whose socket went quiet dials again, and has what was typed meanwhile");
+    else fail(`a socket gone quiet — ${JSON.stringify({ sockets: await a.evaluate(() => window.__sockets.length), before, A: await a.evaluate(() => window.__pad.text("main.py")) })}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a save refused as stale, in a room with somebody else ---------------
   // Review of 28 October, N1, against production: B pressed Run on a 12 s
   // program — a running page puts off reading the pad again — and typed a
@@ -702,6 +735,10 @@ try {
     });
     await w.goto(`${ORIGIN}/${name}`);
     await w.waitForFunction(() => window.__pad && window.monaco?.editor.getEditors()[0]?.getModel(), null, { timeout: 60_000 });
+    // Said, rather than nothing (review of 28 October, liveness).
+    const offline = await w.waitForFunction(() => /Offline/.test(document.getElementById("presence")?.textContent ?? ""), null, { timeout: 15_000 }).then(() => true, () => false);
+    if (offline) ok("a page whose room is out of reach says it is offline");
+    else fail(`a page with no room — presence ${JSON.stringify(await w.evaluate(() => document.getElementById("presence")?.textContent))}`);
     const openIn = async (page, path) => {
       await page.locator(`#files .row.file[data-path="${path}"]`).click();
       await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });

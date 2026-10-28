@@ -76,6 +76,9 @@ const STALE_TRIES = 3;
  */
 const LIVE_SETTLE_MS = 600;
 
+/** How long a page is out of the room before it says it is offline (`App.outSince`). */
+const OFFLINE_AFTER_MS = 5000;
+
 /**
  * Bytes of text a file can hold and still be edited together live. Above it
  * the file opens read-only and is changed from the terminal; its changes
@@ -441,6 +444,14 @@ export class App {
   private me = 1;
   /** The room is shut to this page: an ajar session holds the name. */
   private notLive = false;
+  /**
+   * Since when this page has been out of the room: from the start until the
+   * first welcome, and from each drop until the next. Past `OFFLINE_AFTER_MS`
+   * it says so where the people here are shown. A page whose WebSocket a
+   * proxy blocked said nothing at all, and its typing still saved while
+   * nobody else's reached it (review of 28 October).
+   */
+  private outSince: number | null = Date.now();
   private whoami = "someone";
   /** Who this browser is to the pad, as the store last said. */
   private access: Access = OPEN;
@@ -683,6 +694,14 @@ export class App {
       el.append(mark);
       return;
     }
+    if (this.outSince !== null && Date.now() - this.outSince >= OFFLINE_AFTER_MS) {
+      const mark = document.createElement("span");
+      mark.className = "not-live";
+      mark.textContent = "Offline";
+      mark.title = "Not connected to the others on this pad: your changes still save, but theirs reach this page only once it reconnects, which it keeps trying to.";
+      el.append(mark);
+      return;
+    }
     if (others.length === 0) return;
     for (const id of [this.me, ...others]) {
       const dot = document.createElement("span");
@@ -708,8 +727,11 @@ export class App {
           // in `pair-check.mjs`.
           if (this.inRoom) for (const [path, doc] of this.docs) if (doc.ready) this.atDrop.set(path, { text: doc.contents(), at: Date.now() });
           this.inRoom = false;
+          this.outSince ??= Date.now();
+          this.offlineSoon();
         } else {
           this.inRoom = true;
+          this.outSince = null;
           if (this.atDrop.size) {
             const generation = ++this.dropGeneration;
             setTimeout(() => {
@@ -760,6 +782,14 @@ export class App {
       },
     }, () => codeFor(this.name));
     this.peers.connect();
+    this.offlineSoon();
+  }
+
+  /** The presence shown again once a page still out of the room has been for `OFFLINE_AFTER_MS`. */
+  private offlineSoon(): void {
+    setTimeout(() => {
+      if (!this.disposed && this.outSince !== null) this.renderPresence([]);
+    }, OFFLINE_AFTER_MS + 100);
   }
 
   /**
