@@ -134,6 +134,16 @@ export const BOXED = [
 export const BOX = ".ajar/box.py";
 
 /**
+ * What the boxed tools' aliases run: box.py imported rather than run, so
+ * Python keeps it compiled in `.ajar/__pycache__` beside it and compiles it
+ * again only when it changes. Run as a script, its 290 KB were compiled on
+ * every call — 72 ms of the 110 to 120 each took, against 38 imported
+ * (review of 28 October). The pad never syncs `.ajar` or `__pycache__`.
+ */
+export const BOXRUN = ".ajar/boxrun.py";
+const BOXRUN_PY = "import box\nbox.main()\n";
+
+/**
  * The editor, aliased as `nano` and `edit`.
  *
  * `nano` because that is what people type, and neither nano nor vim can be
@@ -420,6 +430,7 @@ export class Shell {
     const awkBytes = await awk;
     if (awkBytes) await rt.writeBytes(AWK, awkBytes);
     await rt.write(BOX, BOX_PY);
+    await rt.write(BOXRUN, BOXRUN_PY);
     await rt.write(EDIT, EDIT_PY);
     await rt.write(SITE, SITE_PY);
     await rt.write(PADFETCH, PADFETCH_PY);
@@ -436,7 +447,7 @@ export class Shell {
       ),
       // A program run by its path, which this bash does without a hang.
       `alias awk='/workspace/${AWK}'`,
-      ...BOXED.map((name) => `alias ${name}='python /workspace/${BOX} ${name}'`),
+      ...BOXED.map((name) => `alias ${name}='python /workspace/${BOXRUN} ${name}'`),
       ...EDITORS.map((name) => `alias ${name}='python /workspace/${EDIT}'`),
       `alias curl='python /workspace/${CURL}'`,
       // pip installs a `flask` script under .deps/bin, which the shell does

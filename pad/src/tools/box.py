@@ -3219,7 +3219,8 @@ def cmd_zip(argv):
     6 and stored instead when that would not make them smaller, and reported
     with zip's percentages. Python's deflate gives Info-ZIP's sizes for small
     files and a few bytes fewer on large ones, so the percentage for a big
-    file can be a point or so higher than zip's.
+    file can be a point or so higher than zip's. An archive named - goes to
+    standard output, and what zip says then goes to standard error.
     """
     import fnmatch
     import tempfile
@@ -3261,12 +3262,16 @@ def cmd_zip(argv):
     if not operands:
         die("zip", "needs an archive and files: zip [options] archive file ...")
     archive, targets = operands[0], operands[1:]
-    if "." not in os.path.basename(archive):
+    to_stdout = archive == "-"
+    if not to_stdout and "." not in os.path.basename(archive):
         archive += ".zip"
+    # zip says its warnings and errors where its progress goes: on stdout,
+    # unless the archive is going there.
+    say = (sys.stderr if to_stdout else sys.stdout).write
 
     found, names = [], set()
     try:
-        archive_stat = os.stat(archive)
+        archive_stat = None if to_stdout else os.stat(archive)
     except OSError:
         archive_stat = None
 
@@ -3302,23 +3307,22 @@ def cmd_zip(argv):
             names.add(name)
             found.append((name, path, kind))
 
-    # zip says its warnings and errors on stdout, where its progress goes.
     for target in targets:
         if not os.path.lexists(target):
-            sys.stdout.write(f"\tzip warning: name not matched: {target}\n")
+            say(f"\tzip warning: name not matched: {target}\n")
             continue
         add(target.rstrip("/") or target)
     if not found:
-        sys.stdout.write(f"\nzip error: Nothing to do! ({archive})\n")
+        say(f"\nzip error: Nothing to do! ({archive})\n")
         return 12
 
     old_entries = []
     if archive_stat is not None:
         try:
             with zipfile.ZipFile(archive) as old:
-                old_entries = [(info, old.read(info)) for info in old.infolist()]
+                old_entries = [(info, old.read(info)) for info in zip_names(old.infolist())]
         except (zipfile.BadZipFile, OSError):
-            sys.stdout.write(
+            say(
                 "\tzip warning: missing end signature--probably not a zip file (did you\n"
                 "\tzip warning: remember to use binary mode when you transferred it?)\n"
                 "\tzip warning: (if you are trying to read a damaged archive try -F)\n"
@@ -3342,7 +3346,7 @@ def cmd_zip(argv):
                     with open(path, "rb") as f:
                         data = f.read()
                 except OSError:
-                    sys.stdout.write(f"\tzip warning: could not open for reading: {path}\n")
+                    say(f"\tzip warning: could not open for reading: {path}\n")
                     continue
         info.filename, info.create_system = name, 3
         if kind == "dir" or not data or level == 0:
@@ -3354,21 +3358,32 @@ def cmd_zip(argv):
         built[name] = (info, data, method)
         if not quiet:
             how = "stored 0%" if method == zipfile.ZIP_STORED else f"deflated {((200 * (len(data) - packed) // len(data)) + 1) // 2}%"
-            sys.stdout.write(f"{'updating' if name in old_names else '  adding'}: {name} ({how})\n")
+            say(f"{'updating' if name in old_names else '  adding'}: {name} ({how})\n")
 
+    def write(z):
+        for info, data in old_entries:
+            if info.filename in built:
+                new_info, new_data, method = built.pop(info.filename)
+                z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
+            else:
+                z.writestr(info, data, compress_type=info.compress_type)
+        for new_info, new_data, method in built.values():
+            z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
+
+    if to_stdout:
+        import io
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as z:
+            write(z)
+        sys.stdout.buffer.write(buffer.getvalue())
+        return 0
     folder = os.path.dirname(os.path.abspath(archive))
     handle, temporary = tempfile.mkstemp(prefix=".zi", dir=folder)
     os.close(handle)
     try:
         with zipfile.ZipFile(temporary, "w") as z:
-            for info, data in old_entries:
-                if info.filename in built:
-                    new_info, new_data, method = built.pop(info.filename)
-                    z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
-                else:
-                    z.writestr(info, data, compress_type=info.compress_type)
-            for new_info, new_data, method in built.values():
-                z.writestr(new_info, new_data, compress_type=method, compresslevel=level or None)
+            write(z)
         keep_mode_and_times(temporary, stat.S_IMODE(archive_stat.st_mode) if archive_stat else 0o666 & ~zip_umask(), None)
         os.replace(temporary, archive)
     finally:
@@ -3419,6 +3434,24 @@ def zip_mtime(info):
     return time.mktime(info.date_time + (0, 0, -1))
 
 
+def zip_names(infos):
+    """The entries, each named as whoever made the archive meant.
+
+    A name without the UTF-8 flag is cp437 by the letter of the format, and
+    Python reads it so; but Info-ZIP on Linux and macOS writes a name's own
+    bytes, which are UTF-8, and does not set the flag, so café.txt came out as
+    caf├⌐.txt (review of 28 October). Such a name is read again as UTF-8; a
+    real cp437 name with anything past ASCII in it almost never is valid UTF-8.
+    """
+    for info in infos:
+        if not info.flag_bits & 0x800:
+            try:
+                info.filename = info.filename.encode("cp437").decode("utf-8")
+            except UnicodeError:
+                pass
+    return infos
+
+
 def cmd_unzip(argv):
     """Info-ZIP unzip 6.0: extract, -l, -p, -t, -d, -o, -n, -q, -j and member names, as unzip says them.
 
@@ -3427,13 +3460,15 @@ def cmd_unzip(argv):
     unzip does. Options go before the archive: after it, only -d DIR and
     -x NAMES are options, as for unzip, and anything else is a member name.
     A name with ../ in it, or a leading /, is extracted inside the
-    destination with a warning, never outside it.
+    destination with a warning, never outside it. An encrypted member needs
+    its password given with -P: with none, it is skipped as unzip skips it
+    when there is no terminal to ask on.
     """
     import fnmatch
     import time
 
     listing = pipe = testing = overwrite = never = junk = in_excludes = False
-    quiet, dest, archive, includes, excludes = 0, None, None, [], []
+    quiet, dest, archive, includes, excludes, password = 0, None, None, [], [], None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3443,14 +3478,18 @@ def cmd_unzip(argv):
                     listing, pipe, testing = listing or f == "l", pipe or f == "p", testing or f == "t"
                     overwrite, never, junk = overwrite or f == "o", never or f == "n", junk or f == "j"
                     quiet += f == "q"
-                elif f == "d":
-                    dest = a[j + 1 :]
-                    if not dest:
+                elif f in "dP":
+                    value = a[j + 1 :]
+                    if not value:
                         i += 1
-                        dest = argv[i] if i < len(argv) else ""
+                        value = argv[i] if i < len(argv) else ""
+                    if f == "d":
+                        dest = value
+                    else:
+                        password = os.fsencode(value)
                     break
                 else:
-                    die("unzip", f"unsupported option '-{f}'. Supported: -l -p -t -o -n -q -j -d DIR, and -x NAMES after the archive")
+                    die("unzip", f"unsupported option '-{f}'. Supported: -l -p -t -o -n -q -j -d DIR -P PASSWORD, and -x NAMES after the archive")
         elif archive is None:
             archive = a
         elif a == "-d" or (a.startswith("-d") and len(a) > 2):
@@ -3464,7 +3503,7 @@ def cmd_unzip(argv):
             (excludes if in_excludes else includes).append(a)
         i += 1
     if archive is None:
-        sys.stdout.write("UnZip 6.00 (box.py). Usage: unzip [-lptonjq] [-d exdir] file[.zip] [list] [-x xlist] [-d exdir]\n")
+        sys.stdout.write("UnZip 6.00 (box.py). Usage: unzip [-lptonjq] [-P password] [-d exdir] file[.zip] [list] [-x xlist] [-d exdir]\n")
         return 0
     path = next((p for p in (archive, archive + ".zip", archive + ".ZIP") if os.path.isfile(p)), None)
     if path is None:
@@ -3487,8 +3526,39 @@ def cmd_unzip(argv):
         return 9
 
     status = 0
-    members = z.infolist()
+    members = zip_names(z.infolist())
     used_in, used_ex = set(), set()
+    # What the members unzip could not read came to: no password (5, as
+    # unzip says when it cannot ask), a wrong one (82 if nothing else was
+    # read, else 1), a method zipfile cannot undo (81), or damage (2).
+    skipped, read_any = [], False
+
+    def member(info, shown):
+        """The member's bytes, or None, said as unzip says it, when they cannot be had."""
+        nonlocal read_any
+        try:
+            data = z.read(info, pwd=password)
+        except RuntimeError:
+            # zipfile's word for both "encrypted, password required" and "Bad password".
+            why, code = ("unable to get password", 5) if password is None else ("incorrect password", 82)
+        except NotImplementedError:
+            why, code = f"unsupported compression method {info.compress_type}", 81
+        except (zipfile.BadZipFile, EOFError, OSError, ValueError) as e:
+            why, code = f"bad CRC or data ({e})", 2
+        else:
+            read_any = True
+            return data
+        sys.stdout.flush()
+        sys.stderr.write(f"   skipping: {shown:<22}  {why}\n")
+        skipped.append(code)
+        return None
+
+    def skipped_status():
+        if not skipped:
+            return 0
+        if all(code == 82 for code in skipped):
+            return 1 if read_any else 82
+        return max(code for code in skipped if code != 82)
 
     def wanted(info):
         hits = [p for p in includes if fnmatch.fnmatchcase(info.filename, p)]
@@ -3522,25 +3592,21 @@ def cmd_unzip(argv):
         return status
 
     if testing:
-        bad = False
         for info in selected:
-            try:
-                z.read(info)
-                ok = "OK"
-            except (zipfile.BadZipFile, OSError, EOFError) as e:
-                ok, bad = f"bad CRC or data ({e})", True
-            if not quiet:
-                print(f"    testing: {info.filename:<22}   {ok}")
-        print(f"At least one error was detected in {path}." if bad else f"No errors detected in compressed data of {path}.")
+            if member(info, info.filename) is not None and not quiet:
+                print(f"    testing: {info.filename:<22}   OK")
+        print(f"At least one error was detected in {path}." if skipped else f"No errors detected in compressed data of {path}.")
         cautions()
-        return 2 if bad else status
+        return skipped_status() or status
 
     if pipe:
         for info in selected:
             if not info.is_dir():
-                sys.stdout.buffer.write(z.read(info))
+                data = member(info, info.filename)
+                if data is not None:
+                    sys.stdout.buffer.write(data)
         cautions()
-        return status
+        return skipped_status() or status
 
     base = dest or "."
     if dest:
@@ -3594,9 +3660,13 @@ def cmd_unzip(argv):
                     continue
                 elif answer.startswith("r:"):
                     target = shown = answer[2:]
-            if os.path.lexists(target) and not os.path.isdir(target):
-                os.remove(target)
-        data = z.read(info)
+        # Read before anything there is removed: a member that cannot be read
+        # leaves the file it would have replaced alone.
+        data = member(info, shown)
+        if data is None:
+            continue
+        if os.path.lexists(target) and not os.path.isdir(target):
+            os.remove(target)
         if stat.S_ISLNK(mode):
             # unzip makes the links last, once everything they could point at is out.
             if not quiet:
@@ -3625,7 +3695,7 @@ def cmd_unzip(argv):
         stamp = int(zip_mtime(info) * 10**9)
         keep_mode_and_times(target, stat.S_IMODE(mode) & 0o777 or None, (stamp, stamp))
     cautions()
-    return status
+    return max(skipped_status(), status)
 
 
 def unzip_ask(shown):
@@ -3669,6 +3739,16 @@ def unzip_ask(shown):
 # hunk whose outer context lines do not match (fuzz 2, by default), which
 # is how a file quietly becomes something nobody wrote; here such a hunk
 # fails and says so, and -F 2 gets GNU's behaviour for those who want it.
+#
+# git's extended headers are followed as GNU follows them: a rename or a copy
+# patches the file under its new name ("patching file b (renamed from a)")
+# and a rename then removes the old one; "new mode" sets the mode; and a
+# header with no hunks under it — a pure rename, a mode change, an empty file
+# made or deleted — is acted on all the same. A binary diff is skipped with
+# GNU's "git binary diffs are not supported", and the rest still applied. So
+# is git's "Binary files a/x and b/x differ", which says nothing of what to
+# change: GNU says "patching file" and leaves it, or makes it empty when it
+# is new; here it is a skipped file and exit status 1.
 def cmd_patch(argv):
     import re
 
@@ -3943,6 +4023,18 @@ def cmd_patch(argv):
         # say which file it is for, so GNU skips header-less normal diffs.
         need_header = not (inname_given or posix) and forced_type != "normal"
         git = False
+        git_from = None      # the `diff --git` line of a header with no hunk yet
+        move, modes, binary = None, [None, None], False
+
+        def hunkless(*found):
+            """With no arguments: whether the git header being read has something
+            to do without a hunk. With them: that header, as a diff of no hunks."""
+            if not found:
+                return git_from is not None and bool(binary or move or modes != [None, None] or nonexistent != [0, 0])
+            start, end, names, nonexistent_, move_, modes_ = found
+            return dict(type="git", start=start, end=end, names=names, timestr=[None, None], stamps=[-1, -1],
+                        nonexistent=nonexistent_, indent=0, strip_cr=False, nesting=0, prereq=None, git=True,
+                        move=move_, modes=modes_, binary=binary)
         first_command = None
         this_is_command = stars_this = False
         indent = 0
@@ -3981,7 +4073,10 @@ def cmd_patch(argv):
                 words = body[7:].split()
                 prereq = words[0] if words else None
             elif body.startswith(b"diff --git "):
-                git = True
+                if hunkless():
+                    return hunkless(git_from, previous_line, names, nonexistent, move, modes)
+                git, git_from = True, previous_line
+                move, modes, binary, names, nonexistent = None, [None, None], False, [None, None, None], [0, 0]
                 need_header = False
                 parts = body[11:].split()
                 if len(parts) == 2:
@@ -3989,14 +4084,24 @@ def cmd_patch(argv):
                     names[1] = fetchname(parts[1] + b"\n", False)[0]
             elif git and body.startswith(b"deleted file mode "):
                 nonexistent[1] = 2
+                modes[0] = git_mode(body[18:])
             elif git and body.startswith(b"new file mode "):
                 nonexistent[0] = 2
-            elif git and (body.startswith(b"rename ") or body.startswith(b"copy ")):
-                refuse("a git rename or copy")
-            elif git and (body.startswith(b"old mode ") or body.startswith(b"new mode ")):
-                refuse("a git mode change")
+                modes[1] = git_mode(body[14:])
+            elif git and (body.startswith(b"rename from ") or body.startswith(b"rename to ")):
+                # Which names: the `diff --git` line's, as GNU takes them — git
+                # leaves the a/ and b/ off these, so -p cannot apply to them.
+                move = "rename"
+            elif git and (body.startswith(b"copy from ") or body.startswith(b"copy to ")):
+                move = "copy"
+            elif git and body.startswith(b"old mode "):
+                modes[0] = git_mode(body[9:])
+            elif git and body.startswith(b"new mode "):
+                modes[1] = git_mode(body[9:])
             elif git and body.startswith(b"GIT binary patch"):
-                refuse("a git binary patch")
+                binary = "patch"
+            elif git and body.startswith(b"Binary files "):
+                binary = "differs"
             else:
                 t = body
                 level = 0
@@ -4025,7 +4130,7 @@ def cmd_patch(argv):
                     nonexistent[1] = 1 + (not stamps[1])
                 return dict(type="unified", start=previous_line, names=names, timestr=timestr, stamps=stamps,
                             nonexistent=nonexistent, indent=indent, strip_cr=strip_cr, nesting=nesting,
-                            prereq=prereq, git=git)
+                            prereq=prereq, git=git, move=move, modes=modes)
             stars_this = body.startswith(b"********")
             if (forced_type in (None, "context") and stars_last and indent_last == indent
                     and body.startswith(b"*** ")):
@@ -4034,16 +4139,24 @@ def cmd_patch(argv):
                     nonexistent[0] = 1 + (not stamps[0])
                 d = dict(type="context", start=previous_line - 1, names=names, timestr=timestr, stamps=stamps,
                          nonexistent=nonexistent, indent=indent, strip_cr=strip_cr, nesting=nesting,
-                         prereq=prereq, git=git)
+                         prereq=prereq, git=git, move=move, modes=modes)
                 return d
             if (forced_type in (None, "normal") and last_command
                     and (body.startswith(b"< ") or body.startswith(b"> "))):
                 return dict(type="normal", start=previous_line - 1, names=names, timestr=timestr, stamps=stamps,
                             nonexistent=nonexistent, indent=indent, strip_cr=False, nesting=0, prereq=prereq,
-                            git=git)
+                            git=git, move=move, modes=modes)
+        if hunkless():
+            return hunkless(git_from, len(plines), names, nonexistent, move, modes)
         if first_command is not None:
             refuse("an ed script")
         return None
+
+    def git_mode(text):
+        try:
+            return int(text.split()[0], 8)
+        except (IndexError, ValueError):
+            return None
 
     def malformed(k, line):
         fatal(f"malformed patch at line {k}: {os.fsdecode(line.rstrip(NL))}")
@@ -4384,10 +4497,20 @@ def cmd_patch(argv):
             break
         if verbose:
             say(f"  {'L' if not any_patch else 'The next patch l'}ooks like "
-                f"{ {'unified': 'a unified diff', 'context': 'a new-style context diff', 'normal': 'a normal diff'}[info['type']] } to me...\n")
+                f"{ {'unified': 'a unified diff', 'context': 'a new-style context diff', 'normal': 'a normal diff', 'git': 'a git diff'}[info['type']] } to me...\n")
         any_patch = True
         reverse = reverse_flag
         names, nonexistent = info["names"], info["nonexistent"]
+        if info.get("binary"):
+            say(f"File {names[1] or names[0]}: git binary diffs are not supported.\n" if info["binary"] == "patch" else
+                f"File {names[1] or names[0]}: not patched -- the diff says only that the binary files differ.\n")
+            somefailed = True
+            pos = info["end"]
+            continue
+        # A git rename or copy: from the old name to the new, unless a file
+        # to patch was named on the command line, which is then the one.
+        move = info["move"] if explicit is None else None
+        modes = info["modes"]
         if info["indent"] and not silent:
             say(f"(Patch is indented {info['indent']} space{'' if info['indent'] == 1 else 's'}.)\n")
         if info["strip_cr"] and binary:
@@ -4396,7 +4519,13 @@ def cmd_patch(argv):
             say("(Stripping trailing CRs from patch; use --binary to disable.)\n")
         skip_rest = False
         inname = explicit
-        if inname is None:
+        if inname is None and move:
+            source, outname = (names[1], names[0]) if reverse else (names[0], names[1])
+            if source is not None and os.path.isfile(source) and outname is not None:
+                inname = source
+            else:
+                somefailed = True
+        elif inname is None:
             if not posix and (names[0] or names[1]) and names[2]:
                 names[2] = None
             errs, stats = [None] * 3, [None] * 3
@@ -4419,6 +4548,10 @@ def cmd_patch(argv):
                 empty = missing or stats[choice].st_size == 0
                 looks_reversed = (not empty) < nonexistent[reverse ^ empty]
                 if empty and nonexistent[reverse ^ missing] == 1 and nonexistent[(not reverse) ^ missing] == 2:
+                    looks_reversed = False
+                if info["git"] and not missing and empty and nonexistent[not reverse] == 2:
+                    # git's "deleted file mode" for an empty file, which is there
+                    # and empty as it should be: GNU deletes it without asking.
                     looks_reversed = False
                 if looks_reversed:
                     what = "delete" if missing else "empty out" if empty else "create"
@@ -4487,7 +4620,7 @@ def cmd_patch(argv):
 
         # Read the file to patch.
         inlines, in_exists, in_size = [], False, 0
-        outname = outfile if outfile is not None else inname
+        outname = outfile if outfile is not None else outname if move else inname
         if not skip_rest:
             try:
                 with open(inname, "rb") as f:
@@ -4510,8 +4643,9 @@ def cmd_patch(argv):
                 say(f"File {inname} is read-only; trying to patch anyway\n")
             if not skip_rest and not silent:
                 renamed = outname != inname
+                how = ("renamed" if move == "rename" else "copied") if move else "read"
                 say(f"{'checking' if dry else 'patching'} file {outname}" +
-                    (f" (read from {inname})\n" if renamed else "\n"))
+                    (f" ({how} from {inname})\n" if renamed else "\n"))
                 if verbose:
                     say("Using Plan A...\n")
 
@@ -4527,7 +4661,7 @@ def cmd_patch(argv):
         rejects = []
         k = info["start"]
         while True:
-            h, nk = next_hunk(info, k)
+            h, nk = next_hunk(info, k) if info["type"] != "git" else (None, k)
             if h is None:
                 break
             k = nk
@@ -4712,7 +4846,7 @@ def cmd_patch(argv):
             elif verbose or (not silent and (fuzz or in_offset)):
                 say(f"Hunk #{hunk_no} succeeded at {newwhere}" + (f" with fuzz {fuzz}" if fuzz else "") +
                     (f" (offset {in_offset} line{'' if in_offset == 1 else 's'})" if in_offset else "") + ".\n")
-        pos = k
+        pos = info["end"] if info["type"] == "git" else k
 
         if not skip_rest:
             result.extend(inlines[copied:])
@@ -4773,7 +4907,10 @@ def cmd_patch(argv):
                 if not dry:
                     if backup:
                         make_backup(outname)
-                    if failed < hunk_no:
+                    # A git header with no hunks still has a file to write when
+                    # it renames, copies or makes one; a mode change alone has not.
+                    applies = failed < hunk_no or not hunk_no
+                    if applies and (hunk_no or move or not in_exists):
                         parent = os.path.dirname(outname)
                         if parent and not os.path.isdir(parent):
                             os.makedirs(parent, exist_ok=True)
@@ -4782,8 +4919,12 @@ def cmd_patch(argv):
                                 f.write(body)
                         except OSError as e:
                             fatal(f"Can't create file {outname} : {e.strerror}")
-                        if not in_exists:
+                        if not in_exists or move:
                             created_files.add(outname)
+                        if move == "rename" and outname != inname:
+                            os.unlink(inname)
+                    if applies and modes[not reverse] is not None:
+                        keep_mode_and_times(outname, stat.S_IMODE(modes[not reverse]), None)
         elif not skip_rest and output_stream is not None:
             output_stream.write(body)
         if failed:
@@ -7191,7 +7332,9 @@ COMMANDS = {
     "unxz": lambda a: compressor(a, "unxz", __import__("lzma"), ".xz"),
 }
 
-if __name__ == "__main__":
+def main():
+    """The tool `sys.argv[1]` names, on the rest. Run through boxrun.py, which
+    imports this so that Python keeps it compiled (shell.ts BOXRUN)."""
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         sys.stderr.write(f"usage: box.py <{'|'.join(sorted(COMMANDS))}> [args...]\n")
         raise SystemExit(2)
@@ -7206,3 +7349,7 @@ if __name__ == "__main__":
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 0
     raise SystemExit(code)
+
+
+if __name__ == "__main__":
+    main()
