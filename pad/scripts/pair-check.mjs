@@ -86,6 +86,9 @@ async function place(name, label) {
     const Real = window.WebSocket;
     window.__sockets = [];
     window.__cut = false;
+    // Milliseconds each message waits before the page hears it, in order:
+    // a slow link, or a slow machine, as CI's are.
+    window.__lag = 0;
     const Cuttable = function (url, protocols) {
       const ws = window.__cut ? new Real("ws://127.0.0.1:9/") : new Real(url, protocols);
       window.__sockets.push(ws);
@@ -96,7 +99,8 @@ async function place(name, label) {
         get: () => handler,
         set: (h) => {
           handler = h;
-          Real.prototype.__lookupSetter__("onmessage").call(ws, h ? (e) => { if (!ws.__silent) h(e); } : null);
+          const hear = (e) => { if (!ws.__silent) h(e); };
+          Real.prototype.__lookupSetter__("onmessage").call(ws, h ? (e) => (window.__lag ? setTimeout(() => hear(e), window.__lag) : hear(e)) : null);
         },
       });
       return ws;
@@ -646,7 +650,9 @@ try {
   // ---- a file renamed while somebody types in it ---------------------------
   // Review of 28 October, against production: B typed in notes.txt, a key
   // every 100 ms, while A renamed it; B's editor followed the file and let go
-  // of the keyboard, and 9 of 38 keystrokes landed.
+  // of the keyboard, and 9 of 38 keystrokes landed. A hears B 400 ms late, so
+  // keys B typed have not reached A when A moves the file: on CI's slower
+  // machines, without the lag here, the two keys in flight were lost.
   {
     const name = `pair-renametyping-${Date.now().toString(36)}`;
     await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.txt", content: "start\n" }, { path: "other.txt", content: "x\n" }] }) });
@@ -659,6 +665,7 @@ try {
     await openIn(a, "notes.txt");
     await openIn(b, "notes.txt");
     await caretAt(b, 2, 1);
+    await a.evaluate(() => { window.__lag = 400; });
     const typed = "abcdefghijklmnopqrstuvwxyz0123456789AB";
     await Promise.all([
       b.keyboard.type(typed, { delay: 100 }),

@@ -1748,6 +1748,12 @@ was one file gone and another arrived; the typist's editor lost the file
 under it and the keyboard, and kept 9 to 12 of 38 keys (review of 28
 October). It keeps showing the old file until the new one is in its place,
 carries what was typed up to then, and gives the editor its focus back.
+What it carries counts as typing when the room's document of the new file
+arrives, too: that document is the mover's, and keys typed here that had not
+reached the mover when it moved are in neither it nor the new file's text.
+Counted only from the moment the new file was shown, they went — two of 38
+on CI's slower machines, none on this Mac, until `pair-check.mjs` held the
+mover's messages back 400 ms (`window.__lag`).
 And a rename that meets a newer save of a file it moves reads the pad again,
 merges into the files it moves, and moves once more: it put the older copy
 under the new name.

@@ -1020,6 +1020,12 @@ export class App {
       const model = this.texts.model(to)!;
       const edit = carryOver(carried.shown, carried.typed, model.getValue());
       if (!edit) continue;
+      // What the file showed is the mover's text, without this typing: the
+      // room's document for it, from the mover, has none of it either, and
+      // binding carries what was typed since it was shown. Taken after the
+      // carry, keys typed here that had not reached the mover when it moved
+      // were in neither, and went — two of 38 on CI's slower machines.
+      if (!this.shownUnbound.has(to)) this.shownUnbound.set(to, model.getValue());
       const start = model.getPositionAt(edit.at);
       const end = model.getPositionAt(edit.at + edit.remove);
       model.applyEdits([{ range: new this.monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.insert }]);
