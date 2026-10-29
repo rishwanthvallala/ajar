@@ -10,7 +10,7 @@ import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-token
 import { applied, carryOver, merge, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId, seedId, utf8Of } from "./editing";
-import { RuntimeNotices, Shell } from "./shell";
+import { BOX, RuntimeNotices, Shell } from "./shell";
 import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, docPayload, MAX_DOC_MESSAGE, Peers, readDoc, streamFor } from "./peers";
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
@@ -751,6 +751,53 @@ async function main() {
     else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(printed.trim())} (exit ${r.exitCode})`);
   }
 
+  // What the review of 28 October found the tools getting wrong. Two archives
+  // as other tools make them: café.txt named in UTF-8 without the flag that
+  // says so, as Info-ZIP on Linux writes it, and a.txt encrypted with the
+  // password "pw" by Info-ZIP's zip -P.
+  const unbase = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  await rt.writeBytes("names.zip", unbase("UEsDBBQAAAAAAABgXF2Fw9zvAgAAAAIAAAAJAAAAY2Fmw6kudHh0YwpQSwECFAMUAAAAAAAAYFxdhcPc7wIAAAACAAAACQAAAAAAAAAAAAAAgAEAAAAAY2Fmw6kudHh0UEsFBgAAAAABAAEANwAAACkAAAAAAA=="));
+  await rt.writeBytes("enc.zip", unbase("UEsDBAoACQAAAFGlXF1sW1L1EgAAAAYAAAAFAAAAYS50eHQGCe2dgpAcTiWCIEbU2ChTCydQSwcIbFtS9RIAAAAGAAAAUEsBAh4DCgAJAAAAUaVcXWxbUvUSAAAABgAAAAUAAAAAAAAAAQAAAKSBAAAAAGEudHh0UEsFBgAAAAABAAEAMwAAAEUAAAAAAA=="));
+  await rt.write("rename/old.txt", "kept\n");
+  await rt.write("rename/move.diff", "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n");
+  for (const [cmd, want] of [
+    // A negative number through %u, %x and %o wraps, as in every other awk;
+    // WebAssembly's plain conversion made it 0.
+    ["awk 'BEGIN { printf \"%u %x %o\\n\", -1, -1, -8 }'", "18446744073709551615 ffffffffffffffff 1777777777777777777770"],
+    ["mkdir -p unz && cd unz && unzip -q ../names.zip && cat café.txt; cd .. && rm -rf unz", "c"],
+    ["unzip -P pw -p enc.zip", "top a"],
+    // No password and no terminal to ask on: skipped, as Info-ZIP skips it,
+    // where it was a Python traceback; and a file it would replace is kept.
+    ["echo mine > a.txt; unzip -o enc.zip < /dev/null > /dev/null 2>&1; echo rc=$?; cat a.txt; rm a.txt", "rc=5\nmine"],
+    // `zip -` is the archive on stdout, not a file called -.zip.
+    ["zip -q - poem.txt > out.zip; unzip -p out.zip | head -1; test -e -.zip && echo made -.zip; rm out.zip", "alpha one 10"],
+    // A git rename, as GNU patch applies it: refused, it had left the files
+    // before it in the patch changed and the ones after it not.
+    ["cd rename && patch -p1 < move.diff && cat new.txt && test ! -e old.txt && echo moved; cd ..; rm -rf rename", "patching file new.txt (renamed from old.txt)\nkept\nmoved"],
+  ] as const) {
+    printed = "";
+    const r = await sh.run(cmd);
+    const said = printed.trim();
+    if (said === want) ok(cmd);
+    else fail(`${cmd} — wanted ${JSON.stringify(want)}, got ${JSON.stringify(said)} (exit ${r.exitCode})`);
+  }
+  await sh.run("rm -f names.zip enc.zip");
+
+  // The boxed tools run box.py imported, through .ajar/boxrun.py, so that
+  // Python compiles its 300 KB once and keeps it in .ajar/__pycache__: run
+  // as a script it was compiled on every command (review of 28 October).
+  printed = "";
+  await sh.run("rev < /dev/null; ls .ajar/__pycache__ 2>/dev/null | grep -c '^box\\.'");
+  is(printed.trim(), "1", "box.py is kept compiled, not compiled for every command");
+  const timed = async (cmd: string) => {
+    const from = performance.now();
+    for (let i = 0; i < 3; i++) await sh.run(cmd);
+    return Math.round((performance.now() - from) / 3);
+  };
+  const imported = await timed("rev < /dev/null");
+  const script = await timed(`python /workspace/${BOX} rev < /dev/null`);
+  ok(`a boxed tool, warm, costs ${imported}ms; box.py run as a script, ${script}ms`);
+
   // Werkzeug's reloader watches on a thread, which cannot start: Flask's
   // debug mode runs without it, and says so. A stand-in for werkzeug.serving,
   // where the real one comes from pip.
@@ -1264,6 +1311,16 @@ async function main() {
     // An emoji changed on one side and a letter added on the other: no half
     // of one anywhere.
     is(merge("a👍b", "a🔥b", "a👍bc"), "a🔥bc", "an emoji changed here and a letter added there are both kept, the emoji whole");
+    // A teammate's page saved the shared document with a line of this page's
+    // half typed, and this page's save, refused as stale, merged its whole
+    // line onto that: the line and its start, both (review of 28 October, N1).
+    const N1 = "import time\n\ndef main():\n    x = 1\n    y = 2\n";
+    const typedHere = "abcimport time\n\ndef main():\n    # other note\n    x = 1\n    y = 2\n";
+    is(merge(N1, typedHere, "abcimport time\n\ndef main():\n    # oth    x = 1\n    y = 2\n"), typedHere, "a line half typed in a teammate's save goes in once, whole");
+    is(merge(N1, "import time\n\ndef main():\n    # oth    x = 1\n    y = 2\n", typedHere.replace("abc", "")), typedHere.replace("abc", ""), "and the other way round, the store further on");
+    is(merge("hello world\n", "hello wor\n", "hello w\n"), "hello w\n", "a deletion caught part way: the further one");
+    is(merge("x = 1\n", "## opened\nx = 1\n", "def f():\n    return 42\nx = 1\n"), "def f():\n    return 42\n## opened\nx = 1\n", "two blocks put in at one place keep their line breaks");
+    is(merge("a\nb\nc\n", "a\nNEW\nb\nc\n", "a\nB!\nc\n"), "a\nNEW\nB!\nc\n", "a line put in before a line somebody changed: both");
     // What putBack writes when the pad already has the change: nothing.
     is(putBack(new Map([["p.txt", { base: "a\n", mine: "b\n" }]]), new Map([["p.txt", "b\n"]])).length, 0, "a file the pad already holds the change in is not written again");
   }

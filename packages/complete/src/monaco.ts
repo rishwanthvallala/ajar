@@ -85,6 +85,14 @@ export function attachCompleter(monaco: Api, editor: Monaco.editor.ICodeEditor, 
     disposeInlineCompletions() {},
   };
   const registration = monaco.languages.registerInlineCompletionsProvider("*", provider);
+  // Ctrl+Right (⌘→ on a Mac) moves by a word, and the end of the line: Monaco
+  // also has it take the next word of the grey text, which then went into a
+  // shared file with no Tab pressed, for everyone (review of 28 October,
+  // "med" taking "ian"). Tab takes a suggestion; nothing else does.
+  const unbound = monaco.editor.addKeybindingRule({
+    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.RightArrow,
+    command: "-editor.action.inlineSuggest.acceptNextWord",
+  });
 
   let settle: ReturnType<typeof setTimeout> | undefined;
   const moved = editor.onDidChangeCursorPosition((e) => {
@@ -104,6 +112,7 @@ export function attachCompleter(monaco: Api, editor: Monaco.editor.ICodeEditor, 
   return {
     dispose() {
       clearTimeout(settle);
+      unbound.dispose();
       registration.dispose();
       moved.dispose();
       typed.dispose();

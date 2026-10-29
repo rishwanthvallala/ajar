@@ -21,6 +21,15 @@ mkdir -p $B
 cp /in/awk/*.c /in/awk/*.h /in/awk/awkgram.y /recipe/wasix.c $B/
 cd $B
 
+# printf's %u, %o, %x and %X: awk makes the number a uintmax_t with a plain
+# cast, which C leaves undefined for a negative one. Where awk usually runs
+# that wraps, so printf "%x", -1 is ffffffffffffffff in this awk, gawk and
+# mawk alike; WebAssembly's conversion gave 0 (review of 28 October). A
+# negative number goes through intmax_t first, which is the wrap they give.
+sed -i -e 's/(uintmax_t) getfval(x)/awk_unsigned(getfval(x))/' \
+  -e '/^#include "awkgram.tab.h"$/a static uintmax_t awk_unsigned(double v) { return v < 0 ? (uintmax_t) (intmax_t) v : (uintmax_t) v; }' run.c
+[ "$(grep -c awk_unsigned run.c)" = 2 ] || { echo "run.c: printf's %u is not converted where it was" >&2; exit 1; }
+
 # The parser, and the table of what each token does, as awk's makefile makes
 # them — with byacc, the makefile's other yacc, rather than bison: the
 # registry's clang runs past its own 64 KiB stack parsing bison's yyparse
@@ -60,5 +69,7 @@ got=$(run '{ s += $2; print $1 } END { print s, 2^10, length("hello") }' in.txt 
 [ "$got" = "a b 3 1024 5 " ] || { echo "awk ran wrong: $got" >&2; exit 1; }
 got=$(run '{ print; exit 3 } END { print "end" }' in.txt | tr '\n' ' '; echo "${PIPESTATUS[0]}")
 [ "$got" = "a 1 end 3" ] || { echo "exit in a rule: $got" >&2; exit 1; }
+got=$(run 'BEGIN { printf "%u %x %o %X %u\n", -1, -1, -8, 255, 2^40 }')
+[ "$got" = "18446744073709551615 ffffffffffffffff 1777777777777777777770 FF 1099511627776" ] || { echo "printf %u of -1: $got" >&2; exit 1; }
 
 cp $B/awk.wasm /out/awk.wasm

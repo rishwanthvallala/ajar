@@ -35,6 +35,13 @@ const CH_DOC = 0x05;
 const MAX_PENDING = 512;
 
 /**
+ * How long a socket may hear nothing before it is taken for gone, once the
+ * relay has shown it beats (`Peers.beats`): past two of its 20 s beats, and
+ * short of the relay's own 60 s.
+ */
+const SILENT_MS = 50_000;
+
+/**
  * The largest document message this page sends. The relay takes 32 MB a
  * frame, and one over that does not close the socket: the relay stops reading
  * it, and everything this page sends after — every file's typing, the nudges
@@ -167,7 +174,8 @@ function decode(buf: ArrayBuffer): Frame {
 
 export interface PeerEvents {
   /** Somebody changed the folder. The sequence they reached, if they said. */
-  onMoved: (seq: number) => void;
+  /** Somebody changed the folder; `renamed`, when they renamed or moved files, says which became which. */
+  onMoved: (seq: number, renamed?: [string, string][]) => void;
   /** How many other browsers are on this link, this one not counted. */
   onPresence: (others: number, id: number | null) => void;
   /** A document update, awareness change, or request for state. */
@@ -219,6 +227,17 @@ export class Peers {
     return [...this.others].sort((a, b) => a - b);
   }
   private closed = false;
+  /**
+   * When anything last came on the socket, and whether this relay sends a
+   * beat with each of its pings (ws.rs `BEAT`). A socket that has gone quiet
+   * — half-open, after a laptop slept or a NAT forgot it — stays OPEN here
+   * for minutes while nothing comes, and the page said "2 here" (review of
+   * 28 October). With beats, silence past `SILENT_MS` is a socket gone, and
+   * is dropped and dialled again; without them, a quiet room is only quiet.
+   */
+  private lastHeard = 0;
+  private beats = false;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private shut = false;
   /** The next try after a dropped socket, while one is waiting. */
@@ -255,6 +274,11 @@ export class Peers {
     const ws = new WebSocket(this.url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.lastHeard = Date.now();
+    this.watchdog ??= setInterval(() => {
+      const open = this.ws;
+      if (open && this.beats && open.readyState === WebSocket.OPEN && Date.now() - this.lastHeard > SILENT_MS) this.gone(open);
+    }, 10_000);
 
     ws.onopen = () => {
       // Not the end of backing off: a room that refuses the hello still opened
@@ -274,6 +298,7 @@ export class Peers {
     };
 
     ws.onmessage = (ev) => {
+      this.lastHeard = Date.now();
       if (!(ev.data instanceof ArrayBuffer)) return;
       try {
         this.receive(decode(ev.data));
@@ -282,26 +307,42 @@ export class Peers {
       }
     };
 
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.ws = null;
-      // The relay issues a new participant id on every join and refuses a
-      // frame stamped with any other, so the old one must not survive the
-      // socket that earned it.
-      if (this.id !== null) this.lost = true;
-      this.id = null;
-      this.others.clear();
-      this.events.onPresence(0, null);
-      if (this.closed) return;
-      const wait = Math.min(250 * 2 ** this.attempt, 8000);
-      this.attempt += 1;
-      this.retry = setTimeout(() => {
-        this.retry = null;
-        this.connect();
-      }, wait);
-    };
+    ws.onclose = () => this.gone(ws);
 
     ws.onerror = () => ws.close();
+  }
+
+  /**
+   * The socket is done with — closed, or found silent — and another is
+   * dialled after a wait. A silent one is not waited for: its close may
+   * never come.
+   */
+  private gone(ws: WebSocket): void {
+    if (this.ws !== ws) return;
+    if (ws.readyState !== WebSocket.CLOSED) {
+      ws.onclose = null;
+      ws.onmessage = null;
+      try {
+        ws.close();
+      } catch {
+        // Already on its way out.
+      }
+    }
+    this.ws = null;
+    // The relay issues a new participant id on every join and refuses a
+    // frame stamped with any other, so the old one must not survive the
+    // socket that earned it.
+    if (this.id !== null) this.lost = true;
+    this.id = null;
+    this.others.clear();
+    this.events.onPresence(0, null);
+    if (this.closed) return;
+    const wait = Math.min(250 * 2 ** this.attempt, 8000);
+    this.attempt += 1;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      this.connect();
+    }, wait);
   }
 
   private codeField(): { code?: string } {
@@ -334,6 +375,8 @@ export class Peers {
           if (!(this.lost && q.channel === CH_DOC)) this.send(q.channel, q.payload, q.streamId);
         }
         this.lost = false;
+      } else if (msg.t === "beat") {
+        this.beats = true;
       } else if (msg.t === "joined") {
         this.others.add((msg as { participant: { id: number } }).participant.id);
         this.events.onPresence(this.others.size, this.id);
@@ -361,8 +404,11 @@ export class Peers {
       return;
     }
     if (f.channel === CH_FS) {
-      const msg = parse(f.payload) as { t: string; seq?: number };
-      if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0);
+      const msg = parse(f.payload) as { t: string; seq?: number; renamed?: unknown };
+      const renamed = Array.isArray(msg.renamed)
+        ? msg.renamed.filter((p): p is [string, string] => Array.isArray(p) && p.length === 2 && typeof p[0] === "string" && typeof p[1] === "string")
+        : undefined;
+      if (msg.t === "moved") this.events.onMoved(msg.seq ?? 0, renamed);
       return;
     }
     if (f.channel === CH_DOC) {
@@ -377,10 +423,25 @@ export class Peers {
     return this.others.size === 0;
   }
 
-  /** Say that the folder moved. Silent when nobody else is here. */
-  moved(seq: number): void {
+  /**
+   * In the room, and somebody else with it: their documents and this page's
+   * are one, and what either types reaches the other through it. Not while
+   * the socket is down or the room has not answered, when `others` is empty
+   * anyway, and a page is on its own however many share the link.
+   */
+  get shared(): boolean {
+    return this.id !== null && this.ws?.readyState === WebSocket.OPEN && this.others.size > 0;
+  }
+
+  /**
+   * Say that the folder moved. Silent when nobody else is here. `renamed`:
+   * which files became which, for a rename or a move, so a place with one of
+   * them open follows it even when its text changed on the way — typed into
+   * meanwhile, by the very person it follows (review of 28 October).
+   */
+  moved(seq: number, renamed?: [string, string][]): void {
     if (this.others.size === 0) return;
-    this.send(CH_FS, json({ t: "moved", seq }));
+    this.send(CH_FS, json(renamed?.length ? { t: "moved", seq, renamed } : { t: "moved", seq }));
   }
 
   /**
@@ -414,6 +475,7 @@ export class Peers {
   close(): void {
     this.closed = true;
     if (this.retry) clearTimeout(this.retry);
+    if (this.watchdog) clearInterval(this.watchdog);
     this.ws?.close();
   }
 

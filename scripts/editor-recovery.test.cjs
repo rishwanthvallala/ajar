@@ -72,6 +72,7 @@ function view(m) {
       getModel: () => m,
       updateOptions() {},
       saveViewState: () => null,
+      hasTextFocus: () => false,
       onDidChangeCursorSelection: () => ({ dispose() {} }),
       createDecorationsCollection: () => ({ set() {}, clear() {} }),
     },
@@ -97,6 +98,7 @@ function fixture(store = {}) {
     known: new Map(), binaries: new Map(), local: new Set(), dirty: new Set(),
     orphaned: new Set(), pendingImages: new Set(), editorViews: new Map(), docs: new Map(), docReady: new Map(),
     defaultFormatted: new Set(), markdownModes: new Map(), viewStates: new Map(),
+    renamedTo: new Map(), mergedAway: new Set(),
     shownUnbound: new Map(), seeds: new Map(), byStream: new Map(),
     awaiting: new Map(), unanswered: new Map(), stuck: new Map(), atDrop: new Map(),
     sessions: [], storeSeq: 1, writeChain: Promise.resolve(),
@@ -231,6 +233,46 @@ for (const roomText of ['base', 'REMOTE base']) test(`remote rename carries pend
   } finally {
     for (const doc of a.docs.values()) doc.destroy();
     globalThis.document = previousDocument;
+  }
+});
+
+test('closed-tab journals recover deleted files without taking a live tab\'s journal', async () => {
+  const storageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const locksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
+  try {
+    for (const canTransfer of [true, false]) {
+      const prefix = 'pad.unsaved.recovery';
+      const entries = new Map([
+        [`${prefix}.closed`, JSON.stringify({'gone.py':{base:'old',text:'old LOCAL'}})],
+        [`${prefix}.live`, JSON.stringify({'live.py':{base:null,text:'still open'}})],
+        [prefix, JSON.stringify({'util.py':{base:'utility',text:'utility LEGACY'}})],
+      ]);
+      const storage = {
+        get length() { return entries.size; }, key: i => [...entries.keys()][i] ?? null,
+        getItem: key => entries.get(key) ?? null, removeItem: key => entries.delete(key),
+        setItem(key, value) { if (!canTransfer && key === `${prefix}.current`) throw new Error('storage full'); entries.set(key, value); },
+      };
+      Object.defineProperty(globalThis, 'localStorage', {configurable:true,value:storage});
+      Object.defineProperty(navigator, 'locks', {configurable:true,value:{request: async (name, _, fn) => fn(name.endsWith('.live') ? null : {})}});
+      const a = fixture(); a.tab = 'current';
+      a.known.set('util.py', 'utility');
+      a.warm = a.say = a.saveSoon = () => {};
+      const opened = []; a.ui = {groups:{open: path => opened.push(path)}};
+      await a.recoverJournal();
+      assert.deepEqual(opened, ['gone.py']);
+      assert.equal(a.texts.get('gone.py').getValue(), 'old LOCAL');
+      assert(a.orphaned.has('gone.py') && a.local.has('gone.py'));
+      assert(!a.dirty.has('gone.py'), 'deleted recovery text is not republished');
+      assert.equal(a.texts.get('util.py').getValue(), 'utility LEGACY');
+      assert(entries.has(`${prefix}.live`), 'an open tab retains its own journal');
+      if (canTransfer) {
+        assert.deepEqual(JSON.parse(entries.get(`${prefix}.current`)), {'gone.py':{base:'old',text:'old LOCAL'}});
+        assert(!entries.has(`${prefix}.closed`));
+      } else assert(entries.has(`${prefix}.closed`), 'keep the source copy if transfer fails');
+    }
+  } finally {
+    if (storageDescriptor) Object.defineProperty(globalThis, 'localStorage', storageDescriptor); else delete globalThis.localStorage;
+    if (locksDescriptor) Object.defineProperty(navigator, 'locks', locksDescriptor); else delete navigator.locks;
   }
 });
 

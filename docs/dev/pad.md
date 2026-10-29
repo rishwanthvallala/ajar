@@ -78,7 +78,11 @@ single `run` for the same reason — these twenty-seven, `awk`, `curl` and `wget
 too, [networking.md](networking.md)), `flask`, and the compilers' `go`, `gofmt`,
 `gcc`, `cc`, `clang++`, `g++` and `c++` — along with `clear` and the shell's
 exports, the two below among them. A warm
-command costs **142 ms**.
+command costs **142 ms**. A boxed one runs `.ajar/boxrun.py`, which imports
+box.py rather than running it, so Python compiles its 290 KB once and keeps
+it in `.ajar/__pycache__` (neither is synced): run as a script it was
+compiled on every command, 158 ms against 103 in headless Chromium on 28
+October.
 
 Those exports are `PIP_TARGET` and `PYTHONPATH`, both pointing at
 `/workspace/.deps`, and neither is a convenience. python's own site-packages
@@ -153,7 +157,13 @@ normal diffs, read by their hunks' counts (a removed line that began `-- ` had
 been taken for a header, and the change silently not made); a hunk found at an
 offset, leaving `.orig` as GNU does; a failed one in a `.rej` in GNU's form
 while the rest apply, and stderr saying when fuzz would have placed it; files
-made and deleted. `-F N` asks for fuzz, and gives GNU's result.
+made and deleted. `-F N` asks for fuzz, and gives GNU's result. Since 28
+October, git's extended headers too: a rename or copy patches the new name
+("patching file b (renamed from a)") and a rename removes the old one, `new
+mode` and `new file mode` set the mode, and a header with no hunks under it —
+a pure rename, a mode change, an empty file made or deleted — is acted on. A
+git rename was refused, after the files before it in the patch had been
+changed. A binary diff is skipped, as GNU skips it, and the rest applied.
 
 `diff`, `cmp`, `xargs` and `find` are ports of GNU's too, since 20 October,
 checked against diffutils 3.10 and findutils 4.9 on the review harness's 118
@@ -190,7 +200,13 @@ Some of what they now do differently from before:
   from the terminal, and with no answer replaces none and exits 1; `-o` and
   `-n` decide without asking. After the archive's name only `-d` and `-x` are
   options; anything else there is a member's name. It used to replace without
-  asking.
+  asking. Since 28 October an encrypted member wants `-P password`: without
+  one it is skipped, "unable to get password", status 5, as unzip says when
+  there is no terminal to ask on — it does not prompt. A name without the
+  UTF-8 flag is read as UTF-8 when it is that, which is how Info-ZIP on Linux
+  and macOS writes one, and as CP437 otherwise (`zip_names`).
+- **`zip -`** writes the archive to standard output, and what zip says to
+  standard error, since 28 October; it made a file called `-.zip`.
 - **`zip` adds to an archive** that exists rather than writing a new one over
   it, and keeps directories. `-R`, which was taken for `-r`, is refused: in
   Info-ZIP it means something else.
@@ -508,6 +524,14 @@ ahead of libc:
   -1` said "write error on /dev/stdout", where a real one dies of SIGPIPE.
 - **8 MiB of stack, first in memory**, so running out traps rather than
   writing over awk's data.
+- **printf's `%u`, `%o`, `%x` and `%X` through `intmax_t`** for a negative
+  number, since 28 October: `run.c` casts the double straight to
+  `uintmax_t`, which C leaves undefined below zero. Natively that wraps, and
+  `printf "%x", -1` is `ffffffffffffffff` in BWK, gawk and mawk alike;
+  WebAssembly's conversion gave 0. `build.sh` makes the one change with
+  `sed`, refuses to build if it no longer finds the line, and checks the
+  result. The recipe without it rebuilt the committed awk.wasm to the byte,
+  so the change is all that differs.
 
 `system()`, `print | "cmd"`, `"cmd" | getline`, `print >` a file and `-f
 prog.awk` all work in the browser. Its limits: a function recursing about 500
@@ -845,6 +869,15 @@ finds nothing, and marks it ready in that same step. No command can run before
 then, so nothing is written into a sandbox mid-command. `app-check.mjs` holds
 one browser's packages back and deletes a file under it.
 
+**A re-read merges into a document nobody else shares**, since 28 October. A
+file this page has a live document of, and nobody in the room to bring it the
+change, has the stored change carried into the document (`carryOver`), with
+whatever was typed here kept. It took the newer version as known without it
+in the document, so its next save went over the teammate's with the right
+base (review of 28 October, C6 again). A document others do share keeps the
+older version as known until the change arrives through the room, so a save
+meanwhile is merged rather than sent over it.
+
 **Only the file on screen is bound to its document.** A file somebody else is
 typing in, while this browser shows another, keeps the editor model it had
 when it was last on screen; its document — and the sandbox, which each update
@@ -903,7 +936,12 @@ found on 2 October and all in `app.ts`'s `readyDoc`, `attach` and `onDoc`:
   in where it was made when the other side left those lines alone, and lines
   both sides changed are compared again by character. Where the two still
   overlap, the same change goes in once; otherwise the other side's text
-  stays and what was typed follows it. Nothing of the base appears twice,
+  stays and what was typed follows it. Since 28 October lines put in just
+  before a line the other side changed are settled with it, by character, and
+  a side whose text is on the way from the base to the other's — the same
+  typing caught part way, which is what a teammate's save of a shared
+  document holds — is taken as that typing once, the further of the two
+  (`settle`, `onTheWay`). Nothing of the base appears twice,
   nothing typed is lost, and nothing somebody else wrote is removed. Until
   then it was one span from the first difference to the last, so two edits
   far apart carried everything between them over somebody else's work
@@ -1046,6 +1084,28 @@ state exchange every join starts carries the same typing anyway (`Peers.lost`).
 `pair-check.mjs` cuts a place's sockets the
 way a sleeping laptop's are cut, types on both sides of the gap, and wants
 one file with both people's work.
+
+The same history can double a line too. A place out of the room that re-read
+a teammate's save while it was gone merged the save into its document; back
+in the room, the state exchange brought the same line from the teammate's
+document as well, and both kept it (review of 28 October, dup-both). A
+document merged into while out of the room is marked (`App.mergedAway`) and
+rejoined, as above, rather than exchanged: the room's copy, and what was
+typed here since the drop.
+
+**A page out of the room says so**, since 28 October: "Offline" where the
+people here are, once it has been out for `OFFLINE_AFTER_MS`, five seconds.
+A page whose WebSocket a proxy blocked showed nothing there, saved its typing,
+and heard nobody's. **A socket gone quiet is dialled again.** After a laptop
+sleeps, or a NAT forgets the connection, the browser can hold a half-open
+socket for minutes with nothing arriving, and the page went on saying
+"2 here". The relay's pings are answered by the browser itself and never
+reach a page, so the relay sends a pad page a small frame of its own, a beat,
+with each ping, every 20 s (`ws.rs`, `BEAT`); a page that has heard beats and
+then nothing for `SILENT_MS`, 50 s, drops the socket and dials again
+(`Peers`'s watchdog). One talking to a relay that sends no beats never takes
+it for silent. `pair-check.mjs` blocks one page's socket and silences
+another's.
 
 ### Seeding the sandbox is a separate problem, with the same shape
 
@@ -1680,6 +1740,24 @@ for the moved one only while it is still recognisably that file — most of its
 lines in common, or a short one most of its text at the same start and end
 (`alike`). `pair-check.mjs` runs both, and fails both against the code before.
 
+**A rename says which file became which**, since 28 October: the `moved`
+nudge carries the old and new names (`Peers.moved`), and a page that has the
+old one open follows it by name (`App.renamedTo`), not by its text. Typing
+had changed the text, so to the re-read the rename of a file being typed in
+was one file gone and another arrived; the typist's editor lost the file
+under it and the keyboard, and kept 9 to 12 of 38 keys (review of 28
+October). It keeps showing the old file until the new one is in its place,
+carries what was typed up to then, and gives the editor its focus back.
+What it carries counts as typing when the room's document of the new file
+arrives, too: that document is the mover's, and keys typed here that had not
+reached the mover when it moved are in neither it nor the new file's text.
+Counted only from the moment the new file was shown, they went — two of 38
+on CI's slower machines, none on this Mac, until `pair-check.mjs` held the
+mover's messages back 400 ms (`window.__lag`).
+And a rename that meets a newer save of a file it moves reads the pad again,
+merges into the files it moves, and moves once more: it put the older copy
+under the new name.
+
 ## Naming in the tree
 
 **Rename is a button on every row, since 24 October** — a pencil, before
@@ -1842,7 +1920,12 @@ the numbers; what matters for the pad:
   keystroke is answered in about 10 ms, and a newer one stops an older one
   between chunks, read from shared memory. The provider asks for no debounce.
 - **Others on the pad.** Grey text is Monaco's, not the document's: nothing
-  reaches the shared document until Tab, and then as typing does.
+  reaches the shared document until Tab, and then as typing does. Only Tab:
+  Monaco also binds Ctrl+Right (Cmd+Right on a Mac) to take the next word of
+  grey text, so the key that moves by a word or to the line's end put
+  suggested text into the shared file (review of 28 October). Unbound while
+  suggestions are on (`packages/complete/src/monaco.ts`); `complete-check.mjs`
+  presses it with grey text showing.
 - **Off.** Suggest beside Format, per browser (`pad.suggest`), drawn struck
   through like Colours when off. Read-only files (too large to share live)
   get no suggestions.
@@ -1895,13 +1978,32 @@ Cache Storage, and the switch.
   whole carries the hash of the version it was typed over too, since 20
   October, and is refused and merged the same way: a page whose room was out
   of reach — so it heard of nobody's saves — wrote its copy over a newer one,
-  and said "saved" (review of 19 October, C6).
+  and said "saved" (review of 19 October, C6). Since 28 October every write
+  does: a command's output, a rename's files and New file too, a file being
+  made with an empty base and a deletion with its own
+  ([pad-store.md](pad-store.md)); they went whole with none, and wrote over a
+  teammate's save this page had not read. The merged text goes back with the
+  version it was merged over, and is read and merged again, up to
+  `STALE_TRIES`, if that moved meanwhile. In a room with somebody else, what
+  the store has and the shared document lacks is given `LIVE_SETTLE_MS` to
+  arrive through the room before the merge is worked out again and put into
+  the document — not the model — as one edit (`App.mergeInto`): a teammate's
+  save holds this page's typing half done, and merging the whole line onto
+  that kept both, `    # oth    x = 1` (N1).
 - **A 413 or 507** keeps the files unsaved (`dirty`) without retrying on its
   own — the next edit tries again (DC-04).
 - **While saving fails**, the unsaved text and the stored text it was typed
   over are kept in `localStorage` (`App.journal`, `pad.unsaved.<name>`),
   cleared as each file saves, and merged back on the next visit
   (`App.recoverJournal`); leaving asks first while there is any (DC-05).
+  Each tab has a key of its own since 28 October, `pad.unsaved.<name>.<tab>`,
+  and holds a Web Lock, `pad.tab.<name>.<tab>`, while it is open; a page
+  recovers only the journals whose lock is free — tabs that closed — merging
+  each onto what it holds, and the old shared key with them. One key for all
+  of a browser's tabs let the second tab offline write over the first's
+  typing (review of 19 October, item 7). A file taken back to what is stored
+  before its save comes round — an undo after Replace — leaves no entry
+  either; it came back at the next visit.
 - **A response body** is under the same deadline as its headers, as an idle
   time, not a total (`request` in store.ts, DC-07).
 - **A zip import** joins the live documents of files it replaces that another
@@ -1977,3 +2079,56 @@ What the reviewer's second look at the deployed pad found, and what changed:
   taken for its header and left out.
 - **Comments in the dark theme** are VS Code's own green, 5.2:1 on the
   editor's background, where Monaco's came to 4.39:1 (`theme.ts`).
+
+## After the re-review of 28 October
+
+A second outside look at the deployed pad (ef6138f), with two people in a
+file, a page whose socket was blocked or went quiet, and the shell's tools
+against their real ones. Each item is in its section; `pair-check.mjs` makes
+every collaboration case and fails each against ef6138f.
+
+- **A save refused as stale in a live room doubled the line** being typed
+  (N1); now merged by character into the document after the room has had a
+  moment ([Saving when it goes wrong](#saving-when-it-goes-wrong-audit-of-17-october),
+  [Seeding a document](#seeding-a-document-is-the-subtle-part)).
+- **A page with no room overwrote after any re-read** (C6 again); a re-read
+  now merges into its document ([How a change travels](#how-a-change-travels)).
+- **Command output, a rename and New file went whole with no version**;
+  every write names one now, and the relay holds a new file and a deletion
+  to theirs ([pad-store.md](pad-store.md)).
+- **A page back in the room after re-reading had a teammate's line twice**
+  (dup-both); it rejoins instead. **One journal for all of a browser's tabs**,
+  and an undo after Replace brought back at the next visit; per tab now.
+- **Nothing said a page was out of the room**, and a half-open socket said
+  "2 here" for minutes; "Offline", and a relay beat that a quiet socket is
+  dialled again without.
+- **A rename took the keyboard from whoever was typing** in the file
+  ([Moving files](#moving-files)), and **Ctrl+Right took a word of grey text**
+  ([Suggestions](#suggestions-as-you-type)).
+- **axe's serious findings**: the search results had `aria-label` on a plain
+  `div`, a name it may not have (`aria-prohibited-attr`); they are a region
+  now. And on an iPad, Monaco's keyboard button had no name; it is "Show the
+  keyboard, to type in the editor".
+- **The tools.** `patch` follows git's renames, copies and modes and acts on
+  a header with no hunks — a pure rename, a mode change, an empty file — as
+  GNU patch 2.8 does in 13 of 15 git diffs tried against it, the other two
+  on purpose (below), where it applied the files before a rename and then
+  refused it. `unzip` reads a name Info-ZIP
+  wrote in UTF-8 without the flag as UTF-8 (`café.txt` was `caf├⌐.txt`), takes
+  `-P`, and skips an encrypted member it has no password for with Info-ZIP's
+  words and status 5, where it was a traceback, leaving the file it would
+  have replaced. `zip -` writes the archive to standard output. awk's printf
+  `%u`, `%o`, `%x` and `%X` of a negative number wrap, as BWK, gawk and mawk
+  do natively, where WebAssembly's conversion made them 0 ([awk](#awk)).
+- **A boxed tool compiled box.py, 290 KB, on every command**, which the
+  review measured as 72 of a command's 110 to 120 ms on a host CPython;
+  imported through `.ajar/boxrun.py`, Python keeps it compiled in
+  `.ajar/__pycache__`. In headless Chromium on this Mac: 103 ms a command,
+  against 158 run as a script (`check.ts` measures both).
+
+Still open: two people in a room whose saves are both refused as stale in the
+same moment each merge for themselves, and within the settle window that can
+still put a change in twice. Deliberately different from GNU: a git "Binary
+files differ" header, which says nothing of what changed, is a skipped file
+and status 1, where GNU says "patching file" and leaves it, or makes a new
+one empty.

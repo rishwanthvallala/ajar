@@ -50,6 +50,9 @@ export class ProjectSearch {
     this.query.setAttribute("autocomplete", "off");
     this.replacement.setAttribute("aria-label", "Replacement text");
     this.status.setAttribute("role", "status");
+    // A region, which a name is allowed on: on a plain div the name was a
+    // serious axe finding (review of 28 October, aria-prohibited-attr).
+    this.results.setAttribute("role", "region");
     this.results.setAttribute("aria-label", "Search results");
     this.results.setAttribute("aria-busy", "false");
     this.matching.append(label("Match case", this.matchCase), label("Whole word", this.wholeWord));

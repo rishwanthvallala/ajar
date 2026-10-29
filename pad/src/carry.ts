@@ -187,9 +187,20 @@ function numbered(texts: string[][]): Pieces[] {
   });
 }
 
-/** Whether `x` is wholly before `y`, so both go in, `x` first. Two insertions at one place are not. */
-function before(x: { from: number; to: number }, y: { from: number; to: number }): boolean {
-  return x.to < y.from || (x.to === y.from && (x.from < x.to || y.from < y.to));
+/**
+ * Whether `x` is wholly before `y`, so both go in, `x` first. Two insertions
+ * at one place are not. Nor, between lines, are lines put in just before a
+ * line the other side changed: at the line before or after it, as written,
+ * they are the same place, and typing a line there arrives in a teammate's
+ * save as the start of that line changed — `    # oth    x = 1` beside
+ * `    # other note` put in above `    x = 1`. Both went in whole until 28
+ * October, the line and its start (review of 28 October, N1). Compared by
+ * character, that is one place too, and comes out right.
+ */
+function before(x: { from: number; to: number }, y: { from: number; to: number }, inLines = false): boolean {
+  if (x.to < y.from) return true;
+  if (x.to !== y.from) return false;
+  return inLines ? x.from < x.to && y.from < y.to : x.from < x.to || y.from < y.to;
 }
 
 /** The merge of three texts in pieces: `inLines` for lines, which may be compared again by character. */
@@ -206,12 +217,12 @@ function combine(base: Pieces, mine: Pieces, theirs: Pieces, inLines: boolean): 
   while (i < ours.length || j < other.length) {
     const a = ours[i];
     const b = other[j];
-    if (a && (!b || before(a, b))) {
+    if (a && (!b || before(a, b, inLines))) {
       upTo(a.from);
       out.push(a.text);
       pos = a.to;
       i++;
-    } else if (b && (!a || before(b, a))) {
+    } else if (b && (!a || before(b, a, inLines))) {
       upTo(b.from);
       out.push(b.text);
       pos = b.to;
@@ -227,11 +238,11 @@ function combine(base: Pieces, mine: Pieces, theirs: Pieces, inLines: boolean): 
       for (;;) {
         const na = ours[i];
         const nb = other[j];
-        if (na && !before(stretch, na)) {
+        if (na && !before(stretch, na, inLines)) {
           mineIn.push(na);
           stretch.to = Math.max(stretch.to, na.to);
           i++;
-        } else if (nb && !before(stretch, nb)) {
+        } else if (nb && !before(stretch, nb, inLines)) {
           theirsIn.push(nb);
           stretch.to = Math.max(stretch.to, nb.to);
           j++;
@@ -254,8 +265,13 @@ function settle(base: Pieces, from: number, to: number, mineIn: Hunk[], theirsIn
   const mine = spliced(base, from, to, mineIn);
   const theirs = spliced(base, from, to, theirsIn);
   if (mine === theirs) return mine;
+  const original = base.parts.slice(from, to).join("");
+  // One side's text on the way from the base to the other's: the same typing
+  // or deleting, caught part way — a teammate's page saved the shared
+  // document mid-word. The further one, once.
+  if (onTheWay(original, theirs, mine)) return mine;
+  if (onTheWay(original, mine, theirs)) return theirs;
   if (inLines) {
-    const original = base.parts.slice(from, to).join("");
     if (original.length + mine.length + theirs.length < MOST_CHARACTERS) {
       // By code point, so no hunk cuts a character in two.
       const [b, m, t] = numbered([Array.from(original), Array.from(mine), Array.from(theirs)]);
@@ -266,6 +282,10 @@ function settle(base: Pieces, from: number, to: number, mineIn: Hunk[], theirsIn
   // added after it — is in their text already, and goes in once.
   const typed = mineIn.map((h) => h.text).join("");
   const alike = theirsIn.map((h) => h.text).join("");
+  // Two things put in at one place, neither part of the other: both, whole.
+  // What they share at an end — a line break, often — is each one's own, and
+  // taken off one of them it joined two lines (`## openedx = 1`).
+  if (original === "") return theirs + typed;
   const shorter = Math.min(typed.length, alike.length);
   let head = 0;
   while (head < shorter && typed.charCodeAt(head) === alike.charCodeAt(head)) head++;
@@ -273,6 +293,24 @@ function settle(base: Pieces, from: number, to: number, mineIn: Hunk[], theirsIn
   while (tail < shorter - head && typed.charCodeAt(typed.length - 1 - tail) === alike.charCodeAt(alike.length - 1 - tail)) tail++;
   [head, tail] = wholeCharacters(typed, head, tail);
   return theirs + typed.slice(head, typed.length - tail);
+}
+
+/**
+ * Whether `middle` lies on the way from `start` to `end` by putting in alone
+ * — each a part of the next — or by taking out alone. Compared by UTF-16
+ * unit, which for putting in and taking out is the same as by character.
+ */
+function onTheWay(start: string, middle: string, end: string): boolean {
+  if (middle === start || middle === end) return false;
+  return (within(start, middle) && within(middle, end)) || (within(end, middle) && within(middle, start));
+}
+
+/** Whether `a` is `b` with nothing, or only some characters, taken out. */
+function within(a: string, b: string): boolean {
+  if (a.length > b.length) return false;
+  let i = 0;
+  for (let j = 0; i < a.length && j < b.length; j++) if (a.charCodeAt(i) === b.charCodeAt(j)) i++;
+  return i === a.length;
 }
 
 /** The base from `from` up to `to`, with `hunks` made to it. */

@@ -719,14 +719,16 @@ async fn read_pad(
         if let Ok(Ok(Some(seq))) =
             tokio::task::spawn_blocking(move || pads.unchanged_since(&name, since)).await
         {
-            return Json(PadBody {
-                exists: true,
-                access: view,
-                seq,
-                files: Default::default(),
-                unchanged: true,
-            })
-            .into_response();
+            return with_bases(
+                Json(PadBody {
+                    exists: true,
+                    access: view,
+                    seq,
+                    files: Default::default(),
+                    unchanged: true,
+                })
+                .into_response(),
+            );
         }
     }
 
@@ -743,22 +745,24 @@ async fn read_pad(
         // `exists` and who you are to this pad, then the stored object's own
         // fields. The stored document starts with `{`, which `open_for_read`
         // left off.
-        Ok(Some(opened)) => stream_json(
+        Ok(Some(opened)) => with_bases(stream_json(
             format!(
                 r#"{{"exists":true,"access":{},"#,
                 serde_json::to_string(&view).unwrap_or_else(|_| "{}".into())
             ),
             opened,
             held,
+        )),
+        Ok(None) => with_bases(
+            Json(PadBody {
+                exists: false,
+                access: view,
+                seq: 0,
+                files: Default::default(),
+                unchanged: false,
+            })
+            .into_response(),
         ),
-        Ok(None) => Json(PadBody {
-            exists: false,
-            access: view,
-            seq: 0,
-            files: Default::default(),
-            unchanged: false,
-        })
-        .into_response(),
         Err(e) => refuse(e).into_response(),
     }
 }
@@ -1179,6 +1183,19 @@ fn card(host: &str, name: &str, title: &str, description: &str) -> axum::respons
 /// when the last byte goes or the client disappears — not when this function
 /// returns, which is before a single byte of the body has moved. Held by the
 /// handler instead, the bound would cover nothing but opening the file.
+/**
+ * A pad read, saying that this relay holds a whole file or a deletion to the
+ * version its `base` names, and an empty `base` to a file not being there
+ * (`pad::Store::write_within`). A page sends those only to a relay that says
+ * so: one that does not refuses an empty base as stale every time.
+ */
+fn with_bases(mut response: axum::response::Response) -> axum::response::Response {
+    response
+        .headers_mut()
+        .insert("x-pad-bases", axum::http::HeaderValue::from_static("1"));
+    response
+}
+
 fn stream_json(
     head: String,
     opened: pad::Opened,
