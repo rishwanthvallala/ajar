@@ -15,6 +15,11 @@
 //   put that older text over the newest typing — a character at a time.
 //
 //   npm run build:pad && cargo build && node pad/scripts/pair-check.mjs
+//
+// CI has no package mirror, so its pages fetch the runtime from Wasmer's CDN,
+// and a download that fails there is a page error here: "unable to load
+// package python/python" failed the run of 29 October with nothing wrong in
+// the pad. Run it again before looking further.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
