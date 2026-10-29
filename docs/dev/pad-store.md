@@ -126,6 +126,16 @@ base64 and is not base64 — an edit is held to what it leaves. Deleting at
 such a path still works, the backslash apart, so a pad holding one from
 before can be cleaned.
 
+## Its limits
+
+A pad's size and files, the store's ceiling, history, the lease, what an
+address may add a day and what an account may hold are settings since 29
+October — `deploy/limits.env`, overridden on the box by
+`/etc/ajar/relay.env` ([operations.md](operations.md#the-storage-limits)) —
+and `Store::open` is given them (`pad::Limits`); the constants in `pad.rs`
+are their defaults, and what the tests run with. `GET /api/limits` says
+them, for the page.
+
 ## A read
 
 The response is the same JSON as before. It is assembled as it is sent: the

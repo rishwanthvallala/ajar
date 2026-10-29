@@ -262,6 +262,13 @@ if [ ! -f /etc/ajar/relay.env ]; then
 fi
 RELAYENV
 
+# The storage limits, the repo's every time (deploy/limits.env). An override
+# for this box alone goes in /etc/ajar/relay.env, read after it, which the
+# deploy leaves alone. The relay's tests have read this file already, so a
+# value the relay would not take does not get here.
+scp -q deploy/limits.env "$HOST:/tmp/ajar-limits.env"
+ssh "$HOST" "$SUDO install -m 644 /tmp/ajar-limits.env /etc/ajar/limits.env && rm -f /tmp/ajar-limits.env"
+
 # The egress endpoint. Node only exists on the box for this — the relay is a
 # static binary — so it is installed on demand rather than in the bootstrap,
 # which keeps a box that never runs it from carrying it.

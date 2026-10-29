@@ -23,6 +23,7 @@ import { starterFor } from "./starters";
 import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, type LocalFetch, vet } from "./fetch-bridge";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64, unstorable } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
+import { DEFAULT_LIMITS, limitsFrom, loadLimits, padLimits } from "./limits";
 import { placesIn, problemsIn } from "./problems";
 import { pipInstalled, requirementLines, requirementName } from "./requirements";
 
@@ -637,6 +638,21 @@ async function main() {
     ] as const) {
       is(said(text), want, `a pasted link: ${JSON.stringify(text.slice(0, 50))}`);
     }
+  }
+
+  // ---- the limits the relay holds a pad to ----
+  //
+  // Asked of the relay (`/api/limits`), so a setting there needs no release
+  // here; the defaults until it answers, and when it cannot.
+  {
+    is(JSON.stringify(limitsFrom({ pad: { bytes: 1048576, files: 7, lease: 1 }, account: {} })), JSON.stringify({ maxFiles: 7, maxBytes: 1048576 }), "the relay's limits are read from its answer");
+    is(limitsFrom({ pad: { bytes: "lots", files: 7 } }), null, "and an answer that is not one is not taken");
+    is(limitsFrom({ pad: { bytes: 0, files: 7 } }), null, "nor one that would hold nothing");
+    is(limitsFrom(null), null, "nor no answer at all");
+    is(padLimits().maxBytes, DEFAULT_LIMITS.maxBytes, "until the relay has said, a pad holds the relay's default");
+    // check.ts is served with no relay behind it: the defaults stand.
+    const heard = await loadLimits();
+    is(heard.maxFiles > 0 && heard.maxBytes > 0, true, "and with no relay to ask, the page goes on by them");
   }
 
   // ---- zips, in and out ----

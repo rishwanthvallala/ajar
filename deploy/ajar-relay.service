@@ -29,10 +29,15 @@ Environment=RUST_LOG=ajar_relay=info
 # afterwards with none of it in use; with the bar fixed at 1 MiB it held 59
 # (measured 11 October, docs/dev/pad-store.md).
 Environment=MALLOC_MMAP_THRESHOLD_=1048576
+# The storage limits — a pad's size and files, the store's, history, the
+# lease, an address's and an account's — from the repo's deploy/limits.env,
+# which every deploy installs here.
+EnvironmentFile=-/etc/ajar/limits.env
 # Signing in: the public origin, and each provider's client id and secret.
 # Kept on the box, root-only, and never in the repository; the deploy creates
 # it with the origin alone and never overwrites it. Without the ids, nobody is
 # offered sign-in and the site works as it did. See docs/dev/operations.md.
+# Read after limits.env, so a limit set here overrides the repo's on this box.
 EnvironmentFile=-/etc/ajar/relay.env
 
 # Creates /var/lib/ajar owned by the service user, so the pad store needs no

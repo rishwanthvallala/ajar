@@ -11,7 +11,8 @@ import type { IconName } from "./icons";
 import { openShare } from "./share";
 import { type Change, type Pad, Store, StoreError } from "./store";
 import { brand, button, clearBusy, confirmDialog, el, icon, isBusy, modal, nameDialog, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";
-import { leftOut, PAD_LIMITS, pickZip, prepareImport, readZip, ZipError } from "./zip";
+import { leftOut, pickZip, prepareImport, readZip, ZipError } from "./zip";
+import { loadLimits } from "./limits";
 
 /** Reasons a provider sends someone back with, that are not failures. */
 const SIGN_IN_CANCELLED = new Set(["access_denied"]);
@@ -458,7 +459,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
     try {
       let prepared;
       try {
-        prepared = prepareImport(await readZip(zip, PAD_LIMITS));
+        prepared = prepareImport(await readZip(zip, await loadLimits()));
       } catch (e) {
         throw new Error(e instanceof ZipError ? e.message : `could not read ${zip.name} as a zip`);
       }

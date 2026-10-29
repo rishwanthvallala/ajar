@@ -238,6 +238,11 @@ impl Growth {
         }
     }
 
+    /// Bytes an address may add in a window.
+    pub fn allowance(&self) -> u64 {
+        self.allowance
+    }
+
     /// Bytes this address may still add in its current window.
     pub fn remaining(&self, ip: IpAddr, now: Instant) -> u64 {
         let spent = self.spent.lock();

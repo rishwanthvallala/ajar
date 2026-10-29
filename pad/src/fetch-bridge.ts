@@ -22,11 +22,12 @@
  * cookies but its own.
  */
 import type { Sandbox } from "@wasmer/sdk";
+import { padLimits } from "./limits";
 
 const DIR = "/workspace/.ajar/fetch";
 const POLL_MS = 40;
 /** As much as a pad holds: a body bigger than that has nowhere to go. */
-export const MAX_BODY = 200 * 1024 * 1024;
+const maxBody = () => padLimits().maxBytes;
 /** Requests made at once; the rest wait their turn. */
 const AT_ONCE = 16;
 
@@ -180,7 +181,7 @@ export async function answer(request: FetchRequest, page: URL, ours: readonly st
       signal,
     });
     const body = await readCapped(res);
-    if (!body) return encodeAnswer({ ok: false, code: 63, error: `Maximum file size exceeded: ${vetted.url.href} is over ${MAX_BODY / 1048576} MB` });
+    if (!body) return encodeAnswer({ ok: false, code: 63, error: `Maximum file size exceeded: ${vetted.url.href} is over ${maxBody() / 1048576} MB` });
     return encodeAnswer({
       ok: true,
       status: res.status,
@@ -204,10 +205,10 @@ export async function answer(request: FetchRequest, page: URL, ours: readonly st
   }
 }
 
-/** The body, or null when it is over MAX_BODY. */
+/** The body, or null when it is over what a pad holds. */
 async function readCapped(res: Response): Promise<Uint8Array | null> {
   const said = Number(res.headers.get("content-length") ?? "0");
-  if (said > MAX_BODY) {
+  if (said > maxBody()) {
     await res.body?.cancel().catch(() => {});
     return null;
   }
@@ -219,7 +220,7 @@ async function readCapped(res: Response): Promise<Uint8Array | null> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > MAX_BODY) {
+    if (size > maxBody()) {
       await reader.cancel().catch(() => {});
       return null;
     }

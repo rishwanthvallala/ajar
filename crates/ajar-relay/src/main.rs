@@ -86,7 +86,7 @@ const PAD_BODY_BUDGET: usize = MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES;
 // are at most twice the budget: 132 MiB against 512 MiB leaves room for the
 // rest of the process. What the store does with a write after that streams,
 // whatever the file's size. The changes and edits a body may hold are capped
-// as it is parsed (`pad::MAX_WRITES`, `pad::MAX_EDITS`), so what they cost as
+// as it is parsed (`pad::MAX_WRITES_READ`, `pad::MAX_EDITS`), so what they cost as
 // structures is a few hundred kilobytes, not a multiple of the body.
 const _: () = assert!(PAD_BODY_BUDGET * 2 < 256 * 1024 * 1024);
 
@@ -167,19 +167,49 @@ struct Args {
     #[arg(long, default_value = "./ajar-pads")]
     pad_dir: String,
 
+    // The storage limits. Each is a flag and an environment variable: the
+    // unit sets none, and reads them from `/etc/ajar/limits.env` — the repo's
+    // `deploy/limits.env`, which every deploy installs — and then from
+    // `/etc/ajar/relay.env`, which no deploy touches, so a value there
+    // overrides it. Sizes take `200MiB`, `4GiB` or a number of bytes.
     /// Bytes every pad together may occupy. Refuses new writes past it.
     ///
     /// The default suits the box this normally runs on. A smaller disk should
     /// say so — the point is to refuse before the disk is gone, and what
     /// "before" means is a property of the disk, not of this program.
-    #[arg(long, default_value_t = pad::MAX_STORE_BYTES)]
+    #[arg(long, env = "AJAR_PAD_STORE_BYTES", default_value_t = pad::MAX_STORE_BYTES, value_parser = size)]
     max_store_bytes: u64,
+
+    /// Bytes one pad may hold.
+    #[arg(long, env = "AJAR_PAD_MAX_BYTES", default_value_t = pad::MAX_BYTES as u64, value_parser = size)]
+    pad_max_bytes: u64,
+
+    /// Files one pad may hold, at most `pad::MAX_FILES_LIMIT`.
+    #[arg(long, env = "AJAR_PAD_MAX_FILES", default_value_t = pad::MAX_FILES)]
+    pad_max_files: usize,
+
+    /// Days a pad nobody opens or writes lasts. An account's never lapse.
+    #[arg(long, env = "AJAR_PAD_LEASE_DAYS", default_value_t = pad::LEASE.as_secs() / 86_400)]
+    pad_lease_days: u64,
+
+    /// Versions one pad's history keeps.
+    #[arg(long, env = "AJAR_PAD_VERSIONS", default_value_t = pad::VERSIONS_KEPT)]
+    pad_versions: usize,
+
+    /// Bytes of files a pad's versions may name between them. The newest
+    /// version is kept whatever its size.
+    #[arg(long, env = "AJAR_PAD_HISTORY_BYTES", default_value_t = pad::HISTORY_BYTES, value_parser = size)]
+    pad_history_bytes: u64,
+
+    /// Days a version is kept.
+    #[arg(long, env = "AJAR_PAD_VERSION_DAYS", default_value_t = pad::VERSION_AGE.as_secs() / 86_400)]
+    pad_version_days: u64,
 
     /// Bytes one address may add to the pad store per day.
     ///
     /// A flag for the same reason the store ceiling is one: so a check can
     /// reach it in a few requests rather than a quarter of a gigabyte.
-    #[arg(long, default_value_t = quota::MAX_PAD_GROWTH_PER_IP)]
+    #[arg(long, env = "AJAR_PAD_GROWTH_PER_ADDRESS", default_value_t = quota::MAX_PAD_GROWTH_PER_IP, value_parser = size)]
     pad_growth_per_address: u64,
 
     /// Read the caller's address from `X-Forwarded-For`.
@@ -207,12 +237,16 @@ struct Args {
     usage_db: Option<String>,
 
     /// Pads one account may own.
-    #[arg(long, default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
+    #[arg(long, env = "AJAR_ACCOUNT_MAX_PADS", default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
     account_max_pads: usize,
 
     /// Bytes one account's pads may hold together.
-    #[arg(long, default_value_t = accounts::MAX_BYTES_PER_ACCOUNT)]
+    #[arg(long, env = "AJAR_ACCOUNT_MAX_BYTES", default_value_t = accounts::MAX_BYTES_PER_ACCOUNT, value_parser = size)]
     account_max_bytes: u64,
+
+    /// Pads one account may give a name of its choosing.
+    #[arg(long, env = "AJAR_ACCOUNT_MAX_NAMED", default_value_t = accounts::MAX_NAMED_PER_ACCOUNT)]
+    account_max_named: usize,
 
     /// Write every pad out as one JSON document each, the way the store kept
     /// them before October 2026, into this directory, and exit. The way back:
@@ -263,8 +297,27 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+    let limits = pad_limits(&args);
+    // Refused at the start, by name, rather than met as odd refusals later.
+    if let Some(problem) = limits.problem() {
+        anyhow::bail!("the pad limits will not do: {problem}");
+    }
+    info!(
+        "pad limits: {} MB and {} files a pad, {} MB in all; a lease of {} days; {} versions, {} MB, {} days; {} MB a day an address; an account {} pads, {} MB, {} named",
+        limits.bytes / (1024 * 1024),
+        limits.files,
+        limits.store_bytes / (1024 * 1024),
+        args.pad_lease_days,
+        limits.versions,
+        limits.history_bytes / (1024 * 1024),
+        args.pad_version_days,
+        args.pad_growth_per_address / (1024 * 1024),
+        args.account_max_pads,
+        args.account_max_bytes / (1024 * 1024),
+        args.account_max_named,
+    );
     let pads = Arc::new(
-        Store::open(&args.pad_dir, args.max_store_bytes)
+        Store::open(&args.pad_dir, limits)
             .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?,
     );
     if let Some(out) = &args.export_pads {
@@ -295,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
             .with_limits(accounts::Limits {
                 pads: args.account_max_pads,
                 bytes: args.account_max_bytes,
-                named: accounts::MAX_NAMED_PER_ACCOUNT,
+                named: args.account_max_named,
             }),
     );
     // An owned pad lasts as long as its account: none of them lapses. Not
@@ -453,12 +506,66 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The store's limits, from the flags or the environment.
+fn pad_limits(args: &Args) -> pad::Limits {
+    pad::Limits {
+        bytes: args.pad_max_bytes,
+        files: args.pad_max_files,
+        store_bytes: args.max_store_bytes,
+        lease: std::time::Duration::from_secs(args.pad_lease_days.saturating_mul(86_400)),
+        versions: args.pad_versions,
+        history_bytes: args.pad_history_bytes,
+        version_age: std::time::Duration::from_secs(args.pad_version_days.saturating_mul(86_400)),
+    }
+}
+
+/// A size as a flag or the environment gives it: `200MiB`, `4GiB`, `512 KB` or a
+/// number of bytes. Binary and decimal units both, as they are written; a
+/// bare `M` or `G` is binary, as a disk's free space is said.
+fn size(text: &str) -> Result<u64, String> {
+    let t = text.trim().replace('_', "");
+    let at = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let (number, unit) = t.split_at(at);
+    let n: u64 = number
+        .parse()
+        .map_err(|_| format!("{text:?} is not a size: give 200MiB, 4GiB or a number of bytes"))?;
+    let times: u64 = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kib" => 1 << 10,
+        "m" | "mib" => 1 << 20,
+        "g" | "gib" => 1 << 30,
+        "kb" => 1_000,
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        _ => {
+            return Err(format!(
+                "{text:?}: the unit is not one of B, KiB, MiB, GiB, KB, MB, GB"
+            ))
+        }
+    };
+    n.checked_mul(times)
+        .ok_or_else(|| format!("{text:?} is too large"))
+}
+
+/// What this relay holds pads, accounts and addresses to: the numbers its
+/// refusals come from, for the page to check against before it sends and to
+/// say in words — a zip too big to import, a download too big to keep. Not a
+/// secret; the documentation says them too.
+async fn limits(State(state): State<AppState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "pad": state.pads.limits(),
+        "account": state.accounts.limits(),
+        "address": { "growth_per_day": state.growth.allowance() },
+    }))
+}
+
 /// Every route the relay answers, and the web client's files behind them when
 /// it serves one. Apart from `main` so the tests can serve exactly this.
 fn router(state: AppState, web: Option<&str>) -> Router {
     let mut app = Router::new()
         .route("/ws", get(upgrade))
         .route("/healthz", get(health))
+        .route("/api/limits", get(limits))
         .route("/install.sh", get(install_script))
         .route("/run.sh", get(run_script))
         // A write's body is read by `receive`, which keeps to
@@ -609,8 +716,8 @@ struct Wrote {
 fn refuse(e: pad::Error) -> (StatusCode, String) {
     let code = match e {
         pad::Error::TooBig { .. }
-        | pad::Error::TooManyFiles
-        | pad::Error::TooManyWrites
+        | pad::Error::TooManyFiles(_)
+        | pad::Error::TooManyWrites(_)
         | pad::Error::TooManyEdits => StatusCode::PAYLOAD_TOO_LARGE,
         // Not the request's fault and worth retrying, which is what this status
         // means and what PAYLOAD_TOO_LARGE would wrongly deny.

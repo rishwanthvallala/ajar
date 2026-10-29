@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 mod splice;
 
-/// Total bytes one pad may hold.
+/// Total bytes one pad may hold, by default ([`Limits::bytes`]).
 ///
 /// 25 MiB until 7 October, 60 until 11 October, 100 until 29 October, 200
 /// since — asked for, for now, with the quotas around it as they were. What kept it down
@@ -49,7 +49,91 @@ mod splice;
 /// a browser sends a bigger write in several.
 pub const MAX_BYTES: usize = 200 * 1024 * 1024;
 
-/// Files one pad may hold.
+/// The most a configured [`Limits::files`] may be: what one request is read
+/// up to ([`MAX_WRITES_READ`]) is fixed, and four times this.
+pub const MAX_FILES_LIMIT: usize = 5_000;
+
+/// What the store holds pads to. Each is a relay flag with an environment
+/// variable (main.rs), set in `deploy/limits.env` and, on the box, overridden
+/// by `/etc/ajar/relay.env`; the constants here are the defaults, and what
+/// `Limits::default()` — every test — runs with.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Limits {
+    /// Bytes one pad may hold: [`MAX_BYTES`].
+    pub bytes: u64,
+    /// Files one pad may hold: [`MAX_FILES`], at most [`MAX_FILES_LIMIT`].
+    pub files: usize,
+    /// Bytes every pad together may hold: [`MAX_STORE_BYTES`].
+    pub store_bytes: u64,
+    /// How long a pad nobody opens or writes lasts: [`LEASE`].
+    #[serde(serialize_with = "seconds")]
+    pub lease: Duration,
+    /// Versions one pad keeps: [`VERSIONS_KEPT`].
+    pub versions: usize,
+    /// Bytes of files a pad's versions may name between them: [`HISTORY_BYTES`].
+    pub history_bytes: u64,
+    /// How old a version may be: [`VERSION_AGE`].
+    #[serde(serialize_with = "seconds")]
+    pub version_age: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            bytes: MAX_BYTES as u64,
+            files: MAX_FILES,
+            store_bytes: MAX_STORE_BYTES,
+            lease: LEASE,
+            versions: VERSIONS_KEPT,
+            history_bytes: HISTORY_BYTES,
+            version_age: VERSION_AGE,
+        }
+    }
+}
+
+impl Limits {
+    /// Changes one request may make: files written, edited or removed.
+    ///
+    /// The page sends at most twice the files a pad holds in one — every file
+    /// removed and as many put in its place, a command that replaced
+    /// everything — so this is twice that again. Nothing bounded it before but
+    /// the 33 MiB body, which holds 2.6 million `{"path":"a"}`: each parsed
+    /// into a struct ten times its size, and each compared with every one
+    /// after it while the write held one of the relay's two write permits
+    /// (audit B10).
+    pub fn writes(&self) -> usize {
+        4 * self.files
+    }
+
+    /// What a configuration may not be, said; `None` when it will do.
+    pub fn problem(&self) -> Option<String> {
+        if self.bytes == 0 || self.files == 0 || self.versions == 0 {
+            return Some("a pad's bytes, files and versions must each be at least 1".into());
+        }
+        if self.files > MAX_FILES_LIMIT {
+            return Some(format!(
+                "a pad may hold at most {MAX_FILES_LIMIT} files, not {}",
+                self.files
+            ));
+        }
+        if self.bytes > self.store_bytes {
+            return Some(format!(
+                "one pad ({} bytes) cannot hold more than every pad together ({} bytes)",
+                self.bytes, self.store_bytes
+            ));
+        }
+        if self.lease < Duration::from_secs(60 * 60) {
+            return Some("a pad's lease must be at least an hour".into());
+        }
+        None
+    }
+}
+
+fn seconds<S: serde::Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(d.as_secs())
+}
+
+/// Files one pad may hold, by default.
 ///
 /// Far below the agent tier's 5,000, and deliberately: a pad is a scratchpad
 /// someone pasted three files into, and every write walks the whole tree
@@ -227,10 +311,11 @@ pub enum Error {
     },
     TooBig {
         bytes: usize,
+        limit: u64,
     },
-    TooManyFiles,
-    /// More changes in one request than [`MAX_WRITES`].
-    TooManyWrites,
+    TooManyFiles(usize),
+    /// More changes in one request than [`Limits::writes`].
+    TooManyWrites(usize),
     /// More edits to one file than [`MAX_EDITS`], or to a request's files
     /// together than [`MAX_EDITS_PER_REQUEST`].
     TooManyEdits,
@@ -256,14 +341,14 @@ impl Error {
             // Quoted as Rust quotes a string, so a tab or a line break in the
             // name shows as `\t` or `\n` rather than breaking the message.
             Error::Unstorable { path, why } => format!("{path:?} cannot be stored: {why}"),
-            Error::TooBig { bytes } => format!(
+            Error::TooBig { bytes, limit } => format!(
                 "{:.1} MB is over the {} MB limit",
                 *bytes as f64 / (1024.0 * 1024.0),
-                MAX_BYTES / (1024 * 1024)
+                limit / (1024 * 1024)
             ),
-            Error::TooManyFiles => format!("a pad holds at most {MAX_FILES} files"),
-            Error::TooManyWrites => {
-                format!("one save changes at most {MAX_WRITES} files — send the rest in another")
+            Error::TooManyFiles(limit) => format!("a pad holds at most {limit} files"),
+            Error::TooManyWrites(limit) => {
+                format!("one save changes at most {limit} files — send the rest in another")
             }
             Error::TooManyEdits => format!(
                 "one save makes at most {MAX_EDITS} edits to a file and {MAX_EDITS_PER_REQUEST} \
@@ -471,15 +556,11 @@ pub struct Write {
     pub edits: Option<Vec<Edit>>,
 }
 
-/// Changes one request may make: files written, edited or removed.
-///
-/// The page sends at most twice [`MAX_FILES`] in one — every file a pad holds
-/// removed and as many put in its place, a command that replaced everything —
-/// so this is twice that again. Nothing bounded it before but the 33 MiB
-/// body, which holds 2.6 million `{"path":"a"}`: each parsed into a struct
-/// ten times its size, and each compared with every one after it while the
-/// write held one of the relay's two write permits (audit B10).
-pub const MAX_WRITES: usize = 4 * MAX_FILES;
+/// What one request's list of writes is read up to, whatever a pad may hold:
+/// it is parsed before the store is asked, so it cannot follow the configured
+/// [`Limits::files`], and is four times the most that may be. The store then
+/// refuses past [`Limits::writes`].
+pub const MAX_WRITES_READ: usize = 4 * MAX_FILES_LIMIT;
 
 /// Edits one change may make to its file. The page sends one — what it
 /// works out between the text the store has and the text it has (carry.ts),
@@ -501,7 +582,7 @@ fn edits<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Edit>>, D:
 }
 
 /// A request's writes as they arrive, kept no further than one past
-/// [`MAX_WRITES`], or than the write whose edits take the request past
+/// [`MAX_WRITES_READ`], or than the write whose edits take the request past
 /// [`MAX_EDITS_PER_REQUEST`]: whichever comes first. What is not kept is read
 /// and dropped. A list cut short is always one the store refuses — it is
 /// longer than a request may be, or has more edits — so nothing is applied
@@ -519,7 +600,7 @@ pub fn writes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Write>, D::E
         ) -> Result<Self::Value, A::Error> {
             let mut kept = Vec::new();
             let mut edits = 0usize;
-            while kept.len() <= MAX_WRITES && edits <= MAX_EDITS_PER_REQUEST {
+            while kept.len() <= MAX_WRITES_READ && edits <= MAX_EDITS_PER_REQUEST {
                 let Some(w) = seq.next_element::<Write>()? else {
                     return Ok(kept);
                 };
@@ -885,6 +966,8 @@ pub struct Store {
     /// The ceiling this store enforces. A field rather than the constant so a
     /// smaller disk can say so, and so a test can reach it without writing 4 GB.
     ceiling: u64,
+    /// What it holds each pad to; `ceiling` is its `store_bytes`.
+    limits: Limits,
     /// One connection, and every change to the store under it: a write's
     /// checks and its transaction are one step, so two writes to one pad
     /// cannot both start from the same version and lose one another.
@@ -980,11 +1063,13 @@ struct Head {
 }
 
 impl Store {
-    /// The ceiling is always explicit. There was a convenience `open` applying
-    /// the default, and with one real caller passing a flag it was only ever
-    /// reached from tests — a constructor that exists for tests is how a default
-    /// diverges from what production runs.
-    pub fn open(dir: impl Into<PathBuf>, ceiling: u64) -> std::io::Result<Self> {
+    /// The limits are always explicit. There was a convenience `open` applying
+    /// the default ceiling, and with one real caller passing a flag it was only
+    /// ever reached from tests — a constructor that exists for tests is how a
+    /// default diverges from what production runs. Tests pass
+    /// `Limits::default()`, which is what the flags default to.
+    pub fn open(dir: impl Into<PathBuf>, limits: Limits) -> std::io::Result<Self> {
+        let ceiling = limits.store_bytes;
         let dir = dir.into();
         let blobs = dir.join("blobs");
         std::fs::create_dir_all(&blobs)?;
@@ -1011,6 +1096,7 @@ impl Store {
             dir,
             blobs,
             ceiling,
+            limits,
             db: Mutex::new(db),
             used: AtomicU64::new(0),
             pinned: Default::default(),
@@ -1131,7 +1217,7 @@ impl Store {
 
     fn lapsed(&self, name: &str, touched_ms: u64) -> bool {
         !self.pinned.read().contains(name)
-            && Duration::from_millis(now_ms().saturating_sub(touched_ms)) > LEASE
+            && Duration::from_millis(now_ms().saturating_sub(touched_ms)) > self.limits.lease
     }
 
     /// Whether the store's database answers, for the readiness check: a row
@@ -1147,6 +1233,11 @@ impl Store {
 
     /// Bytes of the blobs some pad holds right now, and of the last runs
     /// pads keep.
+    /// What this store holds each pad to.
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
     pub fn used(&self) -> u64 {
         self.used.load(Ordering::Relaxed)
     }
@@ -1351,6 +1442,7 @@ impl Store {
     /// what a pad keeps. Returns the change in bytes held.
     fn keep_version(
         tx: &rusqlite::Transaction,
+        limits: &Limits,
         name: &str,
         rows: &BTreeMap<String, Row>,
         seq: u64,
@@ -1374,13 +1466,18 @@ impl Store {
             )?;
             held += Self::count_ref(tx, &row.blob, row.stored, 1, now)?;
         }
-        Ok(held + Self::prune_versions(tx, name, now)?)
+        Ok(held + Self::prune_versions(tx, limits, name, now)?)
     }
 
-    /// Versions past [`VERSIONS_KEPT`], [`HISTORY_BYTES`] or [`VERSION_AGE`],
+    /// Versions past [`Limits::versions`], [`Limits::history_bytes`] or [`Limits::version_age`],
     /// oldest first, let go. The newest is always kept: it is the one a
     /// restore was most likely just made from.
-    fn prune_versions(tx: &rusqlite::Transaction, name: &str, now: u64) -> Result<i64, Error> {
+    fn prune_versions(
+        tx: &rusqlite::Transaction,
+        limits: &Limits,
+        name: &str,
+        now: u64,
+    ) -> Result<i64, Error> {
         let versions: Vec<(i64, u64, u64)> = {
             let mut q = tx.prepare_cached(
                 "SELECT id, at_ms, bytes FROM versions WHERE pad = ?1 ORDER BY id DESC",
@@ -1394,12 +1491,12 @@ impl Store {
             })?;
             rows.collect::<Result<_, _>>()?
         };
-        let oldest = now.saturating_sub(VERSION_AGE.as_millis() as u64);
+        let oldest = now.saturating_sub(limits.version_age.as_millis() as u64);
         let mut total = 0u64;
         let mut held = 0;
         for (i, (id, at, bytes)) in versions.into_iter().enumerate() {
             total += bytes;
-            if i == 0 || (i < VERSIONS_KEPT && total <= HISTORY_BYTES && at >= oldest) {
+            if i == 0 || (i < limits.versions && total <= limits.history_bytes && at >= oldest) {
                 continue;
             }
             held += Self::drop_version(tx, name, id, now)?;
@@ -1640,7 +1737,7 @@ impl Store {
         }
         let now = now_ms();
         let tx = db.transaction()?;
-        let held = Self::keep_version(&tx, name, &rows, head.seq, now)?;
+        let held = Self::keep_version(&tx, &self.limits, name, &rows, head.seq, now)?;
         tx.commit()?;
         self.adjust(held);
         self.release(&db);
@@ -1803,6 +1900,7 @@ impl Store {
         if run.output.len() > LAST_RUN_MAX {
             return Err(Error::TooBig {
                 bytes: run.output.len(),
+                limit: LAST_RUN_MAX as u64,
             });
         }
         if run.command.len() > LAST_RUN_NAME_MAX || run.path.len() > LAST_RUN_NAME_MAX {
@@ -1969,8 +2067,8 @@ impl Store {
         // Counted first, before anything is worked out for any of them. A
         // list cut short as it was read (`writes`, `edits`) is over these by
         // one, so it is refused here like the whole of it.
-        if writes.len() > MAX_WRITES {
-            return Err(Error::TooManyWrites);
+        if writes.len() > self.limits.writes() {
+            return Err(Error::TooManyWrites(self.limits.writes()));
         }
         let mut edits = 0usize;
         for w in writes {
@@ -2055,8 +2153,8 @@ impl Store {
             .zip(&last)
             .filter(|(w, &last)| last && (w.content.is_some() || w.edits.is_some()))
             .count();
-        if kept > MAX_FILES {
-            return Err(Error::TooManyFiles);
+        if kept > self.limits.files {
+            return Err(Error::TooManyFiles(self.limits.files));
         }
 
         // Each new file's blob, written beside the store with nobody waiting:
@@ -2166,13 +2264,14 @@ impl Store {
         // Checked after applying rather than before: a write that replaces a
         // large file with a small one should be allowed even when the pad was
         // already at the limit.
-        if new.len() > MAX_FILES {
-            return Err(Error::TooManyFiles);
+        if new.len() > self.limits.files {
+            return Err(Error::TooManyFiles(self.limits.files));
         }
         let bytes: u64 = new.values().map(|r| r.size).sum();
-        if bytes > MAX_BYTES as u64 {
+        if bytes > self.limits.bytes {
             return Err(Error::TooBig {
                 bytes: bytes as usize,
+                limit: self.limits.bytes,
             });
         }
 
@@ -2209,7 +2308,7 @@ impl Store {
         }
         if due {
             let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
-            held += Self::keep_version(&tx, name, &old, was_seq, now)?;
+            held += Self::keep_version(&tx, &self.limits, name, &old, was_seq, now)?;
         }
         held += Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
         if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
@@ -2467,7 +2566,7 @@ impl Store {
         for (name, bytes, touched_ms) in all {
             let owned = pinned.contains(&name);
             let idle = Duration::from_millis(now.saturating_sub(touched_ms));
-            if !owned && idle > LEASE {
+            if !owned && idle > self.limits.lease {
                 continue;
             }
             census.pads += 1;
@@ -2491,7 +2590,7 @@ impl Store {
     /// Delete everything past its lease, freeing the names, and the blobs
     /// nothing holds or is reading. Returns the names.
     pub fn sweep(&self) -> Vec<String> {
-        let cutoff = now_ms().saturating_sub(LEASE.as_millis() as u64);
+        let cutoff = now_ms().saturating_sub(self.limits.lease.as_millis() as u64);
         let candidates: Vec<String> = {
             let db = self.db.lock();
             let Ok(mut q) = db.prepare("SELECT name FROM pads WHERE touched_ms < ?1") else {
@@ -2650,7 +2749,7 @@ mod tests {
     #[test]
     fn the_census_counts_live_pads_and_leaves_out_lapsed_ones() {
         let dir = tempdir::Dir::new();
-        let s = Store::open(dir.path(), u64::MAX).unwrap();
+        let s = Store::open(dir.path(), ceiling(u64::MAX)).unwrap();
         s.write("fresh", &[put("a.txt", "x")]).unwrap();
         s.write("big", &[put("a.txt", &"y".repeat(5000))]).unwrap();
         s.write("old", &[put("a.txt", "z")]).unwrap();
@@ -2668,7 +2767,7 @@ mod tests {
     #[test]
     fn a_pinned_pad_outlives_its_lease_and_removing_it_frees_its_bytes() {
         let dir = tempdir::Dir::new();
-        let s = Store::open(dir.path(), u64::MAX).unwrap();
+        let s = Store::open(dir.path(), ceiling(u64::MAX)).unwrap();
         s.write("owned", &[put("a.txt", "kept")]).unwrap();
         s.write("anon", &[put("a.txt", "lapses")]).unwrap();
         s.pin("owned");
@@ -2735,7 +2834,7 @@ mod tests {
         // at the per-pad cap fill a 16 GB disk and the relay can then save
         // nothing at all — including for the people who were using it properly.
         let dir = tempdir::Dir::new();
-        let s = Store::open(dir.path(), 3 * 1024 * 1024).unwrap();
+        let s = Store::open(dir.path(), ceiling(3 * 1024 * 1024)).unwrap();
 
         megabyte(&s, "one").unwrap();
         megabyte(&s, "two").unwrap();
@@ -2757,7 +2856,7 @@ mod tests {
     fn a_full_store_still_serves_what_it_already_has() {
         // Refusing new writes is survival; refusing reads would be an outage.
         let dir = tempdir::Dir::new();
-        let s = Store::open(dir.path(), 2 * 1024 * 1024).unwrap();
+        let s = Store::open(dir.path(), ceiling(2 * 1024 * 1024)).unwrap();
         megabyte(&s, "kept").unwrap();
         assert!(megabyte(&s, "extra").is_err(), "the store should be full");
 
@@ -2804,11 +2903,11 @@ mod tests {
         // waiting for a deploy.
         let dir = tempdir::Dir::new();
         {
-            let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+            let s = Store::open(dir.path(), Limits::default()).unwrap();
             megabyte(&s, "kept").unwrap();
             assert!(s.used() > 1024 * 1024);
         }
-        let again = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let again = Store::open(dir.path(), Limits::default()).unwrap();
         assert!(
             again.used() > 1024 * 1024,
             "reopening must count what is already there"
@@ -2830,10 +2929,33 @@ mod tests {
         );
     }
 
+    /// The default limits with another ceiling, as `--max-store-bytes` gives.
+    fn ceiling(bytes: u64) -> Limits {
+        Limits {
+            store_bytes: bytes,
+            ..Limits::default()
+        }
+    }
+
     fn store() -> (Store, tempdir::Dir) {
+        store_with(Limits::default())
+    }
+
+    /// A store held to other limits, as the relay's flags give it.
+    fn store_with(limits: Limits) -> (Store, tempdir::Dir) {
         let dir = tempdir::Dir::new();
-        let store = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let store = Store::open(dir.path(), limits).unwrap();
         (store, dir)
+    }
+
+    /// Pads of a mebibyte and three files, so the limits can be met in a few
+    /// bytes rather than the default's two hundred mebibytes.
+    fn small() -> Limits {
+        Limits {
+            bytes: 1024 * 1024,
+            files: 3,
+            ..Limits::default()
+        }
     }
 
     /// For the tests of how blobs are let go: a version would hold the blob
@@ -3002,10 +3124,10 @@ mod tests {
         // would care.
         let dir = tempdir::Dir::new();
         {
-            let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+            let s = Store::open(dir.path(), Limits::default()).unwrap();
             s.write("keeper", &[put("main.py", "print(1)")]).unwrap();
         }
-        let reopened = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let reopened = Store::open(dir.path(), Limits::default()).unwrap();
         assert_eq!(
             reopened.get("keeper").unwrap().unwrap().files["main.py"].content,
             "print(1)"
@@ -3281,10 +3403,63 @@ mod tests {
     fn replacing_a_large_file_with_a_small_one_is_allowed() {
         // The cap is checked after applying, not before, or a full pad could
         // never be emptied.
-        let (s, _d) = store();
-        s.write("p", &[put("big", &"x".repeat(MAX_BYTES - 10))])
+        let (s, _d) = store_with(small());
+        s.write("p", &[put("big", &"x".repeat(1024 * 1024 - 10))])
             .unwrap();
         assert!(s.write("p", &[put("big", "small")]).is_ok());
+    }
+
+    #[test]
+    fn a_pad_is_held_to_the_limits_it_is_given() {
+        let (s, _d) = store_with(small());
+        let over = s
+            .write("p", &[put("big", &"x".repeat(1024 * 1024 + 1))])
+            .err();
+        assert!(
+            matches!(over, Some(Error::TooBig { limit, .. }) if limit == 1024 * 1024),
+            "{over:?}"
+        );
+        assert_eq!(over.unwrap().message(), "1.0 MB is over the 1 MB limit");
+        let three: Vec<Write> = (0..3).map(|i| put(&format!("f{i}"), "x")).collect();
+        s.write("p", &three).unwrap();
+        let fourth = s.write("p", &[put("f3", "x")]).err();
+        assert_eq!(fourth, Some(Error::TooManyFiles(3)));
+        assert_eq!(fourth.unwrap().message(), "a pad holds at most 3 files");
+        // A request's changes follow the files a pad holds: four times them.
+        let thirteen: Vec<Write> = (0..13).map(|i| delete(&format!("g{i}"))).collect();
+        assert_eq!(
+            s.write("q", &thirteen).err(),
+            Some(Error::TooManyWrites(12))
+        );
+    }
+
+    #[test]
+    fn limits_that_will_not_work_are_said() {
+        assert_eq!(Limits::default().problem(), None);
+        let none = Limits {
+            files: 0,
+            ..Limits::default()
+        };
+        assert!(none.problem().is_some());
+        let too_many = Limits {
+            files: MAX_FILES_LIMIT + 1,
+            ..Limits::default()
+        };
+        assert!(too_many.problem().unwrap().contains("at most 5000 files"));
+        let bigger_than_all = Limits {
+            bytes: 10,
+            store_bytes: 5,
+            ..Limits::default()
+        };
+        assert!(bigger_than_all
+            .problem()
+            .unwrap()
+            .contains("cannot hold more than every pad together"));
+        let brief = Limits {
+            lease: Duration::from_secs(60),
+            ..Limits::default()
+        };
+        assert!(brief.problem().is_some());
     }
 
     #[test]
@@ -3293,7 +3468,10 @@ mod tests {
         let writes: Vec<Write> = (0..=MAX_FILES)
             .map(|i| put(&format!("f{i}"), "x"))
             .collect();
-        assert_eq!(s.write("p", &writes).err(), Some(Error::TooManyFiles));
+        assert_eq!(
+            s.write("p", &writes).err(),
+            Some(Error::TooManyFiles(MAX_FILES))
+        );
     }
 
     #[test]
@@ -3324,8 +3502,9 @@ mod tests {
     fn a_request_is_read_no_further_than_it_may_go() {
         // Audit B10: a request could hold millions of changes, each parsed
         // into a struct many times its size. They are kept to one past the
-        // most a request may make, as they are read, and the store refuses
-        // a list that long as it would have refused the whole of it.
+        // most any configured store may let a request make, as they are read,
+        // and the store refuses a list that long as it would have refused the
+        // whole of it.
         #[derive(Deserialize)]
         struct Body {
             #[serde(deserialize_with = "writes")]
@@ -3336,10 +3515,17 @@ mod tests {
             vec![r#"{"path":"a"}"#; 50_000].join(",")
         );
         let body: Body = serde_json::from_str(&json).unwrap();
-        assert_eq!(body.writes.len(), MAX_WRITES + 1);
+        assert_eq!(body.writes.len(), MAX_WRITES_READ + 1);
         let (s, _d) = store();
-        assert_eq!(s.write("p", &body.writes).err(), Some(Error::TooManyWrites));
-        assert_eq!(s.write("p", &body.writes[..MAX_WRITES]).err(), None);
+        assert_eq!(
+            s.write("p", &body.writes).err(),
+            Some(Error::TooManyWrites(Limits::default().writes()))
+        );
+        assert_eq!(
+            s.write("p", &body.writes[..Limits::default().writes()])
+                .err(),
+            None
+        );
 
         // A file's edits, the same way.
         let edits = vec![r#"{"at":0,"remove":0}"#; 5_000].join(",");
@@ -3526,7 +3712,7 @@ mod tests {
         std::fs::write(dir.path().join("demo.tomb"), b"").unwrap();
         std::fs::write(dir.path().join("other.tomb"), b"").unwrap();
 
-        let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let s = Store::open(dir.path(), Limits::default()).unwrap();
         assert!(!dir.path().join("demo.tomb").exists());
         assert!(!dir.path().join("other.tomb").exists());
         assert!(s.get("demo").unwrap().is_none());
@@ -3541,7 +3727,7 @@ mod tests {
         // pad genuinely do overlap.
         use std::sync::Arc;
         let dir = tempdir::Dir::new();
-        let store = Arc::new(Store::open(dir.path(), MAX_STORE_BYTES).unwrap());
+        let store = Arc::new(Store::open(dir.path(), Limits::default()).unwrap());
         store.write("p", &[put("seed", "0")]).unwrap();
 
         let hands: Vec<_> = (0..8)
@@ -4116,7 +4302,7 @@ mod tests {
         // so a store at its ceiling still took 32 KiB of output for each of
         // as many empty pads as anyone made.
         let dir = tempdir::Dir::new();
-        let s = Store::open(dir.path(), 40 * 1024).unwrap();
+        let s = Store::open(dir.path(), ceiling(40 * 1024)).unwrap();
         let run = |output: &str| LastRun {
             path: "a.py".into(),
             command: "python a.py".into(),
@@ -4162,7 +4348,7 @@ mod tests {
         // And a store opened again counts what runs it has.
         s.set_last_run("three", &big).unwrap();
         drop(s);
-        let s = Store::open(dir.path(), 40 * 1024).unwrap();
+        let s = Store::open(dir.path(), ceiling(40 * 1024)).unwrap();
         assert_eq!(s.used(), big.bytes());
     }
 
@@ -4420,7 +4606,7 @@ mod tests {
             .set_modified(SystemTime::now() - ago)
             .unwrap();
 
-        let s = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let s = Store::open(dir.path(), Limits::default()).unwrap();
         let pad = s.get("old-pad").unwrap().expect("imported");
         assert_eq!((pad.seq, pad.created_ms, pad.updated_ms), (3, 1_000, 2_000));
         assert_eq!(pad.files["main.py"].content, "print('é')\n");
@@ -4437,7 +4623,7 @@ mod tests {
         );
         // And a second start does not bring it in twice.
         drop(s);
-        let again = Store::open(dir.path(), MAX_STORE_BYTES).unwrap();
+        let again = Store::open(dir.path(), Limits::default()).unwrap();
         assert_eq!(again.get("old-pad").unwrap().unwrap().seq, 3);
     }
 
@@ -4462,7 +4648,7 @@ mod tests {
         );
         assert_eq!(back.files.len(), 2);
         // And a store opened on that directory brings it in again.
-        let reopened = Store::open(out.path(), MAX_STORE_BYTES).unwrap();
+        let reopened = Store::open(out.path(), Limits::default()).unwrap();
         assert_eq!(
             reopened.get("p").unwrap().unwrap().files["a.txt"].content,
             "one"

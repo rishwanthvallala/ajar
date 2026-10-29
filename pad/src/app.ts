@@ -30,7 +30,8 @@ import { loadEditor } from "./editor-load";
 import { ICONS } from "./icons";
 import { openOpenShare, openShare } from "./share";
 import { button, clearBusy, confirmDialog, el, modal, nameDialog, toast, toastRegions } from "./ui";
-import { leftOut, makeZip, PAD_LIMITS, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
+import { leftOut, makeZip, pickZip, type Prepared, prepareImport, readZip, save, ZipError, type ZipEntry } from "./zip";
+import { loadLimits } from "./limits";
 import { type Change, type LastRun, mintName, Store, StoreError, storedHash, type Pad, type Version } from "./store";
 import { type Place, problemsIn } from "./problems";
 import { seedFiles } from "./seed";
@@ -587,6 +588,9 @@ export class App {
   }
 
   async start(): Promise<void> {
+    // What the relay holds a pad to, asked now so a download into the
+    // sandbox goes by it too; an import waits for the answer (limits.ts).
+    void loadLimits();
     // This tab's journal is its own for as long as it is open: another tab
     // recovers only the journals of tabs whose lock is free.
     void navigator.locks?.request(this.tabLock(this.tab), () => new Promise<void>((resolve) => {
@@ -4174,8 +4178,9 @@ export class App {
     try {
       this.say("loading", `reading ${zip.name}…`);
       let prepared: Prepared;
+      const limits = await loadLimits();
       try {
-        prepared = prepareImport(await readZip(zip, PAD_LIMITS));
+        prepared = prepareImport(await readZip(zip, limits));
       } catch (e) {
         return this.say("error", e instanceof ZipError ? e.message : `could not read ${zip.name} as a zip`);
       }
@@ -4187,7 +4192,7 @@ export class App {
       const starter = this.untouchedStarter() && files.some((f) => f.encoding === "utf8" && !isMarker(f.path, f.content));
       const after = new Set([...this.texts.keys(), ...this.binaries.keys(), ...files.map((f) => f.path)]);
       if (starter && !files.some((f) => f.path === "main.py")) after.delete("main.py");
-      if (after.size > PAD_LIMITS.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${PAD_LIMITS.maxFiles}`);
+      if (after.size > limits.maxFiles) return this.say("error", `that would make ${after.size} files here; a pad holds at most ${limits.maxFiles}`);
 
       const replacing = files.filter((f) =>
         f.encoding === "base64"

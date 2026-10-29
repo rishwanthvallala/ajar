@@ -366,12 +366,54 @@ The export carries every pad as it stands, with each one's lease as the file's
 modification time, which is what the old relay reads. `pads/legacy/` is the
 store as it was when the new relay first started, and misses everything since.
 
-The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
-together, each file's text counted once however many pads hold it, and since
-18 October each pad's last run as well) and
-`--pad-growth-per-address` (512 MiB a day per address — two and a half full
-pads since a pad went to 200 MiB on 29 October; five at 100). The size of one
-pad is not a flag. A save no
+### The storage limits
+
+What the relay holds pads, accounts and addresses to is configuration, since
+29 October: each limit is a flag of `ajar-relay` and an environment variable,
+and the unit sets them from two files.
+
+- **`deploy/limits.env`**, in the repository, is installed by every deploy as
+  `/etc/ajar/limits.env`. A change here is a commit and a deploy, no code.
+- **`/etc/ajar/relay.env`**, on the box, is read after it, and no deploy
+  touches it, so a line there overrides the same one from the repository —
+  for when a change cannot wait: edit it, then
+  `systemctl restart ajar-relay`. It is the file sign-in's secrets are in.
+  Move the value into `deploy/limits.env` afterwards, or the next person
+  reading the repository is told the wrong number.
+
+| Variable | Flag | Default | |
+|---|---|---|---|
+| `AJAR_PAD_MAX_BYTES` | `--pad-max-bytes` | 200 MiB | one pad |
+| `AJAR_PAD_MAX_FILES` | `--pad-max-files` | 500 | one pad, at most 5,000 |
+| `AJAR_PAD_STORE_BYTES` | `--max-store-bytes` | 4 GiB | every pad together, each file's text counted once however many pads hold it, and each pad's last run |
+| `AJAR_PAD_LEASE_DAYS` | `--pad-lease-days` | 90 | a pad nobody opens or writes; an account's never lapse |
+| `AJAR_PAD_VERSIONS` | `--pad-versions` | 30 | a pad's history |
+| `AJAR_PAD_HISTORY_BYTES` | `--pad-history-bytes` | 200 MiB | of files a pad's versions name; the newest is kept whatever its size |
+| `AJAR_PAD_VERSION_DAYS` | `--pad-version-days` | 30 | how old a version may be |
+| `AJAR_PAD_GROWTH_PER_ADDRESS` | `--pad-growth-per-address` | 512 MiB | what one address may add in a day; growth only |
+| `AJAR_ACCOUNT_MAX_PADS` | `--account-max-pads` | 20 | pads an account owns |
+| `AJAR_ACCOUNT_MAX_BYTES` | `--account-max-bytes` | 250 MiB | what they hold together |
+| `AJAR_ACCOUNT_MAX_NAMED` | `--account-max-named` | 3 | of them with a chosen name |
+
+Sizes take `200MiB`, `4GiB` or a number of bytes. A flag on the command line
+wins over the variable, and the variable over the default. The relay says
+the limits it runs with as it starts (`pad limits: …` in the journal) and
+refuses to start on ones that will not do — a pad bigger than the store, more
+than 5,000 files, a lease under an hour — rather than meet them as odd
+refusals later. And the relay's tests read `deploy/limits.env`: a name it
+does not read or a value it does not take fails CI before a deploy can put
+it on the box, where it would stop the relay starting.
+
+The page asks the relay what they are (`GET /api/limits`, `pad/src/limits.ts`)
+for what it checks before sending — a zip too big to import, a download into
+the sandbox too big to keep — so changing one needs no release of the page.
+Until the relay answers, and from one too old to, it goes by the defaults.
+
+What is still in code: a request's size (33 MiB) and the bodies read at once
+(66 MiB), which `main.rs` holds to the unit's `MemoryMax` at compile time; a
+request's changes, edits and the parse bound on them (`MAX_WRITES_READ`, four
+times the most files a pad may be set to); the per-address rate limits; and
+the agent's own limits. A save no
 longer costs the pad's size — the store streams the files a save names, and
 an edit from one blob to the next — but a single request is still read off
 the wire whole, up to 33 MiB. Since 18 October bodies take room as their bytes
@@ -379,7 +421,7 @@ arrive, out of 66 MiB for every body at once, and two are parsed and stored
 at a time; `main.rs` asserts that the bodies with the text parsed out of
 them, 132 MiB, stay under 256 MiB of the unit's `MemoryMax=512M`. Lowering
 `MemoryMax` is therefore a code change as well. An account's 250 MB holds one
-full pad and a quarter of another.
+full pad and a quarter of another, at the defaults.
 
 What a writer is told when these bite: **408** for a body that sent nothing
 for 20 seconds or had not finished in ten minutes (an upload that stopped

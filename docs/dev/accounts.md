@@ -261,7 +261,8 @@ is all in the page — no relay change, and the original is only read.
   MB on 29 October, for now, with the account total left at 250 — so an
   account holds one full pad and a quarter of another. Every pad together is held to
   4 GB by default, whatever the accounts add up to. The disk has 15 GB free;
-  these are the numbers to revisit, not a promise.
+  these are the numbers to revisit, not a promise — each is a setting, in
+  `deploy/limits.env` ([operations.md](operations.md#the-storage-limits)).
 - **No expiry** while the account exists. Deleting a pad deletes its files and
   retires its name for good — unlike anonymous expiry, which frees it.
 - **Deleting an account** deletes its pads. A read-only archive is the

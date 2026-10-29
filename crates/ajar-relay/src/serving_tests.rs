@@ -79,7 +79,11 @@ impl Relay {
     /// The same, its pad store refusing past `ceiling` bytes.
     pub fn with_ceiling(origin: &str, ceiling: u64) -> Self {
         let dir = Dir::new();
-        let pads = Arc::new(crate::pad::Store::open(dir.0.join("pads"), ceiling).unwrap());
+        let limits = crate::pad::Limits {
+            store_bytes: ceiling,
+            ..Default::default()
+        };
+        let pads = Arc::new(crate::pad::Store::open(dir.0.join("pads"), limits).unwrap());
         let accounts =
             Arc::new(crate::accounts::Accounts::open(&dir.0.join("accounts.db")).unwrap());
         let state = AppState {
@@ -1194,13 +1198,19 @@ async fn a_save_of_more_changes_than_one_may_make_is_refused() {
         answer.body
     );
     assert!(
-        answer.body.contains(&crate::pad::MAX_WRITES.to_string()),
+        answer
+            .body
+            .contains(&crate::pad::Limits::default().writes().to_string()),
         "{}",
         answer.body
     );
     // The most one may make is taken.
     let most = relay
-        .call(write("p", &[], deletions(crate::pad::MAX_WRITES)))
+        .call(write(
+            "p",
+            &[],
+            deletions(crate::pad::Limits::default().writes()),
+        ))
         .await;
     assert_eq!(most.status, StatusCode::OK, "{}", most.body);
 
@@ -1328,4 +1338,66 @@ async fn a_page_that_has_the_pad_is_told_so_rather_than_sent_it_again() {
         ))
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_limits_are_told_as_the_store_holds_pads_to_them() {
+    let relay = Relay::with_ceiling("", 3 * 1024 * 1024 * 1024);
+    let answer = relay.call(get("/api/limits", &[])).await;
+    assert_eq!(answer.status, StatusCode::OK);
+    let limits = answer.json();
+    assert_eq!(limits["pad"]["bytes"], crate::pad::MAX_BYTES as u64);
+    assert_eq!(limits["pad"]["files"], crate::pad::MAX_FILES);
+    assert_eq!(limits["pad"]["store_bytes"], 3u64 * 1024 * 1024 * 1024);
+    assert_eq!(limits["pad"]["lease"], crate::pad::LEASE.as_secs());
+    assert_eq!(
+        limits["account"]["pads"],
+        crate::accounts::MAX_PADS_PER_ACCOUNT
+    );
+    assert_eq!(limits["address"]["growth_per_day"], u64::MAX);
+}
+
+#[test]
+fn a_size_is_read_as_people_write_one() {
+    assert_eq!(crate::size("209715200"), Ok(200 * 1024 * 1024));
+    assert_eq!(crate::size("200MiB"), Ok(200 * 1024 * 1024));
+    assert_eq!(crate::size("200 MiB"), Ok(200 * 1024 * 1024));
+    assert_eq!(crate::size("4GiB"), Ok(4 << 30));
+    assert_eq!(crate::size("4g"), Ok(4 << 30));
+    assert_eq!(crate::size("250MB"), Ok(250_000_000));
+    assert_eq!(crate::size("512 KiB"), Ok(512 << 10));
+    assert_eq!(crate::size("1_000"), Ok(1000));
+    assert!(crate::size("lots").is_err());
+    assert!(crate::size("200 parsecs").is_err());
+    assert!(crate::size("99999999999GiB").is_err());
+}
+
+/// `deploy/limits.env`, which every deploy installs and the unit reads: each
+/// name one the relay has, each value one it takes, and together limits that
+/// will do. A mistake there would stop the relay starting on the box; here it
+/// fails the check before it can be deployed.
+#[test]
+fn the_deployed_limits_are_ones_the_relay_takes() {
+    use clap::{CommandFactory, Parser};
+    let command = crate::Args::command();
+    let mut argv = vec!["ajar-relay".to_owned()];
+    let mut named = 0;
+    for line in include_str!("../../../deploy/limits.env").lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .unwrap_or_else(|| panic!("not NAME=value: {line}"));
+        let arg = command
+            .get_arguments()
+            .find(|a| a.get_env().and_then(|e| e.to_str()) == Some(key))
+            .unwrap_or_else(|| panic!("the relay reads no {key}"));
+        argv.push(format!("--{}={value}", arg.get_long().unwrap()));
+        named += 1;
+    }
+    assert!(named >= 10, "deploy/limits.env names only {named} limits");
+    let args = crate::Args::try_parse_from(&argv).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(crate::pad_limits(&args).problem(), None);
 }
