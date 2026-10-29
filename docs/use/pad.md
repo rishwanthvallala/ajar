@@ -388,6 +388,11 @@ the pad open in more than one. A save made from an older
 copy than the store has — two places editing without the live connection — is
 merged into the newer one, never written over it.
 
+**If someone removes a file you have unsaved typing in**, it stays open for
+you, read-only, with **Save local copy** and **Discard local changes** above
+it. If the file is made again, the new one takes its name and yours moves
+beside it as *name (kept)*, still only in your browser.
+
 A file whose lines end in a mix of styles — some Windows `\r\n`, some `\n`,
 as a CSV can when a script wrote part of it and something else the rest — is
 given one style when it is opened, the one most of its lines already have,

@@ -965,9 +965,15 @@ export class App {
     // what they were, so the next save is refused as stale and merges it in
     // (`writeOverStale`); taken as known, that save went over it.
     const held = new Map<string, string>();
+    let setAside = false;
     this.applyingRemote = true;
     for (const [path, content] of incoming) {
       if (this.known.get(path) === content) continue;
+      // A file kept here after somebody removed it, and made again since:
+      // the pad's takes the name, and what this page kept moves beside it.
+      // Left as it was, the page showed its old copy read-only and never the
+      // new file.
+      if (this.orphaned.has(path)) setAside = this.setAside(path, content, incoming) || setAside;
       // A viewer's own copy keeps what they made of it.
       if (this.local.has(path)) continue;
       // What the pad never keeps, stored by an older page: not shown, not run.
@@ -1008,7 +1014,12 @@ export class App {
     for (const path of this.known.keys()) {
       if (incoming.has(path) || this.local.has(path)) continue;
       const text = this.current(path);
-      if (!moves.has(path) && text !== undefined && text !== this.known.get(path)) {
+      // Kept only for typing of this page's own not yet saved (`dirty`): a
+      // file somebody typed in and deleted before their save went in differs
+      // from what is stored here by their typing, which came through the
+      // room, and every other page open on it kept a read-only copy and
+      // asked before leaving.
+      if (!moves.has(path) && this.dirty.has(path) && text !== undefined && text !== this.known.get(path)) {
         this.journal([path]); this.closeDoc(path); this.dirty.delete(path);
         this.orphaned.add(path); this.local.add(path);
         for (const held of this.editorViews.values()) if (held.editor.getModel() === this.texts.existing(path)) { held.editor.updateOptions({ readOnly: true }); this.paintOrphan(held, path); }
@@ -1068,6 +1079,8 @@ export class App {
     // Selection callbacks can create destination documents synchronously.
     // Carry all pending edits before those callbacks run.
     this.renameEditorTabs(moves);
+    // Tabs that took a kept copy beside them show it.
+    if (setAside) this.ui?.groups.refresh();
     const followed = followFrom !== null && this.texts.has(moves.get(followFrom)!);
     if (followed) {
       this.show(moves.get(followFrom!)!);
@@ -1835,6 +1848,59 @@ export class App {
     const discard = document.createElement("button"); discard.type = "button"; discard.textContent = "Discard local changes";
     discard.onclick = () => { if (confirm(`Discard the retained changes to ${path}?`)) void this.discard(path); };
     actions.append(save, discard); note.append(actions);
+  }
+
+  /**
+   * A file this page kept after somebody removed it, which the pad has again.
+   * Its name is the pad's file now, editable and live; what this page kept,
+   * if it differs, moves to `name (kept).ext` beside it — still only here,
+   * read-only, with its journal entry, so neither copy is lost and the next
+   * visit does not merge the old text into the new file. True when it moved.
+   */
+  private setAside(path: string, content: string, incoming: ReadonlyMap<string, string>): boolean {
+    const retained = this.current(path);
+    const base = this.readJournal()[path]?.base ?? this.known.get(path) ?? "";
+    const downloaded = this.orphanedKept.has(path);
+    this.orphaned.delete(path); this.orphanedKept.delete(path); this.local.delete(path); this.unjournal([path]);
+    const model = this.texts.existing(path);
+    for (const held of this.editorViews.values()) {
+      if (!model || held.editor.getModel() !== model) continue;
+      held.editor.updateOptions({ readOnly: this.solo(path) });
+      held.view.title.hidden = true;
+    }
+    if (retained === undefined || retained === content) return false;
+    const kept = this.keptName(path, incoming);
+    this.setFile(kept, retained);
+    this.orphaned.add(kept); this.local.add(kept);
+    if (downloaded) this.orphanedKept.add(kept);
+    // A base, though the pad never had this name: recovered, it is a kept
+    // copy again rather than a new file published to everyone.
+    const own = this.readJournal();
+    own[kept] = { base, text: retained };
+    try {
+      localStorage.setItem(this.journalKey, JSON.stringify(own));
+    } catch {
+      // Full or blocked: the leave warning still stands.
+    }
+    for (const group of this.ui?.groups.model.groups ?? []) {
+      const at = group.tabs.indexOf(path);
+      if (at < 0) continue;
+      group.tabs.splice(at + 1, 0, kept);
+      if (group.active === path) group.active = kept;
+    }
+    this.say("", `${path} is in the pad again; what you kept of the one removed is ${kept}, here only`);
+    return true;
+  }
+
+  /** `notes (kept).txt`, or `notes (kept 2).txt` when that is taken, here or in the pad as just read. */
+  private keptName(path: string, incoming: ReadonlyMap<string, string>): string {
+    const slash = path.lastIndexOf("/") + 1;
+    const dot = path.lastIndexOf(".");
+    const [stem, ext] = dot > slash ? [path.slice(0, dot), path.slice(dot)] : [path, ""];
+    for (let n = 1; ; n++) {
+      const name = `${stem} (kept${n > 1 ? ` ${n}` : ""})${ext}`;
+      if (!this.texts.has(name) && !this.binaries.has(name) && !this.known.has(name) && !incoming.has(name)) return name;
+    }
   }
 
   /** Capture each pane while its old model still holds cursor/scroll state. */

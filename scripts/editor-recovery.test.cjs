@@ -96,7 +96,7 @@ function fixture(store = {}) {
     name: 'recovery', store, access: { role: 'editor' }, active: 'util.py',
     monaco: { Range }, texts: new Texts((_, text) => model(text)),
     known: new Map(), binaries: new Map(), local: new Set(), dirty: new Set(),
-    orphaned: new Set(), pendingImages: new Set(), editorViews: new Map(), docs: new Map(), docReady: new Map(),
+    orphaned: new Set(), orphanedKept: new Set(), pendingImages: new Set(), editorViews: new Map(), docs: new Map(), docReady: new Map(),
     defaultFormatted: new Set(), markdownModes: new Map(), viewStates: new Map(),
     renamedTo: new Map(), mergedAway: new Set(),
     shownUnbound: new Map(), seeds: new Map(), byStream: new Map(),
@@ -119,6 +119,8 @@ test('command publication excludes retained deleted files from writes and baseli
   a.runtime = Promise.resolve(rt); a.runtimeReady = true;
   a.known.set('main.py', 'base');
   a.texts.put('main.py', 'base with local edits');
+  // This page's own typing, not yet saved: what makes a removed file worth keeping.
+  a.dirty.add('main.py');
   const m = a.texts.model('main.py');
   a.editorViews.set('background', view(m));
   await a.refresh();
@@ -152,6 +154,35 @@ function groupsFor(a, layout) {
   a.ui = { groups, setFileCount() {} };
   return groups;
 }
+
+test('a file somebody else typed in and removed is not kept here: the typing was theirs', async () => {
+  const a = fixture({ read: async () => ({ seq: 2, files: {} }) });
+  a.known.set('notes.txt', 'one');
+  // Their typing, through the room: in the document here, never this page's edit.
+  a.texts.put('notes.txt', 'typed by them one');
+  a.editorViews.set('background', view(a.texts.model('notes.txt')));
+  await a.refresh();
+  assert(!a.orphaned.has('notes.txt') && !a.local.has('notes.txt'));
+  assert(!a.texts.has('notes.txt'));
+});
+
+test('a kept copy whose file is made again: the pad\'s takes the name, the kept text moves beside it', async () => {
+  const a = fixture({ read: async () => ({ seq: 3, files: { 'notes.txt': { content: 'theirs', encoding: 'utf8' } } }) });
+  a.warm = a.say = () => {};
+  a.texts.put('notes.txt', 'mine');
+  a.orphaned.add('notes.txt'); a.local.add('notes.txt');
+  const layout = new EditorLayoutModel(); layout.open('util.py'); layout.open('notes.txt');
+  const groups = groupsFor(a, layout);
+  groups.refresh = () => {};
+  a.show = path => { a.active = path; groups.open(path); };
+  await a.refresh();
+  assert.equal(a.texts.get('notes.txt').getValue(), 'theirs');
+  assert(!a.orphaned.has('notes.txt') && !a.local.has('notes.txt'), 'the pad\'s file is live and editable again');
+  assert.equal(a.texts.get('notes (kept).txt').getValue(), 'mine');
+  assert(a.orphaned.has('notes (kept).txt') && a.local.has('notes (kept).txt'), 'the kept copy is still only here');
+  assert.deepEqual(layout.current.tabs, ['util.py', 'notes.txt', 'notes (kept).txt']);
+  assert.equal(layout.current.active, 'notes (kept).txt', 'the tab that showed the kept text still shows it');
+});
 
 test('a remote folder move renames tabs in all groups before render callbacks prune', async () => {
   const a = fixture({ read: async () => ({ seq: 2, files: {

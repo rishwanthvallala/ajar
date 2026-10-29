@@ -689,6 +689,76 @@ try {
     await b.context().close();
   }
 
+  // ---- a file somebody removes, kept where it has typing --------------------
+  // Editor groups keep a file somebody else removed, read-only, where this
+  // page has typing in it not yet saved. They kept it wherever the text
+  // differed from the stored copy — on every page open on a file somebody
+  // typed in and deleted before their save went in, which typed nothing —
+  // and then never showed the file when it was made again.
+  {
+    const name = `pair-orphan-${Date.now().toString(36)}`;
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "notes.txt", content: "one\n" }, { path: "mine.txt", content: "one\n" }, { path: "other.txt", content: "x\n" }] }) });
+    const [a, b] = await pair(name);
+    for (const page of [a, b]) page.on("dialog", (d) => void d.accept());
+    const openIn = async (page, path) => {
+      await page.locator(`#files .row.file[data-path="${path}"]`).click();
+      await page.waitForFunction((p) => window.__pad.active() === p, path, { timeout: 10_000 });
+      await wait(page, 500);
+    };
+    const remove = async (page, path) => {
+      await page.hover(`#files .file-row:has(.row.file[data-path="${path}"])`);
+      await page.locator(`#files button[aria-label="Delete ${path}"]`).click();
+    };
+    const leaving = (page) => page.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; });
+    await openIn(a, "notes.txt");
+    await openIn(b, "notes.txt");
+    // B types and deletes before B's save: A has B's typing, and none of its own.
+    await caretAt(b, 1, 1);
+    await b.keyboard.type("typed by B ");
+    await remove(b, "notes.txt");
+    await wait(a, 3000);
+    const falseCopy = { local: await a.evaluate(() => window.__pad.local()), leaving: await leaving(a) };
+    if (!falseCopy.local.includes("notes.txt") && !falseCopy.leaving) ok("a page that typed nothing in a file somebody else typed in and removed keeps no copy of it, and asks nothing on leaving");
+    else fail(`a removed file kept where nothing was typed — ${JSON.stringify(falseCopy)}`);
+
+    // A types with its saves held back, and B removes the file: A keeps its typing.
+    await openIn(a, "mine.txt");
+    await openIn(b, "other.txt");
+    const held = (route) => (route.request().method() === "PUT" ? route.abort() : route.continue());
+    await a.route(`**/api/pad/${name}`, held);
+    await caretAt(a, 1, 1);
+    await a.keyboard.type("mine ");
+    await wait(a, 1500);
+    await remove(b, "mine.txt");
+    await wait(a, 3000);
+    await a.unroute(`**/api/pad/${name}`, held);
+    const kept = { local: await a.evaluate(() => window.__pad.local()), text: await a.evaluate(() => window.__pad.text("mine.txt")), leaving: await leaving(a) };
+    if (kept.local.includes("mine.txt") && kept.text === "mine one\n" && kept.leaving) ok("and a page with typing of its own in it keeps that, read-only, and asks before leaving");
+    else fail(`a removed file with typing here — ${JSON.stringify(kept)}`);
+
+    // B makes the file again: A shows B's, editable, and its own beside it.
+    await b.locator('#files button[aria-label^="New file"]').first().click();
+    await b.locator("#files input.name-input").fill("mine.txt");
+    await b.locator("#files input.name-input").press("Enter");
+    await wait(b, 800);
+    await b.keyboard.type("fresh from B");
+    await wait(a, 4000);
+    const store = (await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files;
+    await openIn(a, "mine.txt");
+    const back = await a.evaluate(() => ({
+      text: window.__pad.text("mine.txt"),
+      kept: window.__pad.text("mine (kept).txt"),
+      local: window.__pad.local(),
+      readOnly: window.monaco.editor.getEditors().find((ed) => ed.getContainerDomNode().closest(".editor-group.focused") && ed.getContainerDomNode().offsetParent)?.getOption(window.monaco.editor.EditorOption.readOnly),
+    }));
+    const fine = back.text === "fresh from B" && store["mine.txt"]?.content === "fresh from B" && back.kept === "mine one\n"
+      && back.local.includes("mine (kept).txt") && !back.local.includes("mine.txt") && back.readOnly === false && !("mine (kept).txt" in store);
+    if (fine) ok("and when the file is made again, that page shows the new one, editable, with what it kept beside it and only there");
+    else fail(`a kept file made again — ${JSON.stringify({ ...back, stored: store["mine.txt"]?.content, keptStored: "mine (kept).txt" in store })}`);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a socket that goes quiet --------------------------------------------
   // Review of 28 October, liveness: a half-open socket — a laptop that slept,
   // a NAT that forgot it — stays OPEN in the browser while nothing comes,
