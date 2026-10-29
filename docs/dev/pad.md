@@ -878,7 +878,8 @@ base (review of 28 October, C6 again). A document others do share keeps the
 older version as known until the change arrives through the room, so a save
 meanwhile is merged rather than sent over it.
 
-**Only the file on screen is bound to its document.** A file somebody else is
+**Only the files on screen are bound to their documents** — one per editor
+group showing a file ([Editor tabs and groups](#editor-tabs-and-groups)). A file somebody else is
 typing in, while this browser shows another, keeps the editor model it had
 when it was last on screen; its document — and the sandbox, which each update
 is written into — move on without it. So anything that writes a file into the
@@ -1802,6 +1803,39 @@ of the row, its name selected up to the extension.
   change, a command — so the same input goes into each new tree, with its
   caret, and its focus if it had it. A row whose folder somebody moved or
   deleted meanwhile ends the naming.
+
+## Editor tabs and groups
+
+Tabs, and groups of them split right or down, since 29 October (PR #5). The
+tabs, the splits, their keys and dragging are `packages/workspace-ui`'s
+(`EditorGroups`, with `EditorLayoutModel` holding what is open where), shared
+with the workspace; the layout is kept per pad in this browser, file names
+only, and a restored tab whose file is gone is pruned once the pad is read.
+Here each group has a Monaco editor of its own (`App.editorViews`), made the
+first time the group shows a file; `App.editor` and `App.active` are the
+focused group's.
+
+**A file is bound to its document once, however many groups show it.** The
+same file in two groups is one model in two editors, so the text, its undo
+and the room's edits are shared; the document binds to the model
+(`DocSession.bindModel`), and each editor showing it only attaches its
+cursor and the others' (`attachView`). Bound once per editor, typing went in
+once per binding. The document tells this browser's own edits from the
+room's by the transaction's origin, the model, where it went by `tr.local`.
+
+**A file somebody removes while this page has typing in it not yet saved**
+is kept: read-only, in this page only (`orphaned`, and in `local`, as a
+viewer's own copy is), out of every save and command's publication, in the
+journal, with Save local copy and Discard local changes above it, and leaving
+asks until one is taken. Only for this page's own typing (`dirty`): kept for
+any difference from the stored copy, every page open on a file somebody
+typed in and deleted before their save went in kept one, of typing that was
+theirs. And when the pad has the name again — somebody made the file anew,
+or restored it — the pad's takes it, live and editable, and what this page
+kept moves beside it as `name (kept).ext`, kept as before (`App.setAside`).
+It went on showing its old copy, read-only, and never the new file.
+`pair-check.mjs` makes all three, the first and last failing against the
+PR as it came; `scripts/editor-recovery.test.cjs` holds `App` to them too.
 
 ## Starters
 

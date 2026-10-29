@@ -238,6 +238,7 @@ try {
   // Typing in a tab closed inside its save delay. The owner's first tab is in
   // the room and has the text too, but only the typist saves.
   const brief = await owner.context().newPage();
+  pages.set("brief", brief);
   await brief.goto(`${ORIGIN}/${name}`);
   await until(brief, () => window.__pad?.role() === "owner" && window.__pad?.docs().includes("main.py"), undefined, 30_000);
   await typeAtEnd(brief, "main.py", "# closed-at-once\n");
@@ -367,7 +368,7 @@ try {
   // frozen as it was, on Back. Playwright switches that cache off, so every
   // check passed while a pad came back from Your pads empty and dead: it tore
   // itself down on the way out. Here with the cache on, as a person has it.
-  cacheBrowser = await chromium.launch({ channel: "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
+  cacheBrowser = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
   const cached = await cacheBrowser.newContext({ storageState: await owner.context().storageState() });
   const tab = await cached.newPage();
   pages.set("cached owner", tab);

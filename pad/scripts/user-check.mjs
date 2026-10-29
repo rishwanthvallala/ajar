@@ -147,6 +147,7 @@ const CLOSED = LIVE ? "https://example.com/" : `http://bin.test:${BIN_PORT}/clos
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-")));
 const context = await chromium.launchPersistentContext(profile, {
+  channel: process.env.PAD_BROWSER_CHANNEL || undefined,
   headless: true,
   viewport: { width: 1280, height: 800 },
   args: ["--host-resolver-rules=MAP bin.test 127.0.0.1"],
@@ -786,10 +787,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   const pngHex = sentPng?.encoding === "base64" ? Buffer.from(sentPng.content, "base64").toString("hex") : JSON.stringify(sentPng);
   expect("a binary file a command makes is in the tree as one, and sent as its bytes", binaryRows && pngHex === "89504e470d0a1a0a0000fffe", pngHex);
   await page.locator('#files .row.file[data-path="b.png"]').click();
-  // An image by name, and not by its bytes: the viewer says so and leaves
-  // the editor, rather than putting a broken picture or garbage on screen.
+  // An image by name, and not by its bytes: its tab offers an explanation
+  // and a download, without putting a broken picture or garbage in the editor.
   const notShown = await page.waitForFunction(() => /b\.png is not (text|an image)/.test(document.querySelector("#status")?.textContent ?? ""), null, { timeout: 5000 }).then(() => true, () => false);
-  expect("clicking it says it cannot be shown, rather than opening garbage", notShown && (await page.locator("#editor").isVisible()), `"${await status()}"`);
+  expect("clicking it says it cannot be shown, rather than opening garbage", notShown && (await page.locator(".editor-group.focused .image-view").isVisible()) && (await page.locator(".editor-group.focused .image-view").getByRole("button", { name: "Download b.png", exact: true }).isVisible()), `"${await status()}"`);
   await page.hover('#files .file-row:has(.row.file[data-path="b.png"])');
   const gotPng = await got(() => page.locator('#files button[aria-label="Download b.png"]').click());
   expect("and downloads byte for byte", (await readFile(gotPng.to)).toString("hex") === "89504e470d0a1a0a0000fffe", (await readFile(gotPng.to)).toString("hex"));
@@ -1215,20 +1216,26 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     "print('png written')",
   ].join("\n");
   await clear();
-  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py`);
-  await typed("printf '\\033]7777;pad-image=/workspace/dot.png\\007'; echo asked");
+  await typed(`echo ${Buffer.from(MAKE_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py && printf '\\033]7777;pad-image=/workspace/dot.png\\007'; echo asked`);
   const shownByEscape = await page.waitForFunction(() => {
     const img = document.querySelector("#image-pane:not([hidden]) img");
     return img && img.naturalWidth === 4 && document.querySelector("#editor")?.hidden;
   }, null, { timeout: 15_000 }).then(() => true, () => false);
-  // Not on screen apart from the command that printed it.
-  const escapeHidden = (await rows()).filter((l) => !l.startsWith("$")).every((l) => !/7777|pad-image/.test(l));
+  // Inspect output after Python's marker, excluding the long command's echo
+  // (which wraps onto lines without a prompt).
+  const imageRows = await rows();
+  const imageOutput = imageRows.findLastIndex((line) => line.trim() === "png written");
+  const escapeHidden = imageOutput >= 0 && imageRows.slice(imageOutput + 1).every((line) => !/7777|pad-image/.test(line));
+  const REDRAW_PNG = MAKE_PNG.replace("* 4", "* 2").replace("4, 3, 8", "2, 3, 8");
+  await typed(`echo ${Buffer.from(REDRAW_PNG).toString("base64")} | base64 -d > mkpng.py && python mkpng.py && rm mkpng.py && printf '\\033]7777;pad-image=/workspace/dot.png\\007'`);
+  const redrawn = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 2, null, { timeout: 10_000 }).then(() => true, () => false);
+  expect("a regenerated plot refreshes its already active tab", redrawn, await status());
   await page.click("#back-to-editor");
   const editorBack = await page.locator("#editor").isVisible() && await page.locator("#image-pane").isHidden();
   expect("an image a program names with the pad's escape shows in place of the editor, the escape itself unprinted, and Back to editor returns", shownByEscape && escapeHidden && editorBack, `escape ${shownByEscape}, unprinted ${escapeHidden}, back ${editorBack}`);
   await page.waitForSelector('#files .row.file[data-path="dot.png"]', { timeout: 20_000 }).catch(() => {});
   await page.click('#files .row.file[data-path="dot.png"]');
-  const shownByTree = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 4, null, { timeout: 10_000 }).then(() => true, () => false);
+  const shownByTree = await page.waitForFunction(() => document.querySelector("#image-pane:not([hidden]) img")?.naturalWidth === 2, null, { timeout: 10_000 }).then(() => true, () => false);
   await open("main.py");
   const leftForText = await page.locator("#image-pane").isHidden() && await page.locator("#editor").isVisible();
   expect("and an image file opened from the tree shows too, until a text file is opened", shownByTree && leftForText, `tree ${shownByTree}, text again ${leftForText}`);
@@ -1333,7 +1340,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   if (!LIVE) {
     let release;
     holding = new Promise((r) => (release = r));
-    const cold = await chromium.launch();
+    const cold = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
     const first = await (await cold.newContext()).newPage();
     await first.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
     const typeable = await first.waitForFunction(() => window.monaco?.editor.getEditors()[0]?.hasTextFocus(), null, { timeout: 60_000 }).then(() => true, () => false);

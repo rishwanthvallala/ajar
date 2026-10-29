@@ -368,3 +368,13 @@ body { background: var(--bg); color: var(--ink); }
   background: color-mix(in srgb, var(--warn) 12%, var(--surface));
 }
 
+
+/* Every editor group is its own Markdown layout container. */
+.pad-shell .has-editor-groups { display: flex !important; flex-direction: column; }
+.pad-shell .editor-group-content { container-type: inline-size; }
+.pad-shell .editor-group-content.md-shown > .editor { visibility: hidden; }
+.pad-shell .editor-group-content .editor[hidden] ~ .md-view { display: none; }
+@container (min-width: 48rem) {
+  .pad-shell .editor-group-content.md-shown > .editor { visibility: visible; right: 50%; }
+  .pad-shell .editor-group-content.md-shown > .md-view { left: 50%; border-left: 1px solid var(--rule); }
+}

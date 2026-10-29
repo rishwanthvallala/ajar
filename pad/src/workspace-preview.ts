@@ -43,7 +43,23 @@ export function startWorkspacePreview(): void {
   let active = "main.py";
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  const renderGroup = (id: string, path: string | null) => {
+    const view = ui.groups.views.get(id);
+    if (!view) return;
+    const hosts = ui.groupHosts(view);
+    hosts.editor.hidden = !path;
+    hosts.editor.dataset.active = path ?? "";
+    hosts.editor.replaceChildren(Object.assign(document.createElement("pre"), { className: "fixture-code", textContent: path ? files.get(path) ?? "" : "" }));
+  };
+  ui.groups.onSelect = (view, path) => renderGroup(view.id, path);
+  ui.groups.onFocusEditor = view => { ui.groupHosts(view).editor.tabIndex = -1; ui.groupHosts(view).editor.focus(); };
+  ui.groups.onChange = () => {
+    ui.useGroup(ui.groups.currentView); active = ui.groups.current.active ?? ""; ui.setActiveFile(active);
+    for (const row of ui.elements.files.querySelectorAll<HTMLElement>(".row.file")) row.classList.toggle("on", row.dataset.path === active);
+    ui.shell.requestLayout();
+  };
   const showFile = (path: string) => {
+    ui.groups.open(path);
     active = path;
     ui.elements.editor.dataset.active = path;
     ui.setActiveFile(path);
@@ -95,6 +111,7 @@ export function startWorkspacePreview(): void {
     ui.elements.preview.hidden = scenario !== "running";
     ui.setPreview(false);
     const empty = scenario === "empty";
+    if (empty) ui.groups.prune(() => false);
     renderTree(empty);
     ui.shell.el("editor-empty").hidden = !empty;
     ui.shell.el("viewer").hidden = empty;
@@ -102,7 +119,7 @@ export function startWorkspacePreview(): void {
       ui.shell.el("viewer-title").textContent = "No file selected";
       output.textContent = "No commands yet.\n";
     } else {
-      showFile(active);
+      showFile(files.has(active) ? active : "main.py");
       output.textContent = "$ python main.py\nhello from pad\n$ ";
     }
     ui.elements.presence.textContent = scenario === "disconnected" ? "offline" : "2 here";

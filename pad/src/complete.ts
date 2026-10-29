@@ -39,7 +39,8 @@ export class Suggestions {
   private why = "";
   private readonly events = new AbortController();
   private readonly monaco: typeof Monaco;
-  private readonly editor: Monaco.editor.IStandaloneCodeEditor;
+  private editor: Monaco.editor.IStandaloneCodeEditor;
+  private typed: Monaco.IDisposable | null = null;
   private readonly button: HTMLButtonElement;
 
   constructor(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor, button: HTMLButtonElement) {
@@ -51,15 +52,31 @@ export class Suggestions {
     if (!__SUGGEST__ || !suitable()) return;
     button.hidden = false;
     if (this.on && read(LOADED_KEY) === "1") this.start();
-    // A key that writes something: the first sign this visitor edits.
-    const typed = editor.onKeyDown((e) => {
+    this.watchEditor();
+    this.paint();
+  }
+
+  /** Reuse one completion model as focus moves between editor groups. */
+  setEditor(editor: Monaco.editor.IStandaloneCodeEditor): void {
+    if (this.editor === editor) return;
+    this.typed?.dispose(); this.attached?.dispose(); this.attached = null;
+    this.editor = editor;
+    if (!__SUGGEST__ || !suitable()) return;
+    this.watchEditor(); this.attach();
+  }
+  private watchEditor(): void {
+    this.typed = this.editor.onKeyDown(e => {
       const key = e.browserEvent.key;
       if (this.on && this.state === "waiting" && !e.ctrlKey && !e.metaKey && (key.length === 1 || key === "Enter" || key === "Tab")) {
-        if (!editor.getOption(monaco.editor.EditorOption.readOnly)) this.start();
+        if (!this.editor.getOption(this.monaco.editor.EditorOption.readOnly)) this.start();
       }
     });
-    this.events.signal.addEventListener("abort", () => typed.dispose());
-    this.paint();
+  }
+  private attach(): void {
+    if (!this.completer) return;
+    this.attached = attachCompleter(this.monaco, this.editor, this.completer, {
+      enabled: model => this.on && this.state === "ready" && this.editor.getModel() === model && !this.editor.getOption(this.monaco.editor.EditorOption.readOnly),
+    });
   }
 
   private start(): void {
@@ -92,10 +109,7 @@ export class Suggestions {
         completer.dispose();
       },
     );
-    this.attached = attachCompleter(this.monaco, this.editor, completer, {
-      enabled: (model) =>
-        this.on && this.state === "ready" && this.editor.getModel() === model && !this.editor.getOption(this.monaco.editor.EditorOption.readOnly),
-    });
+    this.attach();
   }
 
   private toggle(): void {
@@ -123,6 +137,7 @@ export class Suggestions {
 
   dispose(): void {
     this.events.abort();
+    this.typed?.dispose();
     this.attached?.dispose();
     this.completer?.dispose();
   }

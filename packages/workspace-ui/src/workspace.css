@@ -112,3 +112,55 @@
 
 /* There for screen readers, not the eye. */
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.editor-groups { display: flex; flex: 1; min-width: 0; min-height: 0; width: 100%; height: 100%; }
+.editor-groups > * { flex: 1; }
+.editor-split { display: grid; min-width: 0; min-height: 0; overflow: hidden; }
+.editor-group { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); }
+.editor-group-head { display: flex; flex: none; height: 2.25rem; min-width: 0; border-bottom: 1px solid var(--rule); background: var(--surface-2); }
+.editor-tab-list { display: flex; flex: 1; min-width: 0; overflow: auto hidden; scrollbar-width: thin; }
+.editor-tab { display: flex; flex: none; align-items: center; max-width: 15rem; border-right: 1px solid var(--rule); border-top: 2px solid transparent; color: var(--muted); }
+.editor-tab.active { color: var(--ink); background: var(--surface); }
+.editor-group.focused .editor-tab.active { border-top-color: var(--accent); }
+.editor-tab button, .editor-group-actions button { font: inherit; color: inherit; border: 0; background: transparent; border-radius: 0; cursor: pointer; }
+.editor-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .4rem .5rem .4rem .75rem; min-width: 0; height: 100%; font-size: .75rem !important; }
+.editor-tab-close { flex: none; width: 1.65rem; height: 1.65rem; margin-right: .2rem; opacity: 0; font-size: 1rem !important; }
+.editor-tab:hover .editor-tab-close, .editor-tab:focus-within .editor-tab-close, .editor-tab.active .editor-tab-close { opacity: 1; }
+.editor-tab-close:hover, .editor-group-actions button:hover { background: var(--rule); }
+.editor-group-actions { display: flex; flex: none; align-items: center; padding: 0 .2rem; border-left: 1px solid var(--rule); color: var(--ink-2); }
+.editor-group-actions button { width: 1.8rem; height: 1.8rem; font-size: 1.1rem; }
+.editor-tabs-empty { padding: .5rem .75rem; font-size: .75rem; color: var(--muted); }
+.editor-group-content { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.editor-group-note { flex: none; padding: .25rem .5rem; font-size: .6875rem; overflow-wrap: anywhere; color: var(--muted); border-bottom: 1px solid var(--rule); }
+.editor-group-note.problem { color: var(--danger, #b33); }
+.editor-group-divider { background: var(--rule); touch-action: none; }
+.editor-split.right > .editor-group-divider { cursor: col-resize; }
+.editor-split.down > .editor-group-divider { cursor: row-resize; }
+.editor-group-divider:hover, .editor-group-divider.dragging { background: var(--accent); }
+.editor-group[data-drop]::after { content: ""; position: absolute; inset: 2.25rem 0 0; background: color-mix(in srgb, var(--accent) 16%, transparent); border: 2px solid var(--accent); pointer-events: none; z-index: 10; }
+.editor-group[data-drop=right]::after { left: 50%; }
+.editor-group[data-drop=down]::after { top: 50%; }
+.editor-group-switcher { display: none; width: 100%; max-width: 100%; flex: none; border: 0; border-bottom: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); padding: .4rem; font: inherit; }
+.editor-context-menu { position: fixed; z-index: 2000; display: flex; flex-direction: column; padding: .25rem; min-width: 13rem; max-height: min(26rem, 90dvh); overflow: auto; background: var(--surface, #fff); color: var(--ink, #222); border: 1px solid var(--rule, #ccc); border-radius: .3rem; box-shadow: 0 6px 24px #0003; font: 12px system-ui; }
+.editor-context-menu button { padding: .5rem .65rem; text-align: left; background: transparent; color: inherit; border: 0; border-radius: .2rem; font: inherit; cursor: pointer; }
+.editor-context-menu button:hover, .editor-context-menu button:focus { background: var(--surface-2, #eee); outline: 1px solid var(--accent, #46c); }
+.shell.narrow .editor-group-switcher:not([hidden]) { display: block; }
+.shell.narrow .editor-split { display: contents; }
+.shell.narrow .editor-group-divider, .shell.narrow .editor-group:not(.focused) { display: none; }
+@media (pointer: coarse) { .editor-tab-close { opacity: 1; } }
+.shell .editor-content.has-editor-groups { display: flex; flex-direction: column; }
+.shell .editor-content.has-editor-groups > .editor-empty { position: absolute; inset: 2.25rem 0 0; z-index: 1; pointer-events: none; }
+.shell .editor-content.has-editor-groups > .editor-empty button { pointer-events: auto; }
+
+.shell.narrow .editor-group.focused { flex: 1; width: 100%; }
+
+.editor-group-placeholder { position: absolute; inset: 2.25rem 0 0; display: grid; place-items: center; padding: 1rem; font-size: .8125rem; color: var(--muted); text-align: center; pointer-events: none; }
+.shell .editor-content.has-editor-groups .editor-groups > .editor-group .editor-group-placeholder { display: none; }
+@media (pointer: coarse) {
+  .editor-group-head { height: 2.75rem; }
+  .editor-group-actions button, .editor-tab-close { min-width: 2.25rem; min-height: 2.25rem; }
+}
+
+.shell .viewer-body.has-editor-groups { display: flex; flex-direction: column; }
+
+.document-recovery { display: inline-flex; flex-wrap: wrap; gap: .5rem; margin-left: .5rem; }
+.document-recovery button { font: inherit; color: var(--accent); border: 1px solid var(--rule); border-radius: 3px; padding: .2rem .4rem; background: var(--surface); cursor: pointer; }

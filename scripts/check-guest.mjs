@@ -308,7 +308,7 @@ async function main() {
   );
   const link = await linkOf(agent);
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ channel: process.env.AJAR_BROWSER_CHANNEL || process.env.PAD_BROWSER_CHANNEL || undefined, headless: true });
   browsers.push(browser);
   const ana = await guestPage(browser, link, "ana");
 
@@ -834,13 +834,19 @@ async function main() {
   await writeFile(refused, Buffer.from([0, 0x9f, 0x92, 0x96, 0, 1, 2, 3]));
   agentHop.restore();
   await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
-  const lostSaid = await ana
-    .locator(".toast", { hasText: "could not be saved" })
-    .first()
-    .waitFor({ timeout: 15_000 })
-    .then(() => ana.locator(".toast", { hasText: "could not be saved" }).first().textContent(), () => null);
-  check(lostSaid?.includes("refused.txt"), "typing held for a file the host refuses by then is said to be lost, and which file", JSON.stringify(lostSaid));
-  check(!(await leaving()), "and then leaving asks nothing");
+  await ana.getByRole("tab", { name: "refused.txt", exact: true }).click();
+  const recovery = await ana.getByRole("button", { name: "Save local copy", exact: true }).waitFor({ timeout: 15_000 }).then(() => true, () => false);
+  // The recovery toolbar updates before Monaco paints the restored model.
+  // Wait for the text a person sees as well as the available recovery action.
+  const retainedVisible = recovery && await until(async () => (await editorText(ana)).includes(" held"), 15_000);
+  check(retainedVisible, "typing for a refused file is retained with a local-copy recovery action", `shown ${JSON.stringify(await editorText(ana))}`);
+  check(await leaving(), "retained typing still protects against leaving before it is kept");
+  const localCopy = ana.waitForEvent("download");
+  await ana.getByRole("button", { name: "Save local copy", exact: true }).click();
+  const savedCopy = await localCopy;
+  const keptText = await readFile(await savedCopy.path(), "utf8");
+  check(keptText.includes(" held"), "the local download keeps the typing the host could not save");
+  check(!(await leaving()), "after keeping a local copy, leaving asks nothing");
 
   // ---- a host whose machine is asleep -----------------------------------------
   // Its socket stays open, so the relay counts it as here; it answers
@@ -911,7 +917,7 @@ async function main() {
 
   // ---- Back out of the back/forward cache -----------------------------------
   // Playwright turns the cache off; this browser has it on, as people do.
-  const cached = await chromium.launch({ channel: "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
+  const cached = await chromium.launch({ channel: process.env.AJAR_BROWSER_CHANNEL || process.env.PAD_BROWSER_CHANNEL || "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] });
   browsers.push(cached);
   const dan = await guestPage(cached, link, "dan");
   await open(dan, "long.txt");

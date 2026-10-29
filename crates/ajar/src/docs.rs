@@ -123,10 +123,10 @@ pub struct Docs {
     next_id: u32,
 }
 
-/// Documents one guest may hold open at once. The page holds one — the file
-/// on screen — so this is a ceiling against a client opening every file in
-/// the folder, a megabyte of the host's memory apiece, not a limit anybody
-/// working meets.
+/// Live documents one guest may subscribe to at once. Split editor groups
+/// can show several files; background tabs release clean subscriptions. This
+/// ceiling prevents a client opening every file in the folder, a megabyte of
+/// the host's memory apiece.
 pub const MAX_DOCS_PER_READER: usize = 16;
 
 /// Documents open at once, everyone's together.

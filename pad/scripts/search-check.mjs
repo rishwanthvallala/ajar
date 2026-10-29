@@ -178,7 +178,7 @@ server.on("upgrade", (req, socket, head) => {
 await new Promise((resolve) => server.listen(Number(process.env.SEARCH_PORT ?? 0), "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const browserType = { chromium, firefox, webkit }[process.env.SEARCH_BROWSER ?? "chromium"];
-const browser = await browserType.launch();
+const browser = await browserType.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
 const errors = [];
 const modifier = process.platform === "darwin" ? "Meta" : "Control";
 const name = `search-${Date.now().toString(36)}`;
