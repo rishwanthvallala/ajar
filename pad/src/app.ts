@@ -297,7 +297,9 @@ export class App {
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   private readonly editorViews = new Map<string, PadEditorView>();
   private groupId = "";
-  private loadingFiles = false;
+  // Access/UI updates can render before open() has loaded the saved files.
+  // Keep restored tabs intact until their paths can actually be validated.
+  private loadingFiles = true;
   private readonly orphaned = new Set<string>();
   private readonly orphanedKept = new Set<string>();
   /** Plots announced by the terminal before command publication stores them. */

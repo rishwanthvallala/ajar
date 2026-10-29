@@ -32,7 +32,7 @@ async function run() {
       page.on('pageerror', e => errors.push(e.message));
       await page.route('**/api/pad/**', route => {
         if (route.request().method() === 'PUT') writes.push(...(route.request().postDataJSON()?.writes ?? []));
-        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ exists: true, seq, files: storedFiles }) });
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ exists: true, seq, files: storedFiles, access: {role:'owner',account:true,view:'link',edit:'code'} }) });
       });
       await page.route('**/packages/**', route => route.abort());
       await page.routeWebSocket('**/ws', ws => { wire = ws; ws.onMessage(data => {

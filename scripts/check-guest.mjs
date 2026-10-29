@@ -836,7 +836,10 @@ async function main() {
   await ana.locator("#away[hidden]").waitFor({ state: "attached", timeout: 30_000 });
   await ana.getByRole("tab", { name: "refused.txt", exact: true }).click();
   const recovery = await ana.getByRole("button", { name: "Save local copy", exact: true }).waitFor({ timeout: 15_000 }).then(() => true, () => false);
-  check(recovery && (await editorText(ana)).includes(" held"), "typing for a refused file is retained with a local-copy recovery action");
+  // The recovery toolbar updates before Monaco paints the restored model.
+  // Wait for the text a person sees as well as the available recovery action.
+  const retainedVisible = recovery && await until(async () => (await editorText(ana)).includes(" held"), 15_000);
+  check(retainedVisible, "typing for a refused file is retained with a local-copy recovery action", `shown ${JSON.stringify(await editorText(ana))}`);
   check(await leaving(), "retained typing still protects against leaving before it is kept");
   const localCopy = ana.waitForEvent("download");
   await ana.getByRole("button", { name: "Save local copy", exact: true }).click();
