@@ -760,13 +760,15 @@ export const CANDIDATES: Candidate[] = [
     heavy: true,
     checks: [
       { covers: "version", run: "git --version", match: "^git version" },
-      { covers: "init", run: "mkdir -p r && cd r && git init -q . && echo ok", want: "ok" },
+      // Every `init` says "templates not found" first: the build points at a
+      // template directory that is not in its package. Harmless, and matched past.
+      { covers: "init", run: "mkdir -p r && cd r && git init -q . && echo ok", match: "(^|\\n)ok$" },
       // `git log` alone exits 79 with no output: git launches a pager when
       // stdout is a terminal, and there is no pager here to launch. Every
       // paging command needs --no-pager or GIT_PAGER=cat. Worth knowing before
       // shipping git, because the failure looks like a lost commit.
-      { covers: "commit then log (needs --no-pager)", run: "mkdir -p s && cd s && git init -q . && git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x && git --no-pager log --oneline | wc -l | tr -d ' '", want: "1" },
-      { covers: "log without --no-pager still fails", run: "mkdir -p s2 && cd s2 && git init -q .; git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x; git log >/dev/null 2>&1; echo rc=$?", want: "rc=79" },
+      { covers: "commit then log (needs --no-pager)", run: "mkdir -p s && cd s && git init -q . && git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x && git --no-pager log --oneline | wc -l | tr -d ' '", match: "(^|\\n)1$" },
+      { covers: "log without --no-pager still fails", run: "mkdir -p s2 && cd s2 && git init -q .; git -c user.email=a@b -c user.name=n commit -q --allow-empty -m x; git log >/dev/null 2>&1; echo rc=$?", match: "(^|\\n)rc=79$" },
       { covers: "add and status", run: "mkdir -p t2 && cd t2 && git init -q . && echo f > f.txt && git add f.txt && git status --porcelain", match: "A\\s+f\\.txt" },
     ],
   },

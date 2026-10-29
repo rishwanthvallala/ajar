@@ -477,7 +477,9 @@ unable to spawn — until `find` became a shim like the rest.
 **`git` works, and needs `--no-pager`.** `git log` alone spawns a pager that
 does not exist and exits 79 with no output — indistinguishable from a commit
 that never happened, and reported that way here before being diagnosed. If git
-is ever shipped, `shell.ts` has to set `GIT_PAGER=cat`.
+is ever shipped, `shell.ts` has to set `GIT_PAGER=cat`. Asked for on 30 October
+and left for a decision — where its history would live, and whether remotes
+are wanted: [open-points.md](../open-points.md#git-in-the-pad).
 
 Registry presence is **not** installability. Every `kilyanni/*` and `liftm/*`
 package returns full metadata from the GraphQL API and then fails

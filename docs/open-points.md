@@ -186,6 +186,39 @@ server started in a *different* tab. That was the trade taken, and it is one
 line (`Scope::Signal`) if it turns out to be the wrong one. Sharing one domain
 across terminals would need a single confined parent that spawns every shell.
 
+### git in the pad
+
+Asked for on 30 October, and left for a decision. The registry's
+`kilyanni/git` — git 2.52, a minimal static build for WASI — runs in the
+sandbox: probed that day in a real browser (`npm run probe --workspace=ajar-pad
+-- --only kilyanni/git`), `init`, `add`, `status`, `commit` and `log` all work.
+What shipping it would mean, and the two choices it needs:
+
+- **The cost.** Loading it moved 166 MB over the wire in the probe — about 85
+  MB of it git's own package, as first measured — so it would be fetched the
+  first time a line names `git`, as C, Go and Node are (`toolchains.ts`), never
+  on a visit.
+- **What it needs set.** `GIT_PAGER=cat`: `git log` alone waits on a pager
+  there is none of and exits 79 with nothing printed, which reads as a lost
+  commit. An empty template directory (`GIT_TEMPLATE_DIR`), or every `init`
+  says "templates not found". And an identity, or a first `commit` is refused
+  for want of `user.name`.
+- **Where its history lives — the first choice.** The pad never saves `.git`
+  (`sync.ts`), and the sandbox is in memory, one per tab: as things stand,
+  commits go when the tab does. Three ways: *in this browser*, per pad, so it
+  survives a reload for that person and nobody else sees it; *in the pad*,
+  shared, against the 500 files and 200 MB, and two people committing at once
+  can break the repository, which wants a lock the pad does not have; or *not
+  kept*, git for one sitting, said in the guide.
+- **Remotes — the second.** This build has no HTTPS, and the sandbox reaches
+  PyPI alone, so no `clone`, `pull` or `push`. They would be a project of
+  their own: a proxy on the relay held to GitHub, a git that speaks HTTPS (or
+  a JavaScript one in the page), and a way to give it a token for `push` — and
+  a relay that forwards anyone's traffic to GitHub is an abuse question first.
+
+Local git with history kept in this browser was the suggestion; remotes later,
+if at all.
+
 ### Tools that do not fully work
 
 From `npm run probe --workspace=ajar-pad`, which installs each package and
@@ -238,8 +271,8 @@ a package of our own — none on a visit, each when a line names it or Run is
 pressed on a file it runs. See
 [dev/pad.md](dev/pad.md#languages-on-first-use). **Not offered at all:** `gcc`
 itself, which does not exist for this sandbox; `git` (85 MB, and it needs
-`GIT_PAGER=cat`), which is a tool rather than a language and was not asked
-for.
+`GIT_PAGER=cat`), which is a tool rather than a language — asked for on 30
+October, and waiting on a decision ([git in the pad](#git-in-the-pad)).
 
 ---
 
