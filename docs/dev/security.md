@@ -540,8 +540,8 @@ What bounds the bodies' memory is the budget, not the permits.
 
 **The store allowance counts bytes added, not pads created.** A cap on
 creations does not protect a disk: sixty pads an hour at 100 MiB each fills the
-ceiling before breakfast. So each address may add 512 MiB a day — five full pads, or
-tens of thousands of ordinary ones — and only growth is charged, so an edit in
+ceiling before breakfast. So each address may add 512 MiB a day — two and a half
+full pads since a pad went to 200 MiB on 29 October, or tens of thousands of ordinary ones — and only growth is charged, so an edit in
 place is always free and an address at its limit can still make room. It is
 what made a 90-day lease affordable: without it, one address could fill the
 store in minutes and keep it full for a season.

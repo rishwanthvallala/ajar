@@ -209,7 +209,8 @@ impl Quota {
 /// in the few minutes some seventy full writes take. With a 90-day lease a store filled that way
 /// stays full for a season, so the lease could only grow once this existed.
 ///
-/// 512 MiB is five full-size pads, or tens of thousands of the scripts people
+/// 512 MiB is two and a half full-size pads (five, until pads went to 200 MiB
+/// on 29 October), or tens of thousands of the scripts people
 /// actually paste, and a classroom behind one address `pip install`ing the same
 /// small package — so ordinary use never meets it. It was 256 until pads went
 /// to 100 MiB on 11 October, which would have left room for two. Only growth

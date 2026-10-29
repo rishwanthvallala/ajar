@@ -5,9 +5,10 @@
 // tasks, its heap, and what it read. A measurement, not a check;
 // docs/dev/pad.md has the numbers it gave.
 //
-//   cargo build && npx vite build && node scripts/open-perf.mjs [small|big|paste] [fast|slow]
+//   cargo build && npx vite build && node scripts/open-perf.mjs [small|big|full|paste] [fast|slow]
 //
-// small is 500 files of 2.4 KB, big 500 of 165 KB (78 MB). slow is Chromium's
+// small is 500 files of 2.4 KB, big 500 of 165 KB (78 MB), full 500 of 400 KB
+// (190 MB, near the pad's 200 MiB). slow is Chromium's
 // own throttles — the network at 20 Mbit/s with 80 ms of latency, the CPU four
 // times slower — with the pad's reads and the page's files gzipped, as Caddy
 // sends them. Each run is a return visit: the pad is opened once first,
@@ -99,7 +100,7 @@ if (SIZE === "paste") await paste();
 
 // A project's worth of files in folders, of the kinds a pad holds.
 const name = `open-${SIZE}`;
-const LINES = SIZE === "big" ? 4000 : 60;
+const LINES = SIZE === "full" ? 9800 : SIZE === "big" ? 4000 : 60;
 const kinds = ["py", "py", "py", "js", "ts", "md", "json", "html", "css", "txt"];
 const writes = [];
 for (let i = 0; i < 500; i++) {
@@ -194,7 +195,7 @@ server.close();
 const gone = new Promise((r) => relay.once("exit", r));
 relay.kill();
 await gone;
-// The big pad is 78 MB on disk, and the relay keeps versions of it.
+// The big pad is 78 MB on disk, the full one 190, and the relay keeps versions of them.
 await rm(dir, { recursive: true, force: true });
 process.exit(0);
 

@@ -545,7 +545,7 @@ than met as a hang:
 | `Host`, `Cookie`, `Referer`, `User-Agent`, `Sec-*`, `Proxy-*`… | the browser's own; left out, and named by `curl -v` |
 | Response headers | only the ones the site exposes to pages |
 | Redirects | always followed: `redirect: "manual"` gives a page an opaque nothing |
-| A body over 100 MB | refused, as a pad would not hold it |
+| A body over 200 MB | refused, as a pad would not hold it |
 
 It is sent **without credentials**, without a referrer and uncached, and
 **never to this site or the preview's** — a program in a pad somebody shared

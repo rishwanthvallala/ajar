@@ -76,7 +76,7 @@ export async function storedHash(text: string): Promise<string> {
 /**
  * Bytes of JSON one request carries at most. The relay reads a write off the
  * wire whole, and takes 33 MiB; held to that, a write costs it the same
- * whatever a pad holds. A pad holds 100 MiB since 11 October, so an upload, a
+ * whatever a pad holds. A pad holds 200 MiB since 29 October, so an upload, a
  * copy or one large file goes in several requests.
  */
 export const REQUEST_BYTES = 24 * 1024 * 1024;

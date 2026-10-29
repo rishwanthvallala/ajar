@@ -369,16 +369,17 @@ store as it was when the new relay first started, and misses everything since.
 The pad store's limits are flags too: `--max-store-bytes` (4 GiB for every pad
 together, each file's text counted once however many pads hold it, and since
 18 October each pad's last run as well) and
-`--pad-growth-per-address` (512 MiB a day per address — five full pads since a
-pad went to 100 MiB on 11 October). The size of one pad is not a flag. A save no
+`--pad-growth-per-address` (512 MiB a day per address — two and a half full
+pads since a pad went to 200 MiB on 29 October; five at 100). The size of one
+pad is not a flag. A save no
 longer costs the pad's size — the store streams the files a save names, and
 an edit from one blob to the next — but a single request is still read off
 the wire whole, up to 33 MiB. Since 18 October bodies take room as their bytes
 arrive, out of 66 MiB for every body at once, and two are parsed and stored
 at a time; `main.rs` asserts that the bodies with the text parsed out of
 them, 132 MiB, stay under 256 MiB of the unit's `MemoryMax=512M`. Lowering
-`MemoryMax` is therefore a code change as well. An account's 250 MB holds two
-full pads and half a third.
+`MemoryMax` is therefore a code change as well. An account's 250 MB holds one
+full pad and a quarter of another.
 
 What a writer is told when these bite: **408** for a body that sent nothing
 for 20 seconds or had not finished in ten minutes (an upload that stopped

@@ -39,14 +39,15 @@ mod splice;
 
 /// Total bytes one pad may hold.
 ///
-/// 25 MiB until 7 October, 60 until 11 October, 100 since. What kept it down
+/// 25 MiB until 7 October, 60 until 11 October, 100 until 29 October, 200
+/// since — asked for, for now, with the quotas around it as they were. What kept it down
 /// was the store: a pad was one document every save rewrote whole, and at 60
 /// MiB that could take the relay down. A save now writes only what it changes
 /// (see docs/dev/pad-store.md), so this is no longer a memory figure. What it
 /// costs is the download: opening a pad fetches all of it, for everyone who
 /// opens it. One request is still bounded on its own, by `MAX_PAD_HTTP_BODY`;
 /// a browser sends a bigger write in several.
-pub const MAX_BYTES: usize = 100 * 1024 * 1024;
+pub const MAX_BYTES: usize = 200 * 1024 * 1024;
 
 /// Files one pad may hold.
 ///
@@ -1510,7 +1511,7 @@ impl Store {
     ///
     /// It was read whole: every file into a string, then all of it into one
     /// JSON value and out again — a version can be as big as the pad was, up
-    /// to 100 MiB, and a few at once took a fair part of the relay's memory
+    /// to 200 MiB, and a few at once took a fair part of the relay's memory
     /// (audit B03). Streamed, it costs a chunk buffer, as a read does.
     pub fn open_version(&self, name: &str, id: u64) -> Result<Option<Opened>, Error> {
         check_name(name)?;

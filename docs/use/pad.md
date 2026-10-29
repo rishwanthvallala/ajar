@@ -145,7 +145,7 @@ for everyone on it:
 - `__MACOSX`, `.DS_Store` and the rest of what zipping leaves behind stay out.
 - If a file in the zip would replace a different one already here, you are
   asked first. On a new pad, the starter `main.py` makes way.
-- 500 files and 100 MB, the same as any pad. Password-protected zips are
+- 500 files and 200 MB, the same as any pad. Password-protected zips are
   refused.
 
 **Colours** above the editor turns the colouring off, for every file, and
@@ -550,7 +550,7 @@ A Makefile is kept and indented with tabs, but nothing here runs it.
 **`ls` lays out columns even into a pipe** here, so `ls | wc -l` counts rows
 of names, not names; `ls -1` gives one a line.
 
-**What a pad keeps.** At most 500 files and 100 MB. A file a command makes
+**What a pad keeps.** At most 500 files and 200 MB. A file a command makes
 that the pad cannot keep — past the 500, or with a name it cannot hold, a
 backslash in it (what a script written for Windows makes) or a tab — is named
 in the status line and above the prompt, and left out; everything else the
@@ -572,7 +572,7 @@ counts, so a folder people keep visiting stays. Once one is deleted its name is
 free, so an old link opens an empty folder — or whatever somebody else has
 started there since. Keep anything you care about somewhere else too.
 
-**A pad holds 500 files and 100 MB.** A change that would take it past either
+**A pad holds 500 files and 200 MB.** A change that would take it past either
 is not saved, and the line under the editor says so.
 
 **A text file over 24 MB opens read-only.** It is too large to edit together

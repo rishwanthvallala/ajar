@@ -24,7 +24,8 @@ were deployed that day, and the agent's share shipped in v0.0.7. A host still
 on v0.0.6 or older can have its place taken while it is away, and lets a guest
 read by name what the tree hides, until it reinstalls. The same day a pad's
 cap went to 60 MB, meant for now; on 11 October it went to 100 MB to stay,
-once the store could carry it — [that day's list](#closed-on-11-october).*
+once the store could carry it — [that day's list](#closed-on-11-october) —
+and on 29 October to 200 MB, for now.*
 
 *On 8 October a click on a file in the guest's tree stopped being lost to
 the folder changing, and fresh containers of fifteen Linux distributions
@@ -325,7 +326,9 @@ start. Flask's debug mode was the common case, and no longer starts one.
 
 ## Built, with the parts that are still open
 
-### Pads of up to 100 MB
+### Pads of up to 200 MB
+
+200 MB since 29 October; what follows was measured at 100.
 
 From the measurements of 11 October ([pad-store.md](dev/pad-store.md#old-against-new-11-october)):
 

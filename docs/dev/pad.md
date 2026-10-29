@@ -398,8 +398,8 @@ deletes forward; to `nano`, both ctrl-c and ctrl-d are just keys.
 
 **`FileStat` carries `kind` and `size` and nothing else** — no modification
 time, no hash — so the sync diff must read every file to know what changed.
-Affordable under the pad's caps of 500 files and 100 MB — 25 MB until 7
-October, 60 until 11 October. Timed then, in a 100 MB pad of 50 files: a
+Affordable under the pad's caps of 500 files and 200 MB — 25 MB until 7
+October, 60 until 11 October, 100 until 29 October. Timed then, in a 100 MB pad of 50 files: a
 command's change is stored 0.1 s after Enter, the diff included, as at 25 MB.
 The sandbox's files are in memory, so reading them all is cheap; if the caps
 rise again, time it again.
@@ -1222,6 +1222,13 @@ Models went from 500 to 1, the leak warnings from 4 to none, and the heap
 after opening from 19 to 14 MB for the small pad and from 94 to 89 MB for
 the large one.
 
+**At the 200 MiB cap, since 29 October**: `open-perf.mjs full`, 500 files of
+400 KB, 190 MB, local and unthrottled, on this Mac — the editor at 3.8 s
+(1.2 for the 78 MB pad, measured straight after on the same build), ready at 3.8 (1.3), the
+terminal answering at 6.5 (2.9), a 200 MB heap after opening (89), and a
+longest task of 0.6 s (0.2). One model, no warnings. Throttled it was not
+timed; the read is the most of it, and it is the pad's size.
+
 **The models were not the 61 s,** and nothing here came near it. For the
 small pad they were 25 ms. For 78 MB of text they were the largest part of
 the page's own work — 1.0 s of `App.start`'s 1.25 s with the CPU slowed, in
@@ -1488,7 +1495,7 @@ is the format's headers and a CRC. Names are written with the UTF-8 flag
 Windows zips use.
 
 **Reading checks before it inflates.** The central directory says how many
-entries and how many bytes they unpack to; over the pad's 500 files or 100 MB is
+entries and how many bytes they unpack to; over the pad's 500 files or 200 MB is
 refused there, before any inflating. A zip can lie about those sizes — the
 classic zip bomb — so the inflated bytes are counted again as they come, and
 each entry's size and CRC must match what the directory claimed. Encrypted
@@ -1547,7 +1554,7 @@ Binary files travel everywhere text does, except into the editor:
 
 The cost is reading each binary file's bytes and encoding them as base64 after
 every command — the diff already read every file as text, and a pad is capped
-at 100 MB; base64 makes a binary file a third larger against that cap.
+at 200 MB; base64 makes a binary file a third larger against that cap.
 
 ## numpy, pandas and matplotlib
 

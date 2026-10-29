@@ -923,7 +923,7 @@ async fn history(
 ///
 /// Let in as a read is and sent as one is, from its blobs, holding the same
 /// slot and permit until the last byte has gone. It was neither: built whole
-/// in memory — a version is as big as the pad was, up to 100 MiB — and
+/// in memory — a version is as big as the pad was, up to 200 MiB — and
 /// outside every bound on reads, so a few at once could take the relay's
 /// memory and everyone's sessions with it (audit B03).
 async fn version(

@@ -136,7 +136,7 @@ A write is the opposite case: its body is read off the wire before anything
 can be checked, so its size is what it costs. The limit is
 `MAX_PAD_HTTP_BODY`, 33 MiB. It was twice `pad::MAX_BYTES` plus 1 MiB — 121 MiB
 at a 60 MiB cap — while a write could carry a whole pad; since 11 October a
-browser sends at most 24 MiB a request, and a pad of up to 100 MiB, or one file
+browser sends at most 24 MiB a request, and a pad of up to 200 MiB, or one file
 that big, in several ([pad-store.md](pad-store.md#a-write-bigger-than-one-request)).
 Bodies being read share `PAD_BODY_BUDGET`, two whole bodies (66 MiB), taken
 as their bytes arrive; one that sends nothing for 20 s, or is not in after ten

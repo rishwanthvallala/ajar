@@ -26,7 +26,7 @@ import type { Sandbox } from "@wasmer/sdk";
 const DIR = "/workspace/.ajar/fetch";
 const POLL_MS = 40;
 /** As much as a pad holds: a body bigger than that has nowhere to go. */
-export const MAX_BODY = 100 * 1024 * 1024;
+export const MAX_BODY = 200 * 1024 * 1024;
 /** Requests made at once; the rest wait their turn. */
 const AT_ONCE = 16;
 

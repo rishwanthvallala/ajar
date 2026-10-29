@@ -35,7 +35,8 @@ pub const MIN_CHOSEN_NAME: usize = 3;
 /// Bytes every pad of one account may hold together. Each pad keeps its own
 /// cap (`pad::MAX_BYTES`) as well; this is what stops twenty of them filling
 /// the disk. 250 MiB since pads went to 100 on 11 October — at 100 an owned pad
-/// could never reach the cap a pad has.
+/// could never reach the cap a pad has. Left at 250 when pads went to 200 on 29
+/// October: an owned pad can reach the cap, with 50 for the account's others.
 pub const MAX_BYTES_PER_ACCOUNT: u64 = 250 * 1024 * 1024;
 
 /// What one account may hold. Flags on the relay, so the numbers can move

@@ -23,7 +23,7 @@ export class ZipError extends Error {}
 
 /** A pad's own limits, which an import is held to before anything is sent. */
 /** What the relay's store takes in one pad (`pad::MAX_BYTES`, `MAX_FILES`). */
-export const PAD_LIMITS = { maxFiles: 500, maxBytes: 100 * 1024 * 1024 };
+export const PAD_LIMITS = { maxFiles: 500, maxBytes: 200 * 1024 * 1024 };
 
 /** Ask for a zip from this computer. Null when the person thinks better of it. */
 export function pickZip(): Promise<File | null> {
@@ -70,7 +70,7 @@ async function through(data: Uint8Array, stream: CompressionStream | Decompressi
  * Inflated a piece at a time, and stopped the moment it passes `limit`
  * bytes. Inflated whole and measured after, a zip that said one byte and
  * held sixteen megabytes was all sixteen in memory before it was refused —
- * and past the pad's 100 MB, a tab with unsaved work in it (audit DC-08).
+ * and past the pad's 200 MB, a tab with unsaved work in it (audit DC-08).
  */
 async function inflate(data: Uint8Array, limit: number): Promise<Uint8Array> {
   const reader = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();

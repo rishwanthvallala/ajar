@@ -1198,7 +1198,7 @@ async function main() {
   }
 
   // ---- a write too big for one request ----
-  // A pad holds 100 MiB and a request carries 24, so an upload, a copy or a
+  // A pad holds 200 MiB and a request carries 24, so an upload, a copy or a
   // large file goes in parts. Sizes are counted as the bytes JSON.stringify
   // writes, which is what the relay's limit counts.
   {

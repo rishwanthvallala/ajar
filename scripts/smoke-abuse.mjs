@@ -201,9 +201,9 @@ async function main() {
   });
   const oversized = putStatus(`${HTTP}/api/pad/toobig`, huge);
 
-  // The status alone proves nothing. 130 MB of content is over the per-pad
-  // 100 MiB cap as well, so it comes back 413 whether or not there is an HTTP
-  // body limit — an earlier version of this check passed with the limit raised
+  // The status alone proves nothing. 130 MB of content was over the per-pad
+  // 100 MiB cap as well (200 since 29 October), so it came back 413 whether or
+  // not there was an HTTP body limit — an earlier version of this check passed with the limit raised
   // back to 151 MiB and was measuring the wrong refusal entirely.
   //
   // What the body limit buys is that the relay stops *reading*: with it, curl

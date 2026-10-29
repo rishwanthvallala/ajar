@@ -178,7 +178,7 @@ A browser sends at most 24 MiB of JSON a request (`REQUEST_BYTES` in
 Small changes go together while they fit. A file bigger than that goes as its
 first part, then each next part as an edit adding it to the end, against the
 hash the answer before gave for it; a paste bigger than that, the same way from
-where it was made. An upload of a full 100 MB pad is five requests or so.
+where it was made. An upload of a full 200 MB pad is ten requests or so.
 
 A body is read before the write takes one of the relay's two write permits,
 since 18 October (audit B04): it takes room in a budget of two whole bodies,
@@ -262,7 +262,11 @@ each blob once.
 
 The caps went up after it, on 11 October, once the measurements above held: a
 pad from 60 MB to 100 MB, what an address may add in a day from 256 MiB to 512,
-and an account's room from 100 MB to 250.
+and an account's room from 100 MB to 250. On 29 October a pad went to 200 MB,
+asked for, for now, with the other two left where they were: an address adds
+two and a half full pads a day, and an account holds one and a quarter. A
+pad's history keeps its newest version always and older ones up to 200 MiB of
+files between them, so a full pad keeps about one.
 
 ## History
 
