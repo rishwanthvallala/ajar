@@ -8,6 +8,10 @@ mistakes worth not repeating.
 Read [architecture](architecture.md) first. After that, follow whatever you
 are touching.
 
+An agent, or anyone new to running it: [AGENTS.md](../../AGENTS.md) has the
+facts — the server and how to reach it, deploying, CI, the suites, the
+settings and the conventions — in one place.
+
 | | |
 |---|---|
 | [architecture.md](architecture.md) | The two products, the one relay, and why the split is shaped this way |
