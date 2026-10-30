@@ -38,7 +38,7 @@ tokio-tungstenite = "0.29.0"
 tower = { version = "0.5.3", features = ["util"] }
 
 # TCP_USER_TIMEOUT, which only Linux has and only behind `all` — see
-# `give_up_on_stalled_peers`. Already in the tree through tokio.
+# `prepare_socket`. Already in the tree through tokio.
 [target.'cfg(target_os = "linux")'.dependencies]
 socket2 = { version = "0.6.5", features = ["all"] }
 [[bin]]

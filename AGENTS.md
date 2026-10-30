@@ -197,7 +197,9 @@ operations.md, "The storage limits".
   is the maintainer's.
 - What is unfinished, and what waits on a decision, is in
   [docs/open-points.md](docs/open-points.md) — git in the pad and backups
-  among them.
+  among them. What gives way first under load, ranked, is in
+  [docs/dev/scaling.md](docs/dev/scaling.md); `scripts/relay-load.mjs` is its
+  load test, for a local relay in podman only.
 
 ## The maintainer's machines
 

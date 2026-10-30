@@ -80,6 +80,11 @@ ReadOnlyPaths=/srv/ajar
 # half of it — so lowering this is a code change too.
 MemoryMax=512M
 TasksMax=512
+# Every pad tab, terminal and guest is a socket here, and every pad read a
+# socket and a file. systemd's soft default is 1,024 of those, which a thousand
+# tabs reach (docs/dev/scaling.md); at the 26 KB an idle socket now costs, the
+# memory above holds far more.
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

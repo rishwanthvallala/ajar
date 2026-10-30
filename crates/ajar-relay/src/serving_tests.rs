@@ -1401,3 +1401,20 @@ fn the_deployed_limits_are_ones_the_relay_takes() {
     let args = crate::Args::try_parse_from(&argv).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(crate::pad_limits(&args).problem(), None);
 }
+
+#[tokio::test]
+async fn a_read_s_small_pieces_go_out_together_and_a_big_one_as_it_is() {
+    use futures_util::StreamExt;
+    let piece = |n: usize| Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; n]));
+    let pieces =
+        futures_util::stream::iter(vec![piece(3), piece(4), piece(100), piece(20), piece(2)])
+            .boxed();
+    let sizes: Vec<usize> = crate::coalesced(pieces, 8)
+        .map(|c| c.unwrap().len())
+        .collect()
+        .await;
+    // 3 + 4 wait for the 100 they then go with; 20 alone is enough; 2 is what is left.
+    assert_eq!(sizes, vec![107, 20, 2]);
+    let whole: usize = sizes.iter().sum();
+    assert_eq!(whole, 129, "nothing is lost or added");
+}

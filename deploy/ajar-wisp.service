@@ -67,6 +67,8 @@ ReadOnlyPaths=/srv/ajar
 # bound if something goes wrong.
 MemoryMax=384M
 TasksMax=256
+# Each tunnel is two sockets, the page's and the one to PyPI.
+LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target

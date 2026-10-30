@@ -120,9 +120,9 @@ const _: () = assert!(pad::LAST_RUN_MAX * 6 + 16 * 1024 < MAX_RUN_HTTP_BODY);
 /// Pad reads being streamed at once, from every caller together.
 ///
 /// Not a memory bound — a read is streamed from its file and costs a chunk
-/// buffer whatever the pad's size — but a descriptor bound: each is an open
-/// file and a socket, and the unit's soft limit is 1,024 of those shared with
-/// every session. Each address is held to `quota::MAX_READS_PER_IP` of these, so
+/// buffer whatever the pad's size — but a descriptor and disk bound: each is
+/// an open file and a socket, shared with every session (the unit allows
+/// 65,536 since 30 October; it was systemd's 1,024). Each address is held to `quota::MAX_READS_PER_IP` of these, so
 /// one slow reader cannot hold them all.
 const MAX_CONCURRENT_PAD_READS: usize = 64;
 
@@ -134,7 +134,7 @@ const MAX_CONCURRENT_PAD_READS: usize = 64;
 /// body when it cannot write, so a deadline inside it never runs. A handful
 /// of readers that opened large pads and stopped reading held every slot,
 /// and everyone else waited ten seconds to be told the server was busy. The
-/// kernel can see it — see `give_up_on_stalled_peers`. A minute is longer than
+/// kernel can see it — see `prepare_socket`. A minute is longer than
 /// any connection that is merely slow goes without draining anything.
 const STALLED_PEER: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -493,7 +493,7 @@ async fn main() -> anyhow::Result<()> {
     use axum::serve::ListenerExt;
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await?
-        .tap_io(|tcp| give_up_on_stalled_peers(tcp, STALLED_PEER));
+        .tap_io(|tcp| prepare_socket(tcp, STALLED_PEER));
     info!("relay listening on {}", args.bind);
     // `into_make_service_with_connect_info` so the quota can see who is
     // calling. Behind a proxy every connection is the proxy, which is why
@@ -666,13 +666,24 @@ async fn no_such_route() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "no such API route")
 }
 
-/// Have the kernel close a connection whose peer has stopped reading.
+/// Every accepted connection: sent without Nagle's delay, and closed by the
+/// kernel once its peer has stopped reading.
 ///
 /// `TCP_USER_TIMEOUT` bounds how long sent data may stay unacknowledged *or*
 /// unsent behind a zero window — a reader that has stopped. Closing the
 /// socket ends whatever was being streamed to it, and with it the slots it
 /// held. Linux only; elsewhere the relay is a development build.
-fn give_up_on_stalled_peers(tcp: &tokio::net::TcpStream, after: std::time::Duration) {
+fn prepare_socket(tcp: &tokio::net::TcpStream, after: std::time::Duration) {
+    // No Nagle: a pad read goes out as many small writes — its fields,
+    // then each file's parts around its blob — and with Nagle on the second
+    // waits for the first one's ACK, which Linux delays 40 ms: every read on a
+    // connection used before took 40 ms however small the pad, and Caddy
+    // reuses its connections to the relay (measured 30 October,
+    // docs/dev/scaling.md). Frames to a socket go out at once for the same
+    // reason.
+    if let Err(e) = tcp.set_nodelay(true) {
+        tracing::warn!("could not set TCP_NODELAY: {e}");
+    }
     #[cfg(target_os = "linux")]
     if let Err(e) = socket2::SockRef::from(tcp).set_tcp_user_timeout(Some(after)) {
         tracing::warn!("could not set TCP_USER_TIMEOUT: {e}");
@@ -1322,16 +1333,22 @@ fn stream_json(
                 Ok::<_, std::io::Error>(axum::body::Bytes::from(bytes))
             })
             .boxed(),
+            // A blob read 64 KiB at a time: ReaderStream's 4 KiB made a
+            // 200 MiB pad fifty thousand trips to the blocking pool.
             pad::Part::Blob(path) => futures_util::stream::once(tokio::fs::File::open(path))
-                .map_ok(tokio_util::io::ReaderStream::new)
+                .map_ok(|file| tokio_util::io::ReaderStream::with_capacity(file, READ_CHUNK))
                 .try_flatten()
                 .boxed(),
         })
         .flatten();
-    let body = futures_util::stream::once(async move {
-        Ok::<_, std::io::Error>(axum::body::Bytes::from(head))
-    })
-    .chain(rest)
+    let body = coalesced(
+        futures_util::stream::once(async move {
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(head))
+        })
+        .chain(rest)
+        .boxed(),
+        READ_CHUNK,
+    )
     .map(move |chunk| {
         let _held = (&held, &reading);
         chunk
@@ -1344,6 +1361,44 @@ fn stream_json(
         )
         .body(axum::body::Body::from_stream(body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// What a socket reads into and writes through, each way.
+const WS_BUFFER: usize = 16 * 1024;
+
+/// What a pad read is sent in. Its pieces — the pad's fields, each file's
+/// own few bytes of JSON around its text — are mostly tiny, and sent one by
+/// one each was a write and, without Nagle, a packet: a 40 KB pad of twenty
+/// files was some sixty (measured 30 October, docs/dev/scaling.md).
+const READ_CHUNK: usize = 64 * 1024;
+
+/// A body's pieces joined into writes of at least `size` bytes, a piece that
+/// big already passed on as it is.
+fn coalesced(
+    pieces: futures_util::stream::BoxStream<'static, Result<axum::body::Bytes, std::io::Error>>,
+    size: usize,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
+    use futures_util::StreamExt;
+    futures_util::stream::unfold(Some((pieces, Vec::new())), move |state| async move {
+        let (mut pieces, mut held) = state?;
+        loop {
+            match pieces.next().await {
+                Some(Ok(piece)) if held.is_empty() && piece.len() >= size => {
+                    return Some((Ok(piece), Some((pieces, held))));
+                }
+                Some(Ok(piece)) => {
+                    held.extend_from_slice(&piece);
+                    if held.len() >= size {
+                        let out = axum::body::Bytes::from(std::mem::take(&mut held));
+                        return Some((Ok(out), Some((pieces, held))));
+                    }
+                }
+                Some(Err(e)) => return Some((Err(e), None)),
+                None if held.is_empty() => return None,
+                None => return Some((Ok(axum::body::Bytes::from(held)), None)),
+            }
+        }
+    })
 }
 
 /// A request body read off the wire, and the room it holds in
@@ -1758,8 +1813,16 @@ async fn upgrade(
     // payload is a workspace snapshot, which the store already refuses above
     // 25 MB — so anything much larger than that is either a bug or an attempt
     // to make the relay allocate on demand.
+    //
+    // And small buffers: tungstenite reads into 128 KiB and writes through
+    // 128 KiB of its own a socket, which made an idle pad tab cost the relay
+    // 140 KB — 512 MiB at some 3,500 tabs (measured 30 October,
+    // docs/dev/scaling.md). A frame larger than these still passes; it is
+    // read and written in more steps.
     ws.max_message_size(32 * 1024 * 1024)
         .max_frame_size(32 * 1024 * 1024)
+        .read_buffer_size(WS_BUFFER)
+        .write_buffer_size(WS_BUFFER)
         .on_upgrade(move |socket| {
             ws::handle(
                 socket,
@@ -1858,7 +1921,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let _client = std::net::TcpStream::connect(addr).unwrap();
         let (mut server, _) = listener.accept().await.unwrap();
-        super::give_up_on_stalled_peers(&server, std::time::Duration::from_secs(2));
+        super::prepare_socket(&server, std::time::Duration::from_secs(2));
         let chunk = vec![0u8; 64 * 1024];
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
