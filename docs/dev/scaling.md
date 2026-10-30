@@ -139,6 +139,11 @@ read 64 KiB at a time rather than 4 KiB.
 | 5 MB pad, best | 282 MB/s | 219 MB/s | **388 MB/s** |
 | peak memory | 75 MB | 67 MB | 113 MB |
 
+On production, a pad of three small files read 40 times over one connection
+from here: a median of **71 ms before the deploy and 31 ms after** (1ea0fec,
+30 October) — the same as `/api/limits`, a single write, whose median was 30
+ms both times: what is left is the round trip.
+
 ### 6. Every first visit is 19–36 MB from this box — measured sizes, estimated cost
 
 Measured from the build and the mirror (reported by the delivery review):
