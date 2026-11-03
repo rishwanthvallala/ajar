@@ -132,9 +132,11 @@ A pad's size and files, the store's ceiling, history, the lease, what an
 address may add a day and what an account may hold are settings since 29
 October — `deploy/limits.env`, overridden on the box by
 `/etc/ajar/relay.env` ([operations.md](operations.md#the-storage-limits)) —
-and `Store::open` is given them (`pad::Limits`); the constants in `pad.rs`
-are their defaults, and what the tests run with. `GET /api/limits` says
-them, for the page.
+and `Store::open` is given them (`pad::Limits`), the paid plan's beside it
+(`with_paid`): each write is held to its pad's plan, its owner's
+(`write_within`'s `plan`), and a pad past its plan's limits takes writes
+that do not take it further past. The constants in `pad.rs` are the defaults,
+and what the tests run with. `GET /api/limits` says them, for the page.
 
 ## A read
 

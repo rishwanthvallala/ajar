@@ -72,6 +72,10 @@ const relay = spawn(
       ...process.env,
       AJAR_PUBLIC_ORIGIN: ORIGIN,
       AJAR_ADMINS: "github:7",
+      // Ana is on the paid plan, which here holds more pads than the free one
+      // and is otherwise the same: the dashboard has to say which, and use it.
+      AJAR_PAID_ACCOUNTS: "github:7",
+      AJAR_PAID_ACCOUNT_MAX_PADS: "25",
       AJAR_GITHUB_CLIENT_ID: "id",
       AJAR_GITHUB_CLIENT_SECRET: "secret",
       AJAR_GITHUB_AUTHORIZE_URL: `${PROVIDER}/authorize`,
@@ -735,7 +739,8 @@ try {
   const card = () => owner.locator(`.pad-card[data-name="${name}"]`);
   await card().waitFor();
   is(await card().locator(".chip-view").textContent(), "Who can view: View link", "the dashboard shows the settings at a glance");
-  is(/1 of 20 pads/.test(await owner.locator(".page-usage").textContent()), true, "and how much of the account is used");
+  const used = await owner.locator(".page-usage").textContent();
+  is(/Paid plan · 1 of 25 pads/.test(used), true, `and how much of the account is used, on its plan's limits — ${JSON.stringify(used)}`);
 
   // Share from the dashboard is the pad's own dialog.
   const dialog = () => owner.locator("dialog.share-dialog");

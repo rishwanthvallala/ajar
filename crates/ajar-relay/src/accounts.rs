@@ -9,6 +9,7 @@
 //! accounts existed. A pad with a row is owned, and who may view or edit it is
 //! decided here — the store API and the relay's peer room both ask.
 
+use crate::plan::{PaidList, Plan, Tiered};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -375,7 +376,10 @@ pub struct Accounts {
     /// beside the database rather than in it, so a copy of the database —
     /// a backup — is not a copy of every edit link.
     key: Aes256Gcm,
-    limits: Limits,
+    /// Each plan's room (`plan.rs`).
+    limits: Tiered<Limits>,
+    /// The accounts on the paid plan.
+    paid: PaidList,
 }
 
 impl Accounts {
@@ -390,17 +394,58 @@ impl Accounts {
         Ok(Accounts {
             db: Mutex::new(conn),
             key,
-            limits: Limits::default(),
+            limits: Tiered {
+                free: Limits::default(),
+                paid: Limits::default(),
+            },
+            paid: PaidList::default(),
         })
     }
 
-    pub fn with_limits(mut self, limits: Limits) -> Self {
+    pub fn with_limits(mut self, limits: Tiered<Limits>) -> Self {
         self.limits = limits;
         self
     }
 
-    pub fn limits(&self) -> Limits {
-        self.limits
+    /// Who is on the paid plan (`AJAR_PAID_ACCOUNTS`).
+    pub fn with_paid(mut self, paid: PaidList) -> Self {
+        self.paid = paid;
+        self
+    }
+
+    /// What an account on `plan` may hold.
+    pub fn limits_of(&self, plan: Plan) -> Limits {
+        self.limits.of(plan)
+    }
+
+    /// The plan an account is on: paid when the configuration names it,
+    /// free otherwise — and free for an id nobody has, rather than an error,
+    /// since the free plan is what anyone may have.
+    pub fn plan_of(&self, user: i64) -> Plan {
+        Self::plan_in(&self.db.lock(), &self.paid, user)
+    }
+
+    fn plan_in(db: &Connection, paid: &PaidList, user: i64) -> Plan {
+        if paid.len() == 0 {
+            return Plan::Free;
+        }
+        let who: Option<(String, String, Option<String>)> = db
+            .query_row(
+                "SELECT provider, provider_id, email FROM users WHERE id = ?1",
+                params![user],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        match who {
+            Some((provider, id, email))
+                if paid.includes(&provider, Some(&id), email.as_deref()) =>
+            {
+                Plan::Paid
+            }
+            _ => Plan::Free,
+        }
     }
 
     fn seal(&self, secret: &str) -> Vec<u8> {
@@ -555,8 +600,9 @@ impl Accounts {
             params![owner],
             |r| r.get(0),
         )?;
-        if held as usize >= self.limits.pads {
-            return Err(AccountError::TooManyPads(self.limits.pads));
+        let limits = self.limits.of(Self::plan_in(&db, &self.paid, owner));
+        if held as usize >= limits.pads {
+            return Err(AccountError::TooManyPads(limits.pads));
         }
         if let Some(wanted) = wanted {
             let named: i64 = db.query_row(
@@ -564,8 +610,8 @@ impl Accounts {
                 params![owner],
                 |r| r.get(0),
             )?;
-            if named as usize >= self.limits.named {
-                return Err(AccountError::TooManyNamed(self.limits.named));
+            if named as usize >= limits.named {
+                return Err(AccountError::TooManyNamed(limits.named));
             }
             Self::free(&db, wanted, taken)?;
             let tx = db.transaction()?;
@@ -893,12 +939,14 @@ impl Accounts {
     /// when it cannot be counted: read as nothing used, it was the whole of
     /// the account's room.
     pub fn room_for(&self, owner: i64, name: &str) -> Result<u64, AccountError> {
-        let used: i64 = self.db.lock().query_row(
+        let db = self.db.lock();
+        let used: i64 = db.query_row(
             "SELECT COALESCE(SUM(bytes), 0) FROM pads WHERE owner_id = ?1 AND deleted IS NULL AND name != ?2",
             params![owner, name],
             |r| r.get(0),
         )?;
-        Ok(self.limits.bytes.saturating_sub(used.max(0) as u64))
+        let room = self.limits.of(Self::plan_in(&db, &self.paid, owner)).bytes;
+        Ok(room.saturating_sub(used.max(0) as u64))
     }
 
     // ---------------------------------------------------------- the operator
@@ -1688,6 +1736,48 @@ mod tests {
             a.create_pad(me, &|_| false, None).err(),
             Some(AccountError::TooManyPads(MAX_PADS_PER_ACCOUNT))
         );
+    }
+
+    #[test]
+    fn a_paid_account_has_the_paid_plan_s_room_and_everyone_else_the_free_one() {
+        let (a, _dir) = store();
+        let a = a
+            .with_limits(Tiered {
+                free: Limits {
+                    pads: 1,
+                    bytes: 10,
+                    named: 0,
+                },
+                paid: Limits {
+                    pads: 3,
+                    bytes: 100,
+                    named: 1,
+                },
+            })
+            .with_paid(PaidList::parse("github:2"));
+        let (free, paid) = (person(&a, "1"), person(&a, "2"));
+        assert_eq!(a.plan_of(free), Plan::Free);
+        assert_eq!(a.plan_of(paid), Plan::Paid);
+        assert_eq!(a.plan_of(9999), Plan::Free, "nobody's plan is the free one");
+        a.create_pad(free, &|_| false, None).unwrap();
+        assert_eq!(
+            a.create_pad(free, &|_| false, None).err(),
+            Some(AccountError::TooManyPads(1))
+        );
+        assert_eq!(
+            a.create_pad(free, &|_| false, Some("mine")).err(),
+            Some(AccountError::TooManyPads(1)),
+            "the count of pads comes first"
+        );
+        for _ in 0..3 {
+            a.create_pad(paid, &|_| false, None).unwrap();
+        }
+        assert_eq!(
+            a.create_pad(paid, &|_| false, None).err(),
+            Some(AccountError::TooManyPads(3))
+        );
+        assert_eq!(a.room_for(free, "x").unwrap(), 10);
+        assert_eq!(a.room_for(paid, "x").unwrap(), 100);
     }
 
     #[test]

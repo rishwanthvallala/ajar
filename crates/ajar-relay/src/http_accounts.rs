@@ -376,17 +376,28 @@ struct Me {
     user: Option<User>,
     /// Who you can sign in with here; empty when sign-in is not set up.
     providers: Vec<&'static str>,
-    /// What an account may hold, for the dashboard to show against.
+    /// The plan this person is on: free unless the relay names them paid.
+    plan: crate::plan::Plan,
+    /// What their account may hold, on that plan, for the dashboard to show against.
     limits: crate::accounts::Limits,
     /// Whether this person may open /admin.
     admin: bool,
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
+    let user = signed_in(&state, &headers).await;
+    let plan = match &user {
+        Some(user) => {
+            let (accounts, id) = (state.accounts.clone(), user.id);
+            blocking(move || accounts.plan_of(id)).await
+        }
+        None => crate::plan::Plan::Free,
+    };
     Json(Me {
-        user: signed_in(&state, &headers).await,
+        user,
         providers: state.auth.offered(),
-        limits: state.accounts.limits(),
+        plan,
+        limits: state.accounts.limits_of(plan),
         admin: crate::http_admin::require_admin(&state, &headers)
             .await
             .is_ok(),

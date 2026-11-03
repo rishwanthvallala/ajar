@@ -171,11 +171,15 @@ deploy, no code. When it cannot wait, the same line in `/etc/ajar/relay.env`
 on the box and `systemctl restart ajar-relay`; then put it in `limits.env`
 too. The relay's tests read `limits.env`, so a bad name or value fails CI; a
 bad override on the box stops the relay starting, with the reason in the
-journal. The page asks `GET /api/limits`. As of 30 October: 200 MiB and 500
-files a pad (raised from 100 MiB on 29 October, "for now"), 4 GiB in all, a
-90-day lease, 30 versions / 200 MiB / 30 days of history, 512 MiB a day an
-address, an account 20 pads / 250 MiB / 3 named. The table is in
-operations.md, "The storage limits".
+journal. The page asks `GET /api/limits`. Since 3 November each limit has a
+free and a paid value (`plan.rs`): a pad follows its owner's plan (unowned
+pads are free), the daily allowance the writer's. Paid accounts are named in
+`AJAR_PAID_ACCOUNTS`, on the box in `/etc/ajar/relay.env` (people, so never
+in the repo); there is no billing yet. In `limits.env`: free 50 MiB / 500
+files a pad, paid 200 MiB / 2,000; free 256 MiB a day an address, paid 1 GiB;
+an account free 10 pads / 100 MiB / 1 named, paid 50 / 1 GiB / 10; 4 GiB in
+all and a 90-day lease for both. The table is in operations.md, "The storage
+limits".
 
 ## How this repository is kept
 

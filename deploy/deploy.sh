@@ -258,6 +258,8 @@ if [ ! -f /etc/ajar/relay.env ]; then
         'AJAR_PUBLIC_ORIGIN=https://code.rishwanth.dev' \
         '# AJAR_GOOGLE_CLIENT_ID=' '# AJAR_GOOGLE_CLIENT_SECRET=' \
         '# AJAR_GITHUB_CLIENT_ID=' '# AJAR_GITHUB_CLIENT_SECRET=' '# AJAR_ADMINS=you@example.com' \
+        '# The paid plan (deploy/limits.env): who is on it, as AJAR_ADMINS names people.' \
+        '# AJAR_PAID_ACCOUNTS=you@example.com,github:12345' \
         > /etc/ajar/relay.env
 fi
 RELAYENV

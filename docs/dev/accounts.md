@@ -255,11 +255,13 @@ is all in the page — no relay change, and the original is only read.
 
 ## Limits and lifecycle
 
-- **Per account:** 20 pads, 250 MB in all, and 200 MB / 500 files each, the
-  same as an anonymous pad. A pad went from 25 MB to 60 MB on 7 October, to
-  100 MB on 11 October, with the account total from 100 MB to 250, and to 200
-  MB on 29 October, for now, with the account total left at 250 — so an
-  account holds one full pad and a quarter of another. Every pad together is held to
+- **Per account, by plan** (since 3 November; [operations.md](operations.md#the-storage-limits)):
+  free, 10 pads, 100 MiB in all, 1 named, each pad 50 MiB / 500 files as an
+  anonymous pad is; paid, 50 pads, 1 GiB, 10 named, each pad 200 MiB / 2,000
+  files. A pad went from 25 MB to 60 MB on 7 October, to 100 MB on 11 October,
+  with the account total from 100 MB to 250, and to 200 MB on 29 October; on 3
+  November the limits split into a free plan, lower, and a paid one, higher.
+  An account is paid when `AJAR_PAID_ACCOUNTS` on the box names it. Every pad together is held to
   4 GB by default, whatever the accounts add up to. The disk has 15 GB free;
   these are the numbers to revisit, not a promise — each is a setting, in
   `deploy/limits.env` ([operations.md](operations.md#the-storage-limits)).

@@ -23,6 +23,7 @@
 //! ever-growing count nobody could reclaim. The trade was reversed on purpose.
 //! An old link now opens an empty folder, or somebody else's newer one.
 
+use crate::plan::Plan;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -966,8 +967,12 @@ pub struct Store {
     /// The ceiling this store enforces. A field rather than the constant so a
     /// smaller disk can say so, and so a test can reach it without writing 4 GB.
     ceiling: u64,
-    /// What it holds each pad to; `ceiling` is its `store_bytes`.
+    /// What it holds a free pad to — and, for every pad, the store's ceiling
+    /// (`ceiling` is its `store_bytes`) and the lease.
     limits: Limits,
+    /// What it holds a paid pad to: its bytes, files and history. Its
+    /// ceiling and lease are the free one's, being the store's.
+    paid: Limits,
     /// One connection, and every change to the store under it: a write's
     /// checks and its transaction are one step, so two writes to one pad
     /// cannot both start from the same version and lose one another.
@@ -1097,6 +1102,7 @@ impl Store {
             blobs,
             ceiling,
             limits,
+            paid: limits,
             db: Mutex::new(db),
             used: AtomicU64::new(0),
             pinned: Default::default(),
@@ -1233,9 +1239,18 @@ impl Store {
 
     /// Bytes of the blobs some pad holds right now, and of the last runs
     /// pads keep.
-    /// What this store holds each pad to.
-    pub fn limits(&self) -> &Limits {
-        &self.limits
+    /// The paid plan's pad limits, beside the free ones `open` was given.
+    pub fn with_paid(mut self, paid: Limits) -> Self {
+        self.paid = paid;
+        self
+    }
+
+    /// What a pad on `plan` is held to.
+    pub fn limits_of(&self, plan: Plan) -> &Limits {
+        match plan {
+            Plan::Free => &self.limits,
+            Plan::Paid => &self.paid,
+        }
     }
 
     pub fn used(&self) -> u64 {
@@ -1711,7 +1726,7 @@ impl Store {
     /// it: asked for before a restore, so whatever the restore replaces can be
     /// had back. Returns the version that is the pad now, if it has files —
     /// and none for a lapsed pad, which is nobody's to keep.
-    pub fn keep_now(&self, name: &str) -> Result<Option<u64>, Error> {
+    pub fn keep_now(&self, name: &str, plan: Plan) -> Result<Option<u64>, Error> {
         check_name(name)?;
         let mut db = self.db.lock();
         let Some(head) = Self::head(&db, name)? else {
@@ -1737,7 +1752,7 @@ impl Store {
         }
         let now = now_ms();
         let tx = db.transaction()?;
-        let held = Self::keep_version(&tx, &self.limits, name, &rows, head.seq, now)?;
+        let held = Self::keep_version(&tx, self.limits_of(plan), name, &rows, head.seq, now)?;
         tx.commit()?;
         self.adjust(held);
         self.release(&db);
@@ -2041,7 +2056,7 @@ impl Store {
     /// this exists only for the tests.
     #[cfg(test)]
     pub fn write(&self, name: &str, writes: &[Write]) -> Result<u64, Error> {
-        self.write_within(name, writes, u64::MAX)
+        self.write_within(name, writes, u64::MAX, Plan::Free)
             .map(|written| written.seq)
     }
 
@@ -2062,13 +2077,16 @@ impl Store {
         name: &str,
         writes: &[Write],
         allowance: u64,
+        plan: Plan,
     ) -> Result<Written, Error> {
         check_name(name)?;
+        // Held to the pad's plan — its owner's, free for a pad nobody owns.
+        let limits = self.limits_of(plan);
         // Counted first, before anything is worked out for any of them. A
         // list cut short as it was read (`writes`, `edits`) is over these by
         // one, so it is refused here like the whole of it.
-        if writes.len() > self.limits.writes() {
-            return Err(Error::TooManyWrites(self.limits.writes()));
+        if writes.len() > limits.writes() {
+            return Err(Error::TooManyWrites(limits.writes()));
         }
         let mut edits = 0usize;
         for w in writes {
@@ -2153,8 +2171,8 @@ impl Store {
             .zip(&last)
             .filter(|(w, &last)| last && (w.content.is_some() || w.edits.is_some()))
             .count();
-        if kept > self.limits.files {
-            return Err(Error::TooManyFiles(self.limits.files));
+        if kept > limits.files {
+            return Err(Error::TooManyFiles(limits.files));
         }
 
         // Each new file's blob, written beside the store with nobody waiting:
@@ -2263,15 +2281,19 @@ impl Store {
         }
         // Checked after applying rather than before: a write that replaces a
         // large file with a small one should be allowed even when the pad was
-        // already at the limit.
-        if new.len() > self.limits.files {
-            return Err(Error::TooManyFiles(self.limits.files));
+        // already at the limit. And a pad already past its plan's limits — made
+        // under higher ones, or its owner's plan since lowered — keeps taking
+        // writes that do not take it further past them: its files can still be
+        // edited, and it can be made smaller, though it cannot grow.
+        let had: u64 = old.values().map(|r| r.size).sum();
+        if new.len() > limits.files && new.len() > old.len() {
+            return Err(Error::TooManyFiles(limits.files));
         }
         let bytes: u64 = new.values().map(|r| r.size).sum();
-        if bytes > self.limits.bytes {
+        if bytes > limits.bytes && bytes > had {
             return Err(Error::TooBig {
                 bytes: bytes as usize,
-                limit: self.limits.bytes,
+                limit: limits.bytes,
             });
         }
 
@@ -2308,7 +2330,7 @@ impl Store {
         }
         if due {
             let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
-            held += Self::keep_version(&tx, &self.limits, name, &old, was_seq, now)?;
+            held += Self::keep_version(&tx, limits, name, &old, was_seq, now)?;
         }
         held += Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
         if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
@@ -3318,7 +3340,7 @@ mod tests {
         }
         // An edit is held to what it leaves.
         let base = s
-            .write_within("p", &[binary("x.bin", "QUJD")], u64::MAX)
+            .write_within("p", &[binary("x.bin", "QUJD")], u64::MAX, Plan::Free)
             .unwrap()
             .hashes["x.bin"]
             .clone();
@@ -3431,6 +3453,81 @@ mod tests {
             s.write("q", &thirteen).err(),
             Some(Error::TooManyWrites(12))
         );
+    }
+
+    #[test]
+    fn a_paid_pad_is_held_to_the_paid_plan_s_limits() {
+        let (s, _d) = store_with(small());
+        let s = s.with_paid(Limits {
+            bytes: 2 * 1024 * 1024,
+            files: 6,
+            ..small()
+        });
+        let big = "x".repeat(1024 * 1024 + 1);
+        assert!(matches!(
+            s.write_within("free", &[put("big", &big)], u64::MAX, Plan::Free),
+            Err(Error::TooBig { limit, .. }) if limit == 1024 * 1024
+        ));
+        s.write_within("paid", &[put("big", &big)], u64::MAX, Plan::Paid)
+            .unwrap();
+        let five: Vec<Write> = (0..5).map(|i| put(&format!("f{i}"), "x")).collect();
+        s.write_within("paid", &five, u64::MAX, Plan::Paid).unwrap();
+        assert_eq!(
+            s.write_within(
+                "paid",
+                &[put("f5", "x"), put("f6", "x")],
+                u64::MAX,
+                Plan::Paid
+            )
+            .err(),
+            Some(Error::TooManyFiles(6))
+        );
+    }
+
+    #[test]
+    fn a_pad_past_its_limits_can_be_edited_and_shrunk_but_not_grown() {
+        // Made on the paid plan, then held to the free one: as a pad whose
+        // owner stopped paying, or one from before the free plan's limits fell.
+        let (s, _d) = store_with(small());
+        let s = s.with_paid(Limits {
+            bytes: 4 * 1024 * 1024,
+            files: 6,
+            ..small()
+        });
+        let mut five: Vec<Write> = (0..5).map(|i| put(&format!("f{i}"), "x")).collect();
+        five.push(put("big", &"x".repeat(2 * 1024 * 1024)));
+        s.write_within("p", &five, u64::MAX, Plan::Paid).unwrap();
+        // Over the free plan's 1 MiB and three files, now held to it:
+        let edit_in_place = s.write_within(
+            "p",
+            &[put("big", &"y".repeat(2 * 1024 * 1024))],
+            u64::MAX,
+            Plan::Free,
+        );
+        assert!(edit_in_place.is_ok(), "a same-size edit: {edit_in_place:?}");
+        s.write_within(
+            "p",
+            &[put("big", &"z".repeat(1024 * 1024 + 10))],
+            u64::MAX,
+            Plan::Free,
+        )
+        .expect("smaller, though still over");
+        assert!(matches!(
+            s.write_within(
+                "p",
+                &[put("big", &"z".repeat(1024 * 1024 + 20))],
+                u64::MAX,
+                Plan::Free
+            ),
+            Err(Error::TooBig { .. })
+        ));
+        assert_eq!(
+            s.write_within("p", &[put("another", "x")], u64::MAX, Plan::Free)
+                .err(),
+            Some(Error::TooManyFiles(3))
+        );
+        s.write_within("p", &[delete("f0")], u64::MAX, Plan::Free)
+            .expect("a file removed");
     }
 
     #[test]
@@ -3603,13 +3700,13 @@ mod tests {
     fn a_write_within_its_allowance_is_charged_what_it_added() {
         let (s, _d) = store();
         let first = s
-            .write_within("p", &[put("a", &"x".repeat(1000))], u64::MAX)
+            .write_within("p", &[put("a", &"x".repeat(1000))], u64::MAX, Plan::Free)
             .unwrap();
         assert_eq!(first.seq, 1);
         assert!(first.grew > 1000, "the new pad was not charged: {first:?}");
 
         let same = s
-            .write_within("p", &[put("a", &"y".repeat(1000))], 0)
+            .write_within("p", &[put("a", &"y".repeat(1000))], 0, Plan::Free)
             .unwrap();
         assert_eq!(same.grew, 0, "an edit that added nothing was charged");
     }
@@ -3620,7 +3717,7 @@ mod tests {
         s.write("p", &[put("a", "small")]).unwrap();
         let before = s.used();
         assert_eq!(
-            s.write_within("p", &[put("b", &"z".repeat(4096))], 1024),
+            s.write_within("p", &[put("b", &"z".repeat(4096))], 1024, Plan::Free),
             Err(Error::OverAllowance)
         );
         assert_eq!(s.used(), before, "a refused write was counted");
@@ -3629,7 +3726,7 @@ mod tests {
             "a refused write was saved"
         );
         // Shrinking always goes through: an address at its limit can make room.
-        assert!(s.write_within("p", &[remove("a")], 0).is_ok());
+        assert!(s.write_within("p", &[remove("a")], 0, Plan::Free).is_ok());
     }
 
     fn remove(path: &str) -> Write {
@@ -3965,13 +4062,23 @@ mod tests {
         // file left 1.3 GB on disk.
         let (s, _d) = store_without_history();
         let mut base = s
-            .write_within("p", &[put("a.txt", &"x".repeat(100_000))], u64::MAX)
+            .write_within(
+                "p",
+                &[put("a.txt", &"x".repeat(100_000))],
+                u64::MAX,
+                Plan::Free,
+            )
             .unwrap()
             .hashes["a.txt"]
             .clone();
         for i in 0..20 {
             base = s
-                .write_within("p", &[edit("a.txt", &base, i, 0, "y")], u64::MAX)
+                .write_within(
+                    "p",
+                    &[edit("a.txt", &base, i, 0, "y")],
+                    u64::MAX,
+                    Plan::Free,
+                )
                 .unwrap()
                 .hashes["a.txt"]
                 .clone();
@@ -4099,9 +4206,9 @@ mod tests {
         let (s, _d) = store();
         s.write("p", &[put("a.py", "x".repeat(1000).as_str())])
             .unwrap();
-        let first = s.keep_now("p").unwrap().unwrap();
+        let first = s.keep_now("p", Plan::Free).unwrap().unwrap();
         assert_eq!(
-            s.keep_now("p").unwrap(),
+            s.keep_now("p", Plan::Free).unwrap(),
             Some(first),
             "the same files are the same version"
         );
@@ -4120,7 +4227,7 @@ mod tests {
         s.remove("p").unwrap();
         assert!(s.history("p").unwrap().is_empty());
         assert_eq!(s.used(), 0, "a deleted pad's history is given back too");
-        assert_eq!(s.keep_now("nobody").unwrap(), None);
+        assert_eq!(s.keep_now("nobody", Plan::Free).unwrap(), None);
     }
 
     #[test]
@@ -4150,7 +4257,7 @@ mod tests {
         assert!(s.version("p", old[0].id).unwrap().is_none());
         assert!(s.open_version("p", old[0].id).unwrap().is_none());
         assert_eq!(
-            s.keep_now("p").unwrap(),
+            s.keep_now("p", Plan::Free).unwrap(),
             None,
             "kept a version of a lapsed pad"
         );
@@ -4199,7 +4306,7 @@ mod tests {
             put("dir/empty.txt", ""),
         ];
         s.write("p", &files).unwrap();
-        let id = s.keep_now("p").unwrap().unwrap();
+        let id = s.keep_now("p", Plan::Free).unwrap().unwrap();
         s.write("p", &[put("a.txt", "since")]).unwrap();
 
         use std::io::Read;
@@ -4227,7 +4334,7 @@ mod tests {
         s.write("p", &[put("a.py", "0")]).unwrap();
         for i in 1..=(VERSIONS_KEPT + 5) {
             s.write("p", &[put("a.py", &i.to_string())]).unwrap();
-            s.keep_now("p").unwrap();
+            s.keep_now("p", Plan::Free).unwrap();
         }
         let history = s.history("p").unwrap();
         assert_eq!(history.len(), VERSIONS_KEPT);
@@ -4415,11 +4522,16 @@ mod tests {
     fn edits_apply_to_the_version_they_name() {
         let (s, _d) = store();
         let written = s
-            .write_within("p", &[put("a.txt", "hello world")], u64::MAX)
+            .write_within("p", &[put("a.txt", "hello world")], u64::MAX, Plan::Free)
             .unwrap();
         let base = written.hashes["a.txt"].clone();
         let next = s
-            .write_within("p", &[edit("a.txt", &base, 6, 5, "there")], u64::MAX)
+            .write_within(
+                "p",
+                &[edit("a.txt", &base, 6, 5, "there")],
+                u64::MAX,
+                Plan::Free,
+            )
             .unwrap();
         assert_eq!(
             s.get("p").unwrap().unwrap().files["a.txt"].content,
@@ -4449,7 +4561,7 @@ mod tests {
         // rather than splitting it.
         let (s, _d) = store();
         let base = s
-            .write_within("p", &[put("a.txt", "a\u{1F600}b")], u64::MAX)
+            .write_within("p", &[put("a.txt", "a\u{1F600}b")], u64::MAX, Plan::Free)
             .unwrap()
             .hashes["a.txt"]
             .clone();
@@ -4492,7 +4604,11 @@ mod tests {
                         ..edit(path, &base, sent.encode_utf16().count(), 0, part)
                     }
                 };
-                base = s.write_within("p", &[w], u64::MAX).unwrap().hashes[path].clone();
+                base = s
+                    .write_within("p", &[w], u64::MAX, Plan::Free)
+                    .unwrap()
+                    .hashes[path]
+                    .clone();
                 sent.push_str(part);
             }
             let file = &s.get("p").unwrap().unwrap().files[path];
@@ -4514,7 +4630,7 @@ mod tests {
     fn a_file_is_edited_in_a_request_of_its_own() {
         let (s, _d) = store_without_history();
         let base = s
-            .write_within("p", &[put("a.txt", "abc")], u64::MAX)
+            .write_within("p", &[put("a.txt", "abc")], u64::MAX, Plan::Free)
             .unwrap()
             .hashes["a.txt"]
             .clone();
@@ -4546,7 +4662,7 @@ mod tests {
     fn edits_that_do_not_apply_leave_nothing_behind() {
         let (s, _d) = store();
         let base = s
-            .write_within("p", &[put("a.txt", "abc")], u64::MAX)
+            .write_within("p", &[put("a.txt", "abc")], u64::MAX, Plan::Free)
             .unwrap()
             .hashes["a.txt"]
             .clone();
@@ -4659,7 +4775,7 @@ mod tests {
     fn a_streamed_pad_says_each_files_hash() {
         let (s, _d) = store();
         let written = s
-            .write_within("p", &[put("a.txt", "one")], u64::MAX)
+            .write_within("p", &[put("a.txt", "one")], u64::MAX, Plan::Free)
             .unwrap();
         let body = streamed(&s, "p");
         assert_eq!(

@@ -9,6 +9,7 @@ mod http_accounts;
 mod http_admin;
 mod outbox;
 mod pad;
+mod plan;
 mod quota;
 #[cfg(test)]
 mod serving_tests;
@@ -172,45 +173,78 @@ struct Args {
     // `deploy/limits.env`, which every deploy installs — and then from
     // `/etc/ajar/relay.env`, which no deploy touches, so a value there
     // overrides it. Sizes take `200MiB`, `4GiB` or a number of bytes.
+    //
+    // Most come twice, for the free plan and the paid one (`plan.rs`); a pad
+    // is held to its owner's, an anonymous pad to the free one's. The old
+    // names, before plans, are the free plan's. Each defaults to the constant
+    // in its module, for both plans, so a relay given none behaves as one
+    // before plans did.
     /// Bytes every pad together may occupy. Refuses new writes past it.
     ///
     /// The default suits the box this normally runs on. A smaller disk should
     /// say so — the point is to refuse before the disk is gone, and what
-    /// "before" means is a property of the disk, not of this program.
+    /// "before" means is a property of the disk, not of this program. One for
+    /// the store, whatever plans its pads are on.
     #[arg(long, env = "AJAR_PAD_STORE_BYTES", default_value_t = pad::MAX_STORE_BYTES, value_parser = size)]
     max_store_bytes: u64,
 
-    /// Bytes one pad may hold.
-    #[arg(long, env = "AJAR_PAD_MAX_BYTES", default_value_t = pad::MAX_BYTES as u64, value_parser = size)]
-    pad_max_bytes: u64,
-
-    /// Files one pad may hold, at most `pad::MAX_FILES_LIMIT`.
-    #[arg(long, env = "AJAR_PAD_MAX_FILES", default_value_t = pad::MAX_FILES)]
-    pad_max_files: usize,
-
-    /// Days a pad nobody opens or writes lasts. An account's never lapse.
+    /// Days a pad nobody owns lasts with nobody opening or writing it. An
+    /// account's pads never lapse, on either plan.
     #[arg(long, env = "AJAR_PAD_LEASE_DAYS", default_value_t = pad::LEASE.as_secs() / 86_400)]
     pad_lease_days: u64,
 
-    /// Versions one pad's history keeps.
-    #[arg(long, env = "AJAR_PAD_VERSIONS", default_value_t = pad::VERSIONS_KEPT)]
-    pad_versions: usize,
+    /// Bytes one free pad may hold.
+    #[arg(long = "free-pad-max-bytes", alias = "pad-max-bytes", env = "AJAR_FREE_PAD_MAX_BYTES", default_value_t = pad::MAX_BYTES as u64, value_parser = size)]
+    free_pad_max_bytes: u64,
+    /// Bytes one paid pad may hold.
+    #[arg(long, env = "AJAR_PAID_PAD_MAX_BYTES", default_value_t = pad::MAX_BYTES as u64, value_parser = size)]
+    paid_pad_max_bytes: u64,
 
-    /// Bytes of files a pad's versions may name between them. The newest
+    /// Files one free pad may hold, at most `pad::MAX_FILES_LIMIT`.
+    #[arg(long = "free-pad-max-files", alias = "pad-max-files", env = "AJAR_FREE_PAD_MAX_FILES", default_value_t = pad::MAX_FILES)]
+    free_pad_max_files: usize,
+    /// Files one paid pad may hold, at most `pad::MAX_FILES_LIMIT`.
+    #[arg(long, env = "AJAR_PAID_PAD_MAX_FILES", default_value_t = pad::MAX_FILES)]
+    paid_pad_max_files: usize,
+
+    /// Versions a free pad's history keeps.
+    #[arg(long = "free-pad-versions", alias = "pad-versions", env = "AJAR_FREE_PAD_VERSIONS", default_value_t = pad::VERSIONS_KEPT)]
+    free_pad_versions: usize,
+    /// Versions a paid pad's history keeps.
+    #[arg(long, env = "AJAR_PAID_PAD_VERSIONS", default_value_t = pad::VERSIONS_KEPT)]
+    paid_pad_versions: usize,
+
+    /// Bytes of files a free pad's versions may name between them. The newest
     /// version is kept whatever its size.
-    #[arg(long, env = "AJAR_PAD_HISTORY_BYTES", default_value_t = pad::HISTORY_BYTES, value_parser = size)]
-    pad_history_bytes: u64,
+    #[arg(long = "free-pad-history-bytes", alias = "pad-history-bytes", env = "AJAR_FREE_PAD_HISTORY_BYTES", default_value_t = pad::HISTORY_BYTES, value_parser = size)]
+    free_pad_history_bytes: u64,
+    /// The same, for a paid pad.
+    #[arg(long, env = "AJAR_PAID_PAD_HISTORY_BYTES", default_value_t = pad::HISTORY_BYTES, value_parser = size)]
+    paid_pad_history_bytes: u64,
 
-    /// Days a version is kept.
-    #[arg(long, env = "AJAR_PAD_VERSION_DAYS", default_value_t = pad::VERSION_AGE.as_secs() / 86_400)]
-    pad_version_days: u64,
+    /// Days a free pad's versions are kept.
+    #[arg(long = "free-pad-version-days", alias = "pad-version-days", env = "AJAR_FREE_PAD_VERSION_DAYS", default_value_t = pad::VERSION_AGE.as_secs() / 86_400)]
+    free_pad_version_days: u64,
+    /// Days a paid pad's versions are kept.
+    #[arg(long, env = "AJAR_PAID_PAD_VERSION_DAYS", default_value_t = pad::VERSION_AGE.as_secs() / 86_400)]
+    paid_pad_version_days: u64,
 
-    /// Bytes one address may add to the pad store per day.
+    /// Bytes one address may add to the pad store per day, writing as anyone
+    /// not on the paid plan.
     ///
     /// A flag for the same reason the store ceiling is one: so a check can
     /// reach it in a few requests rather than a quarter of a gigabyte.
-    #[arg(long, env = "AJAR_PAD_GROWTH_PER_ADDRESS", default_value_t = quota::MAX_PAD_GROWTH_PER_IP, value_parser = size)]
-    pad_growth_per_address: u64,
+    #[arg(long = "free-growth-per-address", alias = "pad-growth-per-address", env = "AJAR_FREE_GROWTH_PER_ADDRESS", default_value_t = quota::MAX_PAD_GROWTH_PER_IP, value_parser = size)]
+    free_growth_per_address: u64,
+    /// The same, for a signed-in account on the paid plan.
+    #[arg(long, env = "AJAR_PAID_GROWTH_PER_ADDRESS", default_value_t = quota::MAX_PAD_GROWTH_PER_IP, value_parser = size)]
+    paid_growth_per_address: u64,
+
+    /// The accounts on the paid plan: comma-separated, each an email or
+    /// `provider:id`, as `AJAR_ADMINS` is. On the box, in `/etc/ajar/relay.env`
+    /// — they are people — never in the repository.
+    #[arg(long, env = "AJAR_PAID_ACCOUNTS", default_value = "")]
+    paid_accounts: String,
 
     /// Read the caller's address from `X-Forwarded-For`.
     ///
@@ -236,17 +270,26 @@ struct Args {
     #[arg(long)]
     usage_db: Option<String>,
 
-    /// Pads one account may own.
-    #[arg(long, env = "AJAR_ACCOUNT_MAX_PADS", default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
-    account_max_pads: usize,
+    /// Pads one free account may own.
+    #[arg(long = "free-account-max-pads", alias = "account-max-pads", env = "AJAR_FREE_ACCOUNT_MAX_PADS", default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
+    free_account_max_pads: usize,
+    /// Pads one paid account may own.
+    #[arg(long, env = "AJAR_PAID_ACCOUNT_MAX_PADS", default_value_t = accounts::MAX_PADS_PER_ACCOUNT)]
+    paid_account_max_pads: usize,
 
-    /// Bytes one account's pads may hold together.
-    #[arg(long, env = "AJAR_ACCOUNT_MAX_BYTES", default_value_t = accounts::MAX_BYTES_PER_ACCOUNT, value_parser = size)]
-    account_max_bytes: u64,
+    /// Bytes one free account's pads may hold together.
+    #[arg(long = "free-account-max-bytes", alias = "account-max-bytes", env = "AJAR_FREE_ACCOUNT_MAX_BYTES", default_value_t = accounts::MAX_BYTES_PER_ACCOUNT, value_parser = size)]
+    free_account_max_bytes: u64,
+    /// Bytes one paid account's pads may hold together.
+    #[arg(long, env = "AJAR_PAID_ACCOUNT_MAX_BYTES", default_value_t = accounts::MAX_BYTES_PER_ACCOUNT, value_parser = size)]
+    paid_account_max_bytes: u64,
 
-    /// Pads one account may give a name of its choosing.
-    #[arg(long, env = "AJAR_ACCOUNT_MAX_NAMED", default_value_t = accounts::MAX_NAMED_PER_ACCOUNT)]
-    account_max_named: usize,
+    /// Pads one free account may give a name of its choosing.
+    #[arg(long = "free-account-max-named", alias = "account-max-named", env = "AJAR_FREE_ACCOUNT_MAX_NAMED", default_value_t = accounts::MAX_NAMED_PER_ACCOUNT)]
+    free_account_max_named: usize,
+    /// Pads one paid account may give a name of its choosing.
+    #[arg(long, env = "AJAR_PAID_ACCOUNT_MAX_NAMED", default_value_t = accounts::MAX_NAMED_PER_ACCOUNT)]
+    paid_account_max_named: usize,
 
     /// Write every pad out as one JSON document each, the way the store kept
     /// them before October 2026, into this directory, and exit. The way back:
@@ -299,26 +342,49 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let limits = pad_limits(&args);
     // Refused at the start, by name, rather than met as odd refusals later.
-    if let Some(problem) = limits.problem() {
-        anyhow::bail!("the pad limits will not do: {problem}");
+    for (plan, l) in [("free", limits.free), ("paid", limits.paid)] {
+        if let Some(problem) = l.problem() {
+            anyhow::bail!("the {plan} plan's pad limits will not do: {problem}");
+        }
     }
+    let paid = plan::PaidList::parse(&args.paid_accounts);
     info!(
-        "pad limits: {} MB and {} files a pad, {} MB in all; a lease of {} days; {} versions, {} MB, {} days; {} MB a day an address; an account {} pads, {} MB, {} named",
-        limits.bytes / (1024 * 1024),
-        limits.files,
-        limits.store_bytes / (1024 * 1024),
+        "storage: {} MB in all, an unowned pad lasting {} days; {} accounts on the paid plan",
+        args.max_store_bytes / (1024 * 1024),
         args.pad_lease_days,
-        limits.versions,
-        limits.history_bytes / (1024 * 1024),
-        args.pad_version_days,
-        args.pad_growth_per_address / (1024 * 1024),
-        args.account_max_pads,
-        args.account_max_bytes / (1024 * 1024),
-        args.account_max_named,
+        paid.len(),
     );
+    for (plan, l, growth, account) in [
+        (
+            "free",
+            limits.free,
+            args.free_growth_per_address,
+            account_limits(&args).free,
+        ),
+        (
+            "paid",
+            limits.paid,
+            args.paid_growth_per_address,
+            account_limits(&args).paid,
+        ),
+    ] {
+        info!(
+            "{plan} plan: {} MB and {} files a pad; {} versions, {} MB, {} days of history; {} MB a day an address; an account {} pads, {} MB, {} named",
+            l.bytes / (1024 * 1024),
+            l.files,
+            l.versions,
+            l.history_bytes / (1024 * 1024),
+            l.version_age.as_secs() / 86_400,
+            growth / (1024 * 1024),
+            account.pads,
+            account.bytes / (1024 * 1024),
+            account.named,
+        );
+    }
     let pads = Arc::new(
-        Store::open(&args.pad_dir, limits)
-            .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?,
+        Store::open(&args.pad_dir, limits.free)
+            .map_err(|e| anyhow::anyhow!("cannot open the pad directory {}: {e}", args.pad_dir))?
+            .with_paid(limits.paid),
     );
     if let Some(out) = &args.export_pads {
         let n = pads
@@ -345,11 +411,8 @@ async fn main() -> anyhow::Result<()> {
                     args.accounts_db
                 )
             })?
-            .with_limits(accounts::Limits {
-                pads: args.account_max_pads,
-                bytes: args.account_max_bytes,
-                named: args.account_max_named,
-            }),
+            .with_limits(account_limits(&args))
+            .with_paid(paid),
     );
     // An owned pad lasts as long as its account: none of them lapses. Not
     // starting is better than starting without knowing which those are, when
@@ -396,7 +459,10 @@ async fn main() -> anyhow::Result<()> {
         receiving: Arc::new(tokio::sync::Semaphore::new(PAD_BODY_BUDGET)),
         body_idle: BODY_IDLE,
         reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
-        growth: Arc::new(quota::Growth::new(args.pad_growth_per_address)),
+        growth: Arc::new(
+            quota::Growth::new(args.free_growth_per_address)
+                .with_paid(args.paid_growth_per_address),
+        ),
         trust_forwarded: args.trust_forwarded_for,
         accounts,
         auth,
@@ -506,16 +572,48 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The store's limits, from the flags or the environment.
-fn pad_limits(args: &Args) -> pad::Limits {
-    pad::Limits {
-        bytes: args.pad_max_bytes,
-        files: args.pad_max_files,
+/// Each plan's pad limits, from the flags or the environment. The store's
+/// ceiling and the lease are the same in both, being the store's.
+fn pad_limits(args: &Args) -> plan::Tiered<pad::Limits> {
+    let days = |n: u64| std::time::Duration::from_secs(n.saturating_mul(86_400));
+    let store = pad::Limits {
         store_bytes: args.max_store_bytes,
-        lease: std::time::Duration::from_secs(args.pad_lease_days.saturating_mul(86_400)),
-        versions: args.pad_versions,
-        history_bytes: args.pad_history_bytes,
-        version_age: std::time::Duration::from_secs(args.pad_version_days.saturating_mul(86_400)),
+        lease: days(args.pad_lease_days),
+        ..pad::Limits::default()
+    };
+    plan::Tiered {
+        free: pad::Limits {
+            bytes: args.free_pad_max_bytes,
+            files: args.free_pad_max_files,
+            versions: args.free_pad_versions,
+            history_bytes: args.free_pad_history_bytes,
+            version_age: days(args.free_pad_version_days),
+            ..store
+        },
+        paid: pad::Limits {
+            bytes: args.paid_pad_max_bytes,
+            files: args.paid_pad_max_files,
+            versions: args.paid_pad_versions,
+            history_bytes: args.paid_pad_history_bytes,
+            version_age: days(args.paid_pad_version_days),
+            ..store
+        },
+    }
+}
+
+/// Each plan's account limits, from the flags or the environment.
+fn account_limits(args: &Args) -> plan::Tiered<accounts::Limits> {
+    plan::Tiered {
+        free: accounts::Limits {
+            pads: args.free_account_max_pads,
+            bytes: args.free_account_max_bytes,
+            named: args.free_account_max_named,
+        },
+        paid: accounts::Limits {
+            pads: args.paid_account_max_pads,
+            bytes: args.paid_account_max_bytes,
+            named: args.paid_account_max_named,
+        },
     }
 }
 
@@ -551,12 +649,68 @@ fn size(text: &str) -> Result<u64, String> {
 /// refusals come from, for the page to check against before it sends and to
 /// say in words — a zip too big to import, a download too big to keep. Not a
 /// secret; the documentation says them too.
-async fn limits(State(state): State<AppState>) -> impl IntoResponse {
+///
+/// The caller's own, on their plan (`plan.rs`); with `?pad=<name>`, that
+/// pad's, which are its owner's plan's; and both plans' as `plans`, for saying
+/// what paying would give.
+async fn limits(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let mine = caller_plan(&state, &headers).await;
+    let pad = match query.get("pad") {
+        Some(name) if pad::check_name(name).is_ok() => pad_plan(&state, &headers, name).await,
+        _ => mine,
+    };
+    let of = |plan: plan::Plan| {
+        serde_json::json!({
+            "pad": state.pads.limits_of(plan),
+            "account": state.accounts.limits_of(plan),
+            "address": { "growth_per_day": state.growth.allowance(plan) },
+        })
+    };
     Json(serde_json::json!({
-        "pad": state.pads.limits(),
-        "account": state.accounts.limits(),
-        "address": { "growth_per_day": state.growth.allowance() },
+        "plan": mine,
+        "pad": state.pads.limits_of(pad),
+        "pad_plan": pad,
+        "account": state.accounts.limits_of(mine),
+        "address": { "growth_per_day": state.growth.allowance(mine) },
+        "plans": { "free": of(plan::Plan::Free), "paid": of(plan::Plan::Paid) },
     }))
+}
+
+/// The plan of whoever is calling: their account's, or free when nobody is
+/// signed in.
+async fn caller_plan(state: &AppState, headers: &axum::http::HeaderMap) -> plan::Plan {
+    match http_accounts::signed_in(state, headers).await {
+        Some(user) => {
+            let accounts = state.accounts.clone();
+            http_accounts::blocking(move || accounts.plan_of(user.id)).await
+        }
+        None => plan::Plan::Free,
+    }
+}
+
+/// The plan of a pad's owner, which is the pad's: free for a pad nobody owns.
+async fn owner_plan(state: &AppState, owner: Option<i64>) -> plan::Plan {
+    match owner {
+        Some(owner) => {
+            let accounts = state.accounts.clone();
+            http_accounts::blocking(move || accounts.plan_of(owner)).await
+        }
+        None => plan::Plan::Free,
+    }
+}
+
+/// A pad's plan, looked up by name. Free when its owner cannot be found out,
+/// which is the stricter of the two — and for a caller who may not open the
+/// pad, who is told nothing of whose it is.
+async fn pad_plan(state: &AppState, headers: &axum::http::HeaderMap, name: &str) -> plan::Plan {
+    match http_accounts::access(state, headers, name).await {
+        Ok(access) if access.role > accounts::Role::None => owner_plan(state, access.owner).await,
+        _ => plan::Plan::Free,
+    }
 }
 
 /// Every route the relay answers, and the web client's files behind them when
@@ -993,7 +1147,11 @@ async fn keep_last_run(
     let now = std::time::Instant::now();
     // What the store counts a run as, names and all; a store at its ceiling
     // refuses it below as it refuses a write (audit B09).
-    if run.bytes() > state.growth.remaining(caller, now) {
+    if run.bytes()
+        > state
+            .growth
+            .remaining(caller, now, caller_plan(&state, &headers).await)
+    {
         return refuse(pad::Error::OverAllowance).into_response();
     }
     let pads = state.pads.clone();
@@ -1084,8 +1242,10 @@ async fn keep_version(
     if let Err(refused) = history_access(&state, &headers, &name, true).await {
         return refused.into_response();
     }
+    // Kept as the pad's plan keeps history.
+    let plan = pad_plan(&state, &headers, &name).await;
     let pads = state.pads.clone();
-    match tokio::task::spawn_blocking(move || pads.keep_now(&name)).await {
+    match tokio::task::spawn_blocking(move || pads.keep_now(&name, plan)).await {
         Ok(Ok(id)) => Json(serde_json::json!({ "id": id })).into_response(),
         Ok(Err(e)) => refuse(e).into_response(),
         Err(_) => (
@@ -1626,7 +1786,12 @@ async fn write_pad(
         None => None,
     };
     let now = std::time::Instant::now();
-    let by_address = state.growth.remaining(caller, now);
+    // The pad is held to its owner's plan; what may be added today, to the
+    // writer's.
+    let plan = owner_plan(&state, access.owner).await;
+    let by_address = state
+        .growth
+        .remaining(caller, now, caller_plan(&state, &headers).await);
     // An owned pad also draws on its account's room, whoever is writing —
     // and a room that cannot be counted is none, not all of it.
     let by_account = match access.owner {
@@ -1657,27 +1822,28 @@ async fn write_pad(
     // that carry every session's frames.
     let pads = state.pads.clone();
     let pad_name = name.clone();
-    let written =
-        tokio::task::spawn_blocking(move || pads.write_within(&pad_name, &body.writes, allowance))
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "storing the pad failed".to_string(),
-                )
-            })?
-            .map_err(|e| {
-                // Refused for the account's room rather than the address's
-                // day: say which, or the advice is wrong.
-                if e == pad::Error::OverAllowance && by_account < by_address {
-                    (
-                        StatusCode::INSUFFICIENT_STORAGE,
-                        accounts::AccountError::OverQuota(state.accounts.limits().bytes).message(),
-                    )
-                } else {
-                    refuse(e)
-                }
-            })?;
+    let written = tokio::task::spawn_blocking(move || {
+        pads.write_within(&pad_name, &body.writes, allowance, plan)
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storing the pad failed".to_string(),
+        )
+    })?
+    .map_err(|e| {
+        // Refused for the account's room rather than the address's
+        // day: say which, or the advice is wrong.
+        if e == pad::Error::OverAllowance && by_account < by_address {
+            (
+                StatusCode::INSUFFICIENT_STORAGE,
+                accounts::AccountError::OverQuota(state.accounts.limits_of(plan).bytes).message(),
+            )
+        } else {
+            refuse(e)
+        }
+    })?;
     state.growth.charge(caller, now, written.grew);
     if access.owner.is_some() {
         let accounts = state.accounts.clone();

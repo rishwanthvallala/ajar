@@ -275,8 +275,10 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   const draw = () => {
     const used = pads.reduce((n, p) => n + p.bytes, 0);
     list.removeAttribute("aria-busy");
+    // Which plan the numbers are, since they differ (the relay's plan.rs).
+    const plan = me.plan === "paid" ? "Paid plan" : "Free plan";
     usage.textContent = limits
-      ? `${pads.length} of ${limits.pads} pads${limits.named ? ` · ${pads.filter((p) => p.chosen).length} of ${limits.named} named` : ""} · ${size(used)} of ${size(limits.bytes)}${full() ? " — delete one to make another" : ""}`
+      ? `${plan} · ${pads.length} of ${limits.pads} pads${limits.named ? ` · ${pads.filter((p) => p.chosen).length} of ${limits.named} named` : ""} · ${size(used)} of ${size(limits.bytes)}${full() ? " — delete one to make another" : ""}`
       : `${pads.length} pads · ${size(used)}`;
     usage.classList.toggle("full", full());
     const fill = limits ? Math.min(1, Math.max(pads.length / limits.pads, used / limits.bytes)) : 0;

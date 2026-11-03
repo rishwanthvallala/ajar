@@ -41,6 +41,8 @@ export interface User {
 export interface Me {
   user: User | null;
   providers: string[];
+  /** Free unless the relay names this account paid; the limits below are that plan's. */
+  plan?: "free" | "paid";
   /** `named`: how many pads an account may name itself, rather than three minted words. */
   limits?: { pads: number; bytes: number; named?: number };
   /** Whether this person may open /admin. */

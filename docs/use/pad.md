@@ -162,8 +162,8 @@ for everyone on it:
 - `__MACOSX`, `.DS_Store` and the rest of what zipping leaves behind stay out.
 - If a file in the zip would replace a different one already here, you are
   asked first. On a new pad, the starter `main.py` makes way.
-- 500 files and 200 MB, the same as any pad. Password-protected zips are
-  refused.
+- As many files and bytes as the pad may hold on its plan (below).
+  Password-protected zips are refused.
 
 **Colours** above the editor turns the colouring off, for every file, and
 shows plain text — Format still works. The button at the end of the top bar picks the theme: System
@@ -572,8 +572,8 @@ A Makefile is kept and indented with tabs, but nothing here runs it.
 **`ls` lays out columns even into a pipe** here, so `ls | wc -l` counts rows
 of names, not names; `ls -1` gives one a line.
 
-**What a pad keeps.** At most 500 files and 200 MB. A file a command makes
-that the pad cannot keep — past the 500, or with a name it cannot hold, a
+**What a pad keeps.** As many files and bytes as its plan allows (below). A
+file a command makes that the pad cannot keep — past the count, or with a name it cannot hold, a
 backslash in it (what a script written for Windows makes) or a tab — is named
 in the status line and above the prompt, and left out; everything else the
 command made is saved as usual. Links made with `ln` are not kept, and nor is
@@ -594,8 +594,20 @@ counts, so a folder people keep visiting stays. Once one is deleted its name is
 free, so an old link opens an empty folder — or whatever somebody else has
 started there since. Keep anything you care about somewhere else too.
 
-**A pad holds 500 files and 200 MB.** A change that would take it past either
-is not saved, and the line under the editor says so.
+**What a pad holds depends on its plan.** A pad is on the plan of the account
+that owns it, and a pad nobody owns is on the free plan:
+
+| | Free | Paid |
+|---|---|---|
+| One pad | 50 MB, 500 files | 200 MB, 2,000 files |
+| Its history | 10 versions, 14 days | 30 versions, 90 days |
+| Added in a day, from one address | 256 MB | 1 GB |
+| An account | 10 pads, 100 MB in all, 1 with a name of your choosing | 50 pads, 1 GB, 10 named |
+
+A change that would take a pad past these is not saved, and the line under the
+editor says so. A pad already past them — made when they were higher — can
+still be edited and made smaller, but not bigger. Your dashboard says which
+plan you are on. There is no way to pay yet; paid accounts are set up by hand.
 
 **A text file over 24 MB opens read-only.** It is too large to edit together
 live. Change it from the terminal — `sed`, `python`, a script of your own — and

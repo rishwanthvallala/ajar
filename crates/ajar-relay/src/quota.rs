@@ -11,6 +11,7 @@
 //! be fair, or to survive a restart, or to work behind a proxy that does not
 //! set a forwarding header — a relay that needs that has outgrown this file.
 
+use crate::plan::{Plan, Tiered};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -226,31 +227,44 @@ pub const GROWTH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 /// the next write after it starts a fresh one. Not a sliding window: exactness
 /// at the edges buys nothing against something measured in days.
 pub struct Growth {
-    allowance: u64,
+    /// What an address may add in a window, for whoever writes from it: the
+    /// free plan's, or the paid one's for a signed-in paying account. What it
+    /// has added is one count either way.
+    allowance: Tiered<u64>,
     spent: Mutex<HashMap<IpAddr, (Instant, u64)>>,
 }
 
 impl Growth {
+    /// One allowance for both plans; `with_paid` sets the paid one.
     pub fn new(allowance: u64) -> Self {
         Self {
-            allowance,
+            allowance: Tiered {
+                free: allowance,
+                paid: allowance,
+            },
             spent: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Bytes an address may add in a window.
-    pub fn allowance(&self) -> u64 {
-        self.allowance
+    pub fn with_paid(mut self, paid: u64) -> Self {
+        self.allowance.paid = paid;
+        self
     }
 
-    /// Bytes this address may still add in its current window.
-    pub fn remaining(&self, ip: IpAddr, now: Instant) -> u64 {
+    /// Bytes an address may add in a window, on `plan`.
+    pub fn allowance(&self, plan: Plan) -> u64 {
+        self.allowance.of(plan)
+    }
+
+    /// Bytes this address may still add in its current window, for a writer on `plan`.
+    pub fn remaining(&self, ip: IpAddr, now: Instant, plan: Plan) -> u64 {
+        let allowance = self.allowance.of(plan);
         let spent = self.spent.lock();
         match spent.get(&ip) {
             Some(&(since, used)) if now.duration_since(since) < GROWTH_WINDOW => {
-                self.allowance.saturating_sub(used)
+                allowance.saturating_sub(used)
             }
-            _ => self.allowance,
+            _ => allowance,
         }
     }
 
@@ -509,16 +523,30 @@ mod tests {
     }
 
     #[test]
+    fn a_paying_writer_has_the_paid_allowance_from_the_same_count() {
+        let g = Growth::new(1000).with_paid(5000);
+        let now = Instant::now();
+        g.charge(ip(1), now, 800);
+        assert_eq!(g.remaining(ip(1), now, Plan::Free), 200);
+        assert_eq!(g.remaining(ip(1), now, Plan::Paid), 4200);
+        assert_eq!(g.allowance(Plan::Paid), 5000);
+    }
+
+    #[test]
     fn growth_is_bounded_per_address_per_window() {
         let g = Growth::new(1000);
         let now = Instant::now();
-        assert_eq!(g.remaining(ip(1), now), 1000);
+        assert_eq!(g.remaining(ip(1), now, Plan::Free), 1000);
         g.charge(ip(1), now, 700);
-        assert_eq!(g.remaining(ip(1), now), 300);
+        assert_eq!(g.remaining(ip(1), now, Plan::Free), 300);
         g.charge(ip(1), now, 700);
-        assert_eq!(g.remaining(ip(1), now), 0, "overshoot must not wrap");
         assert_eq!(
-            g.remaining(ip(2), now),
+            g.remaining(ip(1), now, Plan::Free),
+            0,
+            "overshoot must not wrap"
+        );
+        assert_eq!(
+            g.remaining(ip(2), now, Plan::Free),
             1000,
             "one address's writing spent another's allowance"
         );
@@ -529,12 +557,12 @@ mod tests {
         let g = Growth::new(1000);
         let start = Instant::now();
         g.charge(ip(1), start, 1000);
-        assert_eq!(g.remaining(ip(1), start), 0);
+        assert_eq!(g.remaining(ip(1), start, Plan::Free), 0);
         let later = start + GROWTH_WINDOW + Duration::from_secs(1);
-        assert_eq!(g.remaining(ip(1), later), 1000);
+        assert_eq!(g.remaining(ip(1), later, Plan::Free), 1000);
         g.charge(ip(1), later, 10);
         assert_eq!(
-            g.remaining(ip(1), later),
+            g.remaining(ip(1), later, Plan::Free),
             990,
             "a new window started from the old one's total"
         );

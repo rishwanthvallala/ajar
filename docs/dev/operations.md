@@ -381,33 +381,62 @@ and the unit sets them from two files.
   Move the value into `deploy/limits.env` afterwards, or the next person
   reading the repository is told the wrong number.
 
-| Variable | Flag | Default | |
-|---|---|---|---|
-| `AJAR_PAD_MAX_BYTES` | `--pad-max-bytes` | 200 MiB | one pad |
-| `AJAR_PAD_MAX_FILES` | `--pad-max-files` | 500 | one pad, at most 5,000 |
-| `AJAR_PAD_STORE_BYTES` | `--max-store-bytes` | 4 GiB | every pad together, each file's text counted once however many pads hold it, and each pad's last run |
-| `AJAR_PAD_LEASE_DAYS` | `--pad-lease-days` | 90 | a pad nobody opens or writes; an account's never lapse |
-| `AJAR_PAD_VERSIONS` | `--pad-versions` | 30 | a pad's history |
-| `AJAR_PAD_HISTORY_BYTES` | `--pad-history-bytes` | 200 MiB | of files a pad's versions name; the newest is kept whatever its size |
-| `AJAR_PAD_VERSION_DAYS` | `--pad-version-days` | 30 | how old a version may be |
-| `AJAR_PAD_GROWTH_PER_ADDRESS` | `--pad-growth-per-address` | 512 MiB | what one address may add in a day; growth only |
-| `AJAR_ACCOUNT_MAX_PADS` | `--account-max-pads` | 20 | pads an account owns |
-| `AJAR_ACCOUNT_MAX_BYTES` | `--account-max-bytes` | 250 MiB | what they hold together |
-| `AJAR_ACCOUNT_MAX_NAMED` | `--account-max-named` | 3 | of them with a chosen name |
+**Two plans, since 3 November.** Most limits have a value for the free plan
+and one for the paid plan (`crates/ajar-relay/src/plan.rs`). The free plan is
+everyone not signed in and every account not paying; the paid plan is an
+account named in **`AJAR_PAID_ACCOUNTS`** — comma-separated, each an email or
+`provider:id`, as `AJAR_ADMINS` is — which is set in `/etc/ajar/relay.env` on
+the box, being people, and never in the repository. There is no billing yet:
+when there is, it answers `Accounts::plan_of`, and nothing else changes.
 
+- **A pad is held to its owner's plan.** A pad nobody owns is a free one,
+  whoever writes in it.
+- **What an address may add a day follows the writer**: the paid allowance
+  for a signed-in paying account, the free one for everyone else, from one
+  count per address.
+- **An account's own room follows its plan.**
+- **A pad already past its plan's limits** — made under higher ones, or its
+  owner's plan since lowered — still takes any write that does not take it
+  further past them: it can be edited and shrunk, not grown.
+- **The store's ceiling and the lease** are the server's, one value each.
+
+| Variable (free / paid) | Flag (free / paid) | In `limits.env` (free / paid) | Default | |
+|---|---|---|---|---|
+| `AJAR_FREE_PAD_MAX_BYTES` / `AJAR_PAID_PAD_MAX_BYTES` | `--free-pad-max-bytes` / `--paid-pad-max-bytes` | 50 MiB / 200 MiB | 200 MiB | one pad |
+| `AJAR_FREE_PAD_MAX_FILES` / `AJAR_PAID_…` | `--free-pad-max-files` / `--paid-…` | 500 / 2,000 | 500 | one pad, at most 5,000 |
+| `AJAR_FREE_PAD_VERSIONS` / `AJAR_PAID_…` | `--free-pad-versions` / `--paid-…` | 10 / 30 | 30 | a pad's history |
+| `AJAR_FREE_PAD_HISTORY_BYTES` / `AJAR_PAID_…` | `--free-pad-history-bytes` / `--paid-…` | 50 MiB / 500 MiB | 200 MiB | of files a pad's versions name; the newest is kept whatever its size |
+| `AJAR_FREE_PAD_VERSION_DAYS` / `AJAR_PAID_…` | `--free-pad-version-days` / `--paid-…` | 14 / 90 | 30 | how old a version may be |
+| `AJAR_FREE_GROWTH_PER_ADDRESS` / `AJAR_PAID_…` | `--free-growth-per-address` / `--paid-…` | 256 MiB / 1 GiB | 512 MiB | what one address may add in a day; growth only |
+| `AJAR_FREE_ACCOUNT_MAX_PADS` / `AJAR_PAID_…` | `--free-account-max-pads` / `--paid-…` | 10 / 50 | 20 | pads an account owns |
+| `AJAR_FREE_ACCOUNT_MAX_BYTES` / `AJAR_PAID_…` | `--free-account-max-bytes` / `--paid-…` | 100 MiB / 1 GiB | 250 MiB | what they hold together |
+| `AJAR_FREE_ACCOUNT_MAX_NAMED` / `AJAR_PAID_…` | `--free-account-max-named` / `--paid-…` | 1 / 10 | 3 | of them with a chosen name |
+| `AJAR_PAD_STORE_BYTES` | `--max-store-bytes` | 4 GiB | 4 GiB | every pad together, each file's text counted once however many pads hold it, and each pad's last run |
+| `AJAR_PAD_LEASE_DAYS` | `--pad-lease-days` | 90 | 90 | a pad nobody owns, unopened and unwritten |
+| `AJAR_PAID_ACCOUNTS` | `--paid-accounts` | — (on the box) | none | who is on the paid plan |
+
+The defaults are the code's constants, for both plans, so a relay given no
+configuration behaves as one before plans did. The old names, before plans —
+`--pad-max-bytes`, `--account-max-pads` and the rest — are the free plan's.
 Sizes take `200MiB`, `4GiB` or a number of bytes. A flag on the command line
 wins over the variable, and the variable over the default. The relay says
-the limits it runs with as it starts (`pad limits: …` in the journal) and
-refuses to start on ones that will not do — a pad bigger than the store, more
-than 5,000 files, a lease under an hour — rather than meet them as odd
-refusals later. And the relay's tests read `deploy/limits.env`: a name it
-does not read or a value it does not take fails CI before a deploy can put
-it on the box, where it would stop the relay starting.
+the limits it runs with as it starts (`free plan: …` and `paid plan: …` in
+the journal, and how many accounts are paid) and refuses to start on ones
+that will not do — a pad bigger than the store, more than 5,000 files, a
+lease under an hour — rather than meet them as odd refusals later. And the
+relay's tests read `deploy/limits.env`: a name it does not read, a value it
+does not take, or a paid limit below the free one fails CI before a deploy
+can put it on the box, where it would stop the relay starting.
 
 The page asks the relay what they are (`GET /api/limits`, `pad/src/limits.ts`)
 for what it checks before sending — a zip too big to import, a download into
 the sandbox too big to keep — so changing one needs no release of the page.
-Until the relay answers, and from one too old to, it goes by the defaults.
+In a pad it asks with `?pad=<name>` and is told that pad's plan's (told the
+free plan's when it may not open the pad, so nothing is learnt of whose it
+is); on the dashboard, the person's own. The answer names the plan and gives
+both plans' limits too, for saying what paying would give. Until the relay
+answers, and from one too old to, it goes by the defaults. The dashboard
+says the plan beside what an account uses (`/api/me`'s `plan`).
 
 What is still in code: a request's size (33 MiB) and the bodies read at once
 (66 MiB), which `main.rs` holds to the unit's `MemoryMax` at compile time; a

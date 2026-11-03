@@ -78,14 +78,38 @@ impl Relay {
 
     /// The same, its pad store refusing past `ceiling` bytes.
     pub fn with_ceiling(origin: &str, ceiling: u64) -> Self {
-        let dir = Dir::new();
         let limits = crate::pad::Limits {
             store_bytes: ceiling,
             ..Default::default()
         };
-        let pads = Arc::new(crate::pad::Store::open(dir.0.join("pads"), limits).unwrap());
-        let accounts =
-            Arc::new(crate::accounts::Accounts::open(&dir.0.join("accounts.db")).unwrap());
+        Self::with_plans(
+            origin,
+            crate::plan::Tiered {
+                free: limits,
+                paid: limits,
+            },
+            "",
+        )
+    }
+
+    /// A relay whose pads are held to these limits on each plan, and whose
+    /// paid accounts are `paid`, as `AJAR_PAID_ACCOUNTS` would name them.
+    pub fn with_plans(
+        origin: &str,
+        limits: crate::plan::Tiered<crate::pad::Limits>,
+        paid: &str,
+    ) -> Self {
+        let dir = Dir::new();
+        let pads = Arc::new(
+            crate::pad::Store::open(dir.0.join("pads"), limits.free)
+                .unwrap()
+                .with_paid(limits.paid),
+        );
+        let accounts = Arc::new(
+            crate::accounts::Accounts::open(&dir.0.join("accounts.db"))
+                .unwrap()
+                .with_paid(crate::plan::PaidList::parse(paid)),
+        );
         let state = AppState {
             registry: Arc::new(crate::session::Registry::new()),
             quota: Arc::new(crate::quota::Quota::new()),
@@ -729,7 +753,10 @@ async fn a_version_is_read_within_the_bounds_on_reads() {
     let relay = Relay::new("");
     let pads = &relay.state.pads;
     pads.write("p", &[put("a.txt", "first \"one\"\n")]).unwrap();
-    let id = pads.keep_now("p").unwrap().unwrap();
+    let id = pads
+        .keep_now("p", crate::plan::Plan::Free)
+        .unwrap()
+        .unwrap();
     pads.write("p", &[put("a.txt", "second")]).unwrap();
     let path = format!("/api/pad/p/history/{id}");
 
@@ -805,7 +832,10 @@ async fn a_lapsed_pad_shows_nothing_of_itself() {
     let relay = Relay::new("");
     let pads = &relay.state.pads;
     pads.write("p", &[put("a.txt", "the old owner's")]).unwrap();
-    let id = pads.keep_now("p").unwrap().unwrap();
+    let id = pads
+        .keep_now("p", crate::plan::Plan::Free)
+        .unwrap()
+        .unwrap();
     pads.set_last_run(
         "p",
         &crate::pad::LastRun {
@@ -1399,7 +1429,20 @@ fn the_deployed_limits_are_ones_the_relay_takes() {
     }
     assert!(named >= 10, "deploy/limits.env names only {named} limits");
     let args = crate::Args::try_parse_from(&argv).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(crate::pad_limits(&args).problem(), None);
+    let limits = crate::pad_limits(&args);
+    assert_eq!(limits.free.problem(), None);
+    assert_eq!(limits.paid.problem(), None);
+    // And the paid plan is not the stricter of the two anywhere.
+    let accounts = crate::account_limits(&args);
+    assert!(limits.paid.bytes >= limits.free.bytes && limits.paid.files >= limits.free.files);
+    assert!(
+        limits.paid.versions >= limits.free.versions
+            && limits.paid.history_bytes >= limits.free.history_bytes
+    );
+    assert!(limits.paid.version_age >= limits.free.version_age);
+    assert!(args.paid_growth_per_address >= args.free_growth_per_address);
+    assert!(accounts.paid.pads >= accounts.free.pads && accounts.paid.bytes >= accounts.free.bytes);
+    assert!(accounts.paid.named >= accounts.free.named);
 }
 
 #[tokio::test]
@@ -1417,4 +1460,72 @@ async fn a_read_s_small_pieces_go_out_together_and_a_big_one_as_it_is() {
     assert_eq!(sizes, vec![107, 20, 2]);
     let whole: usize = sizes.iter().sum();
     assert_eq!(whole, 129, "nothing is lost or added");
+}
+
+#[tokio::test]
+async fn a_pad_is_held_to_its_owner_s_plan_and_says_which() {
+    let small = crate::pad::Limits {
+        bytes: 1024,
+        ..Default::default()
+    };
+    let roomy = crate::pad::Limits {
+        bytes: 4096,
+        ..Default::default()
+    };
+    let relay = Relay::with_plans(
+        "",
+        crate::plan::Tiered {
+            free: small,
+            paid: roomy,
+        },
+        "github:2",
+    );
+    let (free, free_cookie) = relay.signed_in("1");
+    let (paid, paid_cookie) = relay.signed_in("2");
+    let theirs = relay.owned_pad(free, View::Link, Edit::Code);
+    let ours = relay.owned_pad(paid, View::Link, Edit::Code);
+    let two_kb = serde_json::json!([{ "path": "big.txt", "content": "x".repeat(2048) }]);
+    let refused = relay
+        .call(write(
+            &theirs.name,
+            &[("cookie", &free_cookie)],
+            two_kb.clone(),
+        ))
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        refused.body
+    );
+    let taken = relay
+        .call(write(&ours.name, &[("cookie", &paid_cookie)], two_kb))
+        .await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+
+    // What each is told: its own plan, and a pad's.
+    let anyone = relay.call(get("/api/limits", &[])).await.json();
+    assert_eq!(anyone["plan"], "free");
+    assert_eq!(anyone["pad"]["bytes"], 1024);
+    assert_eq!(anyone["plans"]["paid"]["pad"]["bytes"], 4096);
+    let payer = relay
+        .call(get("/api/limits", &[("cookie", &paid_cookie)]))
+        .await
+        .json();
+    assert_eq!(payer["plan"], "paid");
+    assert_eq!(payer["pad"]["bytes"], 4096);
+    let a_paid_pad = relay
+        .call(get(
+            &format!("/api/limits?pad={}", ours.name),
+            &[("cookie", &paid_cookie)],
+        ))
+        .await
+        .json();
+    assert_eq!(a_paid_pad["pad_plan"], "paid");
+    assert_eq!(a_paid_pad["pad"]["bytes"], 4096);
+    let me = relay
+        .call(get("/api/me", &[("cookie", &paid_cookie)]))
+        .await
+        .json();
+    assert_eq!(me["plan"], "paid");
 }

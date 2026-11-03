@@ -620,7 +620,7 @@ export class App {
   async start(): Promise<void> {
     // What the relay holds a pad to, asked now so a download into the
     // sandbox goes by it too; an import waits for the answer (limits.ts).
-    void loadLimits();
+    void loadLimits(this.name);
     // This tab's journal is its own for as long as it is open: another tab
     // recovers only the journals of tabs whose lock is free.
     void navigator.locks?.request(this.tabLock(this.tab), () => new Promise<void>((resolve) => {
@@ -4466,7 +4466,7 @@ export class App {
     try {
       this.say("loading", `reading ${zip.name}…`);
       let prepared: Prepared;
-      const limits = await loadLimits();
+      const limits = await loadLimits(this.name);
       try {
         prepared = prepareImport(await readZip(zip, limits));
       } catch (e) {

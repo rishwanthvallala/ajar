@@ -19,23 +19,34 @@ export interface PadLimits {
 export const DEFAULT_LIMITS: Readonly<PadLimits> = { maxFiles: 500, maxBytes: 200 * 1024 * 1024 };
 
 let current: PadLimits = { ...DEFAULT_LIMITS };
-let asked: Promise<PadLimits> | null = null;
+const asked = new Map<string, Promise<PadLimits>>();
 
 /** The limits as last heard, the defaults until then. */
 export function padLimits(): PadLimits {
   return current;
 }
 
-/** The relay's answer, asked once a page and shared; the defaults if it gives none. */
-export function loadLimits(base = ""): Promise<PadLimits> {
-  asked ??= fetch(`${base}/api/limits`, { cache: "no-store" })
-    .then(async (res) => {
-      const heard = res.ok ? limitsFrom(await res.json()) : null;
-      if (heard) current = heard;
-      return current;
-    })
-    .catch(() => current);
-  return asked;
+/**
+ * The relay's answer, asked once a page and shared; the defaults if it gives
+ * none. A pad is held to its owner's plan, free or paid (the relay's
+ * `plan.rs`), so in a pad the question names it; on the dashboard, where a new
+ * pad is the person's own, it is asked about them.
+ */
+export function loadLimits(pad?: string, base = ""): Promise<PadLimits> {
+  const key = pad ?? "";
+  let answer = asked.get(key);
+  if (!answer) {
+    const query = pad ? `?pad=${encodeURIComponent(pad)}` : "";
+    answer = fetch(`${base}/api/limits${query}`, { cache: "no-store", credentials: "same-origin" })
+      .then(async (res) => {
+        const heard = res.ok ? limitsFrom(await res.json()) : null;
+        if (heard) current = heard;
+        return heard ?? current;
+      })
+      .catch(() => current);
+    asked.set(key, answer);
+  }
+  return answer;
 }
 
 /** The pad's part of `/api/limits`, if that is what this is. */
