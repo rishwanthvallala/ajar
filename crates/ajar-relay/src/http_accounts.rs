@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::accounts::{Access, AccountError, Edit, PadInfo, Role, User, View};
 use crate::AppState;
 
-type Refusal = (StatusCode, String);
+pub(crate) type Refusal = (StatusCode, String);
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -135,7 +135,7 @@ pub async fn access(
         })
 }
 
-fn intended(headers: &HeaderMap) -> Result<(), Refusal> {
+pub(crate) fn intended(headers: &HeaderMap) -> Result<(), Refusal> {
     if headers.get("x-ajar").and_then(|v| v.to_str().ok()) == Some("1") {
         Ok(())
     } else {
@@ -143,13 +143,13 @@ fn intended(headers: &HeaderMap) -> Result<(), Refusal> {
     }
 }
 
-async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, Refusal> {
+pub(crate) async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, Refusal> {
     signed_in(state, headers)
         .await
         .ok_or((StatusCode::UNAUTHORIZED, "sign in first".into()))
 }
 
-fn refuse(e: AccountError) -> Refusal {
+pub(crate) fn refuse(e: AccountError) -> Refusal {
     let status = match e {
         AccountError::NotFound => StatusCode::NOT_FOUND,
         AccountError::TooManyPads(_) | AccountError::OverQuota(_) => {
@@ -376,8 +376,14 @@ struct Me {
     user: Option<User>,
     /// Who you can sign in with here; empty when sign-in is not set up.
     providers: Vec<&'static str>,
-    /// The plan this person is on: free unless the relay names them paid.
+    /// The plan this person is on: free unless a payment or the relay's
+    /// configuration puts them on the paid one.
     plan: crate::plan::Plan,
+    /// Until when their payments hold them on the paid plan, if they have
+    /// paid — past, once it has run out.
+    paid_until: Option<i64>,
+    /// Whether the paid plan can be bought here (billing.rs).
+    billing: bool,
     /// What their account may hold, on that plan, for the dashboard to show against.
     limits: crate::accounts::Limits,
     /// Whether this person may open /admin.
@@ -386,18 +392,20 @@ struct Me {
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
     let user = signed_in(&state, &headers).await;
-    let plan = match &user {
+    let standing = match &user {
         Some(user) => {
             let (accounts, id) = (state.accounts.clone(), user.id);
-            blocking(move || accounts.plan_of(id)).await
+            blocking(move || accounts.standing(id)).await
         }
-        None => crate::plan::Plan::Free,
+        None => crate::accounts::Standing::default(),
     };
     Json(Me {
         user,
         providers: state.auth.offered(),
-        plan,
-        limits: state.accounts.limits_of(plan),
+        plan: standing.plan,
+        paid_until: standing.paid_until,
+        billing: state.billing.available(),
+        limits: state.accounts.limits_of(standing.plan),
         admin: crate::http_admin::require_admin(&state, &headers)
             .await
             .is_ok(),

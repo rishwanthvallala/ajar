@@ -10,6 +10,7 @@
  */
 import { account, type Me, PROVIDERS, size } from "./access";
 import { accountMenu, footer, shell, showPrivate, topbar } from "./dashboard";
+import { rupees } from "./pricing";
 import type { IconName } from "./icons";
 import { button, el, icon, toast, toastRegions } from "./ui";
 
@@ -38,6 +39,8 @@ interface AccountRow {
   signed_in: number | null;
 }
 interface Stats {
+  /** Who pays (billing.rs): accounts on the paid plan by a payment, and payments over `days`, in paise. */
+  takings?: { paying: number; payments: number; amount: number };
   accounts: {
     users: number;
     by_provider: Count[];
@@ -330,6 +333,7 @@ function render(s: Stats): HTMLElement[] {
         card("Accounts", number(a.users), `${number(week)} new this week`, "pads"),
         card("Signed in", number(a.signed_in), `in the last ${s.days} days`, "out"),
         card("Sessions", number(a.sessions), "signed in now, not yet expired", "lock"),
+        s.takings ? card("Paying", number(s.takings.paying), `${number(s.takings.payments)} ${s.takings.payments === 1 ? "payment" : "payments"} · ${rupees(s.takings.amount)} in ${s.days} days`, "receipt") : null,
       ),
       el("div", { className: "panels two" }, dayChart("Sign-ups per day", a.signups, "sign-ups"), mix("Signed in with", a.by_provider, {})),
     ),

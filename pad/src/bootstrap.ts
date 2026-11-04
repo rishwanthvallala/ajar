@@ -20,6 +20,11 @@ export async function startPad(): Promise<void> {
     const { startAdmin } = await import("./admin");
     return startAdmin(root);
   }
+  // The plans, and paying for the paid one; where Razorpay sends a payer back.
+  if (path === "pricing") {
+    const { startPricing } = await import("./pricing");
+    return startPricing(root);
+  }
   if (path === "help") {
     const { startHelp } = await import("./help");
     return startHelp(root);

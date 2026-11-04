@@ -295,6 +295,9 @@ sudo -e /etc/ajar/relay.env
 #   AJAR_GOOGLE_CLIENT_SECRET=...
 #   AJAR_GITHUB_CLIENT_ID=...
 #   AJAR_GITHUB_CLIENT_SECRET=...
+#   AJAR_RAZORPAY_KEY_ID=rzp_live_...         (paying: docs/dev/billing.md)
+#   AJAR_RAZORPAY_KEY_SECRET=...
+#   AJAR_RAZORPAY_WEBHOOK_SECRET=...
 sudo systemctl restart ajar-relay
 sudo journalctl -u ajar-relay -n 5 -o cat   # "sign-in offered with ["google", "github"]"
 ```
@@ -384,10 +387,13 @@ and the unit sets them from two files.
 **Two plans, since 3 November.** Most limits have a value for the free plan
 and one for the paid plan (`crates/ajar-relay/src/plan.rs`). The free plan is
 everyone not signed in and every account not paying; the paid plan is an
-account named in **`AJAR_PAID_ACCOUNTS`** — comma-separated, each an email or
-`provider:id`, as `AJAR_ADMINS` is — which is set in `/etc/ajar/relay.env` on
-the box, being people, and never in the repository. There is no billing yet:
-when there is, it answers `Accounts::plan_of`, and nothing else changes.
+account a payment holds there — ₹99 for 30 days with UPI since 5 November,
+[billing.md](billing.md), its price and days `AJAR_PAID_PRICE_INR` and
+`AJAR_PAID_DAYS` here and Razorpay's keys in `/etc/ajar/relay.env` — or one
+named in **`AJAR_PAID_ACCOUNTS`**, comma-separated, each an email or
+`provider:id`, as `AJAR_ADMINS` is, which is set in `/etc/ajar/relay.env` on
+the box, being people, and never in the repository. `Accounts::standing` says
+which, and everything that asks `plan_of` follows it.
 
 - **A pad is held to its owner's plan.** A pad nobody owns is a free one,
   whoever writes in it.
@@ -413,7 +419,10 @@ when there is, it answers `Accounts::plan_of`, and nothing else changes.
 | `AJAR_FREE_ACCOUNT_MAX_NAMED` / `AJAR_PAID_…` | `--free-account-max-named` / `--paid-…` | 1 / 10 | 3 | of them with a chosen name |
 | `AJAR_PAD_STORE_BYTES` | `--max-store-bytes` | 4 GiB | 4 GiB | every pad together, each file's text counted once however many pads hold it, and each pad's last run |
 | `AJAR_PAD_LEASE_DAYS` | `--pad-lease-days` | 90 | 90 | a pad nobody owns, unopened and unwritten |
-| `AJAR_PAID_ACCOUNTS` | `--paid-accounts` | — (on the box) | none | who is on the paid plan |
+| `AJAR_PAID_ACCOUNTS` | `--paid-accounts` | — (on the box) | none | who is on the paid plan without paying |
+| `AJAR_PAID_PRICE_INR` | `--paid-price-inr` | 99 | 99 | what the paid plan costs, in whole rupees ([billing.md](billing.md)) |
+| `AJAR_PAID_DAYS` | `--paid-days` | 30 | 30 | the days one payment adds |
+| `AJAR_RAZORPAY_KEY_ID`, `_KEY_SECRET`, `_WEBHOOK_SECRET` | — | — (on the box, secrets) | none | paying; without the key nothing can be bought |
 
 The defaults are the code's constants, for both plans, so a relay given no
 configuration behaves as one before plans did. The old names, before plans —

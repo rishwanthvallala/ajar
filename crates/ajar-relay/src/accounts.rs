@@ -162,6 +162,27 @@ pub struct User {
     pub email: Option<String>,
 }
 
+/// Which plan an account is on, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Standing {
+    pub plan: Plan,
+    /// Named in `AJAR_PAID_ACCOUNTS`: on the paid plan with nothing to pay.
+    pub listed: bool,
+    /// Until when its payments hold it on the paid plan — past, once they
+    /// no longer do; never, if it has not paid.
+    pub paid_until: Option<i64>,
+}
+
+impl Default for Standing {
+    fn default() -> Self {
+        Standing {
+            plan: Plan::Free,
+            listed: false,
+            paid_until: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Link {
     pub id: i64,
@@ -321,7 +342,7 @@ fn size(bytes: u64) -> String {
     }
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -371,7 +392,7 @@ pub fn three_words() -> String {
 }
 
 pub struct Accounts {
-    db: Mutex<Connection>,
+    pub(crate) db: Mutex<Connection>,
     /// Seals link codes so the dashboard can show them again. Kept in a file
     /// beside the database rather than in it, so a copy of the database —
     /// a backup — is not a copy of every edit link.
@@ -418,33 +439,42 @@ impl Accounts {
         self.limits.of(plan)
     }
 
-    /// The plan an account is on: paid when the configuration names it,
-    /// free otherwise — and free for an id nobody has, rather than an error,
-    /// since the free plan is what anyone may have.
+    /// The plan an account is on: paid while a payment holds it there
+    /// (billing.rs), or when the configuration names it; free otherwise —
+    /// and free for an id nobody has, rather than an error, since the free
+    /// plan is what anyone may have.
     pub fn plan_of(&self, user: i64) -> Plan {
-        Self::plan_in(&self.db.lock(), &self.paid, user)
+        self.standing(user).plan
     }
 
-    fn plan_in(db: &Connection, paid: &PaidList, user: i64) -> Plan {
-        if paid.len() == 0 {
-            return Plan::Free;
-        }
-        let who: Option<(String, String, Option<String>)> = db
+    /// The plan an account is on, and why.
+    pub fn standing(&self, user: i64) -> Standing {
+        Self::standing_in(&self.db.lock(), &self.paid, user, now())
+    }
+
+    fn standing_in(db: &Connection, paid: &PaidList, user: i64, at: i64) -> Standing {
+        let who: Option<(String, String, Option<String>, Option<i64>)> = db
             .query_row(
-                "SELECT provider, provider_id, email FROM users WHERE id = ?1",
+                "SELECT provider, provider_id, email, paid_until FROM users WHERE id = ?1",
                 params![user],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .ok()
             .flatten();
-        match who {
-            Some((provider, id, email))
-                if paid.includes(&provider, Some(&id), email.as_deref()) =>
-            {
+        let Some((provider, id, email, paid_until)) = who else {
+            return Standing::default();
+        };
+        let listed = paid.includes(&provider, Some(&id), email.as_deref());
+        let paying = paid_until.is_some_and(|until| until > at);
+        Standing {
+            plan: if listed || paying {
                 Plan::Paid
-            }
-            _ => Plan::Free,
+            } else {
+                Plan::Free
+            },
+            listed,
+            paid_until,
         }
     }
 
@@ -600,7 +630,9 @@ impl Accounts {
             params![owner],
             |r| r.get(0),
         )?;
-        let limits = self.limits.of(Self::plan_in(&db, &self.paid, owner));
+        let limits = self
+            .limits
+            .of(Self::standing_in(&db, &self.paid, owner, now()).plan);
         if held as usize >= limits.pads {
             return Err(AccountError::TooManyPads(limits.pads));
         }
@@ -945,7 +977,10 @@ impl Accounts {
             params![owner, name],
             |r| r.get(0),
         )?;
-        let room = self.limits.of(Self::plan_in(&db, &self.paid, owner)).bytes;
+        let room = self
+            .limits
+            .of(Self::standing_in(&db, &self.paid, owner, now()).plan)
+            .bytes;
         Ok(room.saturating_sub(used.max(0) as u64))
     }
 
@@ -1168,6 +1203,37 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "ALTER TABLE pads ADD COLUMN chosen INTEGER NOT NULL DEFAULT 0;
              PRAGMA user_version = 2;",
+        )?;
+    }
+    // Paying for the paid plan (5 November 2026, billing.rs): every payment
+    // begun, and until when they hold each account on the paid plan. A
+    // payment outlives the account that made it, owned by nobody — what was
+    // paid, when, and Razorpay's id for it, for the books and for a refund —
+    // so nothing in it names the person.
+    if version < 3 {
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE users ADD COLUMN paid_until INTEGER;
+             CREATE TABLE payments (
+                 id INTEGER PRIMARY KEY,
+                 user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                 reference TEXT NOT NULL UNIQUE,
+                 link_id TEXT UNIQUE,
+                 link_url TEXT,
+                 amount INTEGER NOT NULL,
+                 currency TEXT NOT NULL,
+                 days INTEGER NOT NULL,
+                 status TEXT NOT NULL,
+                 payment_id TEXT UNIQUE,
+                 created INTEGER NOT NULL,
+                 expires INTEGER NOT NULL,
+                 paid_at INTEGER,
+                 until INTEGER,
+                 checked INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX payments_user ON payments (user_id, created);
+             PRAGMA user_version = 3;
+             COMMIT;",
         )?;
     }
     Ok(())

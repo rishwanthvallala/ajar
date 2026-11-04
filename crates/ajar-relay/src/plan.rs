@@ -7,11 +7,11 @@
 //! writing; an account's own room follows its plan. The store's ceiling and
 //! an anonymous pad's lease are the server's, and have one value.
 //!
-//! There is no billing yet. An account is on the paid plan when the relay's
-//! configuration names it — `AJAR_PAID_ACCOUNTS`, comma-separated, each an
-//! email or `provider:id`, matched as `AJAR_ADMINS` is, and kept on the box
-//! with the other secrets rather than in the repository. When billing comes it
-//! answers `Accounts::plan_of` instead, and nothing else changes.
+//! An account is on the paid plan while a payment holds it there (billing.rs:
+//! ₹99 for 30 days, with UPI), or when the relay's configuration names it —
+//! `AJAR_PAID_ACCOUNTS`, comma-separated, each an email or `provider:id`,
+//! matched as `AJAR_ADMINS` is, and kept on the box with the other secrets
+//! rather than in the repository. `Accounts::standing` says which.
 
 use serde::Serialize;
 

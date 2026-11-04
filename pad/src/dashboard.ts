@@ -54,6 +54,10 @@ export function footer(): HTMLElement {
     { className: "page-foot" },
     el("a", { href: "/help" }, "Help"),
     el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
+    el("a", { href: "/pricing" }, "Plans"),
+    el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
+    el("a", { href: "/terms" }, "Terms"),
+    el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
     el("a", { href: "/privacy" }, "Privacy"),
     el("span", { className: "dot-sep", ariaHidden: "true" } as Partial<HTMLSpanElement>, "·"),
     el("a", { href: "/" }, "Open a pad"),
@@ -98,6 +102,7 @@ export function accountMenu(me: Me, onSignOut: () => void): HTMLElement {
       avatar(user.name),
       el("div", {}, el("strong", {}, user.name), el("span", {}, user.email ? `${user.email} · ${provider}` : `Signed in with ${provider}`)),
     ),
+    el("a", { className: "menu-item", href: "/pricing" }, icon("receipt"), "Plan and payments"),
     me.admin ? el("a", { className: "menu-item", href: "/admin" }, icon("chart"), "Admin") : null,
     el("a", { className: "menu-item", href: "/privacy" }, icon("shield"), "Privacy"),
     signOut,
@@ -255,6 +260,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   let pads: PadInfo[] = [];
   const list = el("ul", { className: "pad-list" });
   const usage = el("p", { className: "page-usage" });
+  const planLink = el("a", { className: "plan-link", href: "/pricing", hidden: true });
   const meter = el("div", { className: "meter" }, el("span", { className: "meter-fill" }));
   meter.setAttribute("aria-hidden", "true");
   const create = button("New pad", { icon: "plus", className: "btn-primary" });
@@ -281,6 +287,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       ? `${plan} · ${pads.length} of ${limits.pads} pads${limits.named ? ` · ${pads.filter((p) => p.chosen).length} of ${limits.named} named` : ""} · ${size(used)} of ${size(limits.bytes)}${full() ? " — delete one to make another" : ""}`
       : `${pads.length} pads · ${size(used)}`;
     usage.classList.toggle("full", full());
+    drawPlanLink();
     const fill = limits ? Math.min(1, Math.max(pads.length / limits.pads, used / limits.bytes)) : 0;
     meter.hidden = false;
     (meter.firstElementChild as HTMLElement).style.width = `${Math.round(fill * 100)}%`;
@@ -315,6 +322,29 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       return;
     }
     list.replaceChildren(...pads.map(row));
+  };
+
+  /**
+   * The way to the paid plan, under the numbers: to buy it, to add days as
+   * it nears its end, or to take it again once it has. Not while paying is
+   * not open here, and not to an account on it by arrangement.
+   */
+  const drawPlanLink = () => {
+    const now = Date.now() / 1000;
+    const until = me.paid_until ?? null;
+    const left = until ? Math.ceil((until - now) / 86_400) : 0;
+    let text = "";
+    let soon = false;
+    if (me.plan === "paid" && until && until > now) {
+      const end = new Date(until * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+      soon = left <= 7;
+      text = soon ? `Your paid plan ends on ${end} — add more days` : `Paid plan until ${end}`;
+    } else if (me.plan !== "paid") {
+      text = until ? "Your paid plan has ended — take it again" : full() ? "Need more room? See the paid plan" : "More room with the paid plan";
+    }
+    planLink.hidden = !text || !me.billing;
+    planLink.classList.toggle("soon", soon);
+    planLink.replaceChildren(el("span", {}, text), icon("arrow"));
   };
 
   const row = (first: PadInfo): HTMLElement => {
@@ -654,9 +684,12 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
   const deleteAccount = async (from: HTMLElement) => {
     if (isBusy(from)) return;
     const n = pads.length;
+    // Paid days left are the account's, and go with it.
+    const left = me.paid_until ? Math.ceil((me.paid_until - Date.now() / 1000) / 86_400) : 0;
+    const paid = left > 0 ? ` The ${left === 1 ? "day" : `${left} days`} left on your paid plan go${left === 1 ? "es" : ""} with it.` : "";
     const yes = await confirmDialog({
       title: "Delete your account?",
-      body: `${n === 0 ? "You have no pads." : `Your ${n === 1 ? "pad is" : `${n} pads are`} deleted for everyone, with ${n === 1 ? "its" : "their"} files and links, and ${n === 1 ? "its name is" : "their names are"} never used again.`} Your name and email address are removed. This cannot be undone.`,
+      body: `${n === 0 ? "You have no pads." : `Your ${n === 1 ? "pad is" : `${n} pads are`} deleted for everyone, with ${n === 1 ? "its" : "their"} files and links, and ${n === 1 ? "its name is" : "their names are"} never used again.`} Your name and email address are removed.${paid} This cannot be undone.`,
       confirm: "Delete account",
       danger: true,
       typed: "delete",
@@ -690,7 +723,7 @@ export async function startDashboard(root: HTMLElement): Promise<void> {
       el(
         "main",
         { className: "dash" },
-        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter), el("div", { className: "dash-actions" }, fromLink, fromZip, create)),
+        el("div", { className: "dash-head" }, el("div", { className: "dash-title" }, el("h1", {}, "Your pads"), usage, meter, planLink), el("div", { className: "dash-actions" }, fromLink, fromZip, create)),
         list,
         accountPart,
       ),

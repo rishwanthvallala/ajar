@@ -537,3 +537,97 @@
   .history-list { flex-direction: row; overflow-x: auto; max-height: none; }
   .history-row { flex: none; }
 }
+
+/* ---------------------------------------------------------------- pricing */
+
+.pricing { max-width: 60rem; width: 100%; margin: 0 auto; padding: 2.6rem var(--gutter) 2rem; display: grid; gap: 2.4rem; }
+.pricing h2 { margin: 0 0 0.9rem; font-size: 1.15rem; letter-spacing: -0.01em; }
+.pricing-head h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.5rem); line-height: 1.1; letter-spacing: -0.025em; }
+.pricing-head .lede { max-width: 38rem; margin-bottom: 1rem; }
+.pricing-head .test-mode { margin: 0 0 1rem; max-width: 38rem; }
+.standing { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0; padding: 0.45rem 0.75rem; border-radius: 99px; background: var(--surface-2); color: var(--ink-2); font-size: 0.84rem; }
+.standing .icon { color: var(--ok); }
+.standing-soon { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); color: var(--warn); }
+.standing-soon .icon { color: inherit; }
+
+.plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; align-items: stretch; }
+.plan { padding: 1.5rem 1.5rem 1.4rem; display: flex; flex-direction: column; }
+.plan-paid { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent), var(--lift); }
+.plan-head { display: flex; align-items: center; gap: 0.6rem; }
+.plan-name { margin: 0 !important; font-size: 1rem !important; color: var(--ink-2); font-weight: 600; }
+.plan-paid .plan-name { color: var(--accent); }
+.plan-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.55rem; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 0.72rem; font-weight: 600; }
+.plan-badge .icon svg { width: 0.8rem; height: 0.8rem; }
+.plan-price { display: flex; align-items: baseline; gap: 0.45rem; margin: 0.8rem 0 0.2rem; }
+.plan-amount { font-size: 2.3rem; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.plan-per { color: var(--muted); font-size: 0.875rem; }
+.plan-tagline { margin: 0 0 1.1rem; color: var(--ink-2); font-size: 0.875rem; line-height: 1.5; }
+.plan-lines { list-style: none; margin: 0 0 1.3rem; padding: 1.1rem 0 0; border-top: 1px solid var(--rule); display: grid; gap: 0.85rem; align-content: start; }
+.plan-paid .plan-lines { flex: 1; }
+.plan-lines li { display: grid; grid-template-columns: 1.9rem minmax(0, 1fr); gap: 0.6rem; align-items: start; }
+.plan-lines li > div { display: grid; gap: 0.1rem; }
+.plan-line-icon { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink-2); }
+.plan-paid .plan-line-icon { background: var(--accent-soft); color: var(--accent); }
+.plan-line-label { color: var(--muted); font-size: 0.74rem; }
+.plan-lines strong { font-size: 0.875rem; font-weight: 600; line-height: 1.4; }
+.plan-action { display: grid; gap: 0.6rem; }
+.plan-action .btn-primary { height: 2.75rem; font-size: 0.9rem; }
+.plan-action .providers { width: 100%; }
+.plan-note { margin: 0; color: var(--muted); font-size: 0.78rem; line-height: 1.45; text-wrap: pretty; }
+.plan-foot { margin-top: auto; padding-top: 0.9rem; border-top: 1px dashed var(--rule); }
+.plans-both { margin: -1.2rem 0 0; color: var(--ink-2); font-size: 0.84rem; line-height: 1.5; text-align: center; text-wrap: pretty; }
+
+.pay-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.pay-step { display: grid; gap: 0.7rem; align-content: start; padding: 1.1rem; border-radius: var(--r-lg); border: 1px solid var(--rule); background: var(--surface); }
+.pay-step strong { display: block; font-size: 0.9rem; margin-bottom: 0.2rem; }
+.pay-step span:not(.icon):not(.pay-step-icon):not(.pay-step-n) { color: var(--ink-2); font-size: 0.84rem; line-height: 1.5; }
+.pay-step-icon { position: relative; display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent); }
+.pay-step-n { position: absolute; top: -0.4rem; right: -0.4rem; display: grid; place-items: center; width: 1.1rem; height: 1.1rem; border-radius: 50%; background: var(--accent); color: var(--on-accent); font: 700 0.65rem/1 var(--sans); }
+
+.pay-outcome { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.9rem; align-items: start; padding: 1.2rem 1.3rem; }
+.pay-outcome > .icon, .pay-outcome-icon, .pay-outcome > .spinner { margin-top: 0.15rem; }
+.pay-outcome h2 { margin: 0 0 0.3rem !important; font-size: 1.05rem !important; }
+.pay-outcome p { margin: 0 0 0.4rem; color: var(--ink-2); font-size: 0.875rem; line-height: 1.5; }
+.pay-outcome-ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--rule)); background: color-mix(in srgb, var(--ok) 7%, var(--surface)); }
+.pay-outcome-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--ok); color: var(--on-accent); }
+.pay-outcome-off > .icon { color: var(--warn); }
+.pay-outcome-actions { display: flex; gap: 0.5rem; margin-top: 0.7rem; }
+.pay-ref { font: 0.75rem var(--mono) !important; color: var(--muted) !important; overflow-wrap: anywhere; }
+.spinner { display: inline-block; width: 1.1rem; height: 1.1rem; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: spin 0.7s linear infinite; }
+.pay-problem { margin: 0; }
+
+.table-card { padding: 0.9rem 1.1rem 0.4rem; margin-bottom: 0.6rem; }
+.pay-chip { display: inline-block; padding: 0.12rem 0.5rem; border-radius: 99px; font-size: 0.72rem; font-weight: 600; background: var(--surface-2); color: var(--ink-2); }
+.pay-chip-ok { background: color-mix(in srgb, var(--ok) 14%, var(--surface)); color: var(--ok); }
+.pay-chip-wait { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); color: var(--warn); }
+
+.faq { display: grid; gap: 0.5rem; }
+.faq h2 { margin-bottom: 0.4rem; }
+.faq-item { border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--surface); }
+.faq-item summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.85rem 1rem; cursor: pointer; font-weight: 600; font-size: 0.9rem; list-style: none; border-radius: var(--r-md); }
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary .icon { margin-left: auto; color: var(--muted); transition: transform 150ms; }
+.faq-item[open] summary .icon { transform: rotate(180deg); }
+.faq-item summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.faq-answer { padding: 0 1rem 0.9rem; }
+.faq-answer p { margin: 0 0 0.5rem; color: var(--ink-2); font-size: 0.875rem; line-height: 1.55; }
+.faq-answer p:last-child { margin-bottom: 0; }
+.faq-answer a, .plan-note a { color: var(--accent) !important; font-weight: 600; text-decoration: none; }
+.faq-answer a:hover { text-decoration: underline; }
+
+/* On the dashboard: the plan, and the way to the paid one. */
+.plan-link { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.55rem; color: var(--accent) !important; font-size: 0.8125rem; font-weight: 600; text-decoration: none; }
+.plan-link:hover { text-decoration: underline; }
+.plan-link.soon { color: var(--warn) !important; }
+.plan-link .icon svg { width: 0.85rem; height: 0.85rem; }
+
+@media (max-width: 45rem) {
+  .plans, .pay-steps { grid-template-columns: minmax(0, 1fr); }
+  .pricing { padding-top: 1.6rem; gap: 2rem; }
+  .plans-both { margin-top: -0.8rem; text-align: left; }
+  .plan-paid { order: -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+  .faq-item summary .icon { transition: none; }
+}

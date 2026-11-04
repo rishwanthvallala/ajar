@@ -127,8 +127,24 @@ impl Relay {
             account_writes: Default::default(),
             started: std::time::Instant::now(),
             usage: Arc::new(crate::usage::Usage::in_memory()),
+            billing: Arc::new(crate::billing::Billing {
+                razorpay: None,
+                price: crate::billing::Price::inr(99, 30),
+                origin: origin.to_string(),
+            }),
         };
         Relay { state, dir }
+    }
+
+    /// The same relay, taking payments through this Razorpay.
+    pub fn with_razorpay(mut self, razorpay: crate::billing::Razorpay) -> Self {
+        let origin = self.state.billing.origin.clone();
+        self.state.billing = Arc::new(crate::billing::Billing {
+            razorpay: Some(razorpay),
+            price: crate::billing::Price::inr(99, 30),
+            origin,
+        });
+        self
     }
 
     /// A request through the router, as from [`CALLER`].
@@ -1528,4 +1544,462 @@ async fn a_pad_is_held_to_its_owner_s_plan_and_says_which() {
         .await
         .json();
     assert_eq!(me["plan"], "paid");
+}
+
+/// A stand-in for Razorpay's API: the links it was asked for, and what it
+/// says of each when asked again.
+#[derive(Default)]
+struct FakeRazorpay {
+    /// Each request to make a link: its `Authorization` and its body.
+    asked: Vec<(String, serde_json::Value)>,
+    /// What it says of each link: status, the payment that paid it, and how much.
+    links: std::collections::HashMap<String, (String, Option<String>, u64)>,
+}
+
+type Fake = Arc<parking_lot::Mutex<FakeRazorpay>>;
+
+async fn fake_razorpay() -> (String, Fake) {
+    use axum::extract::{Path, State};
+    use axum::routing::{get, post};
+    let fake: Fake = Default::default();
+    let app = axum::Router::new()
+        .route(
+            "/v1/payment_links",
+            post(
+                |State(fake): State<Fake>, headers: HeaderMap, body: axum::body::Bytes| async move {
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let mut fake = fake.lock();
+                    let id = format!("plink_{}", fake.asked.len() + 1);
+                    let auth = headers[header::AUTHORIZATION].to_str().unwrap().to_string();
+                    fake.asked.push((auth, body));
+                    fake.links.insert(id.clone(), ("created".into(), None, 0));
+                    axum::Json(serde_json::json!({
+                        "id": id,
+                        "short_url": format!("https://rzp.io/i/{id}"),
+                        "status": "created",
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/v1/payment_links/{id}",
+            get(|State(fake): State<Fake>, Path(id): Path<String>| async move {
+                let (status, paid_by, amount_paid) = fake.lock().links[&id].clone();
+                axum::Json(serde_json::json!({
+                    "id": id,
+                    "status": status,
+                    "amount_paid": amount_paid,
+                    "payments": paid_by.map(|p| vec![serde_json::json!({
+                        "payment_id": p, "status": "captured", "amount": amount_paid, "method": "upi",
+                    })]),
+                }))
+            }),
+        )
+        .with_state(fake.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), fake)
+}
+
+fn hook(body: &serde_json::Value, secret: &str) -> Request<Body> {
+    let bytes = serde_json::to_vec(body).unwrap();
+    let sig: String = crate::billing::hmac_sha256(secret.as_bytes(), &bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    request(
+        "POST",
+        "/api/billing/webhook",
+        &[
+            ("content-type", "application/json"),
+            ("x-razorpay-signature", &sig),
+        ],
+        Body::from(bytes),
+    )
+}
+
+fn link_event(
+    event: &str,
+    link: &str,
+    reference: &str,
+    paid_by: &str,
+    paid: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "entity": "event",
+        "event": event,
+        "payload": {
+            "payment_link": { "entity": {
+                "id": link, "reference_id": reference, "status": event.rsplit('.').next(),
+                "amount": 9900, "amount_paid": paid, "currency": "INR",
+            } },
+            "payment": { "entity": {
+                "id": paid_by, "amount": paid, "currency": "INR", "status": "captured", "method": "upi",
+            } },
+        },
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_paid_plan_is_bought_with_one_payment_heard_of_whichever_way_first() {
+    const ORIGIN: &str = "https://pad.example";
+    let (api, fake) = fake_razorpay().await;
+    let razorpay =
+        || crate::billing::Razorpay::new("rzp_test_key", "key-secret", Some("hook-secret"), &api);
+    let relay = Relay::new(ORIGIN).with_razorpay(razorpay());
+    let (ana, cookie) = relay.signed_in("1");
+    let theirs = [("cookie", cookie.as_str()), ("origin", ORIGIN)];
+    let begin = || {
+        request(
+            "POST",
+            "/api/billing/checkout",
+            &[("cookie", &cookie), ("origin", ORIGIN), ("x-ajar", "1")],
+            Body::empty(),
+        )
+    };
+    let days = |n: i64| n * 24 * 60 * 60;
+
+    // Anyone sees the price; only someone signed in can pay.
+    let anyone = relay.call(get("/api/billing", &[])).await.json();
+    assert_eq!(anyone["available"], true);
+    assert_eq!(anyone["test"], true);
+    assert_eq!(anyone["price"]["amount"], 9900);
+    assert_eq!(anyone["price"]["currency"], "INR");
+    assert_eq!(anyone["price"]["days"], 30);
+    assert_eq!(anyone["signed_in"], false);
+    let stranger = relay
+        .call(request(
+            "POST",
+            "/api/billing/checkout",
+            &[("x-ajar", "1")],
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(stranger.status, StatusCode::UNAUTHORIZED);
+    let forged = relay
+        .call(request(
+            "POST",
+            "/api/billing/checkout",
+            &theirs,
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(
+        forged.status,
+        StatusCode::FORBIDDEN,
+        "a cross-site form cannot begin one"
+    );
+
+    // Begun: a UPI-only link for ₹99, which comes back here.
+    let begun = relay.call(begin()).await;
+    assert_eq!(begun.status, StatusCode::CREATED, "{}", begun.body);
+    let begun = begun.json();
+    let reference = begun["reference"].as_str().unwrap().to_string();
+    assert_eq!(begun["url"], "https://rzp.io/i/plink_1");
+    {
+        let fake = fake.lock();
+        let (auth, body) = &fake.asked[0];
+        use base64::Engine;
+        assert_eq!(
+            auth,
+            &format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("rzp_test_key:key-secret")
+            )
+        );
+        assert_eq!(body["amount"], 9900);
+        assert_eq!(body["currency"], "INR");
+        assert_eq!(body["accept_partial"], false);
+        assert_eq!(body["reference_id"], reference.as_str());
+        assert_eq!(body["callback_url"], format!("{ORIGIN}/api/billing/return"));
+        assert_eq!(body["callback_method"], "get");
+        assert_eq!(body["options"]["checkout"]["method"]["upi"], "1");
+        for other in ["card", "netbanking", "wallet"] {
+            assert_eq!(body["options"]["checkout"]["method"][other], "0", "{other}");
+        }
+        let left = body["expire_by"].as_i64().unwrap() - crate::accounts::now();
+        assert!((15 * 60..=31 * 60).contains(&left), "open for {left} s");
+        assert_eq!(body["notify"]["sms"], false);
+        assert_eq!(body["notify"]["email"], false);
+    }
+    // Pressed again, or come back to: the same payment, not a second link.
+    let again = relay.call(begin()).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.json()["reference"], reference.as_str());
+    assert_eq!(fake.lock().asked.len(), 1);
+    let mine = relay.call(get("/api/billing", &theirs)).await.json();
+    assert_eq!(mine["plan"], "free");
+    assert_eq!(mine["payments"][0]["status"], "created");
+    assert_eq!(mine["payments"][0]["url"], "https://rzp.io/i/plink_1");
+
+    // Back from Razorpay's page with a signature that does not hold: sent on
+    // to the page, and nothing credited.
+    let rz = razorpay();
+    let back = |link: &str, reference: &str, paid_by: &str, sig: &str| {
+        get(
+            &format!(
+                "/api/billing/return?razorpay_payment_id={paid_by}&razorpay_payment_link_id={link}\
+                 &razorpay_payment_link_reference_id={reference}&razorpay_payment_link_status=paid\
+                 &razorpay_signature={sig}"
+            ),
+            &[],
+        )
+    };
+    let wrong = relay
+        .call(back("plink_1", &reference, "pay_1", &"0".repeat(64)))
+        .await;
+    assert_eq!(wrong.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        wrong.headers[header::LOCATION],
+        format!("/pricing?payment={reference}")
+    );
+    assert_eq!(relay.state.accounts.plan_of(ana), crate::plan::Plan::Free);
+    // Another link's signature, on this reference, credits nothing either.
+    let elsewhere = rz.sign_callback("plink_9", &reference, "paid", "pay_1");
+    relay
+        .call(back("plink_9", &reference, "pay_1", &elsewhere))
+        .await;
+    assert_eq!(relay.state.accounts.plan_of(ana), crate::plan::Plan::Free);
+
+    // Razorpay's own: the paid plan, for thirty days, at once.
+    let sig = rz.sign_callback("plink_1", &reference, "paid", "pay_1");
+    let came = relay.call(back("plink_1", &reference, "pay_1", &sig)).await;
+    assert_eq!(came.status, StatusCode::SEE_OTHER);
+    let now = crate::accounts::now();
+    let me = relay.call(get("/api/me", &theirs)).await.json();
+    assert_eq!(me["plan"], "paid");
+    let until = me["paid_until"].as_i64().unwrap();
+    assert!((now + days(30) - until).abs() < 5, "{until}");
+    assert_eq!(
+        relay.call(get("/api/limits", &theirs)).await.json()["plan"],
+        "paid"
+    );
+    // Back again — a reload of that address — adds nothing.
+    relay.call(back("plink_1", &reference, "pay_1", &sig)).await;
+    // The webhook for it, arriving after, adds nothing either.
+    let late = relay
+        .call(hook(
+            &link_event("payment_link.paid", "plink_1", &reference, "pay_1", 9900),
+            "hook-secret",
+        ))
+        .await;
+    assert_eq!(late.status, StatusCode::OK);
+    assert_eq!(
+        relay.call(get("/api/me", &theirs)).await.json()["paid_until"],
+        until
+    );
+
+    // A second payment, heard of by the webhook alone: thirty days more, on
+    // top of what was left.
+    let second = relay.call(begin()).await.json();
+    let second_ref = second["reference"].as_str().unwrap().to_string();
+    assert_ne!(second_ref, reference);
+    let unsigned = relay
+        .call(hook(
+            &link_event("payment_link.paid", "plink_2", &second_ref, "pay_2", 9900),
+            "not-the-secret",
+        ))
+        .await;
+    assert_eq!(unsigned.status, StatusCode::BAD_REQUEST);
+    let short = relay
+        .call(hook(
+            &link_event("payment_link.paid", "plink_2", &second_ref, "pay_2", 100),
+            "hook-secret",
+        ))
+        .await;
+    assert_eq!(short.status, StatusCode::OK);
+    assert_eq!(
+        relay.call(get("/api/me", &theirs)).await.json()["paid_until"],
+        until,
+        "short is not credited"
+    );
+    let paid = relay
+        .call(hook(
+            &link_event("payment_link.paid", "plink_2", &second_ref, "pay_2", 9900),
+            "hook-secret",
+        ))
+        .await;
+    assert_eq!(paid.status, StatusCode::OK);
+    assert_eq!(
+        relay.call(get("/api/me", &theirs)).await.json()["paid_until"],
+        until + days(30)
+    );
+
+    // A third, heard of by neither — the tab closed, no webhook — is found
+    // when the page next asks.
+    let third = relay.call(begin()).await.json();
+    let third_ref = third["reference"].as_str().unwrap().to_string();
+    fake.lock().links.insert(
+        "plink_3".into(),
+        ("paid".into(), Some("pay_3".into()), 9900),
+    );
+    let status = relay.call(get("/api/billing", &theirs)).await.json();
+    assert_eq!(status["paid_until"], until + days(60));
+    assert_eq!(status["payments"][0]["reference"], third_ref.as_str());
+    assert_eq!(status["payments"][0]["status"], "paid");
+    assert_eq!(status["payments"][0]["payment_id"], "pay_3");
+    assert_eq!(status["payments"][0]["url"], serde_json::Value::Null);
+    assert_eq!(status["payments"].as_array().unwrap().len(), 3);
+
+    // One that lapses unpaid says so, from the webhook.
+    let fourth = relay.call(begin()).await.json();
+    let fourth_ref = fourth["reference"].as_str().unwrap().to_string();
+    let lapsed = relay
+        .call(hook(
+            &link_event("payment_link.expired", "plink_4", &fourth_ref, "", 0),
+            "hook-secret",
+        ))
+        .await;
+    assert_eq!(lapsed.status, StatusCode::OK);
+    let status = relay.call(get("/api/billing", &theirs)).await.json();
+    assert_eq!(status["payments"][0]["status"], "expired");
+    // A webhook for a link this relay never made is acknowledged and let be.
+    let foreign = relay
+        .call(hook(
+            &link_event(
+                "payment_link.paid",
+                "plink_x",
+                "someone-else",
+                "pay_x",
+                9900,
+            ),
+            "hook-secret",
+        ))
+        .await;
+    assert_eq!(foreign.status, StatusCode::OK);
+
+    // Paid up a year ahead: no more, until nearer the time.
+    relay
+        .state
+        .accounts
+        .db
+        .lock()
+        .execute(
+            "UPDATE users SET paid_until = ?2 WHERE id = ?1",
+            rusqlite::params![ana, now + days(350)],
+        )
+        .unwrap();
+    let status = relay.call(get("/api/billing", &theirs)).await.json();
+    assert_eq!(status["refusal"], "ahead");
+    assert_eq!(relay.call(begin()).await.status, StatusCode::CONFLICT);
+
+    // Five begun in an hour is as many as an account may.
+    relay
+        .state
+        .accounts
+        .db
+        .lock()
+        .execute(
+            "UPDATE users SET paid_until = NULL WHERE id = ?1",
+            rusqlite::params![ana],
+        )
+        .unwrap();
+    assert_eq!(relay.call(begin()).await.status, StatusCode::CREATED);
+    relay
+        .state
+        .accounts
+        .db
+        .lock()
+        .execute("UPDATE payments SET status = 'expired'", [])
+        .unwrap();
+    let sixth = relay.call(begin()).await;
+    assert_eq!(
+        sixth.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        sixth.body
+    );
+}
+
+#[tokio::test]
+async fn without_razorpay_s_keys_the_plans_are_shown_and_nothing_can_be_bought() {
+    let relay = Relay::new("https://pad.example");
+    let (_, cookie) = relay.signed_in("1");
+    let status = relay
+        .call(get(
+            "/api/billing",
+            &[("cookie", &cookie), ("origin", "https://pad.example")],
+        ))
+        .await
+        .json();
+    assert_eq!(status["available"], false);
+    assert_eq!(status["refusal"], "unavailable");
+    assert_eq!(status["price"]["amount"], 9900);
+    let begun = relay
+        .call(request(
+            "POST",
+            "/api/billing/checkout",
+            &[
+                ("cookie", &cookie),
+                ("origin", "https://pad.example"),
+                ("x-ajar", "1"),
+            ],
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(begun.status, StatusCode::SERVICE_UNAVAILABLE);
+    let hooked = relay
+        .call(hook(
+            &serde_json::json!({ "event": "payment_link.paid" }),
+            "x",
+        ))
+        .await;
+    assert_eq!(hooked.status, StatusCode::NOT_FOUND);
+    let me = relay
+        .call(get(
+            "/api/me",
+            &[("cookie", &cookie), ("origin", "https://pad.example")],
+        ))
+        .await
+        .json();
+    assert_eq!(me["billing"], false);
+    assert_eq!(me["paid_until"], serde_json::Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_on_the_paid_plan_by_configuration_has_nothing_to_pay() {
+    let (api, _fake) = fake_razorpay().await;
+    let relay = Relay::with_plans(
+        "https://pad.example",
+        crate::plan::Tiered {
+            free: Default::default(),
+            paid: Default::default(),
+        },
+        "github:1",
+    )
+    .with_razorpay(crate::billing::Razorpay::new("rzp_live_k", "s", None, &api));
+    let (_, cookie) = relay.signed_in("1");
+    let headers = [
+        ("cookie", cookie.as_str()),
+        ("origin", "https://pad.example"),
+    ];
+    let status = relay.call(get("/api/billing", &headers)).await.json();
+    assert_eq!(status["plan"], "paid");
+    assert_eq!(status["listed"], true);
+    assert_eq!(status["refusal"], "listed");
+    assert_eq!(status["test"], false);
+    let begun = relay
+        .call(request(
+            "POST",
+            "/api/billing/checkout",
+            &[
+                ("cookie", &cookie),
+                ("origin", "https://pad.example"),
+                ("x-ajar", "1"),
+            ],
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(begun.status, StatusCode::CONFLICT);
+    // No webhook secret: the webhook is refused, signed or not.
+    let hooked = relay
+        .call(hook(
+            &serde_json::json!({ "event": "payment_link.paid" }),
+            "s",
+        ))
+        .await;
+    assert_eq!(hooked.status, StatusCode::NOT_FOUND);
 }

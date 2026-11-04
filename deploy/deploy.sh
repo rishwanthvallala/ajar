@@ -260,6 +260,8 @@ if [ ! -f /etc/ajar/relay.env ]; then
         '# AJAR_GITHUB_CLIENT_ID=' '# AJAR_GITHUB_CLIENT_SECRET=' '# AJAR_ADMINS=you@example.com' \
         '# The paid plan (deploy/limits.env): who is on it, as AJAR_ADMINS names people.' \
         '# AJAR_PAID_ACCOUNTS=you@example.com,github:12345' \
+        '# Paying for it with UPI (docs/dev/billing.md): Razorpay key, and the webhook secret.' \
+        '# AJAR_RAZORPAY_KEY_ID=rzp_live_' '# AJAR_RAZORPAY_KEY_SECRET=' '# AJAR_RAZORPAY_WEBHOOK_SECRET=' \
         > /etc/ajar/relay.env
 fi
 RELAYENV

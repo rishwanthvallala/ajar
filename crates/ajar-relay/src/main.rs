@@ -5,8 +5,10 @@
 
 mod accounts;
 mod auth;
+mod billing;
 mod http_accounts;
 mod http_admin;
+mod http_billing;
 mod outbox;
 mod pad;
 mod plan;
@@ -246,6 +248,16 @@ struct Args {
     #[arg(long, env = "AJAR_PAID_ACCOUNTS", default_value = "")]
     paid_accounts: String,
 
+    /// What the paid plan costs, in whole rupees, for each `--paid-days`
+    /// (billing.rs). Razorpay's keys are secrets, read from the environment
+    /// alone; without them the price is shown and nothing can be bought.
+    #[arg(long, env = "AJAR_PAID_PRICE_INR", default_value_t = 99)]
+    paid_price_inr: u64,
+
+    /// The days one payment adds to an account's paid plan.
+    #[arg(long, env = "AJAR_PAID_DAYS", default_value_t = 30)]
+    paid_days: u32,
+
     /// Read the caller's address from `X-Forwarded-For`.
     ///
     /// Only when something you control sets it. Left on with nothing in
@@ -328,6 +340,8 @@ struct AppState {
     started: std::time::Instant,
     /// How the pad is used, counted as it happens: counts only (usage.rs).
     usage: Arc<usage::Usage>,
+    /// Paying for the paid plan (billing.rs).
+    billing: Arc<billing::Billing>,
 }
 
 #[tokio::main]
@@ -348,6 +362,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let paid = plan::PaidList::parse(&args.paid_accounts);
+    let price = billing::Price::inr(args.paid_price_inr, args.paid_days);
+    if let Some(problem) = price.problem() {
+        anyhow::bail!("{problem}");
+    }
     info!(
         "storage: {} MB in all, an unowned pad lasting {} days; {} accounts on the paid plan",
         args.max_store_bytes / (1024 * 1024),
@@ -433,6 +451,22 @@ async fn main() -> anyhow::Result<()> {
         args.accounts_db,
         auth.offered()
     );
+    let billing = Arc::new(billing::Billing {
+        razorpay: billing::Razorpay::from_env(),
+        price,
+        origin: auth.origin.clone(),
+    });
+    match &billing.razorpay {
+        Some(r) if billing.available() => info!(
+            "payments: Razorpay{}, ₹{} for {} days; its webhook {}",
+            if r.test_mode() { " in test mode" } else { "" },
+            price.amount / 100,
+            price.days,
+            if r.webhooks() { "taken" } else { "not set up" },
+        ),
+        Some(_) => tracing::warn!("payments: Razorpay's keys are set, but no AJAR_PUBLIC_ORIGIN to send payers back to; off"),
+        None => info!("payments: not set up (no Razorpay keys)"),
+    }
     let usage_db = args.usage_db.clone().unwrap_or_else(|| {
         let accounts = std::path::Path::new(&args.accounts_db);
         let file = accounts
@@ -469,6 +503,7 @@ async fn main() -> anyhow::Result<()> {
         account_writes: Default::default(),
         started: std::time::Instant::now(),
         usage: usage.clone(),
+        billing,
     };
 
     // How many are in pads and sessions, every 30 seconds, kept as the most in
@@ -734,6 +769,7 @@ fn router(state: AppState, web: Option<&str>) -> Router {
         .route("/api/pad/{name}/run", get(last_run).put(keep_last_run))
         .merge(http_accounts::routes())
         .merge(http_admin::routes())
+        .merge(http_billing::routes())
         .merge(usage::routes())
         // A path under /api/ that names nothing is not found. It fell
         // through to the web client and answered 200 with its index.html,

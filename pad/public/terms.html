@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Terms — pad</title>
+    <meta name="description" content="The terms of pad at code.rishwanth.dev: using it, the paid plan, payments, refunds and how to reach us." />
+    <!--
+      A plain page on purpose, like privacy.html: no script, so it reads the
+      same to a person and to Razorpay's review of the site, and nothing here
+      changes without this file changing. Served at /terms by deploy/Caddyfile.
+      Keep it true: when the price, the plans or how payments work change
+      (crates/ajar-relay/src/billing.rs, deploy/limits.env), this changes too.
+    -->
+    <style>
+      :root {
+        --bg: #f3f4f7; --surface: #ffffff; --ink: #13171e; --ink-2: #414b59;
+        --muted: #5d6673; --rule: #d9dde4; --accent: #2447c9;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1218; --surface: #161a22; --ink: #e7eaf0; --ink-2: #b4bcc8;
+          --muted: #9aa3b0; --rule: #262c37; --accent: #8ca6ff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--ink);
+        font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+      header { display: flex; align-items: center; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--rule); margin-bottom: 1.5rem; }
+      header a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-weight: 600; color: var(--ink); text-decoration: none; }
+      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+      h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
+      p, li { color: var(--ink-2); }
+      ul { padding-left: 1.25rem; }
+      li { margin: 0.3rem 0; }
+      a { color: var(--accent); }
+      code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }
+      .meta { color: var(--muted); margin: 0; }
+      .short { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 0.9rem 1.25rem; }
+      .short > :first-child { margin-top: 0; }
+      .short > :last-child { margin-bottom: 0; }
+      header a { display: inline-flex; align-items: center; gap: 0.5rem; }
+      .mark rect { fill: var(--accent); }
+      .mark path { stroke: var(--bg); }
+      h2[id] { scroll-margin-top: 1rem; }
+      nav.toc { margin: 1rem 0 0; font-size: 0.9rem; }
+      nav.toc a { margin-right: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><a href="/"><svg class="mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect width="24" height="24" rx="6.5"/><path d="M6.5 8h8.5M9 12h8.5M9 16h5" stroke-width="2" stroke-linecap="round" fill="none"/></svg>pad</a><span class="meta">code.rishwanth.dev</span></header>
+
+      <h1>Terms</h1>
+      <p class="meta">Effective 5 November 2026</p>
+
+      <p>
+        pad is a code scratchpad at <code>code.rishwanth.dev</code>: open it, type, run, and send the link.
+        It is a personal project run by Rishwanth Vallala, in India. By using it you agree to these terms.
+      </p>
+      <nav class="toc" aria-label="On this page">
+        <a href="#paid-plan">The paid plan</a>
+        <a href="#refunds">Refunds and cancellation</a>
+        <a href="#delivery">Delivery</a>
+        <a href="#contact">Contact</a>
+      </nav>
+
+      <div class="short">
+        <p><strong>In short.</strong></p>
+        <ul>
+          <li>pad is free to use. The paid plan gives the pads you own more room, for ₹99 for 30 days.</li>
+          <li>Paying is one payment with UPI, through Razorpay. It is not a subscription: nothing is ever taken again by itself.</li>
+          <li>If a payment went wrong — you were charged and the plan didn't arrive, or charged twice — we refund it in full.</li>
+          <li>Don't use pad to break the law or to harm anyone else's computers.</li>
+        </ul>
+      </div>
+
+      <h2 id="using-pad">Using pad</h2>
+      <ul>
+        <li>You can use pad without an account. Signing in with Google or GitHub gives you pads of your own, as <a href="/privacy">the privacy page</a> describes.</li>
+        <li>Don't use pad to store or share anything unlawful, to attack, scan or flood other systems, to spread malware, to mine cryptocurrency, or to get around its limits. We may remove a pad, or close an account, that does.</li>
+        <li>What you put in a pad stays yours. You let us store it and show it to whoever has its link, which is what pad is for.</li>
+        <li>pad is provided as it is. We work to keep it running and your pads safe, but we can't promise it will never be down or never lose data; keep your own copy of anything you can't do without — any pad can be downloaded as a zip.</li>
+      </ul>
+
+      <h2 id="paid-plan">The paid plan</h2>
+      <ul>
+        <li><strong>Price.</strong> ₹99 buys 30 days of the paid plan for your account. Prices are in Indian rupees, and ₹99 is all you pay.</li>
+        <li><strong>What it gives.</strong> More room for the pads your account owns: the limits are on the <a href="/pricing">Plans</a> page. Everything else pad does is the same on both plans. If the limits change, the Plans page says so first; a paid plan is never made smaller during days already paid for.</li>
+        <li><strong>Paying.</strong> With UPI, on the payment page of Razorpay Software Private Limited, which handles the payment. Your UPI PIN and bank details go to Razorpay and your UPI app, never to us.</li>
+        <li><strong>Not a subscription.</strong> Each payment buys its 30 days once. Paying again adds 30 days to what you have left, up to a year ahead.</li>
+        <li><strong>When it ends.</strong> Your account goes back to the free plan. Nothing is deleted: a pad bigger than the free plan allows can still be opened, edited and made smaller.</li>
+        <li><strong>Deleting your account</strong> ends the paid plan with it, and the days left are not refunded.</li>
+      </ul>
+
+      <h2 id="refunds">Refunds and cancellation</h2>
+      <ul>
+        <li><strong>There is nothing to cancel.</strong> Since nothing renews, the paid plan simply ends after the days paid for.</li>
+        <li><strong>A payment that went wrong is refunded in full</strong>: if you were charged and your account did not move to the paid plan within a day, or you were charged more than once for one payment.</li>
+        <li><strong>Changed your mind?</strong> Write to us within 7 days of a payment and we will refund it in full, and the days it bought are taken off your account.</li>
+        <li>If we ever close pad, we refund the unused days of every paid plan.</li>
+        <li>To ask for a refund, email the address below with the payment's reference — it is on the Plans page under Your payments, and in your UPI app. Refunds go back to the account the payment came from, through Razorpay, usually within 5–7 working days of our approving them.</li>
+      </ul>
+
+      <h2 id="delivery">Delivery</h2>
+      <p>
+        The paid plan is an online service, delivered to your pad account as soon as Razorpay confirms your payment —
+        usually within seconds. Nothing is shipped.
+      </p>
+
+      <h2 id="contact">Contact</h2>
+      <p>
+        Rishwanth Vallala, who runs pad:
+        <a href="mailto:vallalarishwanth@gmail.com">vallalarishwanth@gmail.com</a>. For a payment, include its reference.
+        We usually reply within two working days.
+      </p>
+
+      <h2>Changes</h2>
+      <p>
+        If these terms change, this page changes first, with a new date at the top. A change never takes away what
+        a payment already bought. These terms are governed by the laws of India.
+      </p>
+    </main>
+  </body>
+</html>

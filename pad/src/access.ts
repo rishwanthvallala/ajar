@@ -41,12 +41,53 @@ export interface User {
 export interface Me {
   user: User | null;
   providers: string[];
-  /** Free unless the relay names this account paid; the limits below are that plan's. */
+  /** Free unless a payment or the relay's configuration puts this account on the paid plan; the limits below are that plan's. */
   plan?: "free" | "paid";
+  /** Until when payments hold the account on the paid plan, in seconds — past, once that has run out; null if it never paid. */
+  paid_until?: number | null;
+  /** Whether the paid plan can be bought here. */
+  billing?: boolean;
   /** `named`: how many pads an account may name itself, rather than three minted words. */
   limits?: { pads: number; bytes: number; named?: number };
   /** Whether this person may open /admin. */
   admin?: boolean;
+}
+
+/** A payment for the paid plan, as the relay keeps it (billing.rs). Amounts are in paise. */
+export interface Payment {
+  reference: string;
+  amount: number;
+  currency: string;
+  days: number;
+  status: "created" | "paid" | "expired" | "cancelled";
+  created: number;
+  /** When its link stops taking payment. */
+  expires: number;
+  paid_at: number | null;
+  /** Razorpay's id for the money, `pay_…`. */
+  payment_id: string | null;
+  /** The account was paid for until this, once it was credited. */
+  until: number | null;
+  /** Razorpay's page for it, while it can still be paid. */
+  url: string | null;
+}
+
+/** Where someone stands with paying: `GET /api/billing`. */
+export interface Billing {
+  available: boolean;
+  /** Razorpay's test mode: no money moves. */
+  test: boolean;
+  price: { amount: number; currency: string; days: number };
+  signed_in: boolean;
+  plan: "free" | "paid";
+  /** On the paid plan by the relay's configuration, with nothing to pay. */
+  listed: boolean;
+  paid_until: number | null;
+  /** The relay's clock, in seconds. */
+  now: number;
+  /** Why this account cannot pay now; null when it can, or is signed out. */
+  refusal: "unavailable" | "listed" | "ahead" | null;
+  payments: Payment[];
 }
 
 export interface Link {
@@ -153,7 +194,7 @@ export function takeCode(name: string): boolean {
 }
 
 /** The site's own pages. No pad sits at any of them. */
-const NOT_PADS = new Set(["dashboard", "login", "signup", "account", "settings", "admin", "privacy"]);
+const NOT_PADS = new Set(["dashboard", "login", "signup", "account", "settings", "admin", "privacy", "pricing", "terms", "help"]);
 
 export interface PadLink {
   name: string;
@@ -306,6 +347,10 @@ export const account = {
     await call<void>("/auth/logout", { method: "POST" });
     forgetAllCodes();
   },
+  /** The paid plan's price, and where this person stands with it. */
+  billing: () => call<Billing>("/api/billing"),
+  /** A payment begun — or the one still open — and Razorpay's page for it. */
+  checkout: () => call<{ reference: string; url: string }>("/api/billing/checkout", { method: "POST" }),
   /** The account and every pad in it, for everyone, at once. */
   deleteAccount: async () => {
     await call<void>("/api/me", { method: "DELETE" });

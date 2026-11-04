@@ -165,6 +165,8 @@ part_pad-more() {
   else
     echo "── ui: accounts — owner, editor and viewer ───────────"
     node pad/scripts/accounts-check.mjs
+    echo "── ui: paying for the paid plan ──────────────────────"
+    node pad/scripts/billing-check.mjs
     echo "── ui: two places in one pad ─────────────────────────"
     node pad/scripts/pair-check.mjs
     # Skips without the model in pad/public/packages, which CI does not have.

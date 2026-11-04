@@ -607,7 +607,15 @@ that owns it, and a pad nobody owns is on the free plan:
 A change that would take a pad past these is not saved, and the line under the
 editor says so. A pad already past them — made when they were higher — can
 still be edited and made smaller, but not bigger. Your dashboard says which
-plan you are on. There is no way to pay yet; paid accounts are set up by hand.
+plan you are on.
+
+**The paid plan is ₹99 for 30 days, paid with UPI** at
+[Plans](https://code.rishwanth.dev/pricing) — signed in, press *Pay ₹99 with
+UPI*, pay on Razorpay's page with any UPI app, and you come back on the paid
+plan. It is not a subscription: nothing is taken again, and paying again adds
+30 days to what you have left. When it ends nothing is deleted; your account
+is on the free plan again, and the rule above for pads past their limits
+applies. Refunds and the rest are in the [terms](https://code.rishwanth.dev/terms).
 
 **A text file over 24 MB opens read-only.** It is too large to edit together
 live. Change it from the terminal — `sed`, `python`, a script of your own — and

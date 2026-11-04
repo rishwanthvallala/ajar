@@ -35,6 +35,8 @@ struct Stats {
     usage: UsageStats,
     live: RoomCensus,
     relay: Relay,
+    /// Who is paying, and what came in over the same days.
+    takings: crate::billing::Takings,
     days: i64,
 }
 
@@ -97,15 +99,17 @@ async fn stats(
         live.pad_rooms as i64,
         live.sessions as i64,
     );
-    let (accounts, store, usage) = blocking(move || {
+    let (accounts, store, usage, takings) = blocking(move || {
         let now = crate::usage::now();
         let usage = usage
             .sample(people, rooms, sessions, now)
             .and_then(|()| usage.stats(DAYS, now));
-        (accounts.stats(DAYS, TOP), pads.census(TOP), usage)
+        let takings = accounts.takings(DAYS, now);
+        (accounts.stats(DAYS, TOP), pads.census(TOP), usage, takings)
     })
     .await;
     let accounts = accounts.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message()))?;
+    let takings = takings.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message()))?;
     let usage = usage.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(Stats {
         accounts,
@@ -117,6 +121,7 @@ async fn stats(
             uptime_secs: state.started.elapsed().as_secs(),
             memory_bytes: memory(),
         },
+        takings,
         days: DAYS,
     }))
 }

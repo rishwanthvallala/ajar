@@ -483,7 +483,10 @@ removed and their rooms emptied, as deleting one pad does, all inside the
 account's write turn so no write lands between the rows and the files. Signing
 in again with the same Google or GitHub account starts a new, empty account.
 The privacy page points at it, and keeps the email address for a copy of what
-is stored, or for someone who can no longer sign in.
+is stored, or for someone who can no longer sign in. Since 5 November an
+account's payments stay behind it, naming nobody — amount, date and
+Razorpay's reference ([billing.md](billing.md)) — and the dialog says paid
+days left go with the account.
 
 Not built: Litestream backups (the database is on the box alone), linking a
 Google and a GitHub account into one, and any way to take a pad down for

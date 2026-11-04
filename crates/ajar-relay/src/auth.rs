@@ -115,7 +115,7 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// Equal, in time that does not depend on where they differ.
-fn same(a: &str, b: &str) -> bool {
+pub(crate) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())

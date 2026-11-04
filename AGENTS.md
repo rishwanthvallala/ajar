@@ -48,7 +48,7 @@ What runs there:
 |---|---|
 | `/var/lib/ajar/pads/` | the pad store: `store.db` and `blobs/` |
 | `/var/lib/ajar/accounts.db` | accounts, and `accounts.key`, its sealing key, beside it |
-| `/etc/ajar/relay.env` | root-only, **never in the repository and never overwritten by a deploy**: `AJAR_PUBLIC_ORIGIN`, the Google and GitHub client ids and secrets, `AJAR_ADMINS`. Also where a limit is overridden on the box |
+| `/etc/ajar/relay.env` | root-only, **never in the repository and never overwritten by a deploy**: `AJAR_PUBLIC_ORIGIN`, the Google and GitHub client ids and secrets, `AJAR_ADMINS`, `AJAR_PAID_ACCOUNTS`, Razorpay's keys and webhook secret. Also where a limit is overridden on the box |
 | `/etc/ajar/limits.env` | the storage limits, installed from `deploy/limits.env` by every deploy |
 | `/srv/ajar/web`, `/srv/ajar/pad` | the two clients; the pad's package mirror under `/srv/ajar/pad/packages` |
 | `/srv/ajar/deployed` | the commit last shipped, `-dirty` if the tree had changes |
@@ -132,6 +132,7 @@ node pad/scripts/terminal-check.mjs
 node pad/scripts/user-check.mjs
 node pad/scripts/search-check.mjs
 node pad/scripts/accounts-check.mjs
+node pad/scripts/billing-check.mjs                    # /pricing, paying against a stand-in Razorpay
 node pad/scripts/pair-check.mjs                       # two browsers, one pad
 node pad/scripts/complete-check.mjs                   # skips without the model in pad/public/packages
 (cd pad && VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build && node scripts/preview-check.mjs)   # then build:pad again
@@ -173,9 +174,12 @@ too. The relay's tests read `limits.env`, so a bad name or value fails CI; a
 bad override on the box stops the relay starting, with the reason in the
 journal. The page asks `GET /api/limits`. Since 3 November each limit has a
 free and a paid value (`plan.rs`): a pad follows its owner's plan (unowned
-pads are free), the daily allowance the writer's. Paid accounts are named in
-`AJAR_PAID_ACCOUNTS`, on the box in `/etc/ajar/relay.env` (people, so never
-in the repo); there is no billing yet. In `limits.env`: free 50 MiB / 500
+pads are free), the daily allowance the writer's. An account is paid when it
+has paid — ₹99 for 30 days with UPI through Razorpay since 5 November, at
+`/pricing` ([billing.md](docs/dev/billing.md); price and days in
+`limits.env`, Razorpay's keys and webhook secret in `/etc/ajar/relay.env`) —
+or when `AJAR_PAID_ACCOUNTS` names it, also in `relay.env` (people, so never
+in the repo). In `limits.env`: free 50 MiB / 500
 files a pad, paid 200 MiB / 2,000; free 256 MiB a day an address, paid 1 GiB;
 an account free 10 pads / 100 MiB / 1 named, paid 50 / 1 GiB / 10; 4 GiB in
 all and a 90-day lease for both. The table is in operations.md, "The storage

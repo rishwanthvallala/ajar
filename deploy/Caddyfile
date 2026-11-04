@@ -311,6 +311,14 @@ code.rishwanth.dev {
 		rewrite * /privacy.html
 		file_server
 	}
+	# The terms, with the paid plan's, refunds and how to reach us: what
+	# Razorpay's review of the site looks for. Static for the same reasons;
+	# `terms` is reserved too.
+	handle /terms {
+		root * /srv/ajar/pad
+		rewrite * /terms.html
+		file_server
+	}
 	# A file under the asset folders that is not there is not found, rather
 	# than the page below: index.html with a 200, and the `immutable` header
 	# from above, so a browser kept a page as that script or package for a

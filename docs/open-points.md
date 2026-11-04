@@ -56,6 +56,18 @@ not what would be nice.
 
 ## Waiting on a decision
 
+### Paying: the Razorpay account, and the terms' promises
+
+Built on 5 November ([billing.md](dev/billing.md)), and off until Razorpay's
+keys are on the box: the maintainer's Razorpay account and its KYC, then test
+keys and the webhook, one test payment, and live keys once Razorpay has
+reviewed the site. `/terms` was drafted with the code, and makes promises that
+are the maintainer's to make — a full refund on request within 7 days, the
+unused days refunded if pad closes, a paid plan never made smaller during days
+paid for, replies within two working days. Read it, and change it before the
+keys go in if any of those should not stand. Not built: refunds from our side,
+invoices or GST, subscriptions.
+
 ### The guest page: one fix without a check
 
 Of 11 October's fixes to typing held for a host that is away, one still has no

@@ -22,6 +22,7 @@ settings and the conventions — in one place.
 | [pad-store.md](pad-store.md) | How the relay keeps pads on disk since 11 October: rows in SQLite, contents by hash, saves that send only what changed, history, the last run |
 | [durability.md](durability.md) | What the server holds, what can lose it, and the ways to keep copies of it, for free — a proposal, not yet built |
 | [pad.md](pad.md) | The browser tier: WASIX, the shell, what this runtime does that nothing documents |
+| [billing.md](billing.md) | Paying for the paid plan since 5 November: ₹99 for 30 days with UPI through Razorpay's payment links, why a redirect rather than their script, the three ways a payment is heard of, setting up the keys and the webhook, and what to do by hand |
 | [accounts.md](accounts.md) | Accounts and pad links, as designed and as built: three-word names, view and edit links, roles, the dashboard, Google and GitHub sign-in, deleting an account, the operator's view and the usage counts it shows |
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share — layout, theme, languages and landmarks — the bundle measurements behind it, and what each product keeps for itself |
