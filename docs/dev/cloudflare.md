@@ -32,6 +32,9 @@ relying on it.
 3. **Phase 3, the relay on Workers and Durable Objects.** Possible, a
    rewrite, and not proposed now. Decide at the end of AWS's free plan, 25
    February 2027, beside the other ways off it in durability.md.
+4. **For February, recommended:** the box as it is, on Oracle's free ARM
+   tier behind the same tunnel. $0, with no rewrite. "What each way would
+   cost" compares the options.
 
 ## What it would save
 
@@ -242,6 +245,69 @@ It would mean:
 Phase 1 does not stand in its way: the hostnames, DNS and cache it sets up
 are what phase 3 would use too.
 
+## What each way would cost
+
+Asked on 5 November: would moving everything, the server too, cost less,
+and could it cost nothing? From memory of Cloudflare's and Oracle's plans
+on that date, to be checked against their pages before deciding.
+
+| | A month | What it takes | What it risks |
+|---|---|---|---|
+| **Stay on AWS** after 25 February | About $14 (the box), plus $0.11 a GB past 100 GB out | Nothing | Bandwidth grows with use; one disk until phase 2 |
+| **Phase 1 and 2**: AWS behind Cloudflare, backups in R2 | About $14; bandwidth for the runtime about $0 | Days; the cutover above | — |
+| **All on Cloudflare, Workers Paid** | $5 flat at this size: about 10 M requests, 1 M Durable Object requests and a few GB included | The phase 3 rewrite: weeks | Latency, lock-in (below) |
+| **All on Cloudflare, free plan** | $0 | The rewrite, *and* fitting its limits: pad saves in pieces, and no wisp | The service stopping until midnight UTC when a daily limit runs out; Cloudflare does not bill, it refuses |
+| **Oracle's Always Free ARM**, behind Cloudflare, backups in R2 | $0 | Moving the box as it is: a restore from the backups | Oracle reclaiming an idle free machine; free ARM capacity in Mumbai being hard to get |
+
+**Cloudflare's free plan**, as remembered:
+- **Requests**: about 100,000 a day, for Workers and Durable Objects alike.
+  An incoming WebSocket message counts as a twentieth of a request, so
+  about 2 million keystrokes, terminal frames and pings a day. A handful of
+  people typing fits. One ajar terminal streaming a build's output can use
+  a day's allowance in an hour.
+- **CPU**: 10 ms per request. The small API calls fit. Saving a large pad
+  does not: parsing a 33 MiB body takes far longer, and would not fit the
+  128 MB an object has either. Saves would have to arrive in pieces.
+- **wisp** proxies megabytes of wheels through one long request, far past
+  10 ms. On the free plan it would have to go. pip would then fetch from
+  PyPI through the browser, as `curl` in a pad already does
+  (`fetch-bridge.ts`), and PyPI answers CORS. Untested.
+- **Over a limit**, requests fail until the day turns. For a service with
+  paying accounts that is an outage, which is worse than $5.
+
+**For any move of the relay**:
+- **Latency.** ajar's keystrokes cross the relay twice
+  ([operations.md](operations.md), "Put the relay near the people using
+  it"). Cloudflare chooses where a Durable Object runs, and whether that
+  can be India is not known here. Singapore would take a keystroke's echo
+  from about 30 ms to about 200. **Measure before committing**: one Durable
+  Object echoing a WebSocket, timed from Mumbai.
+- **The rewrite**: about 15,000 lines, onto a runtime without tokio, axum or
+  rusqlite.
+- **Lock-in**: Cloudflare would be the only place it runs.
+
+**Oracle's Always Free tier** gives several ARM cores and many GB of memory
+(far more than the t4g.small), a block volume, and terabytes out a month, for
+nothing. The relay, Caddy and wisp run on it as they are.
+- **Reclaiming**: Oracle takes back free machines it judges idle. Upgrading
+  the account to pay-as-you-go keeps the free resources free, and stops the
+  reclaiming; it needs a card.
+- **Capacity**: free ARM machines in Mumbai are often unavailable, and may
+  take tries over days.
+- **What makes the risk acceptable**: with the backups in R2, losing the
+  machine is a restore somewhere else, not a loss.
+
+The NixOS machine behind a tunnel is the other $0 home for the box, and
+rests on a house's power and connection.
+
+**Recommended, 5 November**:
+1. Phases 1 and 2 now, whatever happens in February. The bandwidth becomes
+   free, and the data stops living on one disk.
+2. In February, move the box as it is to Oracle's free tier behind the same
+   tunnel. $0 and no rewrite.
+3. Rewrite for Cloudflare only if pad outgrows one machine or Oracle proves
+   unreliable — and then on Workers Paid, not the free plan.
+
 ## Built, 5 November
 
 - **`deploy/Caddyfile`**:
@@ -270,4 +336,5 @@ are what phase 3 would use too.
 2. The certificate route after the ports close: the DNS challenge
    (recommended) or Origin CA.
 3. Phase 2's destination: R2 first, or B2 first as durability.md had it.
-4. Phase 3, at the February decision.
+4. In February: Oracle's free tier (recommended), staying on AWS, or phase 3
+   on Workers Paid. "What each way would cost" has the comparison.
