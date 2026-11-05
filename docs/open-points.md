@@ -56,6 +56,16 @@ not what would be nice.
 
 ## Waiting on a decision
 
+### Cloudflare in front of the box
+
+Proposed on 5 November ([cloudflare.md](dev/cloudflare.md)): DNS to
+Cloudflare, Cloudflare Tunnel into the box and its ports closed, the runtime's
+files from Cloudflare's cache, backups to R2. Caddy's side — visitors counted
+by `CF-Connecting-IP`, believed from loopback only — is built and changes
+nothing until a tunnel runs. Waiting on the maintainer: the Cloudflare
+account and moving the domain's DNS; then the certificate route once the
+ports close, and whether R2 or B2 holds the backups first.
+
 ### Paying: the Razorpay account, and the terms' promises
 
 Built on 5 November ([billing.md](dev/billing.md)), and off until Razorpay's

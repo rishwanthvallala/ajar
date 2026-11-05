@@ -32,7 +32,7 @@ checks; `pad/scripts/` the pad's checks and package builds.
 |---|---|
 | Instance | AWS EC2 `i-0ffebdae47c7b633d`, t4g (arm64), `ap-south-1`, public IPv4 `13.207.222.42` |
 | AWS | profile `personal`; sign in with `aws login --profile personal` (CLI 2.32+), never long-lived keys. Free plan, ends 25 February 2027 — see operations.md, "The AWS account" |
-| DNS | NS1, by hand (not Route 53) |
+| DNS | NS1, by hand (not Route 53). Moving it to Cloudflare, with a tunnel in front of the box, is proposed in [cloudflare.md](docs/dev/cloudflare.md) |
 | Reaching it | **No inbound SSH**: port 22 closed since 14 September 2026, the security group allows 80 and 443. `ssh ajar-relay` tunnels over SSM (the `~/.ssh/config` block is in operations.md, "Setting up a new machine"), or `aws ssm start-session --target i-0ffebdae47c7b633d`. `root@ajar.rishwanth.dev` or the bare address only time out |
 | User | `ubuntu`, sudo; key `~/.ssh/ajar-relay`, one per machine that deploys |
 

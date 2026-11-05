@@ -8,7 +8,9 @@
 # port. A request the limiter lets through is answered 502 or by the file; one
 # it refuses is answered 429. That difference is all that is asserted.
 #
-# Linux only — two loopback source addresses stand in for two visitors.
+# Linux only — two loopback source addresses stand in for two visitors, and
+# 127.0.0.1 also for cloudflared, the one address whose CF-Connecting-IP the
+# Caddyfile believes.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -130,6 +132,38 @@ r=$(spend "$DNS" 127.0.0.1 /dns-query)
 [ "$r" = 0 ] && ok "the first $DNS lookups pass" || bad "$r of the first $DNS were refused"
 [ "$(status 127.0.0.1 /dns-query)" = 429 ] && ok "lookup $((DNS + 1)) is refused" || bad "lookup $((DNS + 1)) passed"
 [ "$(status 127.0.0.2 /dns-query)" != 429 ] && ok "another address still resolves" || bad "another address was refused"
+
+# Whose budget a request spends. 127.0.0.1 is loopback, where cloudflared
+# connects from through Cloudflare Tunnel, so its CF-Connecting-IP is the
+# visitor; 127.0.0.2 is anyone else, and the header from them is a claim.
+# 127.0.0.1 has spent its own DNS allowance above; 127.0.0.2 spends its own
+# below, before it claims to be anyone else.
+echo "the visitor behind the tunnel"
+s=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 203.0.113.7")
+[ "$s" != 429 ] && ok "through the tunnel a visitor has a budget of their own, not loopback's ($s)" || bad "a visitor through the tunnel was given loopback's spent budget"
+refused=0
+for _ in $(seq "$DNS"); do
+    [ "$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 203.0.113.7")" = 429 ] && refused=$((refused + 1))
+done
+[ "$refused" -ge 1 ] && ok "and spends it: lookup $((DNS + 1)) is refused" || bad "a visitor through the tunnel was never limited"
+s=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 203.0.113.8")
+[ "$s" != 429 ] && ok "another visitor through the tunnel is not ($s)" || bad "another visitor through the tunnel shared the first one's budget"
+refused=0
+for _ in $(seq "$DNS"); do
+    [ "$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:2::1")" = 429 ] && refused=$((refused + 1))
+done
+s=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:2::2")
+s2=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:3::1")
+[ "$refused" = 0 ] && [ "$s" = 429 ] && [ "$s2" != 429 ] &&
+    ok "an IPv6 visitor through the tunnel is counted by their /64, as one connecting directly is" ||
+    bad "an IPv6 visitor through the tunnel: $refused of their own refused, then $s in the same /64 and $s2 in the next"
+spend "$DNS" 127.0.0.2 /dns-query >/dev/null
+[ "$(status 127.0.0.2 /dns-query)" = 429 ] || bad "127.0.0.2 still had lookups left; the claims below prove nothing"
+refused=0
+for i in $(seq 20); do
+    [ "$(status 127.0.0.2 /dns-query -H "CF-Connecting-IP: 198.51.100.$i")" = 429 ] && refused=$((refused + 1))
+done
+[ "$refused" = 20 ] && ok "from anywhere else the header is ignored: a new claimed address each time is no new budget" || bad "a claimed CF-Connecting-IP from outside bought $((20 - refused)) lookups"
 
 echo "pad_wisp: $WISP a minute per address"
 r=$(spend "$WISP" 127.0.0.1 /wisp/)

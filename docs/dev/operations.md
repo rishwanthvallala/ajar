@@ -611,10 +611,13 @@ Latency to it is doubled and paid on every character.
 The cheapest host and the right host are usually not the same one. Pick the
 region first, then the provider.
 
-**Do not proxy the WebSocket through Cloudflare's orange cloud.** Free and Pro
-plans close idle WebSockets after 100 seconds, so a terminal nobody touches
-for two minutes drops. The agent reconnects and replays, so nothing is lost,
-but guests see churn for no reason. DNS only on that subdomain.
+**Cloudflare closes a WebSocket idle for 100 seconds** on its free and Pro
+plans. Written on 14 September, this said not to proxy the sockets through it
+at all: a terminal nobody touched for two minutes dropped. Since 7 October the
+relay pings every socket it serves every 20 seconds (`PING_EVERY` in
+`ws.rs`), so none of them is idle; the sandbox's wisp tunnel is not pinged,
+and is to be checked at the cutover. Putting the sites behind Cloudflare, by
+Cloudflare Tunnel, is proposed in [cloudflare.md](cloudflare.md).
 
 ## Releasing
 

@@ -17,6 +17,26 @@
 	# likely, never went live. Whoever is cut off reconnects, as they do after
 	# every relay restart.
 	grace_period 10s
+
+	# Who a request is from: `{client_ip}`, which every rate limit below is
+	# keyed on and every upstream is told in X-Forwarded-For — the relay's
+	# quotas and wisp's per-address cap count by it.
+	#
+	# Cloudflare's CF-Connecting-IP is believed from loopback only, which is
+	# where cloudflared connects from once Cloudflare Tunnel carries the sites
+	# (docs/dev/cloudflare.md): Cloudflare's edge sets that header, over
+	# whatever the visitor sent, so through the tunnel it is the visitor.
+	# Until then nothing outside the box arrives over loopback, and
+	# `{client_ip}` is the connection's own address, as `{remote_host}` was.
+	#
+	# Not Cloudflare's published ranges, which would be the way to trust its
+	# proxy without the tunnel: WARP, Cloudflare's free VPN, leaves from those
+	# same ranges, so any WARP user could connect here directly and claim to
+	# be any address at all — a new budget on every request.
+	servers {
+		trusted_proxies static 127.0.0.1/32 ::1/128
+		client_ip_headers CF-Connecting-IP
+	}
 }
 
 ajar.rishwanth.dev {
@@ -27,7 +47,7 @@ ajar.rishwanth.dev {
 		# and Caddy's default is to append — which left the leftmost element
 		# entirely caller-controlled. The relay now reads the rightmost too;
 		# this is the half that holds even if that changes.
-		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-For {client_ip}
 
 		# A terminal can sit untouched for a long time and must not be
 		# hung up on. Caddy's default read timeout is already generous,
@@ -173,7 +193,7 @@ code.rishwanth.dev {
 					root /srv/ajar/pad
 				}
 			}
-			key {remote_host}{file_match.relative}
+			key {client_ip}{file_match.relative}
 			events 100
 			window 1h
 		}
@@ -182,7 +202,7 @@ code.rishwanth.dev {
 			match {
 				path /dns-query
 			}
-			key {remote_host}
+			key {client_ip}
 			events 120
 			window 1m
 			ipv6_prefix 64
@@ -193,7 +213,7 @@ code.rishwanth.dev {
 			match {
 				path /wisp /wisp/*
 			}
-			key {remote_host}
+			key {client_ip}
 			events 30
 			window 1m
 			ipv6_prefix 64
@@ -213,7 +233,7 @@ code.rishwanth.dev {
 	# The relay holds the durable folders and routes the peer broadcast.
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 	# Signing in with Google or GitHub: out to the provider and back. Without
@@ -221,12 +241,12 @@ code.rishwanth.dev {
 	# index.html and the sign-in silently goes nowhere. See docs/dev/accounts.md.
 	handle /auth/* {
 		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 	handle /ws {
 		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-For {client_ip}
 			transport http {
 				read_timeout 24h
 				write_timeout 24h
@@ -299,7 +319,7 @@ code.rishwanth.dev {
 	handle @unfurl {
 		rewrite * /api/unfurl/{re.pad.1}
 		reverse_proxy 127.0.0.1:8787 {
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-For {client_ip}
 		}
 	}
 

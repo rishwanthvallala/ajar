@@ -28,6 +28,7 @@ settings and the conventions — in one place.
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share — layout, theme, languages and landmarks — the bundle measurements behind it, and what each product keeps for itself |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
 | [scaling.md](scaling.md) | Where it breaks first as people, pads and rooms grow, on the one server — ranked, measured where it could be, with the load test and what was fixed on 30 October |
+| [cloudflare.md](cloudflare.md) | Cloudflare in front of the box, proposed on 5 November: a tunnel rather than the proxy alone (WARP and visitors' addresses), free bandwidth for the runtime, what has to hold behind it, the cutover step by step, backups to R2, and what moving all of it would take. Caddy's side of visitors' addresses is built |
 | [operations.md](operations.md) | Deploying, signing in and its secrets, reaching the server, setting up a new machine, the AWS account, cutting a release |
 | [../open-points.md](../open-points.md) | What is unfinished, and what is deliberately absent |
 | [../code-review-2026-09-16.md](../code-review-2026-09-16.md) | A review of the whole tree on 16 September, refreshed on 28 September to the 21 findings then open, and [what was done about the first 22](../code-review-fixes-2026-09-16.md) |

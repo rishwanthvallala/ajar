@@ -160,7 +160,8 @@ in February 2027 (estimate). On demand: Java 14 MB, C++ 20, clang 24, Node 18,
 PHP 19, Go 47.
 
 **Fix**: a CDN in front of `/assets`, `/vendor` and `/packages` (CloudFront's
-origin fetches from EC2 are free), or the packages on R2, which charges no
+origin fetches from EC2 are free; or Cloudflare, proposed on 5 November in
+[cloudflare.md](cloudflare.md)), or the packages on R2, which charges no
 egress — keeping the CORP and CORS headers the page needs; warm the runtime for
 a reader only once they act; brotli for the browsers that do not take zstd.
 

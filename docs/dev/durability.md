@@ -21,7 +21,9 @@ link lives on one EBS volume in Mumbai.
   are copied every minute.
 - **Where:** two independent places, because no free service is promised for
   ten years. Backblaze B2 first (10 GB free since 2015, a key that cannot
-  delete); a nightly second copy on the NixOS machine or Cloudflare R2.
+  delete); a nightly second copy on the NixOS machine or Cloudflare R2. (If
+  the domain moves to Cloudflare, [cloudflare.md](cloudflare.md) of 5
+  November, R2 may as well be first.)
 - **Unattended:** an alarm that emails when a backup stops (healthchecks.io,
   free), a weekly restore test on the server that is what feeds the alarm,
   nothing that expires, pinned tools, retention that keeps it inside the free

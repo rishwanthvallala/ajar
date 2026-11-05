@@ -221,6 +221,10 @@ pub const RESERVED: &[&str] = &[
     // unreachable, which is the exact failure this list exists to prevent.
     "wisp",
     "dns-query",
+    // Cloudflare answers `/cdn-cgi/…` itself on every site it proxies, so a
+    // pad there would be shadowed the day the sites go behind it
+    // (docs/dev/cloudflare.md). Reserved on 5 November, before anyone had it.
+    "cdn-cgi",
     // Signing in, and the dashboard for the pads an account owns.
     "auth",
     "dashboard",
