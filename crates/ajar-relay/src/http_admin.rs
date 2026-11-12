@@ -12,7 +12,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::accounts::AccountStats;
-use crate::http_accounts::{blocking, signed_in};
+use crate::http_accounts::blocking;
 use crate::pad::Census;
 use crate::session::RoomCensus;
 use crate::usage::UsageStats;
@@ -68,9 +68,12 @@ pub async fn require_admin(
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, String)> {
     let not_found = || (StatusCode::NOT_FOUND, "not found".to_string());
-    let me = signed_in(state, headers).await.ok_or_else(not_found)?;
-    let accounts = state.accounts.clone();
-    let provider_id = blocking(move || accounts.provider_id(me.id)).await;
+    let (me, provider_id) = crate::http_accounts::as_caller(state, headers, |accounts, me| {
+        let provider_id = me.as_ref().and_then(|m| accounts.provider_id(m.id));
+        (me, provider_id)
+    })
+    .await;
+    let me = me.ok_or_else(not_found)?;
     if state
         .auth
         .is_admin(&me.provider, provider_id.as_deref(), me.email.as_deref())

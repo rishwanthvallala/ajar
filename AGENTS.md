@@ -207,7 +207,9 @@ limits".
   [docs/open-points.md](docs/open-points.md) — git in the pad and backups
   among them. What gives way first under load, ranked, is in
   [docs/dev/scaling.md](docs/dev/scaling.md); `scripts/relay-load.mjs` is its
-  load test, for a local relay in podman only.
+  load test, and `scripts/relay-bench/run.sh` its requests-a-second
+  benchmark (wrk, the relay alone or behind Caddy, as against HttpArena),
+  both for a local relay in podman only.
 
 ## The maintainer's machines
 

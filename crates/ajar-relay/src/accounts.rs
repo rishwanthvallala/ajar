@@ -454,12 +454,15 @@ impl Accounts {
 
     fn standing_in(db: &Connection, paid: &PaidList, user: i64, at: i64) -> Standing {
         let who: Option<(String, String, Option<String>, Option<i64>)> = db
-            .query_row(
+            .prepare_cached(
                 "SELECT provider, provider_id, email, paid_until FROM users WHERE id = ?1",
-                params![user],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
-            .optional()
+            .and_then(|mut q| {
+                q.query_row(params![user], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .optional()
+            })
             .ok()
             .flatten();
         let Some((provider, id, email, paid_until)) = who else {
@@ -541,20 +544,21 @@ impl Accounts {
 
     pub fn session(&self, token: &str) -> Option<User> {
         let db = self.db.lock();
-        db.query_row(
+        db.prepare_cached(
             "SELECT u.id, u.provider, u.name, u.email FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token_hash = ?1 AND s.expires > ?2",
-            params![hash(token), now()],
-            |r| {
+        )
+        .and_then(|mut q| {
+            q.query_row(params![hash(token), now()], |r| {
                 Ok(User {
                     id: r.get(0)?,
                     provider: r.get(1)?,
                     name: r.get(2)?,
                     email: r.get(3)?,
                 })
-            },
-        )
-        .optional()
+            })
+            .optional()
+        })
         // Signed out, if the lookup fails: the least anyone can be, so it
         // grants nothing a stranger lacks. Said, so it is not silent.
         .inspect_err(|e| tracing::error!(error = %e, "could not look up a sign-in; treated as signed out"))
@@ -991,11 +995,8 @@ impl Accounts {
     pub fn provider_id(&self, user: i64) -> Option<String> {
         self.db
             .lock()
-            .query_row(
-                "SELECT provider_id FROM users WHERE id = ?1",
-                params![user],
-                |r| r.get(0),
-            )
+            .prepare_cached("SELECT provider_id FROM users WHERE id = ?1")
+            .and_then(|mut q| q.query_row(params![user], |r| r.get(0)))
             .ok()
     }
 
@@ -1100,11 +1101,10 @@ impl Accounts {
     ) -> Result<Access, AccountError> {
         let db = self.db.lock();
         let row: Option<(Option<i64>, String, String, Option<i64>)> = db
-            .query_row(
-                "SELECT owner_id, view, edit, deleted FROM pads WHERE name = ?1",
-                params![name],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
+            .prepare_cached("SELECT owner_id, view, edit, deleted FROM pads WHERE name = ?1")?
+            .query_row(params![name], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
             .optional()?;
         let Some((owner, view, edit, deleted)) = row else {
             return Ok(Access::anonymous());
@@ -1131,11 +1131,10 @@ impl Accounts {
         }
         if let Some(code) = code {
             let link: Option<(i64, String)> = db
-                .query_row(
+                .prepare_cached(
                     "SELECT id, role FROM links WHERE pad = ?1 AND code_hash = ?2 AND revoked IS NULL",
-                    params![name, hash(code)],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
+                )?
+                .query_row(params![name, hash(code)], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?;
             if let Some((id, role)) = link {
                 access.link_role = Some(role_parse(&role));

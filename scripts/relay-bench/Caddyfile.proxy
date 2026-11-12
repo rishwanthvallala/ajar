@@ -1,0 +1,20 @@
+# Caddy in front of the relay, for `run.sh proxies`: as deploy/Caddyfile
+# proxies the relay, with addresses from wrk believed.
+{
+	admin off
+	persist_config off
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers X-Forwarded-For
+	}
+}
+https://ajar-bench-proxy:8443 {
+	tls internal
+	reverse_proxy ajar-bench-relay:8787 {
+		header_up X-Forwarded-For {client_ip}
+		transport http {
+			keepalive_idle_conns 1024
+			keepalive_idle_conns_per_host 1024
+		}
+	}
+}

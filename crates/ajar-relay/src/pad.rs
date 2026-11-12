@@ -192,6 +192,18 @@ pub const RENEW_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub const MAX_NAME: usize = 64;
 
+/// A blob this size or under is read into a pad's read as the read is put
+/// together, on the blocking thread already doing that, rather than opened
+/// and read as the response goes out. Each file sent from its blob was three
+/// trips to the blocking pool — the open, the read, and the read that finds
+/// the end — and for a pad of three small files those trips were most of the
+/// read: 6,200 reads a second on two CPUs (12 November, docs/dev/scaling.md).
+pub const INLINE_BLOB: u64 = 16 * 1024;
+
+/// And this much of one read in all, so a pad of thousands of small files is
+/// not held in memory whole; past it, blobs are sent from their files.
+pub const INLINE_READ: u64 = 256 * 1024;
+
 /// Paths this server answers on for its own reasons. A pad can never take one,
 /// and the list has to be complete *before* the first name is handed out —
 /// there is no taking `api` back once somebody owns it.
@@ -1342,18 +1354,17 @@ impl Store {
 
     fn head(db: &Connection, name: &str) -> Result<Option<Head>, Error> {
         Ok(db
-            .query_row(
+            .prepare_cached(
                 "SELECT seq, created_ms, updated_ms, touched_ms FROM pads WHERE name = ?1",
-                [name],
-                |r| {
-                    Ok(Head {
-                        seq: r.get::<_, i64>(0)? as u64,
-                        created_ms: r.get::<_, i64>(1)? as u64,
-                        updated_ms: r.get::<_, i64>(2)? as u64,
-                        touched_ms: r.get::<_, i64>(3)? as u64,
-                    })
-                },
-            )
+            )?
+            .query_row([name], |r| {
+                Ok(Head {
+                    seq: r.get::<_, i64>(0)? as u64,
+                    created_ms: r.get::<_, i64>(1)? as u64,
+                    updated_ms: r.get::<_, i64>(2)? as u64,
+                    touched_ms: r.get::<_, i64>(3)? as u64,
+                })
+            })
             .optional()?)
     }
 
@@ -1700,6 +1711,9 @@ impl Store {
     /// a JSON string — and then `fields`, the rest of its members. Returns the
     /// pieces and how many bytes they come to, which is the response's
     /// length, so `stored` must be each blob's size on disk.
+    ///
+    /// A small blob is read into the pieces now rather than named for the
+    /// sender to open ([`INLINE_BLOB`]), so a small pad goes out as one piece.
     fn streamed<'a>(
         &self,
         before: String,
@@ -1707,22 +1721,38 @@ impl Store {
     ) -> Result<(Vec<Part>, u64), Error> {
         let mut parts = Vec::new();
         let mut remaining = 0u64;
-        let mut text = before;
+        let mut text = before.into_bytes();
+        let mut inlined = 0u64;
         for (i, (path, blob, stored, fields)) in files.enumerate() {
             let key = serde_json::to_string(path).map_err(|e| Error::Io(e.to_string()))?;
-            text.push_str(&format!(
-                r#"{}{key}:{{"content":"#,
-                if i > 0 { "," } else { "" }
-            ));
-            remaining += text.len() as u64;
-            parts.push(Part::Bytes(std::mem::take(&mut text).into_bytes()));
-            remaining += stored;
-            parts.push(Part::Blob(self.blob_path(blob)));
-            text = format!(",{fields}}}");
+            text.extend_from_slice(
+                format!(r#"{}{key}:{{"content":"#, if i > 0 { "," } else { "" }).as_bytes(),
+            );
+            if stored <= INLINE_BLOB && inlined + stored <= INLINE_READ {
+                // Read here, on the blocking thread already putting the read
+                // together, with nothing locked: the blob is held (`hold`),
+                // so it is not deleted under the read.
+                let bytes = std::fs::read(self.blob_path(blob))
+                    .map_err(|e| Error::Io(format!("reading blob {blob}: {e}")))?;
+                if bytes.len() as u64 != stored {
+                    return Err(Error::Io(format!(
+                        "blob {blob} is {} bytes on disk and {stored} in the store",
+                        bytes.len()
+                    )));
+                }
+                inlined += stored;
+                text.extend_from_slice(&bytes);
+            } else {
+                remaining += text.len() as u64;
+                parts.push(Part::Bytes(std::mem::take(&mut text)));
+                remaining += stored;
+                parts.push(Part::Blob(self.blob_path(blob)));
+            }
+            text.extend_from_slice(format!(",{fields}}}").as_bytes());
         }
-        text.push_str("}}");
+        text.extend_from_slice(b"}}");
         remaining += text.len() as u64;
-        parts.push(Part::Bytes(text.into_bytes()));
+        parts.push(Part::Bytes(text));
         Ok((parts, remaining))
     }
 
@@ -3862,6 +3892,71 @@ mod tests {
         opened.into_reader().read_to_string(&mut rest).unwrap();
         assert_eq!(rest.len() as u64, remaining, "remaining was wrong");
         serde_json::from_str(&format!("{{\"exists\":true,{rest}")).expect("valid json")
+    }
+
+    #[test]
+    fn small_files_are_read_into_a_read_and_the_rest_sent_from_their_blobs() {
+        let (s, _d) = store();
+        let blobs = |name: &str| {
+            let opened = s.open_for_read(name).unwrap().unwrap();
+            opened
+                .parts
+                .iter()
+                .filter(|p| matches!(p, Part::Blob(_)))
+                .count()
+        };
+        // A small pad is one piece: nothing left to open as it is sent.
+        s.write("small", &[put("a.txt", "one"), put("b.txt", "two")])
+            .unwrap();
+        let opened = s.open_for_read("small").unwrap().unwrap();
+        assert_eq!(opened.parts.len(), 1, "a small pad is one piece");
+        let read = streamed(&s, "small");
+        assert_eq!(read["files"]["a.txt"]["content"], "one");
+        assert_eq!(read["files"]["b.txt"]["content"], "two");
+
+        // A file past INLINE_BLOB is sent from its blob, beside small ones read in.
+        let big = "b".repeat(INLINE_BLOB as usize + 1);
+        s.write(
+            "mixed",
+            &[
+                put("a.txt", "one"),
+                put("big.txt", &big),
+                put("c.txt", "three"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(blobs("mixed"), 1, "only the big file is sent from its blob");
+        let read = streamed(&s, "mixed");
+        assert_eq!(read["files"]["a.txt"]["content"], "one");
+        assert_eq!(read["files"]["big.txt"]["content"], big.as_str());
+        assert_eq!(read["files"]["c.txt"]["content"], "three");
+
+        // Small files past INLINE_READ in all: the first are read in, the
+        // rest sent from their blobs, and the pad reads the same.
+        let many: Vec<_> = (0..40)
+            .map(|i| put(&format!("f{i:02}.txt"), &"x".repeat(10_000)))
+            .collect();
+        s.write("many", &many).unwrap();
+        let sent = blobs("many");
+        assert!(sent > 0 && sent < 40, "{sent} of 40 sent from their blobs");
+        let read = streamed(&s, "many");
+        for i in 0..40 {
+            let content = read["files"][format!("f{i:02}.txt")]["content"].as_str();
+            assert_eq!(content.map(str::len), Some(10_000), "file {i}");
+        }
+    }
+
+    #[test]
+    fn a_blob_not_the_size_the_store_says_fails_the_read_before_anything_is_sent() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.txt", "one")]).unwrap();
+        let blob = Store::rows(&s.db.lock(), "p").unwrap()["a.txt"]
+            .blob
+            .clone();
+        std::fs::write(s.blob_path(&blob), b"\"on\"").unwrap();
+        // Read in whole, its length is checked: sent from the file, the
+        // response's length would have been wrong, and the read cut short.
+        assert!(s.open_for_read("p").is_err());
     }
 
     #[test]

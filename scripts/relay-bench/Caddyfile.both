@@ -1,0 +1,33 @@
+# Caddy and the relay in one container, for `run.sh caddy`: the relay's
+# routes as deploy/Caddyfile has them, with addresses from wrk believed.
+{
+	admin off
+	persist_config off
+	grace_period 10s
+	# wrk stands in for many visitors, each with an address in X-Forwarded-For.
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers X-Forwarded-For
+	}
+}
+https://ajar-bench-relay:8443 {
+	tls internal
+	encode zstd gzip
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {client_ip}
+			transport http {
+				keepalive_idle_conns_per_host 256
+			}
+		}
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:8787
+	}
+}

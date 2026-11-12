@@ -94,9 +94,27 @@ pub fn session_token(state: &AppState, headers: &HeaderMap) -> Option<String> {
 }
 
 pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Option<User> {
-    let token = session_token(state, headers)?;
+    // No cookie, no trip: most requests are from someone not signed in.
+    session_token(state, headers)?;
+    as_caller(state, headers, |_, user| user).await
+}
+
+/// Who is signed in, and whatever `then` asks the account store about them,
+/// in one trip to the blocking pool. Each question was a trip of its own — the
+/// session, then the pad's access, then the plan — and on two CPUs the trips
+/// cost more than the questions (12 November, docs/dev/scaling.md).
+pub async fn as_caller<T: Send + 'static>(
+    state: &AppState,
+    headers: &HeaderMap,
+    then: impl FnOnce(&crate::accounts::Accounts, Option<User>) -> T + Send + 'static,
+) -> T {
+    let token = session_token(state, headers);
     let accounts = state.accounts.clone();
-    blocking(move || accounts.session(&token)).await
+    blocking(move || {
+        let user = token.and_then(|token| accounts.session(&token));
+        then(&accounts, user)
+    })
+    .await
 }
 
 /// What a caller is told when who may do what to a pad could not be looked
@@ -120,16 +138,16 @@ pub async fn access(
     headers: &HeaderMap,
     name: &str,
 ) -> Result<Access, (StatusCode, &'static str)> {
-    let user = signed_in(state, headers).await.map(|u| u.id);
     let code = headers
         .get("x-pad-code")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let accounts = state.accounts.clone();
     let pad = name.to_string();
-    blocking(move || accounts.access(&pad, user, code.as_deref()))
-        .await
-        .map_err(|e| {
+    as_caller(state, headers, move |accounts, user| {
+        accounts.access(&pad, user.map(|u| u.id), code.as_deref())
+    })
+    .await
+    .map_err(|e| {
             tracing::error!(pad = %name, error = %e.message(), "could not look up who may open a pad; refused");
             UNCHECKED
         })
@@ -391,14 +409,20 @@ struct Me {
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
-    let user = signed_in(&state, &headers).await;
-    let standing = match &user {
-        Some(user) => {
-            let (accounts, id) = (state.accounts.clone(), user.id);
-            blocking(move || accounts.standing(id)).await
-        }
-        None => crate::accounts::Standing::default(),
-    };
+    let (user, standing, provider_id) = as_caller(&state, &headers, |accounts, user| {
+        let standing = user
+            .as_ref()
+            .map(|u| accounts.standing(u.id))
+            .unwrap_or_default();
+        let provider_id = user.as_ref().and_then(|u| accounts.provider_id(u.id));
+        (user, standing, provider_id)
+    })
+    .await;
+    let admin = user.as_ref().is_some_and(|u| {
+        state
+            .auth
+            .is_admin(&u.provider, provider_id.as_deref(), u.email.as_deref())
+    });
     Json(Me {
         user,
         providers: state.auth.offered(),
@@ -406,9 +430,7 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<Me> {
         paid_until: standing.paid_until,
         billing: state.billing.available(),
         limits: state.accounts.limits_of(standing.plan),
-        admin: crate::http_admin::require_admin(&state, &headers)
-            .await
-            .is_ok(),
+        admin,
     })
 }
 

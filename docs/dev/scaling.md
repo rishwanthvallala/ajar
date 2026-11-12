@@ -121,6 +121,9 @@ global budget for them.
 
 ### 5. 40 ms on every pad read — measured, **fixed**
 
+(Reads were measured again on 12 November, with wrk and a smaller pad, and
+made faster again: "Requests a second, against HttpArena", below.)
+
 The relay sent without `TCP_NODELAY`, and a pad read is many small writes —
 the pad's fields, each file's few bytes of JSON around its text. With Nagle,
 the second write waits for the first one's ACK, which Linux delays 40 ms: on
@@ -355,6 +358,153 @@ Rooms (each person sending five 60-byte updates a second, as a typist does):
 Keystrokes are not the bottleneck: a thousand people typing at once used
 about two thirds of the two CPUs. Rooms break by their membership churn
 (item 2) and their big frames (item 4) first.
+
+## Requests a second, against HttpArena (12 November)
+
+Asked on 12 November: going by [HttpArena](https://http-arena.com/)'s
+numbers, is the relay missing out on big gains just by its choice of
+framework, and can it answer 10,000 requests a second?
+
+**The framework is not where requests were lost.** HttpArena's Alpha Round
+(results of 11 November) runs every entry on a 64-core Threadripper, the
+server on 32 of the cores. Its per-framework pages give, divided by the CPU
+each run used:
+
+| HttpArena, per core used | axum (ours) | actix | ntex | Caddy |
+|---|---:|---:|---:|---:|
+| Baseline, plain HTTP/1.1 | about 31,000 | 38,000 | 47,000 | 8,000 |
+| JSON over TLS | about 15,800 | 17,200 | 21,400 | 6,100 |
+| Compressed JSON | about 4,300 | 8,500 | 8,500 | — |
+
+- axum is 1.2–1.5 times behind the fastest Rust frameworks per core, on
+  requests that do nothing.
+- Its compression is half theirs (tower-http's layer). The relay compresses
+  nothing itself: Caddy does.
+- HttpArena's "async delay" profile has axum seven times behind, from the
+  way its entry is written rather than the framework; the relay has no
+  such endpoint.
+- Caddy is the expensive one: about 2.6 times axum's CPU per TLS request.
+
+On the relay's own measure, `/healthz` — axum and hyper alone — answered
+**175,000–250,000 a second on two CPUs**. A small pad's read answered 6,200.
+The other 97% was the relay's own work.
+
+### What it was doing
+
+`scripts/relay-bench/run.sh relay`:
+- the relay's Linux release build, in podman, held to two CPUs (by quota)
+  and 512 MB, on this Mac;
+- wrk in another container, every request from an address of its own;
+- 64 and 256 connections, 10 s each.
+
+A small pad is three files, 1.5 KB. The Mac's cores are faster than
+Graviton2's, so read the numbers as relative.
+
+| Two CPUs, relay alone, 64 connections | 12 Nov, before | after |
+|---|---:|---:|
+| `/healthz` | 174,000 | 185,000 |
+| `/api/limits`, not signed in | 69,000 | 108,000 |
+| `/api/limits`, signed in | 24,000 | 42,000 |
+| `/api/me`, signed in | 10,600 | 35,000 |
+| A small pad, read | 6,200 | **28,800** |
+| A small pad, read by its signed-in owner | 5,700 | **28,200** |
+| A pad unchanged since the page's sequence | 28,000 | 51,000 |
+| A 2 KB save, 500 pads | 1,500 | 1,500–2,100 |
+
+At 256 connections the reads were within 15% of these. Each figure is one
+10 s run. A second run of "after" was within 15% for every endpoint but the
+saves, which came out at 1,500 against 2,100: they are about as they were.
+
+What a small pad's read cost was **trips to tokio's blocking pool**, not the
+work done on them:
+- one for the session;
+- one for the pad's access;
+- one to open it;
+- three for each file, since `tokio::fs` sends the open, the read and the
+  read that finds the end to the pool one at a time.
+
+Three files made twelve hand-offs between threads, about 320 µs of two CPUs
+for 1.5 KB. Now:
+
+- **Small files are read into the read** (`pad::INLINE_BLOB`, 16 KiB, up to
+  `INLINE_READ`, 256 KiB, a read). It happens on the blocking thread already
+  putting the read together, with the store unlocked and the blobs held, and
+  each is checked against its size in the store. A small pad goes out as one
+  buffer, with no stream behind it. Larger files are sent from their blobs as
+  before.
+- **One trip for a request's questions** (`http_accounts::as_caller`):
+  - the session and what is asked about it — a pad's access, the plan,
+    whether this is the operator — in one blocking call;
+  - a read's access check and the read itself, in one more;
+  - a request with no session cookie makes no trip at all to learn it is
+    nobody.
+- **Prepared statements kept** (`prepare_cached`) for the queries every
+  request makes: the session, a pad's access, the plan, a pad's head.
+
+Saves are left as they were: each is a transaction synced to disk, two at a
+time (`MAX_CONCURRENT_PAD_WRITES`). 1,500–2,000 a second is a few thousand
+people typing at once at the page's save delay. More would need commits
+grouped across saves.
+
+### In front of the relay
+
+Production puts Caddy in front, terminating TLS, on the same two CPUs.
+`scripts/relay-bench/run.sh caddy` runs Caddy and the relay in one container
+held to two CPUs, with wrk over HTTPS:
+
+| Two CPUs shared, through Caddy with TLS | 64 connections | 256 |
+|---|---:|---:|
+| A small pad, read — Caddy as deployed | 10,300 | 7,100 |
+| — and with 256 idle connections to the relay | **14,400** | **12,400** |
+| A small pad, read by its owner | 10,300 | 10,700 |
+| `/api/me` | 13,200 | 14,900 |
+| A 2 KB save | 1,000 | 1,200 |
+
+**Caddy kept 32 idle connections to the relay**, its default, so past 32
+requests at once each further one opened a connection and closed it after.
+`keepalive_idle_conns_per_host 256` on the relay's routes in
+`deploy/Caddyfile` fixes it. With Caddy given one CPU on its own
+(`run.sh proxies`), 256 reads at once went from 1,300 a second to 6,600.
+
+Caddy is then most of the cost. The same comparison against nginx:
+
+| One CPU for the proxy, TLS, a small pad's read | 64 connections | 256 |
+|---|---:|---:|
+| Caddy, as deployed | 6,000 | 1,300 |
+| Caddy, 256 idle connections | 7,700 | 6,600 |
+| nginx 1.27, one worker | **20,600** | **15,100** |
+
+The pattern is the same as in HttpArena, about three times the requests per
+CPU.
+
+### What 10,000 a second takes on the box
+
+- **The relay alone** does 28,000 small-pad reads a second on two of this
+  Mac's cores, and nearly that signed in. On Graviton2 it should be about
+  half (an estimate, not measured). 10,000 is within the relay's reach on
+  the box.
+- **Through Caddy**, the two together answer 12,000–14,000 here, about half
+  that on the box (estimate): **not yet 10,000**. Caddy's TLS and proxying
+  take most of the two CPUs.
+- **And not for long.** The box is a burstable t4g.small. Its baseline is
+  20% of each CPU, and past it the credits are unlimited and billed, at about
+  $0.04 a vCPU-hour (AWS's price, from memory). Both CPUs flat out for a
+  month would be about $47 of surplus, more than three times the box. 10,000
+  a second is a peak this box can meet, not a rate it should hold.
+
+To reach it end to end:
+1. **Cloudflare Tunnel** ([cloudflare.md](cloudflare.md)). Visitors' TLS
+   ends at Cloudflare. `cloudflared` could carry `/api`, `/auth` and `/ws`
+   straight to the relay, leaving Caddy the static files, which Cloudflare's
+   cache mostly answers. `cloudflared`'s own cost per request is unmeasured
+   until the cutover.
+2. **nginx instead of Caddy**: about three times the requests per CPU,
+   measured. In exchange, Caddy's certificates (certbot, or Cloudflare), the
+   rate-limit plugin (nginx's `limit_req`, keyed per address and file) and
+   `deploy/caddy/check.sh` would all be redone.
+3. **More cores** for the same software: Oracle's free four-core Ampere
+   machines have no burst credits to spend ([cloudflare.md](cloudflare.md),
+   "What each way would cost").
 
 ## In what order
 

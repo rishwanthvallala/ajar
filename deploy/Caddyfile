@@ -51,10 +51,12 @@ ajar.rishwanth.dev {
 
 		# A terminal can sit untouched for a long time and must not be
 		# hung up on. Caddy's default read timeout is already generous,
-		# but say it out loud rather than inherit it.
+		# but say it out loud rather than inherit it. The idle connections
+		# are the same as for the pad's API, below.
 		transport http {
 			read_timeout 24h
 			write_timeout 24h
+			keepalive_idle_conns_per_host 256
 		}
 	}
 
@@ -231,9 +233,18 @@ code.rishwanth.dev {
 	}
 
 	# The relay holds the durable folders and routes the peer broadcast.
+	#
+	# Up to 256 connections to it kept open between requests. Caddy keeps 32
+	# unless told, and past 32 requests at once every further one opened a
+	# new connection to the relay and closed it after: on one CPU, 256 pad
+	# reads at once went from 1,300 a second to 6,600 with this (12 November,
+	# docs/dev/scaling.md, "In front of the relay").
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8787 {
 			header_up X-Forwarded-For {client_ip}
+			transport http {
+				keepalive_idle_conns_per_host 256
+			}
 		}
 	}
 	# Signing in with Google or GitHub: out to the provider and back. Without
@@ -242,6 +253,9 @@ code.rishwanth.dev {
 	handle /auth/* {
 		reverse_proxy 127.0.0.1:8787 {
 			header_up X-Forwarded-For {client_ip}
+			transport http {
+				keepalive_idle_conns_per_host 256
+			}
 		}
 	}
 	handle /ws {

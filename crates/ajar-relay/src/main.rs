@@ -693,11 +693,11 @@ async fn limits(
     headers: axum::http::HeaderMap,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let mine = caller_plan(&state, &headers).await;
-    let pad = match query.get("pad") {
-        Some(name) if pad::check_name(name).is_ok() => pad_plan(&state, &headers, name).await,
-        _ => mine,
-    };
+    let named = query
+        .get("pad")
+        .map(String::as_str)
+        .filter(|name| pad::check_name(name).is_ok());
+    let (mine, pad) = plans(&state, &headers, named).await;
     let of = |plan: plan::Plan| {
         serde_json::json!({
             "pad": state.pads.limits_of(plan),
@@ -718,13 +718,14 @@ async fn limits(
 /// The plan of whoever is calling: their account's, or free when nobody is
 /// signed in.
 async fn caller_plan(state: &AppState, headers: &axum::http::HeaderMap) -> plan::Plan {
-    match http_accounts::signed_in(state, headers).await {
-        Some(user) => {
-            let accounts = state.accounts.clone();
-            http_accounts::blocking(move || accounts.plan_of(user.id)).await
-        }
-        None => plan::Plan::Free,
+    // Nobody signed in is on the free plan, with nothing to look up.
+    if http_accounts::session_token(state, headers).is_none() {
+        return plan::Plan::Free;
     }
+    http_accounts::as_caller(state, headers, |accounts, user| {
+        user.map_or(plan::Plan::Free, |u| accounts.plan_of(u.id))
+    })
+    .await
 }
 
 /// The plan of a pad's owner, which is the pad's: free for a pad nobody owns.
@@ -742,10 +743,41 @@ async fn owner_plan(state: &AppState, owner: Option<i64>) -> plan::Plan {
 /// which is the stricter of the two — and for a caller who may not open the
 /// pad, who is told nothing of whose it is.
 async fn pad_plan(state: &AppState, headers: &axum::http::HeaderMap, name: &str) -> plan::Plan {
-    match http_accounts::access(state, headers, name).await {
-        Ok(access) if access.role > accounts::Role::None => owner_plan(state, access.owner).await,
-        _ => plan::Plan::Free,
+    plans(state, headers, Some(name)).await.1
+}
+
+/// The caller's plan, and a pad's when one is named — the pad's owner's, free
+/// when the caller may not open it — with one session lookup and one trip to
+/// the blocking pool for both.
+async fn plans(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    pad: Option<&str>,
+) -> (plan::Plan, plan::Plan) {
+    let code = headers
+        .get("x-pad-code")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if pad.is_none() && http_accounts::session_token(state, headers).is_none() {
+        return (plan::Plan::Free, plan::Plan::Free);
     }
+    let pad = pad.map(str::to_string);
+    http_accounts::as_caller(state, headers, move |accounts, user| {
+        let mine = user
+            .as_ref()
+            .map_or(plan::Plan::Free, |u| accounts.plan_of(u.id));
+        let theirs = match pad {
+            Some(pad) => match accounts.access(&pad, user.map(|u| u.id), code.as_deref()) {
+                Ok(access) if access.role > accounts::Role::None => access
+                    .owner
+                    .map_or(plan::Plan::Free, |owner| accounts.plan_of(owner)),
+                _ => plan::Plan::Free,
+            },
+            None => mine,
+        };
+        (mine, theirs)
+    })
+    .await
 }
 
 /// Every route the relay answers, and the web client's files behind them when
@@ -970,6 +1002,15 @@ async fn admit_read(
     Ok((slot, permit))
 }
 
+/// What a pad read found, past who may read it.
+enum Looked {
+    /// Not theirs to read; the access says why.
+    Refused,
+    /// What the page has is the pad still, at this sequence.
+    Unchanged(u64),
+    Opened(Result<Option<pad::Opened>, pad::Error>),
+}
+
 async fn read_pad(
     Path(name): Path<String>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -981,13 +1022,53 @@ async fn read_pad(
         Err(refused) => return refused.into_response(),
     };
 
+    // A page opening the pad, rather than reading it again — after a save
+    // elsewhere, a reconnect, a change of access — says so, and is counted
+    // once it is served (usage.rs).
+    let counted = headers.contains_key("x-pad-open").then(|| name.clone());
+    // A page that has the pad at a sequence says so, and is told it has it
+    // rather than sent it all again. It reads again on every welcome to its
+    // room and whenever anybody joins or leaves it, and for a 78 MB pad each
+    // was 9 MB more to download (18 October). Who it is to the pad is said
+    // either way: that is what a read after a change of access is for.
+    let since = headers
+        .get("x-pad-seq")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|_| counted.is_none());
+    let code = headers
+        .get("x-pad-code")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
     // An owned pad says who may see it; an anonymous one is anybody's. Asked
     // after the slot and the permit, not before: the answer is a database
     // lookup, and a flood of reads the limits would refuse should not get one
-    // each first.
-    let access = match http_accounts::access(&state, &headers, &name).await {
-        Ok(access) => access,
-        Err(refused) => return refused.into_response(),
+    // each first. Asked with the read itself — the session, the access, and
+    // opening the pad, which are filesystem calls — in one trip to the
+    // blocking pool: three trips were more of a small read's cost than the
+    // work (12 November, docs/dev/scaling.md).
+    let (pads, pad) = (state.pads.clone(), name.clone());
+    let looked = http_accounts::as_caller(&state, &headers, move |accounts, user| {
+        let access = accounts.access(&pad, user.map(|u| u.id), code.as_deref())?;
+        let answer = |looked| Ok::<_, accounts::AccountError>((access.clone(), looked));
+        if access.deleted || access.role == accounts::Role::None {
+            return answer(Looked::Refused);
+        }
+        if let Some(since) = since {
+            if let Ok(Some(seq)) = pads.unchanged_since(&pad, since) {
+                return answer(Looked::Unchanged(seq));
+            }
+        }
+        answer(Looked::Opened(pads.open_for_read(&pad)))
+    })
+    .await;
+    let (access, looked) = match looked {
+        Ok(looked) => looked,
+        Err(e) => {
+            tracing::error!(pad = %name, error = %e.message(), "could not look up who may open a pad; refused");
+            return http_accounts::UNCHECKED.into_response();
+        }
     };
     // Deleted is not private: the page says which, so an owner who deleted
     // it in another tab is not told to sign in as someone else.
@@ -1006,27 +1087,9 @@ async fn read_pad(
         };
         return (StatusCode::FORBIDDEN, why).into_response();
     }
-
-    // A page opening the pad, rather than reading it again — after a save
-    // elsewhere, a reconnect, a change of access — says so, and is counted
-    // once it is served (usage.rs).
-    let counted = headers.contains_key("x-pad-open").then(|| name.clone());
     let view = http_accounts::AccessView::from(&access);
-
-    // A page that has the pad at a sequence says so, and is told it has it
-    // rather than sent it all again. It reads again on every welcome to its
-    // room and whenever anybody joins or leaves it, and for a 78 MB pad each
-    // was 9 MB more to download (18 October). Who it is to the pad is said
-    // either way: that is what a read after a change of access is for.
-    let since = headers
-        .get("x-pad-seq")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    if let (Some(since), None) = (since, &counted) {
-        let (pads, name) = (state.pads.clone(), name.clone());
-        if let Ok(Ok(Some(seq))) =
-            tokio::task::spawn_blocking(move || pads.unchanged_since(&name, since)).await
-        {
+    let opened = match looked {
+        Looked::Unchanged(seq) => {
             return with_bases(
                 Json(PadBody {
                     exists: true,
@@ -1036,15 +1099,10 @@ async fn read_pad(
                     unchanged: true,
                 })
                 .into_response(),
-            );
+            )
         }
-    }
-
-    // Opening, checking and renewing are filesystem calls, so they go where
-    // blocking belongs rather than stalling a worker carrying keystrokes.
-    let pads = state.pads.clone();
-    let Ok(opened) = tokio::task::spawn_blocking(move || pads.open_for_read(&name)).await else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "reading the pad failed").into_response();
+        Looked::Refused => unreachable!("refusals are answered above"),
+        Looked::Opened(opened) => opened,
     };
     if let (Some(pad), Ok(_)) = (counted, &opened) {
         usage::count_open(&state, pad);
@@ -1518,6 +1576,18 @@ fn stream_json(
     use futures_util::{StreamExt, TryStreamExt};
 
     let head_len = head.len() as u64;
+    // A pad whose blobs were all read as the read was put together
+    // (`pad::INLINE_BLOB`) is one buffer: sent as it is, with no stream, no
+    // blob held and no slot kept past the handler.
+    if let [pad::Part::Bytes(bytes)] = opened.parts.as_slice() {
+        let mut whole = head.into_bytes();
+        whole.extend_from_slice(bytes);
+        drop(held);
+        return axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(whole))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
     // Kept until the body is sent or dropped: the store deletes a blob a
     // write let go of only once nothing is sending it.
     let reading = opened.reading;
