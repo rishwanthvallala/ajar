@@ -73,13 +73,27 @@ const MAX_PAD_HTTP_BODY: usize = 33 * 1024 * 1024;
 ///
 /// Two since pads went to 60 MiB (it was four at 25): the assertion below is
 /// what the two numbers have to satisfy together.
-const MAX_CONCURRENT_PAD_WRITES: usize = 2;
+///
+/// Two of the largest, that is, since 13 November: the permits are
+/// [`WRITE_UNIT`]s of body, and a write takes as many as its body is long —
+/// a whole 33 MiB upload takes half of them, a 2 KB save one. Two writes at a
+/// time, whatever their size, was also two saves a commit at most, and the
+/// store commits saves that wait together as one (`pad::Store::write_shared`):
+/// on a t4g.small's disk, a save each was 170 a second.
+const LARGEST_WRITES_AT_ONCE: usize = 2;
+
+/// What one write permit stands for: this much of a body being parsed.
+const WRITE_UNIT: usize = 1024 * 1024;
+
+/// The write permits: [`PAD_BODY_BUDGET`] in [`WRITE_UNIT`]s — as many small
+/// saves at once as that, or [`LARGEST_WRITES_AT_ONCE`] of the largest.
+const WRITE_PERMITS: usize = PAD_BODY_BUDGET / WRITE_UNIT;
 
 /// Bytes of request bodies the relay holds at once — pad writes and kept runs,
 /// arriving or being stored — taken as they arrive and given back when the
-/// request is done with them: as much as [`MAX_CONCURRENT_PAD_WRITES`] bodies
+/// request is done with them: as much as [`LARGEST_WRITES_AT_ONCE`] bodies
 /// of the largest size, or any number of smaller ones adding up to the same.
-const PAD_BODY_BUDGET: usize = MAX_PAD_HTTP_BODY * MAX_CONCURRENT_PAD_WRITES;
+const PAD_BODY_BUDGET: usize = MAX_PAD_HTTP_BODY * LARGEST_WRITES_AT_ONCE;
 
 // These two are only meaningful together, and the unit file's MemoryMax=512M is
 // what they have to fit inside — along with every session, outbox and snapshot
@@ -316,8 +330,8 @@ struct AppState {
     registry: Arc<Registry>,
     quota: Arc<quota::Quota>,
     pads: Arc<Store>,
-    /// Bounds how many pad writes are parsed and stored at once. See
-    /// [`MAX_CONCURRENT_PAD_WRITES`].
+    /// Bounds how much of the pad writes' bodies is parsed and stored at
+    /// once. See [`WRITE_PERMITS`].
     writing: Arc<tokio::sync::Semaphore>,
     /// Bytes of request bodies held at once, one permit a byte. See
     /// [`PAD_BODY_BUDGET`].
@@ -492,7 +506,7 @@ async fn main() -> anyhow::Result<()> {
         registry: Arc::new(Registry::new()),
         quota: Arc::new(quota::Quota::new()),
         pads: pads.clone(),
-        writing: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_WRITES)),
+        writing: Arc::new(tokio::sync::Semaphore::new(WRITE_PERMITS)),
         receiving: Arc::new(tokio::sync::Semaphore::new(PAD_BODY_BUDGET)),
         body_idle: BODY_IDLE,
         reading: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAD_READS)),
@@ -1686,6 +1700,10 @@ struct Received {
 }
 
 impl Received {
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
     /// The body as JSON, refused as axum's `Json` would refuse it: 400 for
     /// what is not JSON, 422 for JSON of the wrong shape.
     fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, (StatusCode, String)> {
@@ -1697,7 +1715,7 @@ impl Received {
 
 /// A JSON request body of at most `limit` bytes, read before anything waits
 /// on a write permit and taking room in [`PAD_BODY_BUDGET`] as its bytes
-/// arrive (see [`MAX_CONCURRENT_PAD_WRITES`]). Refused with 408 when nothing
+/// arrive (see [`LARGEST_WRITES_AT_ONCE`]). Refused with 408 when nothing
 /// arrives for [`BODY_IDLE`] or all of it has not within [`BODY_LONGEST`],
 /// 413 past `limit` — said before a byte is read when the declared length
 /// is already over — and 503 when no room is free within [`PAD_WRITE_WAIT`].
@@ -1837,14 +1855,21 @@ fn json_content_type(headers: &axum::http::HeaderMap) -> bool {
         || (essence.starts_with("application/") && essence.ends_with("+json"))
 }
 
-/// One of the [`MAX_CONCURRENT_PAD_WRITES`] permits to parse and store a
-/// write, waiting at most [`PAD_WRITE_WAIT`] for it. Taken once the body is
-/// in: it was taken before, and held while the body arrived, however slowly
-/// (audit B04).
+/// The [`WRITE_PERMITS`] to parse and store a write of `len` bytes — one a
+/// [`WRITE_UNIT`], at least one — waiting at most [`PAD_WRITE_WAIT`] for
+/// them. Taken once the body is in: they were taken before, and held while
+/// the body arrived, however slowly (audit B04).
 async fn write_permit(
     state: &AppState,
+    len: usize,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, (StatusCode, String)> {
-    match tokio::time::timeout(PAD_WRITE_WAIT, state.writing.clone().acquire_owned()).await {
+    let units = len.div_ceil(WRITE_UNIT).clamp(1, WRITE_PERMITS) as u32;
+    match tokio::time::timeout(
+        PAD_WRITE_WAIT,
+        state.writing.clone().acquire_many_owned(units),
+    )
+    .await
+    {
         Ok(Ok(permit)) => Ok(permit),
         Ok(Err(_)) => Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1865,7 +1890,7 @@ async fn write_pad(
     body: axum::body::Body,
 ) -> Result<Json<Wrote>, (StatusCode, String)> {
     let received = receive(&state, &headers, body, MAX_PAD_HTTP_BODY).await?;
-    let _permit = write_permit(&state).await?;
+    let _permit = write_permit(&state, received.len()).await?;
     let body: WriteBody = received.parse()?;
     let caller = caller_ip(&headers, peer.ip(), state.trust_forwarded);
     // Writing needs an edit link or the pad itself; viewing is not enough.
@@ -1939,7 +1964,7 @@ async fn write_pad(
     let pads = state.pads.clone();
     let pad_name = name.clone();
     let written = tokio::task::spawn_blocking(move || {
-        pads.write_within(&pad_name, &body.writes, allowance, plan)
+        pads.write_shared(&pad_name, body.writes.into(), allowance, plan)
     })
     .await
     .map_err(|_| {

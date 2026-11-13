@@ -76,7 +76,11 @@ Since 18 October a save that was answered outlasts a power cut: each blob's
 bytes are synced before it is renamed into place, its directory after (and
 `blobs/`, when the directory is new), and only then does the row naming it
 commit, with the database at `synchronous = FULL`. It was `NORMAL`, and
-nothing synced a blob (audit B07).
+nothing synced a blob (audit B07). Since 13 November saves waiting together
+are committed together: each in a savepoint of one transaction, their
+blobs' directories synced once each, then one commit — 170 saves a second on
+a t4g.small's disk became 480 ([scaling.md](scaling.md), "On the box's own
+hardware").
 
 It was one JSON document per pad, and every save — every keystroke's, every
 half-second — read, parsed and wrote back the whole of it under a lock. On 11
@@ -130,7 +134,7 @@ keystroke in a 300 KB file is a 165-byte request. The relay streams the edit
 from one blob to the next rather than loading the file: memory stays flat
 whatever the file's size ([pad-store.md](pad-store.md#one-large-file)).
 
-### Writes are read whole, and stored two at a time
+### Writes are read whole, and parsed within a budget
 
 A write is the opposite case: its body is read off the wire before anything
 can be checked, so its size is what it costs. The limit is
@@ -140,9 +144,11 @@ browser sends at most 24 MiB a request, and a pad of up to 200 MiB, or one file
 that big, in several ([pad-store.md](pad-store.md#a-write-bigger-than-one-request)).
 Bodies being read share `PAD_BODY_BUDGET`, two whole bodies (66 MiB), taken
 as their bytes arrive; one that sends nothing for 20 s, or is not in after ten
-minutes, is refused with 408. `MAX_CONCURRENT_PAD_WRITES`, two, bounds how
-many are parsed and stored at once, and the permit is taken once the body is
-in. Waiting for room or for a permit is bounded at 20 s, then 503. Until 18
+minutes, is refused with 408. Parsing and storing take permits in 1 MiB
+units of body (`WRITE_PERMITS`, the same 66 MiB): two of the largest at
+once, as `MAX_CONCURRENT_PAD_WRITES` allowed until 13 November, or 66 small
+saves, which the store can then commit together. The permits are taken once
+the body is in. Waiting for room or for a permit is bounded at 20 s, then 503. Until 18
 October the permit was taken before the body was read and held while it
 arrived, so two uploads that stopped part-way held up every save (audit B04).
 The two numbers only mean something together: a write holds its body and the

@@ -492,7 +492,7 @@ meets it.
 | One pad write, off the wire | 33 MiB; a browser sends a larger write in parts of 24 | `main.rs` `MAX_PAD_HTTP_BODY` |
 | Memory one pad save costs | Its request; the files it changes are streamed to disk, an edit from one blob to the next | `pad.rs` `write_within`, `pad/splice.rs` |
 | Request bodies being read at once | 66 MiB between them, taken as bytes arrive; 408 after 20 s with nothing, or 10 minutes in all; a 20 s wait for room, then 503 | `main.rs` `PAD_BODY_BUDGET`, `BODY_IDLE`, `BODY_LONGEST` |
-| Pad writes parsed and stored at once | 2, taken once the body is in; a 20 s wait, then 503 | `main.rs` `MAX_CONCURRENT_PAD_WRITES`, `PAD_WRITE_WAIT` |
+| Pad writes parsed and stored at once | 66 MiB of bodies in 1 MiB units — two of the largest, or 66 small — taken once the body is in; a 20 s wait, then 503 | `main.rs` `WRITE_PERMITS`, `PAD_WRITE_WAIT` |
 | Changes in one write | 2,000, 1,000 edits in one change and 10,000 in all; 413 | `pad.rs` `MAX_WRITES`, `MAX_EDITS`, `MAX_EDITS_PER_REQUEST` |
 | A kept run's body | 256 KiB | `main.rs` `MAX_RUN_HTTP_BODY` |
 | Memory one pad read costs | A chunk buffer — streamed from the file | `pad.rs` `open_for_read` |

@@ -106,6 +106,12 @@ changed after.
    that directory is new, `settle`), and the database
    is `synchronous = FULL`, so a save that was answered is there after a power
    cut, and never as a row naming a blob that is not.
+
+   Since 13 November, saves that wait for the lock together are committed
+   together (`write_shared`, `commit_saves`): each in a savepoint, so one
+   refused is rolled back alone, and a blob it placed that a later save
+   names is kept; the blobs' directories synced once each; then one commit
+   for all of them. The order on the disk is the same.
 3. A blob nothing refers to any more is deleted then, unless something is
    using it: a read still sending it, or an edit being applied to it. Those are
    marked while they run, and what they kept goes at the next write, or the

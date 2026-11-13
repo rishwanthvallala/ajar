@@ -900,6 +900,38 @@ impl Drop for Placed {
     }
 }
 
+/// A save checked and its blobs staged, waiting to be committed: by the
+/// thread that made it, or by another whose commit it joins.
+struct Job {
+    name: String,
+    writes: Arc<[Write]>,
+    staged: Vec<Option<Staged>>,
+    /// Which of `writes` are edits, checked against what they edit again
+    /// once the lock is held.
+    edited: Vec<usize>,
+    /// Whether each write is the last to its path in the request.
+    last: Vec<bool>,
+    allowance: u64,
+    limits: Limits,
+    /// The versions the edits were made against, kept from being deleted
+    /// until the commit — held for that, never read.
+    _bases: Option<Reading>,
+}
+
+/// A save in the queue, and what became of it.
+#[derive(Default)]
+struct Pending {
+    job: Mutex<Option<Job>>,
+    done: Mutex<Option<Result<Written, Error>>>,
+}
+
+/// A save applied inside a commit not yet made.
+struct Applied {
+    written: Written,
+    /// The store's bytes it adds, or gives back.
+    held: i64,
+}
+
 /// Whether `row` is the version `w`'s edits were made against.
 fn names_version(row: Option<&Row>, w: &Write) -> bool {
     row.is_some_and(|r| Some(&r.blob) == w.base.as_ref() && r.encoding == w.encoding)
@@ -1015,6 +1047,15 @@ pub struct Store {
     /// Whether a save keeps the pad as it was as a version. Always, but for
     /// the tests of how blobs are let go, which history would hold on to.
     keeps_history: bool,
+    /// Saves waiting to be committed, by whichever save next holds the lock
+    /// (`write_shared`).
+    saving: Mutex<Vec<Arc<Pending>>>,
+    /// Commits of saves so far: fewer than the saves, when they share them.
+    commits: AtomicU64,
+    /// For the tests: saves queue and wait, and nothing commits, while set —
+    /// so a test can line saves up and see them committed together.
+    #[cfg(test)]
+    hold_saves: std::sync::atomic::AtomicBool,
 }
 
 const SCHEMA: &str = "
@@ -1124,6 +1165,10 @@ impl Store {
             pinned: Default::default(),
             in_use: Default::default(),
             keeps_history: true,
+            saving: Default::default(),
+            commits: AtomicU64::new(0),
+            #[cfg(test)]
+            hold_saves: Default::default(),
         };
         store.import_legacy()?;
         // Nothing is being read yet, so a blob held by nothing can go now.
@@ -1287,7 +1332,7 @@ impl Store {
     }
 
     /// A pad's last run deleted, and the change that makes to `used`.
-    fn drop_run(tx: &rusqlite::Transaction, name: &str) -> Result<i64, Error> {
+    fn drop_run(tx: &Connection, name: &str) -> Result<i64, Error> {
         let size = Self::stored_run(tx, name)?;
         tx.execute("DELETE FROM last_runs WHERE pad = ?1", [name])?;
         Ok(-(size as i64))
@@ -1391,7 +1436,7 @@ impl Store {
     /// any `old` has that `new` does not, counting each blob's holders as it
     /// goes. Returns the change in bytes held, for `used`.
     fn apply_rows(
-        tx: &rusqlite::Transaction,
+        tx: &Connection,
         name: &str,
         old: &BTreeMap<String, Row>,
         new: &BTreeMap<String, Row>,
@@ -1438,7 +1483,7 @@ impl Store {
     /// A blob's holders — files and versions — changed by `by`. Returns what
     /// that does to the bytes held, for `used`.
     fn count_ref(
-        tx: &rusqlite::Transaction,
+        tx: &Connection,
         hash: &str,
         stored: u64,
         by: i64,
@@ -1471,7 +1516,7 @@ impl Store {
     /// version, holding each blob for it, then let go of the versions past
     /// what a pad keeps. Returns the change in bytes held.
     fn keep_version(
-        tx: &rusqlite::Transaction,
+        tx: &Connection,
         limits: &Limits,
         name: &str,
         rows: &BTreeMap<String, Row>,
@@ -1503,7 +1548,7 @@ impl Store {
     /// oldest first, let go. The newest is always kept: it is the one a
     /// restore was most likely just made from.
     fn prune_versions(
-        tx: &rusqlite::Transaction,
+        tx: &Connection,
         limits: &Limits,
         name: &str,
         now: u64,
@@ -1534,12 +1579,7 @@ impl Store {
         Ok(held)
     }
 
-    fn drop_version(
-        tx: &rusqlite::Transaction,
-        name: &str,
-        id: i64,
-        now: u64,
-    ) -> Result<i64, Error> {
+    fn drop_version(tx: &Connection, name: &str, id: i64, now: u64) -> Result<i64, Error> {
         let files: Vec<(String, u64)> = {
             let mut q = tx.prepare_cached(
                 "SELECT blob, stored FROM version_files WHERE pad = ?1 AND version = ?2",
@@ -1565,7 +1605,7 @@ impl Store {
     }
 
     /// Every version a pad has, let go with it.
-    fn drop_history(tx: &rusqlite::Transaction, name: &str, now: u64) -> Result<i64, Error> {
+    fn drop_history(tx: &Connection, name: &str, now: u64) -> Result<i64, Error> {
         let ids: Vec<i64> = {
             let mut q = tx.prepare_cached("SELECT id FROM versions WHERE pad = ?1")?;
             let rows = q.query_map([name], |r| r.get(0))?;
@@ -2106,6 +2146,7 @@ impl Store {
     ///
     /// What it reads and writes is the files it is given. The rest of the pad
     /// is rows in a table, and stays as it is.
+    #[cfg(test)]
     pub fn write_within(
         &self,
         name: &str,
@@ -2113,6 +2154,35 @@ impl Store {
         allowance: u64,
         plan: Plan,
     ) -> Result<Written, Error> {
+        // Copied, as a test hands a slice: the relay hands its writes over.
+        self.write_shared(name, Arc::from(writes), allowance, plan)
+    }
+
+    /// [`Store::write_within`], with the writes handed over rather than
+    /// copied: a save is committed by whichever save holds the store's lock
+    /// next, which may be another thread's.
+    ///
+    /// **Saves that arrive together are committed together.** Every save was
+    /// a transaction of its own, synced to the disk (`synchronous = FULL`)
+    /// one at a time under the lock — and with each new blob's directory
+    /// synced too, 170 saves a second was all a t4g.small's disk gave
+    /// (13 November, docs/dev/scaling.md). Now a save checks and stages its
+    /// blobs as before, off the lock, and joins a queue. Whoever takes the
+    /// lock commits everything queued: each save in a savepoint of one
+    /// transaction, so one refused takes none of the others with it; then
+    /// every new blob's directory synced, once each; then one commit, one
+    /// sync. A save whose commit was made by another thread finds its
+    /// answer waiting when it gets the lock. Durability is as it was: blobs
+    /// on the disk before the commit that names them, and nothing answered
+    /// as saved before that commit is.
+    pub fn write_shared(
+        &self,
+        name: &str,
+        shared: Arc<[Write]>,
+        allowance: u64,
+        plan: Plan,
+    ) -> Result<Written, Error> {
+        let writes: &[Write] = &shared;
         check_name(name)?;
         // Held to the pad's plan — its owner's, free for a pad nobody owns.
         let limits = self.limits_of(plan);
@@ -2132,7 +2202,8 @@ impl Store {
         }
         let mut seen = std::collections::HashSet::new();
         let mut edited = Vec::new();
-        for w in writes {
+        let mut edited_at = Vec::new();
+        for (at, w) in writes.iter().enumerate() {
             check_path(&w.path)?;
             // Anything but a deletion stores a file.
             if w.content.is_some() || w.edits.is_some() {
@@ -2161,6 +2232,7 @@ impl Store {
                     return Err(Error::BadEdit("a file is edited in a request of its own"));
                 }
                 edited.push(w);
+                edited_at.push(at);
             }
             seen.insert(w.path.as_str());
         }
@@ -2223,13 +2295,154 @@ impl Store {
             });
         }
 
-        let mut db = self.db.lock();
-        // Blobs this write puts in place, deleted again if it does not go in.
-        // Declared after the lock, so dropped before it is let go.
-        let mut placed = Placed(Vec::new());
+        let pending = Arc::new(Pending {
+            job: Mutex::new(Some(Job {
+                name: name.to_string(),
+                writes: shared.clone(),
+                staged,
+                edited: edited_at,
+                last,
+                allowance,
+                limits: *limits,
+                _bases: bases,
+            })),
+            done: Mutex::new(None),
+        });
+        self.saving.lock().push(pending.clone());
+        loop {
+            if let Some(done) = pending.done.lock().take() {
+                return done;
+            }
+            #[cfg(test)]
+            while self.hold_saves.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let mut db = self.db.lock();
+            // Committed by whoever held the lock before: a save is only taken
+            // from the queue under the lock, and answered before it is let go.
+            if let Some(done) = pending.done.lock().take() {
+                return done;
+            }
+            let batch = std::mem::take(&mut *self.saving.lock());
+            if !batch.iter().any(|p| Arc::ptr_eq(p, &pending)) {
+                // Taken, and never answered: the thread that took it stopped
+                // part way. Said, rather than waited for.
+                return Err(Error::Io(
+                    "the save was lost while it was being stored".into(),
+                ));
+            }
+            self.commit_saves(&mut db, batch);
+        }
+    }
+
+    /// Commit every save in `batch` together, and answer each.
+    fn commit_saves(&self, db: &mut Connection, batch: Vec<Arc<Pending>>) {
+        let jobs: Vec<(Arc<Pending>, Job)> = batch
+            .into_iter()
+            .filter_map(|p| {
+                let job = p.job.lock().take()?;
+                Some((p, job))
+            })
+            .collect();
+        // Every blob a save put in place, deleted again unless its save went
+        // in — or another save in the batch went in naming it.
+        let mut placed: Vec<Placed> = jobs.iter().map(|_| Placed(Vec::new())).collect();
+        let mut dirs = std::collections::BTreeSet::new();
+        let mut outcomes: Vec<Result<Applied, Error>> = Vec::with_capacity(jobs.len());
+        let committed = (|| -> Result<(), Error> {
+            let mut tx = db.transaction()?;
+            let mut held_so_far = 0i64;
+            for ((_, job), placed) in jobs.iter().zip(placed.iter_mut()) {
+                // Each save in a savepoint of its own: refused, it is rolled
+                // back to before it, and the saves either side are kept.
+                let sp = tx.savepoint()?;
+                let outcome = self.apply_save(&sp, job, placed, &mut dirs, held_so_far);
+                match outcome {
+                    Ok(applied) => {
+                        sp.commit()?;
+                        held_so_far += applied.held;
+                        outcomes.push(Ok(applied));
+                    }
+                    // Rolled back to before it, the others kept.
+                    Err(e) => {
+                        drop(sp);
+                        outcomes.push(Err(e));
+                    }
+                }
+            }
+            // The blobs they named are on the disk before anything naming
+            // them is (see `settle`): their bytes were synced as they were
+            // staged, and their directories are synced here, once each.
+            for dir in &dirs {
+                sync_dir(dir)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        self.commits.fetch_add(1, Ordering::Relaxed);
+        let failed = |why: &Error| Error::Io(format!("storing the save failed: {}", why.message()));
+        match committed {
+            Ok(()) => {
+                let mut kept_blobs: Vec<PathBuf> = Vec::new();
+                for (outcome, placed) in outcomes.iter().zip(placed.iter_mut()) {
+                    match outcome {
+                        Ok(applied) => {
+                            placed.keep();
+                            self.adjust(applied.held);
+                        }
+                        // A blob this save put in place may be named by a
+                        // save after it in the batch, which found it there.
+                        Err(_) => kept_blobs.extend(std::mem::take(&mut placed.0)),
+                    }
+                }
+                for path in kept_blobs {
+                    let named = path
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .is_some_and(|hash| {
+                            db.query_row(
+                                "SELECT refs > 0 FROM blobs WHERE hash = ?1",
+                                [hash],
+                                |r| r.get::<_, bool>(0),
+                            )
+                            .unwrap_or(false)
+                        });
+                    if !named {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+            Err(ref why) => {
+                tracing::error!(error = %why.message(), saves = jobs.len(), "a commit of saves failed; none of them went in");
+                outcomes = jobs.iter().map(|_| Err(failed(why))).collect();
+            }
+        }
+        // Every blob placed for a save that did not go in is deleted here,
+        // as `placed` goes; the versions edits started from are let go; and
+        // whatever the saves let go of, unless somebody is reading it.
+        drop(placed);
+        for ((pending, job), outcome) in jobs.into_iter().zip(outcomes) {
+            drop(job);
+            *pending.done.lock() = Some(outcome.map(|applied| applied.written));
+        }
+        self.release(db);
+    }
+
+    /// One save, applied to `db` — a savepoint of the batch's transaction —
+    /// with the blobs it puts in place recorded in `placed` and their
+    /// directories in `dirs`, to be synced before the commit.
+    fn apply_save(
+        &self,
+        db: &Connection,
+        job: &Job,
+        placed: &mut Placed,
+        dirs: &mut std::collections::BTreeSet<PathBuf>,
+        held_so_far: i64,
+    ) -> Result<Applied, Error> {
+        let (name, writes, limits) = (job.name.as_str(), &job.writes[..], &job.limits);
         let now = now_ms();
-        let head = Self::head(&db, name)?;
-        let old = Self::rows(&db, name)?;
+        let head = Self::head(db, name)?;
+        let old = Self::rows(db, name)?;
         // A lapsed pad starts again: its files go, the name is the writer's.
         let live = head
             .as_ref()
@@ -2244,7 +2457,8 @@ impl Store {
 
         // Another write may have moved an edited file on since it was looked
         // at; then these edits were applied to the wrong text.
-        for w in &edited {
+        for &at in &job.edited {
+            let w = &writes[at];
             if !names_version(new.get(&w.path), w) {
                 return Err(Error::Stale);
             }
@@ -2278,13 +2492,13 @@ impl Store {
         }
 
         let mut changed = Vec::new();
-        for ((w, staged), &last) in writes.iter().zip(staged.iter_mut()).zip(&last) {
+        for ((w, staged), &last) in writes.iter().zip(job.staged.iter()).zip(&job.last) {
             if !last {
                 continue;
             }
             match staged {
                 Some(staged) => {
-                    let stored = self.place(staged, w, &mut placed)?;
+                    let stored = self.place(staged, w, placed, dirs)?;
                     new.insert(
                         w.path.clone(),
                         Row {
@@ -2340,7 +2554,7 @@ impl Store {
         let grew = footprint.saturating_sub(was);
         // The caller's own allowance first: it is what they can do something
         // about, and it is the answer that is true when both would refuse.
-        if grew > allowance {
+        if grew > job.allowance {
             return Err(Error::OverAllowance);
         }
 
@@ -2351,25 +2565,28 @@ impl Store {
             && live
             && !old.is_empty()
             && !changed.is_empty()
-            && Self::newest_version(&db, name)?
+            && Self::newest_version(db, name)?
                 .is_none_or(|(at, _)| now.saturating_sub(at) >= VERSION_EVERY.as_millis() as u64);
-        let tx = db.transaction()?;
+        let tx = db;
         let mut held = 0;
         // A lapsed pad still here until the sweep goes with this write, all
         // of it: its files above, and here its versions and its last run,
         // which otherwise came back as the new pad's (audit B11).
         if head.is_some() && !live {
-            held += Self::drop_history(&tx, name, now)?;
-            held += Self::drop_run(&tx, name)?;
+            held += Self::drop_history(tx, name, now)?;
+            held += Self::drop_run(tx, name)?;
         }
         if due {
-            let was_seq = Self::head(&tx, name)?.map_or(0, |h| h.seq);
-            held += Self::keep_version(&tx, limits, name, &old, was_seq, now)?;
+            let was_seq = Self::head(tx, name)?.map_or(0, |h| h.seq);
+            held += Self::keep_version(tx, limits, name, &old, was_seq, now)?;
         }
-        held += Self::apply_rows(&tx, name, &old, &new, &changed, now)?;
-        if held > 0 && self.used.load(Ordering::Relaxed) + held as u64 > self.ceiling {
-            // Rolled back with the transaction, and the blobs put in place
-            // for it deleted.
+        held += Self::apply_rows(tx, name, &old, &new, &changed, now)?;
+        // Counting the saves before it in the batch, which are not in
+        // `used` until the batch is committed.
+        let after = self.used.load(Ordering::Relaxed) as i128 + held_so_far as i128 + held as i128;
+        if held > 0 && after > self.ceiling as i128 {
+            // Rolled back to its savepoint, and the blobs put in place for it
+            // deleted.
             return Err(Error::StoreFull);
         }
         tx.execute(
@@ -2377,25 +2594,21 @@ impl Store {
              ON CONFLICT(name) DO UPDATE SET seq = ?2, created_ms = ?3, updated_ms = ?4, touched_ms = ?4, bytes = ?5",
             params![name, seq as i64, created_ms as i64, now as i64, bytes as i64],
         )?;
-        tx.commit()?;
-        placed.keep();
-        // Only once it is committed: counting before would charge the store
-        // for bytes no pad holds.
-        self.adjust(held);
-        // The versions this replaced, the ones its edits started from among
-        // them, unless somebody is still reading one.
-        drop(bases);
-        self.release(&db);
         let hashes = writes
             .iter()
             .filter_map(|w| new.get(&w.path).map(|r| (w.path.clone(), r.blob.clone())))
             .collect();
-        Ok(Written {
-            seq,
-            grew,
-            bytes,
-            files: new.len() as u64,
-            hashes,
+        // Counted into `used` once the batch is committed: counting before
+        // would charge the store for bytes no pad holds.
+        Ok(Applied {
+            written: Written {
+                seq,
+                grew,
+                bytes,
+                files: new.len() as u64,
+                hashes,
+            },
+            held,
         })
     }
 
@@ -2463,19 +2676,35 @@ impl Store {
 
     /// A staged blob in its place, and its bytes on disk. Under the store's
     /// lock: nothing deletes a blob without it, so one found here stays.
-    fn place(&self, staged: &mut Staged, w: &Write, placed: &mut Placed) -> Result<u64, Error> {
+    fn place(
+        &self,
+        staged: &Staged,
+        w: &Write,
+        placed: &mut Placed,
+        dirs: &mut std::collections::BTreeSet<PathBuf>,
+    ) -> Result<u64, Error> {
         let path = self.blob_path(&staged.hash);
         if let Ok(meta) = std::fs::metadata(&path) {
-            staged.discard();
             return Ok(meta.len());
         }
-        let stored = match staged.tmp.take() {
+        let stored = match &staged.tmp {
             Some(tmp) => {
                 let made = self.blob_dir(&path)?;
-                std::fs::rename(&tmp, &path).inspect_err(|_| {
-                    let _ = std::fs::remove_file(&tmp);
+                // Renamed rather than taken: the temporary file is gone after
+                // this, and `Staged` deleting it again finds nothing.
+                std::fs::rename(tmp, &path).inspect_err(|_| {
+                    let _ = std::fs::remove_file(tmp);
                 })?;
-                self.settle(&path, made)?;
+                // Synced with every other save's before the batch commits
+                // (`commit_saves`), rather than here, one at a time.
+                dirs.insert(
+                    path.parent()
+                        .expect("a blob's path has a directory")
+                        .to_path_buf(),
+                );
+                if made {
+                    dirs.insert(self.blobs.clone());
+                }
                 staged.stored
             }
             // Already stored when it was staged, and deleted since.
@@ -3892,6 +4121,161 @@ mod tests {
         opened.into_reader().read_to_string(&mut rest).unwrap();
         assert_eq!(rest.len() as u64, remaining, "remaining was wrong");
         serde_json::from_str(&format!("{{\"exists\":true,{rest}")).expect("valid json")
+    }
+
+    /// Saves made in other threads while commits are held, as a commit in
+    /// progress holds them: each joins the queue, in the order given, and is
+    /// committed with the others once they are let go. Their answers, in
+    /// that order.
+    fn saved_together(s: &Store, saves: Vec<(&str, Vec<Write>)>) -> Vec<Result<Written, Error>> {
+        s.hold_saves.store(true, Ordering::SeqCst);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (i, (name, writes)) in saves.into_iter().enumerate() {
+                handles
+                    .push(scope.spawn(move || s.write_within(name, &writes, u64::MAX, Plan::Free)));
+                // Queued before the next is started, so the order is known.
+                while s.saving.lock().len() < i + 1 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            s.hold_saves.store(false, Ordering::SeqCst);
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+
+    fn content(s: &Store, name: &str, path: &str) -> Option<String> {
+        s.get(name)
+            .unwrap()
+            .and_then(|pad| pad.files.get(path).map(|f| f.content.clone()))
+    }
+
+    #[test]
+    fn saves_that_arrive_together_share_one_commit() {
+        let (s, _d) = store();
+        let before = s.commits.load(Ordering::Relaxed);
+        let names: Vec<String> = (0..8).map(|i| format!("pad-{i}")).collect();
+        let saves = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), vec![put("a.txt", &format!("text {i}"))]))
+            .collect();
+        let answers = saved_together(&s, saves);
+        assert!(
+            answers.iter().all(|a| a.as_ref().is_ok_and(|w| w.seq == 1)),
+            "{answers:?}"
+        );
+        assert_eq!(
+            s.commits.load(Ordering::Relaxed) - before,
+            1,
+            "eight saves waiting together, one commit"
+        );
+        for (i, n) in names.iter().enumerate() {
+            assert_eq!(content(&s, n, "a.txt"), Some(format!("text {i}")));
+        }
+        // And one on its own is a commit of its own, as before.
+        s.write("alone", &[put("a.txt", "x")]).unwrap();
+        assert_eq!(s.commits.load(Ordering::Relaxed) - before, 2);
+    }
+
+    #[test]
+    fn a_refused_save_in_a_group_takes_none_of_the_others_with_it() {
+        let (s, _d) = store_with(Limits {
+            bytes: 1024,
+            ..Limits::default()
+        });
+        let big = "x".repeat(2000);
+        let answers = saved_together(
+            &s,
+            vec![
+                // Too big for a pad here — refused once its blobs are in place.
+                (
+                    "big",
+                    vec![put("shared.txt", "shared text"), put("big.txt", &big)],
+                ),
+                // The same text as the refused save's first file: it finds
+                // that blob already in place, put there by the save before it.
+                ("small", vec![put("shared.txt", "shared text")]),
+                ("other", vec![put("b.txt", "fine")]),
+            ],
+        );
+        assert!(
+            matches!(answers[0], Err(Error::TooBig { .. })),
+            "{:?}",
+            answers[0]
+        );
+        assert!(answers[1].is_ok() && answers[2].is_ok(), "{answers:?}");
+        assert!(
+            s.get("big").unwrap().is_none(),
+            "the refused save left no pad"
+        );
+        assert_eq!(
+            content(&s, "small", "shared.txt").as_deref(),
+            Some("shared text")
+        );
+        assert_eq!(content(&s, "other", "b.txt").as_deref(), Some("fine"));
+        assert!(
+            s.blob_path(&hash_of(Encoding::Utf8, "shared text"))
+                .is_file(),
+            "a blob the refused save placed, named by a save after it, stays"
+        );
+        assert!(
+            !s.blob_path(&hash_of(Encoding::Utf8, &big)).exists(),
+            "and one nothing names goes"
+        );
+        assert_eq!(
+            s.used(),
+            {
+                let db = s.db.lock();
+                db.query_row(
+                    "SELECT COALESCE(SUM(stored), 0) FROM blobs WHERE refs > 0",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap() as u64
+            },
+            "the store counted what went in, and nothing of what did not"
+        );
+    }
+
+    #[test]
+    fn saves_to_one_pad_in_a_group_go_in_in_order_and_an_edit_they_made_stale_is_refused() {
+        let (s, _d) = store();
+        s.write("p", &[put("a.txt", "base")]).unwrap();
+        let base = hash(&s, "p", "a.txt");
+        let answers = saved_together(
+            &s,
+            vec![
+                ("p", vec![put("a.txt", "one")]),
+                ("p", vec![put("a.txt", "two")]),
+                // Checked against "base" as it was made, and good then; by its
+                // turn in the group, two saves have moved the file on.
+                ("p", vec![edit("a.txt", &base, 4, 0, "!")]),
+            ],
+        );
+        assert_eq!(answers[0].as_ref().map(|w| w.seq), Ok(2));
+        assert_eq!(answers[1].as_ref().map(|w| w.seq), Ok(3));
+        assert_eq!(answers[2].as_ref().map(|w| w.seq), Err(&Error::Stale));
+        assert_eq!(content(&s, "p", "a.txt").as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn the_store_s_ceiling_counts_the_saves_before_in_the_group() {
+        // Room for one 2 KB file, not two.
+        let (s, _d) = store_with(Limits {
+            store_bytes: 3000,
+            ..Limits::default()
+        });
+        let answers = saved_together(
+            &s,
+            vec![
+                ("a", vec![put("f.txt", &"a".repeat(2000))]),
+                ("b", vec![put("f.txt", &"b".repeat(2000))]),
+            ],
+        );
+        assert!(answers[0].is_ok(), "{:?}", answers[0]);
+        assert_eq!(answers[1].as_ref().err(), Some(&Error::StoreFull));
+        assert!(s.used() <= 3000, "{} used", s.used());
     }
 
     #[test]

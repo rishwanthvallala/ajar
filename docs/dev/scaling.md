@@ -560,15 +560,48 @@ commit's sync is three-fifths of a save. That build was for measuring only.
 It would lose the last moments of saves to a power cut, which is a decision,
 not a fix.
 
+**Saves grouped into one commit, 13 November** (`pad::Store::write_shared`).
+A save still checks its writes and stages its blobs off the lock, each
+synced as before, and then joins a queue. Whoever next takes the store's
+lock commits everything queued in one transaction:
+- each save in a savepoint of its own, so a refused one rolls back alone,
+  and a blob it placed that a later save in the group names is kept;
+- the new blobs' directories synced once each;
+- then one commit and one sync for all of them.
+
+A save committed by another thread finds its answer when it gets the lock.
+No save is answered before the commit that holds it reaches the disk, so
+durability is as it was.
+
+The write permits had to change with it. They were two writes at a time,
+which was also two saves a commit at most; now they are units of body,
+`WRITE_UNIT`, 1 MiB:
+- a 33 MiB upload takes half of them, as two did before;
+- a 2 KB save takes one, so 66 can wait together;
+- the memory bound is the same, `PAD_BODY_BUDGET`.
+
+On staging, the same box and disk, the build before against this one, saves
+to the relay alone:
+
+| t4g.small, 2 KB saves | before | grouped |
+|---|---:|---:|
+| 64 at once | 171 a second, p99 421 ms | **486 a second, p99 162 ms** |
+| 256 at once | 165 a second, p99 1.70 s | **463 a second, p99 705 ms** |
+
+That is more than the throwaway `synchronous = NORMAL` build's 420, with
+nothing given up. Reads on the same build were 14,900 a second for a small
+pad. This instance did 75,500 a second of `/healthz` against the first one's
+96,100, so it was a slower machine, not a slower read.
+
 **What 10,000 a second takes, measured**:
 1. **TLS and the front off Caddy.** nginx is 2.6 times Caddy here, and
    still short of 10,000 for reads, since it shares the two CPUs with the
    relay and does TLS. Cloudflare Tunnel takes visitors' TLS off the box
    altogether ([cloudflare.md](cloudflare.md)). cloudflared's own cost is
    to be measured; it needs the Cloudflare account.
-2. **Saves grouped into one commit.** Saves arriving together share one
-   sync, with the same durability, so most of what `NORMAL` gained comes
-   back.
+2. **Saves grouped into one commit** — done, above: 170 a second to 480.
+   Past that, a blob's own file and directory are what each save still
+   costs. Small files kept in the database itself would take both away.
 3. **Or more cores.** Every number here is two Graviton2 cores, shared.
 
 ## In what order

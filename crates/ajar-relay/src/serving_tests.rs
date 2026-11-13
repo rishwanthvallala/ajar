@@ -114,9 +114,7 @@ impl Relay {
             registry: Arc::new(crate::session::Registry::new()),
             quota: Arc::new(crate::quota::Quota::new()),
             pads,
-            writing: Arc::new(tokio::sync::Semaphore::new(
-                crate::MAX_CONCURRENT_PAD_WRITES,
-            )),
+            writing: Arc::new(tokio::sync::Semaphore::new(crate::WRITE_PERMITS)),
             receiving: Arc::new(tokio::sync::Semaphore::new(crate::PAD_BODY_BUDGET)),
             body_idle: crate::BODY_IDLE,
             reading: Arc::new(tokio::sync::Semaphore::new(crate::MAX_CONCURRENT_PAD_READS)),
@@ -1081,7 +1079,7 @@ async fn uploads_that_stop_part_way_hold_up_no_save() {
     // for the save, the save ran out on 21 October with nothing held up.
     relay.state.body_idle = std::time::Duration::from_secs(3);
     let json = ("content-type", "application/json");
-    let stopped: Vec<_> = (0..crate::MAX_CONCURRENT_PAD_WRITES + 2)
+    let stopped: Vec<_> = (0..crate::LARGEST_WRITES_AT_ONCE + 2)
         .map(|i| {
             send(
                 &relay,
@@ -1124,7 +1122,7 @@ async fn uploads_that_stop_part_way_hold_up_no_save() {
     );
     assert_eq!(
         relay.state.writing.available_permits(),
-        crate::MAX_CONCURRENT_PAD_WRITES
+        crate::WRITE_PERMITS
     );
     assert!(relay.state.pads.get("upload-0").unwrap().is_none());
 
