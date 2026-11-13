@@ -3494,6 +3494,59 @@ mod tests {
     }
 
     #[test]
+    fn every_path_nginx_serves_on_the_pad_s_site_is_reserved() {
+        // The same, for nginx's sites (deploy/nginx/sites.conf), the front
+        // since 14 November: every `location` on the pad's own origin names a
+        // path no pad may take — `/api/`, `= /ws`, `~ ^/wisp(/.*)?$`,
+        // `~ ^/(assets|vendor|packages)/`, and the rest.
+        let sites = include_str!("../../../deploy/nginx/sites.conf");
+        let block = sites
+            .split_once("server_name code.rishwanth.dev;")
+            .expect("the pad origin's server is in sites.conf")
+            .1;
+        let block = block.split_once("\n}").expect("the server is closed").0;
+        let mut names: Vec<String> = Vec::new();
+        for line in block.lines() {
+            let Some(rest) = line.trim().strip_prefix("location ") else {
+                continue;
+            };
+            let pattern = rest
+                .trim_end_matches('{')
+                .split_whitespace()
+                .find(|t| !matches!(*t, "=" | "~" | "~*" | "^~"))
+                .unwrap_or("");
+            // A named location (`@missing_asset`) is no path at all.
+            let Some(path) = pattern.trim_start_matches('^').strip_prefix('/') else {
+                continue;
+            };
+            if let Some(group) = path.strip_prefix('(') {
+                let inner = group.split_once(')').map_or("", |(g, _)| g);
+                names.extend(inner.split('|').map(str::to_string));
+            } else {
+                let segment: String = path
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
+                if !segment.is_empty() {
+                    names.push(segment);
+                }
+            }
+        }
+        for name in &names {
+            assert_eq!(
+                check_name(name).err(),
+                Some(Error::Reserved),
+                "{name} is served by nginx but claimable as a pad name"
+            );
+        }
+        // A parser that matched nothing would make this test pass silently.
+        assert!(
+            names.len() >= 8,
+            "only found {names:?} — the parse is wrong"
+        );
+    }
+
+    #[test]
     fn a_name_has_to_be_a_safe_filename() {
         // The store is a flat directory and the name *is* the filename, so
         // this check is the only thing between a URL and the parent directory.

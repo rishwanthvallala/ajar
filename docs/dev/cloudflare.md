@@ -1,9 +1,14 @@
 # Cloudflare in front of the box
 
 Written 5 November 2026. **A proposal, except the one part already built:**
-Caddy counts every visitor by `{client_ip}`, and takes it from Cloudflare's
-`CF-Connecting-IP` only from loopback, which is ready for Cloudflare Tunnel
-and changes nothing until a tunnel exists (below, "Built").
+the front counts every visitor by the address Cloudflare's `CF-Connecting-IP`
+gives, believed from loopback only, which is ready for Cloudflare Tunnel and
+changes nothing until a tunnel exists (below, "Built"). The front was Caddy
+when this was written and is nginx since 14 November (operations.md, "The
+front"); what is said of Caddy below holds of nginx, rule for rule —
+`set_real_ip_from 127.0.0.1` and `real_ip_header CF-Connecting-IP` in
+`deploy/nginx/nginx.conf`, checked by `deploy/nginx/check.sh` — except where
+noted.
 
 It answers three things together:
 - what the bandwidth will cost once AWS's credits end;
@@ -183,7 +188,10 @@ of these changes.
    - in Caddy's log, your own address as `client_ip`;
    - which encoding the largest package arrives in.
 7. **Close the box**: remove the security group's rules for 80 and 443.
-8. **Certificates, within 60 days of step 7.** Caddy renews by answering
+8. **Certificates, within 60 days of step 7.** (With nginx: certbot renews
+   over port 80, which the tunnel's ports closing would also stop — the same
+   move to a DNS challenge, with certbot's Cloudflare plugin,
+   `python3-certbot-dns-cloudflare`.) Caddy renews by answering
    Let's Encrypt on 80 or 443, which it can no longer be reached on. Move it
    to the DNS challenge, through Cloudflare's API:
    - `github.com/caddy-dns/cloudflare` in `deploy/caddy/go.mod`, beside the

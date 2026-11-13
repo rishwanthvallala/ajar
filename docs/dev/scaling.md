@@ -593,8 +593,29 @@ nothing given up. Reads on the same build were 14,900 a second for a small
 pad. This instance did 75,500 a second of `/healthz` against the first one's
 96,100, so it was a slower machine, not a slower read.
 
+**nginx in Caddy's place, 14 November.** Through `deploy/nginx` as it ships
+— TLS, its access log, the rate-limit maps — with the relay saving in groups,
+on staging, the same way as the first table above:
+
+| t4g.small, through the front (64 / 256) | Caddy, 13 November | nginx |
+|---|---:|---:|
+| `/healthz` | 5,600 / 5,300 | **33,700 / 30,000** |
+| `/api/limits`, not signed in | 4,000 / 3,800 | **16,100 / 15,300** |
+| `/api/me` | 3,300 / 3,100 | **10,700 / 9,800** |
+| A pad unchanged since the page's sequence | 3,400 / 3,100 | **10,500 / 10,300** |
+| A small pad, read | 3,100 / 2,900 | **8,100 / 7,400** |
+| A small pad, read by its owner | 3,000 / 2,700 | **7,900 / 6,800** |
+| A 2 KB save | 175 / 172 | **505 / 461** |
+
+The 99th percentile came down with it, 40–50 ms to 16–26 for the reads.
+**10,000 a second is met** for what a page asks most often — the unchanged
+check a page makes on every welcome to its room, and `/api/me` — and a full
+small-pad read is 8,000. What is left of the two CPUs is shared between
+nginx's TLS and the relay; past this, TLS goes off the box (Cloudflare
+Tunnel) or the box gets more cores.
+
 **What 10,000 a second takes, measured**:
-1. **TLS and the front off Caddy.** nginx is 2.6 times Caddy here, and
+1. **TLS and the front off Caddy.** Done for the front, above. nginx is 2.6 times Caddy here, and
    still short of 10,000 for reads, since it shares the two CPUs with the
    relay and does TLS. Cloudflare Tunnel takes visitors' TLS off the box
    altogether ([cloudflare.md](cloudflare.md)). cloudflared's own cost is

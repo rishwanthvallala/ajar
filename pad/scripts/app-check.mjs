@@ -803,10 +803,13 @@ try {
   // map is blocked in production only — where nobody would see it until WISP
   // was switched on and did not work.
   {
-    const caddy = await readFile(new URL("../../deploy/Caddyfile", import.meta.url), "utf8");
-    caddy.includes(`'sha256-${IMPORTMAP_SHA}'`)
+    // The front deploy/front names: nginx's headers, or the Caddyfile.
+    const front = (await readFile(new URL("../../deploy/front", import.meta.url), "utf8")).trim();
+    const file = front === "nginx" ? "deploy/nginx/code-headers.conf" : "deploy/Caddyfile";
+    const config = await readFile(new URL(`../../${file}`, import.meta.url), "utf8");
+    config.includes(`'sha256-${IMPORTMAP_SHA}'`)
       ? ok("the deployed CSP allows the import map this page actually ships")
-      : fail(`deploy/Caddyfile does not carry 'sha256-${IMPORTMAP_SHA}' — the import map will be blocked in production`);
+      : fail(`${file} does not carry 'sha256-${IMPORTMAP_SHA}' — the import map will be blocked in production`);
   }
 
   // ---- the editor ----

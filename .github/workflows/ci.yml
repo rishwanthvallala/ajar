@@ -127,6 +127,16 @@ jobs:
           deploy/caddy/build.sh
           GOARCH=amd64 deploy/caddy/build.sh
           deploy/caddy/check.sh
+      # And nginx's, the front since 14 November: its rate limits, routes,
+      # headers and caching against a real nginx with Ubuntu's modules, the
+      # ones the box installs (deploy/nginx/check.sh).
+      - name: nginx's rate limits and routes
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx libnginx-mod-http-headers-more-filter libnginx-mod-http-brotli-static libnginx-mod-http-brotli-filter
+          sudo systemctl stop nginx || true
+          deploy/nginx/check.sh
 
   # The pad's browser checks. The pad runs in a browser and its server on
   # Linux, so Linux alone: on a Mac they took a third of that job's time.
@@ -270,6 +280,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: pad/public/packages
-          key: pad-packages-${{ hashFiles('pad/src/runtime.ts', 'pad/src/toolchains.ts', 'pad/public/sw.js', 'pad/scripts/fetch-packages.mjs', 'pad/scripts/build-java.mjs', 'pad/scripts/build-cxx.mjs') }}
+          key: pad-packages-${{ hashFiles('pad/src/runtime.ts', 'pad/src/toolchains.ts', 'pad/public/sw.js', 'pad/scripts/fetch-packages.mjs', 'pad/scripts/build-java.mjs', 'pad/scripts/build-cxx.mjs', 'pad/scripts/brotli-packages.mjs') }}
           restore-keys: pad-packages-
       - run: scripts/ci-annotate.sh "deploy" deploy/from-ci.sh

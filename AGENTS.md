@@ -42,7 +42,7 @@ What runs there:
 |---|---|
 | `ajar-relay.service` | `/usr/local/bin/ajar-relay` on `127.0.0.1:8787`, user `ajar`, `MemoryMax=512M`. Unit: `deploy/ajar-relay.service` |
 | `ajar-wisp.service` | `node /srv/ajar/wisp/wisp-server.mjs`: the sandbox's network, which reaches PyPI and Wasmer's wheels and nothing else |
-| `caddy` | TLS and rate limits, a build with the rate-limit plugin; `/etc/caddy/Caddyfile` from `deploy/Caddyfile` |
+| `nginx` | The front since 14 November: TLS, the pad's files, rate limits; `/etc/nginx/nginx.conf` and `/etc/nginx/ajar/` from `deploy/nginx/`, certificates in `/etc/ajar/tls/` (certbot's, copied by its hook). Which front serves is one word in `deploy/front`; `caddy`, the one before, is kept installed for going back — operations.md, "The front" |
 
 | Path | |
 |---|---|
@@ -52,7 +52,7 @@ What runs there:
 | `/etc/ajar/limits.env` | the storage limits, installed from `deploy/limits.env` by every deploy |
 | `/srv/ajar/web`, `/srv/ajar/pad` | the two clients; the pad's package mirror under `/srv/ajar/pad/packages` |
 | `/srv/ajar/deployed` | the commit last shipped, `-dirty` if the tree had changes |
-| `/var/log/caddy/{ajar,code,preview}.log` | access logs, JSON |
+| `/var/log/nginx/{ajar,code,preview}.log` | access logs, JSON (Caddy's from before, in `/var/log/caddy/`) |
 
 Health, from outside: `https://ajar.rishwanth.dev/healthz?deep=1` says `ready`
 when the relay can serve pads; `https://code.rishwanth.dev/api/limits` says
@@ -76,8 +76,8 @@ warning, and only then deploy by hand.
 deploy job is running:
 
 ```sh
-./deploy/deploy.sh ajar-relay                 # the relay, both clients, the unit, the limits, Caddy
-./deploy/deploy.sh ajar-relay --config-only   # the Caddyfile alone; AJAR_CADDY_RESTART=1 restarts rather than reloads
+./deploy/deploy.sh ajar-relay                 # the relay, both clients, the unit, the limits, the front
+./deploy/deploy.sh ajar-relay --config-only   # the front's config alone: nginx's, or the Caddyfile
 ```
 
 It builds from the working tree, not a commit: an uncommitted edit ships, and
@@ -88,7 +88,7 @@ there is no aarch64 linker, and needs the pad's package mirror
 
 **Verify once, from outside**: `healthz?deep=1`; the live page's asset hashes
 against a local build; and, after a change to the page, the SDK or the
-Caddyfile, one fresh-browser visit that runs a command
+front's config, one fresh-browser visit that runs a command
 (`PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs`) — the
 Content-Security-Policy is real only there. Live checks share a rate limit (a
 runtime file 100 times an hour per address): run them once, not in a loop; a
@@ -208,7 +208,7 @@ limits".
   among them. What gives way first under load, ranked, is in
   [docs/dev/scaling.md](docs/dev/scaling.md); `scripts/relay-load.mjs` is its
   load test, and `scripts/relay-bench/run.sh` its requests-a-second
-  benchmark (wrk, the relay alone or behind Caddy, as against HttpArena),
+  benchmark (wrk, the relay alone or behind a front, as against HttpArena),
   both for a local relay in podman only.
 
 ## The maintainer's machines

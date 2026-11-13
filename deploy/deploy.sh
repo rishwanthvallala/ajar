@@ -29,6 +29,38 @@ SUDO=$(ssh "$HOST" 'if [ "$(id -u)" = 0 ]; then echo; else echo sudo; fi')
 
 say() { printf '\n  %s\n' "$*"; }
 
+# Which front serves the sites: `caddy` or `nginx`, one word in deploy/front.
+# nginx since 14 November (deploy/nginx/nginx.conf says why); the word is how
+# the switch is made, and made back — a deploy with the other word stops the
+# one and starts the other. See docs/dev/operations.md, "The front".
+FRONT=$(tr -d '[:space:]' < deploy/front)
+case "$FRONT" in
+    caddy | nginx) ;;
+    *) echo "deploy/front says '$FRONT'; it has to be caddy or nginx" >&2; exit 1 ;;
+esac
+# The sites nginx serves, each with a certificate of its own.
+SITES="$DOMAIN code.rishwanth.dev preview.rishwanth.dev"
+
+# nginx's config: its packages installed if they are not (and not started
+# while Caddy has the ports), the files pushed and tested, and then either
+# reloaded or, the first time, switched to — with Caddy put back if the sites
+# do not answer through it.
+push_nginx() {
+    local staged
+    staged=$(mktemp -d)
+    # The bare domain only, as for the Caddyfile: code. and preview. stay.
+    for f in deploy/nginx/*.conf deploy/nginx/tls-hook.sh deploy/nginx/switch.sh; do
+        sed "s|\\bajar\\.rishwanth\\.dev|$DOMAIN|g" "$f" > "$staged/$(basename "$f")"
+    done
+    ssh "$HOST" "rm -rf /tmp/ajar-nginx && mkdir -p /tmp/ajar-nginx"
+    scp -q "$staged"/* "$HOST:/tmp/ajar-nginx/"
+    rm -rf "$staged"
+    if ! ssh "$HOST" "$SUDO env SITES='$SITES' bash -euo pipefail /tmp/ajar-nginx/switch.sh"; then
+        echo "  nginx was not updated; what was serving before is serving still" >&2
+        return 1
+    fi
+}
+
 # The Caddyfile: pushed, validated, then loaded. Every deploy ends with this,
 # and `--config-only` does nothing else — for a change to the Caddyfile alone,
 # and for a deploy whose tunnel dropped before it got here (see
@@ -83,9 +115,15 @@ push_caddyfile() {
 
 if [ "$MODE" = "--config-only" ]; then
     CADDY_SWAPPED=""
-    say "updating the Caddyfile, and nothing else"
-    push_caddyfile
-    say "caddy is up to date"
+    if [ "$FRONT" = nginx ]; then
+        say "updating nginx's config, and nothing else"
+        push_nginx
+        say "nginx is up to date"
+    else
+        say "updating the Caddyfile, and nothing else"
+        push_caddyfile
+        say "caddy is up to date"
+    fi
     exit 0
 fi
 
@@ -173,11 +211,15 @@ fi
 # The egress endpoint is compiled in the same way and for the same reason: an
 # empty value means no network policy beyond the preview's, which is what every
 # build that is not this one gets.
+# A brotli copy beside each package for nginx to send (brotli-packages.mjs):
+# made once, in a minute and a half for each 46 MB, and kept after that.
+node pad/scripts/brotli-packages.mjs
 VITE_PREVIEW_ORIGIN="${AJAR_PREVIEW_ORIGIN:-https://preview.rishwanth.dev}" \
 VITE_WISP_URL="${AJAR_WISP_URL:-wss://code.rishwanth.dev/wisp}" \
     npm run build:pad --silent >/dev/null
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
+if [ "$FRONT" = caddy ]; then
 say "building caddy with the rate-limit plugin"
 # The packaged Caddy cannot rate-limit, and refuses the Caddyfile that does, so
 # the one the server runs is built here from the versions pinned in
@@ -193,6 +235,7 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 CADDY_BIN=$(GOARCH="$CADDY_ARCH" deploy/caddy/build.sh)
+fi
 
 say "$(du -h "$BIN" | cut -f1) binary, $(du -sh web/dist | cut -f1) client, $(du -sh pad/dist | cut -f1) pad"
 
@@ -343,6 +386,14 @@ ssh "$HOST" "echo $commit | $SUDO tee /srv/ajar/deployed >/dev/null"
 # directory which does not exist yet gets you a certificate and a 404 — the
 # site answers, so nothing looks broken, and the deploy has already stopped.
 
+if [ "$FRONT" = nginx ]; then
+    push_nginx
+else
+# Back from nginx, if it is what serves: it lets go of the ports first.
+if ssh "$HOST" "systemctl is-active --quiet nginx"; then
+    say "switching the front back from nginx to Caddy"
+    ssh "$HOST" "$SUDO systemctl stop nginx && $SUDO systemctl disable --quiet nginx && $SUDO systemctl enable --quiet caddy && $SUDO systemctl start caddy"
+fi
 say "updating caddy"
 # The binary first, and only when it differs from what is there. It is checked
 # on the box before it replaces anything: a file that does not run there, or
@@ -366,6 +417,7 @@ CADDY
 fi
 
 push_caddyfile
+fi
 
 # ---------------------------------------------------------------- check
 

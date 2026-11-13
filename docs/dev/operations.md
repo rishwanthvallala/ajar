@@ -11,7 +11,7 @@ usage counts the admin page shows ([what is on disk](#what-is-on-disk)).
 ```sh
 ./deploy/deploy.sh ajar-relay --bootstrap     # first time on a fresh box
 ./deploy/deploy.sh ajar-relay                 # every time after
-./deploy/deploy.sh ajar-relay --config-only   # the Caddyfile alone; AJAR_CADDY_RESTART=1 restarts rather than reloads
+./deploy/deploy.sh ajar-relay --config-only   # the front's config alone: nginx's, or the Caddyfile (AJAR_CADDY_RESTART=1 restarts Caddy)
 ```
 
 It builds from the working tree, not from a commit — the relay, the web client
@@ -28,7 +28,8 @@ builds the pad it stops on a wasm mirror with no `manifest.json`, no
 `ajar/cxx`, and says which script makes what is missing. Once the files are
 swapped in it writes the commit it shipped to `/srv/ajar/deployed` — `-dirty`
 when a tracked file differs from that commit — which a deploy from CI measures
-itself against; then it updates Caddy, and it ends by waiting, twenty tries a
+itself against; then it updates the front — nginx, or Caddy, as `deploy/front`
+says ([the front](#the-front)) — and it ends by waiting, twenty tries a
 second apart, for `/healthz?deep=1` to answer 200
 ([verifying a deploy](#verifying-a-deploy)).
 
@@ -73,14 +74,13 @@ sts:AssumeRoleWithWebIdentity` because the role named `repo:rishwanthvallala/aja
 that error, from a role that exists, is a subject or audience that does not
 match, and running the script again rewrites the trust.
 
-`deploy/` holds a Caddyfile (TLS, routing, the headers the pad needs and the
-per-address rate limits), two hardened systemd units — `ajar-relay.service` and
-`ajar-wisp.service` — the egress endpoint they run, `deploy.sh`, and for CI
-`from-ci.sh`, `ci-aws-setup.sh` and the two files that writes.
-`deploy/caddy` is the Caddy the server runs, built with the rate-limit plugin
-([below](#caddy-built-with-the-rate-limit-plugin)). Caddy handles WebSocket
-upgrades without configuration, which is most of why it is there rather than
-nginx.
+`deploy/` holds the front's config — `deploy/nginx/` (TLS, routing, the
+headers the pad needs and the per-address rate limits) and, kept for going
+back, the `Caddyfile` with `deploy/caddy`, the Caddy that served until 13
+November ([the front](#the-front)) — two hardened systemd units,
+`ajar-relay.service` and `ajar-wisp.service`, the egress endpoint they run,
+`deploy.sh`, and for CI `from-ci.sh`, `ci-aws-setup.sh` and the two files that
+writes.
 
 ### From an x86_64 machine
 
@@ -470,8 +470,15 @@ sends at most 1,000 changes and one edit a file); **507** for a last run, as
 for a file, once the store is at `--max-store-bytes`. A run of 408s or 503s
 in the journal with nobody uploading is someone holding uploads open.
 
-`/var/log/caddy/{ajar,code,preview}.log` are Caddy's access logs, JSON, five
-rolls of 10 MiB each. Since 18 October they keep no `X-Pad-Code` (a link's
+`/var/log/nginx/{ajar,code,preview}.log` are nginx's access logs, a line of
+JSON each (`log_format ajar` in `deploy/nginx/nginx.conf`): time, address,
+site, method, path without its query, status, size, time taken, the
+browser's description of itself, and whether a pad read said what the page
+has. No header that is as good as a sign-in or a link, and no query string,
+so no OAuth code. Rotated daily by the package's logrotate, fourteen kept.
+
+`/var/log/caddy/{ajar,code,preview}.log` are Caddy's, from before 13
+November, JSON, five rolls of 10 MiB each. Since 18 October they keep no `X-Pad-Code` (a link's
 code, as good as the link), `Cookie`, `Authorization` or `Set-Cookie`, nor an
 OAuth callback's `code` from its URL — see `format filter` in
 `deploy/Caddyfile`. **Logs from before that deploy may hold link codes**:
@@ -831,7 +838,65 @@ Two failure modes seen so far: the service dying on a bad option (it is
 does not match `/wisp/` with its trailing slash, which presents as a 200 and a
 WebSocket handshake failure rather than a 404.
 
+## The front
+
+**nginx since 14 November 2026**, in place of Caddy: `deploy/nginx/`, which
+`deploy.sh` installs as `/etc/nginx/nginx.conf` and `/etc/nginx/ajar/`.
+Measured on a t4g.small set up as the box is, through each with TLS and its
+access log, a small pad's read went from 3,100 a second through Caddy to
+8,100 through nginx, `/healthz` from 5,600 to 33,700, and the 99th
+percentile from 40–50 ms to 16–26 ([scaling.md](scaling.md), "On the box's
+own hardware"). Caddy was four-fifths of the box's CPU.
+
+**Which one serves is one word**, in `deploy/front`: `nginx` or `caddy`. A
+deploy installs that one's config; when the other is serving, it switches.
+- **To nginx** (`deploy/nginx/switch.sh`, run on the box):
+  - its packages are installed, without starting nginx while Caddy has the
+    ports: nginx and Ubuntu's headers-more and brotli modules, and certbot;
+  - the config is installed and tested (`nginx -t`);
+  - each site's certificate is put where nginx reads it,
+    `/etc/ajar/tls/<site>/` — certbot's if it has one, otherwise Caddy's own,
+    from Caddy's store — so the switch needs nothing issued first;
+  - Caddy is stopped and nginx started, and all three sites are asked for a
+    page through it. If any does not answer, nginx is stopped and Caddy
+    started again, and the deploy fails saying so. If they do, Caddy is
+    disabled — still installed;
+  - certbot then issues each site's certificate over nginx's port 80
+    (`/var/www/acme`), and renews them by its own timer. `tls-hook.sh`
+    copies each new one to `/etc/ajar/tls` and reloads nginx. Until certbot
+    has one, nginx serves Caddy's, and the deploy says until when.
+- **Back to Caddy**: `caddy` in `deploy/front`, and a deploy stops and
+  disables nginx, enables and starts Caddy, and updates it as before.
+  Caddy's certificates were never touched.
+
+Rehearsed on staging on 13 November, polling the pad's API ten times a
+second throughout: the switch to nginx answered nothing for 0.7 s, and the
+way back 1.4 s.
+
+**What changed with it**, on purpose:
+- The packages are sent as brotli, from copies `deploy.sh` writes beside them
+  (`pad/scripts/brotli-packages.mjs`): Ubuntu's nginx has no zstd. Brotli at
+  its highest setting is a little smaller than zstd -19 was, and slow to
+  make — several minutes for the whole mirror, once; a copy already there is
+  kept, and the box's copies come back to CI with the rest of the mirror.
+- The rate limits are buckets that refill rather than events in a window:
+  the same allowance at once, then a trickle.
+- `/dns-query` no longer passes the visitor's cookies, link codes or address
+  on to Cloudflare's resolver. Caddy forwarded every header.
+- The access logs leave out the query string altogether.
+- No HTTP/3: Ubuntu's nginx 1.24 has none.
+
+**Checked** by `deploy/nginx/check.sh`, in CI against a real nginx with
+Ubuntu's modules: the rate limits by file and address, the tunnel's visitors
+and claimed addresses, the routes, the headers and what is cached, the
+compressed copies, module scripts' type, and that no cookie or code reaches
+the log. A `.mjs` sent as `application/octet-stream`, which Ubuntu's nginx
+does unless told — and which kept the SDK from loading — was found by the
+fresh-browser check run through this config before it served anyone.
+
 ## Caddy, built with the rate-limit plugin
+
+(The front until 14 November, and kept for going back: [the front](#the-front).)
 
 The packaged Caddy cannot rate-limit, and the files it serves off disk — about
 15 MB of wasm to every cache-cold pad visitor — are the one thing the relay never

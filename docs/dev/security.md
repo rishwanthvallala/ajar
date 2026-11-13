@@ -500,9 +500,9 @@ meets it.
 | A socket's first frame | 256 KiB, refused unread; no hello in 10 s and it is closed | `ws.rs` `MAX_HELLO_BYTES`, `HELLO_TIMEOUT` |
 | A peer that stops reading | Closed by the kernel after 60 s of sent data going unacknowledged (`TCP_USER_TIMEOUT`, Linux), which ends the stream and frees its read slots | `main.rs` `STALLED_PEER` |
 | Egress tunnels | 64 total, 8 per address | `wisp-server.mjs` `MAX_TUNNELS` |
-| Egress tunnels opened | 30 a minute per address | `deploy/Caddyfile` `pad_wisp` |
-| `/dns-query` | GET/POST only, 4 KB body, 120 a minute per address | `deploy/Caddyfile` `pad_dns` |
-| Each file of the pad's runtime | 100 fetches an hour per address | `deploy/Caddyfile` `pad_files` |
+| Egress tunnels opened | 30 at once per address, then one every two seconds | `deploy/nginx/nginx.conf` `pad_wisp` |
+| `/dns-query` | GET/POST only, 4 KB body, 120 at once per address, then two a second | `deploy/nginx/nginx.conf` `pad_dns` |
+| Each file of the pad's runtime | 100 fetches at once per address, then two a minute | `deploy/nginx/nginx.conf` `pad_files` |
 
 Three of these need their reasoning kept, because the obvious version is wrong:
 
@@ -582,6 +582,11 @@ own: one is counted per pad read that a page marks as its first, behind the
 read's own slot and permit.
 
 ### At the edge
+
+(nginx since 14 November, in place of Caddy, with the same three limits as
+buckets that refill — the same allowance at once, then a trickle — rather
+than events in a sliding window: `deploy/nginx/nginx.conf`, checked by
+`deploy/nginx/check.sh`. What follows was written of Caddy, and holds.)
 
 The pad's runtime — 161 files, about 19 MB as a browser receives it — is served by
 Caddy off disk, so the relay never sees the requests and nothing in it can
