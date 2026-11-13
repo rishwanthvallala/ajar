@@ -37,6 +37,8 @@ struct Stats {
     relay: Relay,
     /// Who is paying, and what came in over the same days.
     takings: crate::billing::Takings,
+    /// Requests a second now, the hour's busiest second, how long they took.
+    traffic: crate::traffic::TrafficStats,
     days: i64,
 }
 
@@ -125,6 +127,7 @@ async fn stats(
             memory_bytes: memory(),
         },
         takings,
+        traffic: state.traffic.stats(crate::usage::now() as u64),
         days: DAYS,
     }))
 }

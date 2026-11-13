@@ -705,7 +705,9 @@ try {
   const figures = await owner.evaluate(() => Object.fromEntries([...document.querySelectorAll(".stat")].map((s) => [s.querySelector(".stat-label").textContent, s.querySelector(".stat-value").textContent])));
   is(figures.Accounts, "1", "the operator's view counts the accounts");
   is(Number(figures["In pads"]) >= 1, true, "and who is in a pad right now");
-  is(await owner.locator(".chart-svg[role=img]").count(), 7, "with charts that say what they show");
+  is(await owner.locator(".chart-svg[role=img]").count(), 8, "with charts that say what they show");
+  // The relay has been answering this suite all along (traffic.rs).
+  is(/^[0-9][0-9.,]*$/.test(figures["Requests a second"] ?? "") && Number(figures["Requests a second"].replace(/,/g, "")) > 0, true, `and how many requests a second the relay is answering (${figures["Requests a second"]})`);
 
   // ---- what is counted as it happens (usage.rs) ----
   // Runs come from the page — the Run above was one. One in a language the

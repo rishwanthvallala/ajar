@@ -39,6 +39,17 @@ interface AccountRow {
   signed_in: number | null;
 }
 interface Stats {
+  /** How busy the relay is (traffic.rs): the last minute's requests a second, the hour's busiest second, durations in ms. */
+  traffic?: {
+    per_second: number;
+    by_kind: { kind: string; per_second: number }[];
+    peak: number;
+    peak_at: number | null;
+    p50_ms_minute: number | null;
+    p99_ms_minute: number | null;
+    p99_ms_hour: number | null;
+    seconds: number[];
+  };
   /** Who pays (billing.rs): accounts on the paid plan by a payment, and payments over `days`, in paise. */
   takings?: { paying: number; payments: number; amount: number };
   accounts: {
@@ -233,6 +244,42 @@ function onlineChart(samples: Sample[]): HTMLElement {
 }
 
 /** Shares of a whole, as labelled bars. */
+/** Requests a second, said as a person would: 0.3, 12, 1,240. */
+function rate(n: number): string {
+  return n < 10 ? n.toFixed(1) : number(Math.round(n));
+}
+
+/** The relay's headroom in a line: the hour's busiest second and how long requests take. */
+function traffic(t: NonNullable<Stats["traffic"]>): string {
+  const ms = (v: number | null) => (v === null ? "—" : v < 1 ? `${v} ms` : `${Math.round(v)} ms`);
+  const peak = t.peak ? `busiest second this hour ${number(t.peak)}` : "none this hour";
+  return `last minute · ${peak} · 99% under ${ms(t.p99_ms_minute)}`;
+}
+
+/** The last two minutes, a bar a second, scaled to the busiest of them. */
+function secondsChart(seconds: number[]): HTMLElement {
+  const most = Math.max(1, ...seconds);
+  const w = 480;
+  const h = 80;
+  const bar = w / Math.max(1, seconds.length);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "chart-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Requests a second over the last two minutes; the most in one second was ${number(most === 1 && !seconds.some(Boolean) ? 0 : most)}`);
+  seconds.forEach((n, i) => {
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    const height = Math.round((n / most) * (h - 4));
+    r.setAttribute("x", String(i * bar));
+    r.setAttribute("y", String(h - height));
+    r.setAttribute("width", String(Math.max(1, bar - 0.5)));
+    r.setAttribute("height", String(height));
+    r.setAttribute("class", "bar");
+    svg.append(r);
+  });
+  return el("section", { className: "panel" }, el("div", { className: "panel-head" }, el("h3", {}, "Requests a second, last two minutes"), el("span", { className: "panel-meta" }, `most ${number(Math.max(0, ...seconds))}`)), svg);
+}
+
 function mix(title: string, counts: Count[], words: Record<string, string>): HTMLElement {
   const total = counts.reduce((n, c) => n + c.n, 0);
   const list = el("ul", { className: "mix" });
@@ -320,7 +367,20 @@ function render(s: Stats): HTMLElement[] {
         card("In pads", number(s.live.pad_people), `${number(s.live.pad_rooms)} ${s.live.pad_rooms === 1 ? "pad" : "pads"} open live`, "eye", s.live.pad_people ? "live" : ""),
         card("ajar sessions", number(s.live.sessions), `${number(s.live.session_people)} people connected`, "link"),
         card("Relay", uptime(s.relay.uptime_secs), `up · v${s.relay.version}${s.relay.memory_bytes ? ` · ${size(s.relay.memory_bytes)} memory` : ""}`, "chart"),
+        s.traffic ? card("Requests a second", rate(s.traffic.per_second), traffic(s.traffic), "refresh") : null,
       ),
+      s.traffic
+        ? el(
+            "div",
+            { className: "panels two" },
+            secondsChart(s.traffic.seconds),
+            mix(
+              "In the last minute",
+              s.traffic.by_kind.filter((k) => k.per_second > 0).map((k) => ({ key: k.kind, n: Math.round(k.per_second * 60) })),
+              {},
+            ),
+          )
+        : null,
     ),
     use,
     el(

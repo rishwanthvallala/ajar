@@ -479,6 +479,9 @@ CPU.
 
 ### What 10,000 a second takes on the box
 
+(Estimated on 12 November from this Mac; measured on the box's own hardware
+the next day, below, and lower: production answers about 3,000.)
+
 - **The relay alone** does 28,000 small-pad reads a second on two of this
   Mac's cores, and nearly that signed in. On Graviton2 it should be about
   half (an estimate, not measured). 10,000 is within the relay's reach on
@@ -505,6 +508,68 @@ To reach it end to end:
 3. **More cores** for the same software: Oracle's free four-core Ampere
    machines have no burst credits to spend ([cloudflare.md](cloudflare.md),
    "What each way would cost").
+
+### On the box's own hardware (13 November)
+
+The numbers above are this Mac's. On 13 November they were measured on AWS
+(`scripts/relay-bench/staging/`):
+- **staging**, a t4g.small set up as production is: the relay with its
+  flags, memory cap and limits, and Caddy with production's Caddyfile, its
+  access logs and rate limits, on internal certificates;
+- **a load generator** beside it, a c7i-flex.large running wrk with two
+  threads, every request from an address of its own in `CF-Connecting-IP`,
+  as cloudflared will send it;
+- 10–15 s a run.
+
+Production was not touched.
+
+| t4g.small, requests a second (64 connections / 256) | the relay alone | through Caddy, as deployed |
+|---|---:|---:|
+| `/healthz` | 96,100 / 92,900 | 5,600 / 5,300 |
+| `/api/limits`, not signed in | 33,800 / 29,000 | 4,000 / 3,800 |
+| `/api/me`, signed in | 27,400 / 24,800 | 3,300 / 3,100 |
+| A small pad, read | 17,000 / 15,500 | 3,100 / 2,900 |
+| A small pad, read by its owner | 15,900 / 14,500 | 3,000 / 2,700 |
+| A pad unchanged since the page's sequence | 27,600 / 23,700 | 3,400 / 3,100 |
+| A 2 KB save | **171 / 167** | **175 / 172** |
+
+**Production answers about 3,000 requests a second**, whatever they are. The
+estimate above, "about half" of this Mac's, was twice too high. Caddy is
+four-fifths of it: the relay alone does five times as much. And **a save is
+the disk's**: 170 a second, alone or behind anything, where this Mac had
+1,500–2,100.
+
+What the front costs, the same box, one front at a time:
+
+| t4g.small, requests a second (64 / 256) | Caddy as deployed | Caddy without its access logs | nginx, with a JSON access log |
+|---|---:|---:|---:|
+| `/healthz` | 5,600 / 5,300 | 9,100 / 8,500 | **25,600 / 21,500** |
+| A small pad, read | 3,100 / 2,900 | 3,900 / 3,600 | **8,100 / 7,900** |
+| A small pad, read by its owner | 3,000 / 2,700 | 3,800 / 3,500 | **7,800 / 7,400** |
+| A 2 KB save | 175 / 172 | 186 / 185 | 188 / 187 |
+
+Caddy's access logs cost a fifth of a read, and Caddy is two to three times
+nginx's CPU a request, as in HttpArena. nginx's p99 was 10–14 ms where
+Caddy's was 40–50.
+
+**Saves**: each new file is synced three times — the file, its directory,
+the store's commit (`synchronous = FULL`) — the last two under the store's
+one lock, so saves go one at a time. A throwaway build whose commit did not
+wait for the disk (`synchronous = NORMAL`) saved 420 a second, so the
+commit's sync is three-fifths of a save. That build was for measuring only.
+It would lose the last moments of saves to a power cut, which is a decision,
+not a fix.
+
+**What 10,000 a second takes, measured**:
+1. **TLS and the front off Caddy.** nginx is 2.6 times Caddy here, and
+   still short of 10,000 for reads, since it shares the two CPUs with the
+   relay and does TLS. Cloudflare Tunnel takes visitors' TLS off the box
+   altogether ([cloudflare.md](cloudflare.md)). cloudflared's own cost is
+   to be measured; it needs the Cloudflare account.
+2. **Saves grouped into one commit.** Saves arriving together share one
+   sync, with the same durability, so most of what `NORMAL` gained comes
+   back.
+3. **Or more cores.** Every number here is two Graviton2 cores, shared.
 
 ## In what order
 

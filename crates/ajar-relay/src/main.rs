@@ -16,6 +16,7 @@ mod quota;
 #[cfg(test)]
 mod serving_tests;
 mod session;
+mod traffic;
 mod usage;
 mod ws;
 
@@ -342,6 +343,8 @@ struct AppState {
     usage: Arc<usage::Usage>,
     /// Paying for the paid plan (billing.rs).
     billing: Arc<billing::Billing>,
+    /// Requests a second and how long they took, for the operator (traffic.rs).
+    traffic: Arc<traffic::Traffic>,
 }
 
 #[tokio::main]
@@ -504,6 +507,7 @@ async fn main() -> anyhow::Result<()> {
         started: std::time::Instant::now(),
         usage: usage.clone(),
         billing,
+        traffic: Default::default(),
     };
 
     // How many are in pads and sessions, every 30 seconds, kept as the most in
@@ -810,6 +814,12 @@ fn router(state: AppState, web: Option<&str>) -> Router {
         .route("/api", any(no_such_route))
         .route("/api/", any(no_such_route))
         .route("/api/{*rest}", any(no_such_route))
+        // Every request above, counted for the operator's view as it is
+        // answered (traffic.rs). The web client's files below are not.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            traffic::track,
+        ))
         // No CORS layer, so no other origin may call this API from a page.
         // None needs to: the pad is served from the origin it calls, and in
         // development through Vite's proxy (pad/vite.config.ts); the session

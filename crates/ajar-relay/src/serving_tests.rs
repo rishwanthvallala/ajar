@@ -132,6 +132,7 @@ impl Relay {
                 price: crate::billing::Price::inr(99, 30),
                 origin: origin.to_string(),
             }),
+            traffic: Default::default(),
         };
         Relay { state, dir }
     }
