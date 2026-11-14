@@ -873,6 +873,17 @@ Rehearsed on staging on 13 November, polling the pad's API ten times a
 second throughout: the switch to nginx answered nothing for 0.7 s, and the
 way back 1.4 s.
 
+**Switched on 14 November** by CI's deploy of f4874da, the first green run
+with `nginx` in `deploy/front`. certbot issued all three sites' certificates
+through nginx at 06:42–06:43 UTC (Let's Encrypt, to 12 February 2027), and
+nginx serves them. From outside afterwards: `healthz?deep=1` ready, the
+page's headers and policy as before, the packages sent as brotli, and a
+fresh visit's terminal answering in 10 s. The one live `app-check.mjs` run
+through it passed 41 checks and failed 3, none refused with 429 and the box
+idle: the visit whose packages it holds back 25 s never got its runtime in
+the 120 s allowed, and a later fresh page took over 30 s to load. Through
+nginx on staging with this config the same check had passed all 62.
+
 **What changed with it**, on purpose:
 - The packages are sent as brotli, from copies `deploy.sh` writes beside them
   (`pad/scripts/brotli-packages.mjs`): Ubuntu's nginx has no zstd. Brotli at

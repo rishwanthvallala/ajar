@@ -91,8 +91,8 @@ against a local build; and, after a change to the page, the SDK or the
 front's config, one fresh-browser visit that runs a command
 (`PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs`) — the
 Content-Security-Policy is real only there. Live checks share a rate limit (a
-runtime file 100 times an hour per address): run them once, not in a loop; a
-429 looks like a broken page.
+runtime file 100 times at once per address, then two a minute): run them
+once, not in a loop; a 429 looks like a broken page.
 
 The agent (`crates/ajar`) is released separately, by tag; ask the maintainer
 before tagging one. A change to the wire format releases first (operations.md,
