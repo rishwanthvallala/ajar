@@ -128,15 +128,23 @@ jobs:
           GOARCH=amd64 deploy/caddy/build.sh
           deploy/caddy/check.sh
       # And nginx's, the front since 14 November: its rate limits, routes,
-      # headers and caching against a real nginx with Ubuntu's modules, the
-      # ones the box installs (deploy/nginx/check.sh).
+      # headers and caching against a real nginx with Ubuntu's modules
+      # (deploy/nginx/check.sh). In Ubuntu 24.04, the box's, for the box's
+      # nginx rather than whichever the runner's image has; and in a network
+      # of its own. Run on the runner itself, it failed on 14 November where
+      # the same check passed in a container, Ubuntu 24.04 and 26.04 alike —
+      # most likely on port 18080, which Caddy's check just above uses too
+      # and Caddy may still have been letting go of.
       - name: nginx's rate limits and routes
         if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx libnginx-mod-http-headers-more-filter libnginx-mod-http-brotli-static libnginx-mod-http-brotli-filter
-          sudo systemctl stop nginx || true
-          deploy/nginx/check.sh
+          scripts/ci-annotate.sh "nginx's rate limits and routes" \
+            docker run --rm -v "$PWD/deploy:/deploy:ro" ubuntu:24.04 bash -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq >/dev/null
+              apt-get install -y -qq nginx libnginx-mod-http-headers-more-filter libnginx-mod-http-brotli-static libnginx-mod-http-brotli-filter curl python3 >/dev/null
+              nginx -v
+              /deploy/nginx/check.sh'
 
   # The pad's browser checks. The pad runs in a browser and its server on
   # Linux, so Linux alone: on a Mac they took a third of that job's time.

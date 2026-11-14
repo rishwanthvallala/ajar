@@ -195,8 +195,9 @@ What thirty people on one network meet, roughly in order:
    live room; the page retries quietly and says "not live".
 3. `pad_dns`, 120 a minute: each name is two DNS-over-HTTPS queries, pip's
    three hosts six, about twenty installs starting a minute (reported).
-4. `pad_files`, **100 fetches of each file an hour an address** (`Caddyfile`):
-   the 101st page load in an hour gets 429s on `/assets`, which nothing falls
+4. `pad_files`, **100 fetches of each file at once an address, then two a
+   minute** (`deploy/nginx/nginx.conf`; 100 an hour in Caddy's, before 14
+   November): the 101st page load in a burst gets 429s on `/assets`, which nothing falls
    back from — a broken page; the package lists are fetched again whenever the
    service worker starts, and a 429 there sends the runtime to Wasmer's CDN.
 5. Pad reads: 32 in flight an address, which the re-reads of item 1 use up
@@ -615,9 +616,9 @@ nginx's TLS and the relay; past this, TLS goes off the box (Cloudflare
 Tunnel) or the box gets more cores.
 
 **What 10,000 a second takes, measured**:
-1. **TLS and the front off Caddy.** Done for the front, above. nginx is 2.6 times Caddy here, and
-   still short of 10,000 for reads, since it shares the two CPUs with the
-   relay and does TLS. Cloudflare Tunnel takes visitors' TLS off the box
+1. **TLS and the front off Caddy.** The front is done, above: nginx is 2.6
+   times Caddy here, and still short of 10,000 for full reads, since it
+   shares the two CPUs with the relay and does TLS. Cloudflare Tunnel takes visitors' TLS off the box
    altogether ([cloudflare.md](cloudflare.md)). cloudflared's own cost is
    to be measured; it needs the Cloudflare account.
 2. **Saves grouped into one commit** — done, above: 170 a second to 480.
