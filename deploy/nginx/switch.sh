@@ -42,7 +42,14 @@ for site in $SITES; do
     if [ -d "/etc/letsencrypt/live/$site" ]; then
         crt="/etc/letsencrypt/live/$site/fullchain.pem" key="/etc/letsencrypt/live/$site/privkey.pem"
     else
-        crt=$(find /var/lib/caddy -path '*certificates*' -name "$site.crt" 2>/dev/null | head -1)
+        # The one that lasts longest: Caddy keeps one per issuer it has used
+        # — Let's Encrypt, and ZeroSSL when that failed — and an old one
+        # may have run out.
+        crt="" last=0
+        while IFS= read -r found; do
+            ends=$(date -d "$(openssl x509 -enddate -noout -in "$found" | cut -d= -f2)" +%s 2>/dev/null) || continue
+            if [ "$ends" -gt "$last" ]; then crt=$found last=$ends; fi
+        done < <(find /var/lib/caddy -path '*certificates*' -name "$site.crt" 2>/dev/null)
         key="${crt%.crt}.key"
     fi
     if [ -z "$crt" ] || [ ! -s "$crt" ] || [ ! -s "$key" ]; then
