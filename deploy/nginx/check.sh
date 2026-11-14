@@ -189,22 +189,30 @@ done
 [ "$refused" -ge 1 ] && ok "and spends it" || bad "a visitor through the tunnel was never limited"
 s=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 203.0.113.8")
 [ "$s" != 429 ] && ok "another visitor through the tunnel is not ($s)" || bad "another visitor through the tunnel shared the first one's budget"
+# Spent past the allowance, then asked from the same /64 and the next. Not
+# the 121st alone refused: the bucket refills two a second, and on CI's
+# container 120 lookups took long enough for one to come back (14 November).
 refused=0
-for _ in $(seq "$DNS"); do
+for _ in $(seq $((DNS + 10))); do
     [ "$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:2::1")" = 429 ] && refused=$((refused + 1))
 done
-s=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:2::2")
+neighbour=0
+for _ in 1 2 3 4 5; do
+    [ "$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:2::2")" = 429 ] && neighbour=$((neighbour + 1))
+done
 s2=$(status 127.0.0.1 /dns-query -H "CF-Connecting-IP: 2001:db8:1:3::1")
-[ "$refused" = 0 ] && [ "$s" = 429 ] && [ "$s2" != 429 ] &&
-    ok "an IPv6 visitor is counted by their /64" ||
-    bad "an IPv6 visitor through the tunnel: $refused of their own refused, then $s in the same /64 and $s2 in the next"
+[ "$refused" -ge 1 ] && [ "$neighbour" -ge 3 ] && [ "$s2" != 429 ] &&
+    ok "an IPv6 visitor is counted by their /64 ($neighbour of 5 refused to a neighbour)" ||
+    bad "an IPv6 visitor through the tunnel: $refused of their own refused, $neighbour of 5 in the same /64, then $s2 in the next"
 spend $((DNS + 10)) 127.0.0.2 /dns-query >/dev/null
 [ "$(status 127.0.0.2 /dns-query)" = 429 ] || bad "127.0.0.2 still had lookups left; the claims below prove nothing"
 refused=0
 for i in $(seq 20); do
     [ "$(status 127.0.0.2 /dns-query -H "CF-Connecting-IP: 198.51.100.$i")" = 429 ] && refused=$((refused + 1))
 done
-[ "$refused" = 20 ] && ok "from anywhere else the header is ignored: a new claimed address each time is no new budget" || bad "a claimed CF-Connecting-IP from outside bought $((20 - refused)) lookups"
+# Most, not all: a lookup or two comes back as the bucket refills while the
+# twenty are asked. Believed, the header would have bought every one.
+[ "$refused" -ge 15 ] && ok "from anywhere else the header is ignored: a new claimed address each time is no new budget ($refused of 20 refused)" || bad "a claimed CF-Connecting-IP from outside bought $((20 - refused)) of 20 lookups"
 
 echo "pad_wisp: $WISP at once per address"
 r=$(spend "$WISP" 127.0.0.4 /wisp/)
