@@ -886,7 +886,9 @@ maintainer's Mac it ran on was asleep, lid shut, through all of it (`pmset
 -g log`: asleep from 10:05 IST, a dark wake every 15–20 minutes), and a
 browser that is frozen while the clock runs fails on exactly such waits.
 Through nginx on staging with this config the same check had passed all 62.
-It wants running again once, from a machine that is awake.
+Run again on 15 November with the Mac awake (`caffeinate -i`, no sleep in
+`pmset -g log` through the run), against production through nginx: **all
+62 passed**, nothing refused with 429.
 
 **What changed with it**, on purpose:
 - The packages are sent as brotli, from copies `deploy.sh` writes beside them
