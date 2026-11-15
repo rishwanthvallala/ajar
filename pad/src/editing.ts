@@ -253,6 +253,24 @@ export class DocSession {
     return Y.encodeStateAsUpdate(this.ydoc, vector);
   }
 
+  /**
+   * What this document has deleted, as an update that carries nothing else.
+   * A deletion takes no clock, so no state vector shows one: a page asked
+   * for what it lacks by vector is never sent a deletion it lacks, only
+   * with an answer to its own asking.
+   */
+  deletions(): Uint8Array {
+    return Y.encodeStateAsUpdate(this.ydoc, Y.encodeStateVector(this.ydoc));
+  }
+
+  /** Whether the holder of `vector` has anything this document has not. */
+  behind(vector: Uint8Array): boolean {
+    for (const [client, clock] of Y.decodeStateVector(vector)) {
+      if (clock > Y.getState(this.ydoc.store, client)) return true;
+    }
+    return false;
+  }
+
   /** How much text there is, without materialising it. */
   get length(): number {
     return this.ytext.length;

@@ -1386,6 +1386,63 @@ async fn a_page_that_has_the_pad_is_told_so_rather_than_sent_it_again() {
 }
 
 #[tokio::test]
+async fn a_page_that_has_the_pad_whole_at_a_sequence_is_sent_only_what_changed_since() {
+    // After every save the rest of the room read the pad again, and was sent
+    // all of it for the one file saved (docs/dev/scaling.md, item 1).
+    let relay = Relay::new("");
+    let first = relay
+        .state
+        .pads
+        .write("p", &[put("a.txt", "one"), put("b.txt", "two")])
+        .unwrap();
+    let opened = relay
+        .call(get("/api/pad/p", &[("x-pad-open", "1")]))
+        .await
+        .json();
+    let had = format!("{first}.{}", opened["created_ms"]);
+    let now = relay
+        .state
+        .pads
+        .write("p", &[put("b.txt", "two, again")])
+        .unwrap();
+
+    let since = relay
+        .call(get(
+            "/api/pad/p",
+            &[("x-pad-seq", &first.to_string()), ("x-pad-since", &had)],
+        ))
+        .await;
+    assert_eq!(since.status, StatusCode::OK, "{}", since.body);
+    let body = since.json();
+    assert_eq!(body["seq"], now);
+    assert_eq!(body["since"], first);
+    assert_eq!(body["kept"], serde_json::json!(["a.txt"]));
+    assert_eq!(body["files"]["b.txt"]["content"], "two, again");
+    assert!(body["files"].get("a.txt").is_none(), "{body}");
+    assert_eq!(body["access"]["role"], "editor");
+
+    // Unchanged is still unchanged; opening it, or a since that is not one,
+    // is the pad whole.
+    let same = relay
+        .call(get(
+            "/api/pad/p",
+            &[("x-pad-seq", &now.to_string()), ("x-pad-since", &had)],
+        ))
+        .await
+        .json();
+    assert_eq!(same["unchanged"], true);
+    for headers in [
+        vec![("x-pad-since", had.as_str()), ("x-pad-open", "1")],
+        vec![("x-pad-since", "not.one")],
+        vec![("x-pad-since", "1")],
+    ] {
+        let whole = relay.call(get("/api/pad/p", &headers)).await.json();
+        assert_eq!(whole["files"]["a.txt"]["content"], "one", "{headers:?}");
+        assert!(whole.get("kept").is_none(), "{headers:?}");
+    }
+}
+
+#[tokio::test]
 async fn the_limits_are_told_as_the_store_holds_pads_to_them() {
     let relay = Relay::with_ceiling("", 3 * 1024 * 1024 * 1024);
     let answer = relay.call(get("/api/limits", &[])).await;

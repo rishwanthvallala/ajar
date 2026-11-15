@@ -1277,6 +1277,21 @@ answered with that and who the page is to it, about 100 bytes
 (`Store::unchanged_since` in the relay, `Pad.unchanged` here). `pair-check.mjs`
 has a second place join and wants the first's read again to be that.
 
+**Somebody else arriving no longer makes every page ask for every open
+document,** since 14 November, and a pad that moved on is read as what
+changed. Only a page's own welcome asks the room again. Every arrival and
+departure used to make every page ask, and every holder answered everyone:
+about D·N·(N−1)² frames for N people with D files open (scaling.md, item 2).
+What that was for — a page back in the room with typing the others lack —
+comes from the returning page's own asking now. A holder that sees more in
+the asker's state vector than it has asks back (`DocSession.behind`). A
+deletion moves no clock on, so the returning page also sends its deletions
+(`DocSession.deletions`). Others arriving or leaving still read the pad
+again, for a save whose nudge no room carried, after 0.2–1 s and once however
+many arrive. A read of a pad that moved on brings only the files written
+since the page last read it (`x-pad-since`, [pad-store.md](pad-store.md)),
+and `refresh` runs one at a time.
+
 **A save's number is no longer taken as how far the page has read.** Each
 write moves a pad on by one, and a page set its sequence to what its save came
 back with. When somebody else's write went in just before, that skipped it:

@@ -48,6 +48,15 @@ export interface Pad {
    * 18 October never says it, and sends the pad whole.
    */
   unchanged?: boolean;
+  /** When the pad was made: a pad that lapsed and began again is another, its sequence from 1. */
+  created_ms?: number;
+  /**
+   * Sent only what changed since this sequence, at which the reader said it
+   * had the pad whole (`x-pad-since`), and the names of the rest in `kept`.
+   * `Store.read` puts the rest back; nothing past it sees either.
+   */
+  since?: number;
+  kept?: string[];
 }
 
 /** One change. A `content` of `null` with no `edits` deletes. */
@@ -309,6 +318,22 @@ async function request(url: string, init: RequestInit, deadline: number): Promis
   }
 }
 
+/**
+ * A read of only what changed (`Pad.kept`) made whole again from `had`, the
+ * pad as this page last read it — or null when `had` lacks a file it names.
+ */
+function filledIn(pad: Pad, had: Pad["files"]): Pad | null {
+  const files: Pad["files"] = {};
+  for (const path of pad.kept ?? []) {
+    const file = had[path];
+    if (!file) return null;
+    files[path] = file;
+  }
+  Object.assign(files, pad.files);
+  const { kept: _kept, since: _since, ...rest } = pad;
+  return { ...rest, files };
+}
+
 export class Store {
   /**
    * `code` is the pad link's code, if this browser holds one: sent with every
@@ -345,6 +370,15 @@ export class Store {
   onBehind: ((name: string) => void) | null = null;
   /** The furthest this store has seen each pad at. */
   private seen = new Map<string, number>();
+  /**
+   * The pad this page opened, as it was when last read: what the next read
+   * of it is sent against, so it brings only the files written since
+   * (`x-pad-since`). After every save everybody else in the room read the
+   * pad again, and was sent all of it for the one file saved
+   * (docs/dev/scaling.md, item 1). Only that pad's: other names read in
+   * passing are not worth holding.
+   */
+  private had: { name: string; seq: number; created: number; files: Pad["files"] } | null = null;
 
   constructor(
     private readonly base = "",
@@ -411,18 +445,34 @@ export class Store {
    * that it has not moved on, when it has not (`Pad.unchanged`).
    */
   async read(name: string, opening = false, since?: number): Promise<Pad> {
+    const had = !opening && this.had?.name === name ? this.had : null;
     const res = await request(`${this.base}/api/pad/${encodeURIComponent(name)}`, {
       headers: {
         ...this.headers(name),
         ...(opening ? { "x-pad-open": "1" } : {}),
         ...(since ? { "x-pad-seq": String(since) } : {}),
+        ...(had ? { "x-pad-since": `${had.seq}.${had.created}` } : {}),
       },
       // A pad's answer depends on who asks. Never one from a cache.
       cache: "no-store",
     }, this.deadline);
     if (!res.ok) await refuse(res);
     this.basesWork = res.headers.get("x-pad-bases") === "1";
-    const pad = (await res.json()) as Pad;
+    let pad = (await res.json()) as Pad;
+    if (pad.kept) {
+      const whole = had && pad.since === had.seq ? filledIn(pad, had.files) : null;
+      // Not what was asked against, or naming a file it does not have:
+      // read whole rather than guess. Never expected, and safe if it happens.
+      if (!whole) {
+        if (this.had === had) this.had = null;
+        return this.read(name, opening, since);
+      }
+      pad = whole;
+    }
+    if (opening) this.had = null;
+    if (!pad.unchanged && (opening || this.had?.name === name)) {
+      this.had = pad.exists && typeof pad.created_ms === "number" ? { name, seq: pad.seq, created: pad.created_ms, files: pad.files } : null;
+    }
     this.saw(name, pad.seq);
     if (Object.values(pad.files ?? {}).some((f) => typeof f.hash === "string")) this.editsWork = true;
     return pad;

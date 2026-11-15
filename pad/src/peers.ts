@@ -176,8 +176,12 @@ export interface PeerEvents {
   /** Somebody changed the folder. The sequence they reached, if they said. */
   /** Somebody changed the folder; `renamed`, when they renamed or moved files, says which became which. */
   onMoved: (seq: number, renamed?: [string, string][]) => void;
-  /** How many other browsers are on this link, this one not counted. */
-  onPresence: (others: number, id: number | null) => void;
+  /**
+   * How many other browsers are on this link, this one not counted.
+   * `welcomed` when it is this one arriving — the first time, or back after
+   * the room was lost — rather than somebody else coming or going.
+   */
+  onPresence: (others: number, id: number | null, welcomed?: boolean) => void;
   /** A document update, awareness change, or request for state. */
   /** `from` is the sender's participant id, which the relay makes it stamp. */
   /** `path` is the file it names — null from a page from before 18 October, which names none. */
@@ -369,7 +373,7 @@ export class Peers {
         this.others = new Set(
           welcome.participants.map((p) => p.id).filter((id) => id !== this.id),
         );
-        this.events.onPresence(this.others.size, this.id);
+        this.events.onPresence(this.others.size, this.id, true);
         this.arrived?.();
         for (const q of this.pending.splice(0)) {
           if (!(this.lost && q.channel === CH_DOC)) this.send(q.channel, q.payload, q.streamId);

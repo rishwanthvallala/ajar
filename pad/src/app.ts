@@ -425,6 +425,10 @@ export class App {
   private missed = false;
   /** And one of them was a refresh that may not be skipped (`refresh(true)`). */
   private missedForced = false;
+  /** The refresh under way, and the one asked for since, which follows it (`refresh`). */
+  private refreshing: Promise<void> | null = null;
+  private refreshNext: { forced: boolean; done: Promise<void> } | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** Models edited since the last save. */
   private dirty = new Set<string>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -768,7 +772,7 @@ export class App {
         for (const [from, to] of renamed ?? []) this.renamedTo.set(from, to);
         void this.refresh();
       },
-      onPresence: (_others, id) => {
+      onPresence: (_others, id, welcomed) => {
         if (id === null) {
           // As the room is lost, and not again: every retry that fails while
           // the network is gone says so too, and each took the text with what
@@ -803,7 +807,22 @@ export class App {
           for (const who of [...waiting]) if (!present.has(who)) waiting.delete(who);
           if (waiting.size === 0) this.awaiting.get(path)?.(false);
         }
-        // Every open document asks for state again.
+        // Somebody else arriving or leaving: the pad read again, in a
+        // moment, for a save made where no room carried its nudge — and
+        // nothing more. Every open document used to ask for state again
+        // here too, in every page, at every arrival and departure: about
+        // D·N·(N−1)² frames for N people with D files open, 50,000 for
+        // thirty with two, which closes sockets, and a reconnect is another
+        // arrival (docs/dev/scaling.md, item 2). What it was for — a page
+        // that had been away, and has what the rest lack — that page's own
+        // asking now brings: a holder that sees, in the asker's state, more
+        // than it has asks back (`onDoc`).
+        if (!welcomed) {
+          this.refreshSoon();
+          return;
+        }
+        // This page arriving, or back: every open document asks for state
+        // again.
         //
         // A dropped socket loses whatever updates were in flight, and nothing
         // would ever notice: both sides carry on believing they are in step
@@ -815,6 +834,10 @@ export class App {
             continue;
           }
           this.peers?.doc(streamFor(path), DOC_WANT, doc.stateVector(), path);
+          // And what was deleted here meanwhile, which the asking cannot
+          // show: a deletion moves no clock on, so nobody would ask back for
+          // it (`DocSession.deletions`). Small — ranges, not text.
+          if (!this.viewer && doc.ready) this.peers?.doc(streamFor(path), DOC_UPDATE, doc.deletions(), path);
         }
         // The peer socket carries nudges, not history. Re-read the durable
         // folder to recover every nudge that may have been missed offline.
@@ -873,8 +896,49 @@ export class App {
    * Read the pad again and take in what changed. `forced` when a save of
    * this page's came back past a write it never read (`Store.onBehind`): its
    * own number is no proof then of having seen everything up to it.
+   *
+   * One at a time, and the ones asked for meanwhile made one more after it.
+   * Every save, arrival and departure in the room asks, and a burst of them
+   * read the pad as many times over, each taking in its answer, awaits and
+   * all, over the others' (docs/dev/scaling.md, item 1). What it promises
+   * is a read begun after it was asked for.
    */
-  private async refresh(forced = false, tries = 0): Promise<void> {
+  private refresh(forced = false, tries = 0): Promise<void> {
+    if (!this.refreshing) {
+      const run = this.refreshOnce(forced, tries).finally(() => {
+        if (this.refreshing === run) this.refreshing = null;
+      });
+      this.refreshing = run;
+      return run;
+    }
+    if (this.refreshNext) {
+      this.refreshNext.forced ||= forced;
+      return this.refreshNext.done;
+    }
+    const next = { forced, done: Promise.resolve() };
+    // After it whether it read or failed: a trailing read that waited on one
+    // that threw never ran, and every one asked for after it waited on it.
+    next.done = this.refreshing.catch(() => undefined).then(() => {
+      if (this.refreshNext === next) this.refreshNext = null;
+      return this.refresh(next.forced);
+    });
+    this.refreshNext = next;
+    return next.done;
+  }
+
+  /**
+   * `refresh`, in a moment, once however many ask meanwhile — and at a moment
+   * of each page's own, not all of a room's at once when somebody arrives.
+   */
+  private refreshSoon(): void {
+    if (this.refreshTimer !== null) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      if (!this.disposed) void this.refresh();
+    }, 200 + Math.random() * 800);
+  }
+
+  private async refreshOnce(forced: boolean, tries: number): Promise<void> {
     if (this.busy) {
       this.missed = true;
       this.missedForced ||= forced;
@@ -1295,6 +1359,11 @@ export class App {
         this.peers?.doc(stream, DOC_NONE, new Uint8Array(), path);
         this.say("error", `${path} has grown too large to share live; others get it as saved`);
       }
+      // And they have what this one lacks — typing made while their room
+      // was lost, a second document of the file — so this one asks them.
+      // Once only: their answer comes before anything they ask next, so
+      // this one is not behind by then.
+      if (doc.behind(bytes)) this.peers?.doc(stream, DOC_WANT, doc.stateVector(), path);
     }
   }
 

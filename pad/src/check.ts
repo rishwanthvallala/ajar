@@ -11,7 +11,7 @@ import { applied, carryOver, merge, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
 import { asEditorHolds, cssString, DocSession, eolOf, participantId, seedId, utf8Of } from "./editing";
 import { BOX, RuntimeNotices, Shell } from "./shell";
-import { jsonBytes, mintName, pieces, plan, Store, StoreError, storedHash } from "./store";
+import { jsonBytes, mintName, type Pad, pieces, plan, Store, StoreError, storedHash } from "./store";
 import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, docPayload, MAX_DOC_MESSAGE, Peers, readDoc, streamFor } from "./peers";
 import { commandsIn, neededBy, runnerFor, TOOLCHAINS } from "./toolchains";
 import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./javac/protocol";
@@ -1192,6 +1192,44 @@ async function main() {
     is(e instanceof StoreError && e.status === 400, true, "a reserved name is refused");
   }
 
+  // A read of the pad this page opened, after somebody else saved, brings
+  // what they changed and not the rest — and comes out whole all the same.
+  // Every save sent the whole pad to everybody else in the room.
+  {
+    const pad = mintName();
+    const reader = new Store();
+    const writer = new Store();
+    const big = "x".repeat(200_000);
+    await writer.write(pad, [{ path: "big.txt", content: big }, { path: "a.txt", content: "one" }, { path: "gone.txt", content: "bye" }]);
+    const opened = await reader.read(pad, true);
+    await writer.write(pad, [{ path: "a.txt", content: "two" }, { path: "gone.txt", content: null }, { path: "new.bin", content: btoa("\u0000\u0001"), encoding: "base64" }]);
+    const sent: { since: string | null; bytes: number; kept: unknown }[] = [];
+    const realFetch = window.fetch;
+    window.fetch = async (input, init) => {
+      const res = await realFetch(input, init);
+      if (!init?.method && String(input).endsWith(`/api/pad/${pad}`)) {
+        const text = await res.clone().text();
+        sent.push({ since: new Headers(init?.headers).get("x-pad-since"), bytes: text.length, kept: (JSON.parse(text) as Pad).kept });
+      }
+      return res;
+    };
+    let again: Pad;
+    try {
+      again = await reader.read(pad, false, opened.seq);
+    } finally {
+      window.fetch = realFetch;
+    }
+    is(sent[0]?.since, `${opened.seq}.${opened.created_ms}`, "the reader says how far it has the pad, and which pad");
+    is(JSON.stringify(sent[0]?.kept), JSON.stringify(["big.txt"]), "and is sent the names of what did not change");
+    is((sent[0]?.bytes ?? Infinity) < 2_000, true, `and not the big file again (${sent[0]?.bytes} bytes)`);
+    is(Object.keys(again.files).sort().join(","), "a.txt,big.txt,new.bin", "what was removed is gone, what was added is there");
+    is(again.files["big.txt"]?.content === big && again.files["a.txt"]?.content === "two", true, "and every file reads as the pad holds it");
+    is(again.files["new.bin"]?.encoding, "base64", "a binary one too");
+    is("kept" in again || "since" in again, false, "with nothing to say it came in pieces");
+    const whole = await new Store().read(pad);
+    is(JSON.stringify(Object.entries(again.files).sort()), JSON.stringify(Object.entries(whole.files).sort()), "the same as a read of all of it");
+  }
+
   // A save of a large file as what changed in it, against the text the relay
   // holds, named by its hash. Anything else it holds by then, it refuses.
   {
@@ -1386,6 +1424,20 @@ async function main() {
     b.applyAwareness(docPayload(DOC_AWARENESS, awareness, one).subarray(1));
     const seen = [...b.awareness.getStates().values()].some((s) => (s as { user?: { name?: string } }).user?.name === "named");
     is(seen, true, "and takes a named cursor's state");
+
+    // What a page back in its room is sent, and asks back for, now that
+    // nobody else asks for everything when it arrives (scaling.md, item 2).
+    // Typing it did while away shows in its state, so a holder asks for it;
+    // deleting does not, so it sends its deletions itself.
+    is(b.behind(a.stateVector()), false, "a document in step is behind nothing");
+    a.replace("same, typed, and typed away\n");
+    is(b.behind(a.stateVector()), true, "one that missed typing sees it in the typist's state");
+    b.applyUpdate(a.diffSince(b.stateVector()));
+    is(b.behind(a.stateVector()) || b.contents() !== a.contents(), false, "and is in step once it asked");
+    a.replace("same\n");
+    is(b.behind(a.stateVector()), false, "a deletion missed shows in no state");
+    b.applyUpdate(a.deletions());
+    is(b.contents(), "same\n", "and comes with the deletions the page sends as it arrives");
     a.destroy();
     b.destroy();
 

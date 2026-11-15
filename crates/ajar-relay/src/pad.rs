@@ -822,6 +822,27 @@ fn lead_file(rows: &BTreeMap<String, Row>) -> Option<(String, Row)> {
         })
 }
 
+/// What a reader has of a pad, whole: the pad at `seq`, of the pad made at
+/// `created_ms` — the `x-pad-since` a page sends, `seq.created_ms`. See
+/// [`Store::open_since`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Had {
+    pub seq: u64,
+    pub created_ms: u64,
+}
+
+impl std::str::FromStr for Had {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        let (seq, created_ms) = s.split_once('.').ok_or(())?;
+        Ok(Had {
+            seq: seq.parse().map_err(|_| ())?,
+            created_ms: created_ms.parse().map_err(|_| ())?,
+        })
+    }
+}
+
 /// A stored pad opened for streaming: its document after the opening brace,
 /// as pieces, and how many bytes they come to.
 ///
@@ -2081,9 +2102,30 @@ impl Store {
     /// Opening counts as touching it, so its lease starts again — at most once
     /// a day, as renewing is a write. What is sent is the version this looked
     /// at: its blobs never change, and none is deleted while it is in use.
+    ///
+    /// For the tests: the relay reads through [`Store::open_since`], which is
+    /// this when the reader has nothing.
+    #[cfg(test)]
     pub fn open_for_read(&self, name: &str) -> Result<Option<Opened>, Error> {
+        self.open_since(name, None)
+    }
+
+    /// [`Store::open_for_read`], for a reader that has the pad whole as it
+    /// was at `had`: sent only the files written since, and the names of the
+    /// rest (`kept`), which it has already — or the pad whole, when `had`
+    /// is not a version of this pad as it is.
+    ///
+    /// After every save, everybody else in the room read the pad again, and
+    /// a pad that had moved on was sent whole: the room's size times the
+    /// pad's, for every save, though only the saved file had changed
+    /// (docs/dev/scaling.md, item 1). A file's row carries the sequence it
+    /// was last written at, so what changed since a sequence is the rows
+    /// past it, and what was removed is what the reader has and `kept` does
+    /// not name. A pad that lapsed and began again counts its sequence from
+    /// 1 again, so `had` names the pad by when it was made, too.
+    pub fn open_since(&self, name: &str, had: Option<Had>) -> Result<Option<Opened>, Error> {
         check_name(name)?;
-        let (head, rows, reading) = {
+        let (head, rows, since, reading) = {
             let db = self.db.lock();
             let Some(head) = Self::head(&db, name)? else {
                 return Ok(None);
@@ -2095,28 +2137,51 @@ impl Store {
             }
             Self::renew(&db, name, head.touched_ms)?;
             let rows = Self::rows(&db, name)?;
-            let reading = self.hold(&db, rows.values().map(|r| r.blob.clone()).collect());
-            (head, rows, reading)
+            let since = had
+                .filter(|had| had.created_ms == head.created_ms && had.seq <= head.seq)
+                .map(|had| had.seq);
+            let sent = |row: &Row| since.is_none_or(|since| row.seq > since);
+            let reading = self.hold(
+                &db,
+                rows.values()
+                    .filter(|r| sent(r))
+                    .map(|r| r.blob.clone())
+                    .collect(),
+            );
+            (head, rows, since, reading)
         };
 
+        let mut before = format!(
+            r#""seq":{},"created_ms":{},"updated_ms":{},"#,
+            head.seq, head.created_ms, head.updated_ms
+        );
+        if let Some(since) = since {
+            let kept: Vec<&str> = rows
+                .iter()
+                .filter(|(_, row)| row.seq <= since)
+                .map(|(path, _)| path.as_str())
+                .collect();
+            let kept = serde_json::to_string(&kept).map_err(|e| Error::Io(e.to_string()))?;
+            before.push_str(&format!(r#""since":{since},"kept":{kept},"#));
+        }
+        before.push_str(r#""files":{"#);
         let (parts, remaining) = self.streamed(
-            format!(
-                r#""seq":{},"created_ms":{},"updated_ms":{},"files":{{"#,
-                head.seq, head.created_ms, head.updated_ms
-            ),
-            rows.iter().map(|(path, row)| {
-                (
-                    path.as_str(),
-                    row.blob.as_str(),
-                    row.stored,
-                    format!(
-                        r#""encoding":"{}","seq":{},"hash":"{}""#,
-                        encoding_name(row.encoding),
-                        row.seq,
-                        row.blob
-                    ),
-                )
-            }),
+            before,
+            rows.iter()
+                .filter(|(_, row)| since.is_none_or(|since| row.seq > since))
+                .map(|(path, row)| {
+                    (
+                        path.as_str(),
+                        row.blob.as_str(),
+                        row.stored,
+                        format!(
+                            r#""encoding":"{}","seq":{},"hash":"{}""#,
+                            encoding_name(row.encoding),
+                            row.seq,
+                            row.blob
+                        ),
+                    )
+                }),
         )?;
         Ok(Some(Opened {
             parts,
@@ -4329,6 +4394,87 @@ mod tests {
         assert!(answers[0].is_ok(), "{:?}", answers[0]);
         assert_eq!(answers[1].as_ref().err(), Some(&Error::StoreFull));
         assert!(s.used() <= 3000, "{} used", s.used());
+    }
+
+    #[test]
+    fn a_reader_that_has_the_pad_at_a_sequence_is_sent_what_changed_since_and_the_names_of_the_rest(
+    ) {
+        use std::io::Read;
+        let (s, _d) = store();
+        let read = |had: Option<Had>| {
+            let opened = s.open_since("p", had).unwrap().expect("the pad exists");
+            let remaining = opened.remaining;
+            let mut rest = String::new();
+            opened.into_reader().read_to_string(&mut rest).unwrap();
+            assert_eq!(rest.len() as u64, remaining, "remaining was wrong");
+            serde_json::from_str::<serde_json::Value>(&format!("{{{rest}")).expect("valid json")
+        };
+        let at = s
+            .write(
+                "p",
+                &[
+                    put("a.txt", "one"),
+                    put("b.txt", "two"),
+                    put("c.txt", "three"),
+                ],
+            )
+            .unwrap();
+        let created_ms = read(None)["created_ms"].as_u64().unwrap();
+        let had = |seq| Some(Had { seq, created_ms });
+        s.write("p", &[put("b.txt", "two, again")]).unwrap();
+        let now = s
+            .write("p", &[delete("c.txt"), put("d.txt", "four")])
+            .unwrap();
+
+        // Since the first save: what the two after it wrote, and the one
+        // file neither touched by name. c.txt is in neither — removed.
+        let since = read(had(at));
+        assert_eq!(since["seq"], now);
+        assert_eq!(since["since"], at);
+        assert_eq!(since["kept"], serde_json::json!(["a.txt"]));
+        let files = since["files"].as_object().unwrap();
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["b.txt", "d.txt"]);
+        assert_eq!(files["b.txt"]["content"], "two, again");
+        assert_eq!(files["d.txt"]["seq"], now);
+        assert!(
+            files["d.txt"]["hash"].is_string(),
+            "and its hash, to edit against"
+        );
+
+        // Had as it is: nothing sent, everything kept.
+        let same = read(had(now));
+        assert_eq!(same["files"], serde_json::json!({}));
+        assert_eq!(same["kept"], serde_json::json!(["a.txt", "b.txt", "d.txt"]));
+
+        // Anything else is sent whole: nothing had, a sequence the pad never
+        // reached, another pad of the name.
+        let whole = |r: serde_json::Value| {
+            assert!(r.get("kept").is_none() && r.get("since").is_none(), "{r}");
+            let mut names: Vec<_> = r["files"].as_object().unwrap().keys().cloned().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(whole(read(None)), ["a.txt", "b.txt", "d.txt"]);
+        assert_eq!(whole(read(had(now + 1))), ["a.txt", "b.txt", "d.txt"]);
+        assert_eq!(
+            whole(read(Some(Had {
+                seq: at,
+                created_ms: created_ms + 1
+            }))),
+            ["a.txt", "b.txt", "d.txt"]
+        );
+
+        // A pad that lapsed and began again counts from 1 again: a reader
+        // of the old one at 1 is not told it has the new one's files.
+        s.set_touched("p", s.limits.lease + Duration::from_secs(86_400));
+        std::thread::sleep(Duration::from_millis(5));
+        s.write("p", &[put("new.txt", "fresh")]).unwrap();
+        assert_eq!(whole(read(had(1))), ["new.txt"]);
+
+        "1.5".parse::<Had>().unwrap();
+        for bad in ["", "1", "1.", ".5", "a.b", "1.5.6", "-1.5"] {
+            assert!(bad.parse::<Had>().is_err(), "{bad:?}");
+        }
     }
 
     #[test]

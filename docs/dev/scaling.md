@@ -46,7 +46,7 @@ the pad's static files and its package mirror all run and are served there.
 
 ## Ranked
 
-### 1. Every save sends the whole pad to everyone else in the room — in code
+### 1. Every save sends the whole pad to everyone else in the room — in code, **fixed 14 November**
 
 A save broadcasts `moved` (`pad/src/app.ts`, `saveEdits`, `this.peers?.moved(seq)`);
 every other page's `onMoved` calls `refresh()`, which reads the pad with
@@ -67,7 +67,20 @@ and the paths deleted since — each stored file already has its `seq`. The
 nudge can carry the changed paths, and a page skips a file it has live. Make
 `refresh` single-flight with a trailing run.
 
-### 2. Every arrival or departure makes everyone resend every open file — in code
+**Fixed, 14 November.** A page keeps the pad it opened as it last read it,
+and says so with each read again — `x-pad-since: <seq>.<created_ms>`, the
+pad named by when it was made, since one that lapsed and began again counts
+from 1 again. The relay sends the files written since then and only the
+names of the rest (`kept`); what the page has that `kept` and the files do
+not name was removed (`Store::open_since`). `Store.read` puts the pad back
+together from what it had, so nothing past it changed. In the browser check,
+a page reading again after another saved one small file beside a 200 KB one
+was sent 416 bytes. The cost per save is now the room's size times the
+saved file, not the pad. The relay still reads every row's name, and sends
+the names: 2,000 files is some 60 KB. `refresh` runs one at a time, and
+whatever asks meanwhile gets one more run after it, begun after it asked.
+
+### 2. Every arrival or departure makes everyone resend every open file — in code, **fixed 14 November**
 
 `onPresence` runs on every `joined` and `left` as well as a page's own
 welcome (`peers.ts`), and each time every page asks again for every document it
@@ -84,6 +97,20 @@ frames an arrival.
 lowest id, or a short random wait cancelled by another's answer); nothing when
 the state vectors already match; viewers and pages without the file stay
 quiet.
+
+**Fixed in part, 14 November.** Only a page's own welcome — its first, or
+back after its room was lost — asks again for every open document. Somebody
+else arriving or leaving reads the pad again, cheaply now (item 1), at a
+moment between 0.2 and 1 s of each page's own, once however many arrive
+meanwhile. What the others' asking was for, a page back with what they lack,
+the page's own asking now brings. A holder that sees more in the asker's
+state than it has asks back, once. A deletion moves no clock on and shows in
+no state, so the page sends its deletions as it arrives too: ranges, a few
+bytes. One arrival is now about D·(N−1)² frames out of the relay, every
+holder's answer still going to everyone: 1,700 for thirty people with two
+files, against 50,000. The rest — one holder answering, and an answer to
+the asker alone — needs a frame addressed to one page, which pad rooms do
+not have: peers only broadcast (`ws.rs`).
 
 ### 3a. A thousand sockets — in code, **fixed**
 
@@ -628,8 +655,8 @@ Tunnel) or the box gets more cores.
 
 ## In what order
 
-1. Reads since a sequence, and a single-flight `refresh` (item 1).
-2. Re-ask only on one's own welcome, one answer (item 2).
+1. ~~Reads since a sequence, and a single-flight `refresh` (item 1).~~ Done.
+2. ~~Re-ask only on one's own welcome~~ (done), one answer (item 2).
 3. Live documents held to a few MiB, frames forwarded as they came (item 4).
 4. A CDN or R2 for the static files and packages (item 6), and pip through the
    browser (item 7).

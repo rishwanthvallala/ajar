@@ -115,6 +115,9 @@ A read that sends `X-Pad-Seq`, the sequence it already has, is answered with
 not moved past it (18 October). The page reads again on every welcome to its
 room and every join or leave, and for a 78 MB pad each was 9 MB more to
 download. A page opening the pad (`X-Pad-Open`) is always sent it whole.
+One that sends `X-Pad-Since`, the sequence and creation time of the pad as
+it last read it whole, is sent only the files written since and the names
+of the rest (14 November; pad-store.md).
 
 Each file in a read carries its `hash`, which is what a browser sends edits
 against. It used to parse, rebuild and re-serialise the whole pad per read —

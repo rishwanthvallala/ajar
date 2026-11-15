@@ -159,6 +159,19 @@ read again on every welcome to the room and whenever anybody joins or leaves
 it; for a large pad each of those was the whole pad again. Opening a pad
 (`x-pad-open`) is always read whole.
 
+A pad that has moved on is sent as what changed (14 November,
+`Store::open_since`). The page says the sequence it last read the pad whole
+at and when the pad was made, `x-pad-since: <seq>.<created_ms>` — a pad that
+lapsed and began again counts from 1 again. When that is this pad, at or
+before its sequence, the read carries `"since"`, `"kept"` — the names of the
+files not written since, which the reader has — and in `files` only the
+rest. A file the reader has that neither names was removed. Each row's
+`seq` is the sequence it was last written at, so this is the rows past
+`since`, and no record of removals is needed. The page puts the pad back
+together from what it had (`Store.read` in `pad/src/store.ts`); anything it
+cannot is read again whole. It was the whole pad to everybody else in the
+room after every save (scaling.md, item 1).
+
 ## A save that sends only what changed
 
 A browser saving a file it already holds can send the edit rather than the file:

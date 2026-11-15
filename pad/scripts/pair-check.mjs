@@ -286,6 +286,50 @@ try {
     await b.context().close();
   }
 
+  // ---- what a place did while away reaches the room through the room alone --
+  // Nobody asks for everything when somebody arrives any more (scaling.md,
+  // item 2). A place back from a dropout is brought what it lacks by its own
+  // asking; the others are brought what it has by asking back, for typing,
+  // which its state shows — and by the deletions it sends as it arrives,
+  // which no state shows. Its saves are held back here, so the store carries
+  // none of it: only the room can.
+  {
+    const name = `pair-away-${Date.now().toString(36)}`;
+    const first = "keep\ndelete me\nkeep too\n";
+    await fetch(`${ORIGIN}/api/pad/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ writes: [{ path: "main.py", content: first }] }) });
+    const [a, b] = await pair(name);
+    const held = (route) => (route.request().method() === "PUT" ? route.abort() : route.continue());
+    await a.context().route(`**/api/pad/${name}`, held);
+    const away = async (edit) => {
+      await a.evaluate(() => {
+        window.__cut = true;
+        for (const ws of window.__sockets) ws.close();
+      });
+      await wait(a, 1500);
+      await a.evaluate(([l, l2, t]) => {
+        const ed = window.monaco.editor.getEditors()[0];
+        ed.executeEdits("typing", [{ range: { startLineNumber: l, startColumn: 1, endLineNumber: l2, endColumn: 1 }, text: t }]);
+      }, edit);
+      await wait(a, 1000);
+      await a.evaluate(() => {
+        window.__cut = false;
+      });
+    };
+    const reaches = (want) => b.waitForFunction((w) => window.__pad.text("main.py") === w, want, { timeout: 20_000 }).then(() => true, () => false);
+    const stored = async () => ((await (await fetch(`${ORIGIN}/api/pad/${name}`)).json()).files["main.py"] ?? {}).content;
+    await away([2, 3, ""]);
+    const deleted = "keep\nkeep too\n";
+    if ((await reaches(deleted)) && (await stored()) === first) await agree(a, b, deleted, "a line deleted while away reaches the room through the room alone, its save held back");
+    else fail(`a deletion made while away — ${JSON.stringify({ stored: await stored(), A: await a.evaluate(() => window.__pad.text("main.py")), B: await b.evaluate(() => window.__pad.text("main.py")) })}`);
+    await away([1, 1, "# typed away\n"]);
+    const typed = "# typed away\nkeep\nkeep too\n";
+    if ((await reaches(typed)) && (await stored()) === first) await agree(a, b, typed, "and a line typed while away, which the others ask back for");
+    else fail(`typing done while away — ${JSON.stringify({ stored: await stored(), A: await a.evaluate(() => window.__pad.text("main.py")), B: await b.evaluate(() => window.__pad.text("main.py")) })}`);
+    await a.context().unroute(`**/api/pad/${name}`, held);
+    await a.context().close();
+    await b.context().close();
+  }
+
   // ---- a file too large to edit together live ------------------------------
   // A live document reaches somebody arriving as one message, and the relay
   // takes 32 MB of those. A 40 MB file open in two places: the second never

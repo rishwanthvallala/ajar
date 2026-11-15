@@ -1060,6 +1060,13 @@ async fn read_pad(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|_| counted.is_none());
+    // And a page that has the pad whole as it was at a sequence says that
+    // too, and is sent only what changed since (`Store::open_since`).
+    let had = headers
+        .get("x-pad-since")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<pad::Had>().ok())
+        .filter(|_| counted.is_none());
     let code = headers
         .get("x-pad-code")
         .and_then(|v| v.to_str().ok())
@@ -1084,7 +1091,7 @@ async fn read_pad(
                 return answer(Looked::Unchanged(seq));
             }
         }
-        answer(Looked::Opened(pads.open_for_read(&pad)))
+        answer(Looked::Opened(pads.open_since(&pad, had)))
     })
     .await;
     let (access, looked) = match looked {
