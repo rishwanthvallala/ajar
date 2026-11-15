@@ -728,6 +728,65 @@ wrk's X-Forwarded-For as the box takes CF-Connecting-IP from the tunnel
 (`nginx-front.sh`). Saves are the same through either: the disk sets their
 pace, not the front.
 
+## On production, 16 November
+
+The same tests against the live site, at the maintainer's asking — the one
+time they have been. A load generator in AWS beside the box (a c7i-flex.large
+in ap-south-1, 2 vCPUs, made for the test and deleted after) to the public
+names over TLS, through nginx and the relay as deployed (a39a3dd), with
+`/healthz?deep=1` asked every 2 s throughout. Anonymous only: no account was
+touched. Twice:
+
+1. **With the limits as they are**, every request from the one machine.
+2. **With the load generator counted as many visitors**: nginx believed its
+   CF-Connecting-IP for the test, as it believes the tunnel's
+   (`set_real_ip_from 3.110.30.144`, added by hand on the box and taken out
+   after), so each request had an address of its own and the relay's
+   per-address limits applied per visitor. Nobody else's limits changed.
+
+Production answered every health check through both, all 200: the ones
+polled every 2 s in no more than 88 ms, and the one asked after each wrk
+level in 21 ms, or up to 283 ms straight after a level of saves. With wrk,
+10 s a level:
+
+| Through nginx, 64 / 256 connections | Staging, 13 Nov | Prod, limits on | Prod, one visitor each |
+|---|---:|---:|---:|
+| `/healthz` (the relay's site) | 33,700 / 30,000 | 20,300 / 18,900 | 20,300 / 18,000 |
+| `/api/limits`, not signed in | 16,100 / 15,300 | 15,900 / 15,400 | 15,800 / 15,000 |
+| A small pad, read | 8,100 / 7,400 | 7,700 / 7,000 † | 6,900 / 6,500 |
+| A pad unchanged since the page's sequence | 10,500 / 10,300 | 10,200 / 10,200 † | 9,900 / 9,500 |
+| A 2 KB save, 500 pads | 505 / 461 | 524 / 452 | 597 / 466 |
+
+† Not all answered: 2.5% and 0.9% of the reads, 0.6% and 2.1% of the
+unchanged checks, refused with 429 — the relay's 32 reads at once per
+address (`MAX_READS_PER_IP`). Fewer than the connections would suggest: a
+read spends little of its time in the relay. Counted as visitors of their
+own, nothing was refused, and each new visitor's bookkeeping cost a little.
+
+With `relay-load.mjs` (8 s a level, the 5 MB levels cut short for the box's
+network allowance):
+
+| | Prod, limits on | Prod, one visitor each |
+|---|---:|---:|
+| Saves, 400 people every 500 ms | 800/s, p99 18 ms | 795/s, p99 121 ms |
+| Rooms, 25 × 4 | **23 of 100 sockets let in** | 100, 1,462 delivered/s, p99 6 ms |
+| Rooms, 250 × 4 | refused | **1,000 sockets, 14,625/s, p99 43 ms** |
+| Rooms, 1 × 50 | refused | 50, 11,942/s, p99 31 ms |
+| 5 MB pad, 8 readers | 196 MB/s | 193 MB/s |
+| Re-reads, room of 10, whole pad | 45 MB a save, p50 354 ms | 45 MB, 347 ms |
+| Re-reads, room of 10, what changed | 246 KB, p50 8 ms | 246 KB, 7 ms |
+| Re-reads, room of 30, what changed | 792 KB, p50 28 ms, p99 136 | 792 KB, 20 ms, 103 |
+
+Rooms are what the limits stop first: one address may open 8 rooms and join
+96, so from one machine 23 of the 100 sockets got in. Counted as visitors,
+production carried a thousand typists at 14,625 updates a second. The small
+pad reads through `relay-load.mjs` (1,550 a second at best) are its Node
+client's, doing TLS on two vCPUs: wrk's are the box's.
+
+Left behind on production: the test's pads, anonymous and named
+`loadtest-1116-*` and `load-*`, about 50 MB, lapsing on their lease in 90
+days.
+
 ## In what order
 
 1. ~~Reads since a sequence, and a single-flight `refresh` (item 1).~~ Done.

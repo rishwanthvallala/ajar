@@ -10,7 +10,11 @@
 //
 //   RELAY=http://127.0.0.1:18787 node scripts/relay-load.mjs [reads|writes|rooms|rereads|all]
 //
-// STEP_S sets how long each level runs (default 12 s).
+// STEP_S sets how long each level runs (default 12 s). ADDR_HEADER names the
+// header each simulated person's address goes in: X-Forwarded-For for the
+// relay alone, CF-Connecting-IP through nginx from an address it believes.
+// BIG_READERS and REREADS trim the heavy levels, for a link that pays for
+// its bytes ("1,8"; "9:whole,9:delta,29:delta").
 
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -20,6 +24,9 @@ const RELAY = process.env.RELAY ?? "http://127.0.0.1:18787";
 const WS_URL = `${RELAY.replace(/^http/, "ws")}/ws`;
 const STEP_MS = Number(process.env.STEP_S ?? 12) * 1000;
 const which = process.argv[2] ?? "all";
+const ADDR = (process.env.ADDR_HEADER ?? "x-forwarded-for").toLowerCase();
+const BIG_READERS = (process.env.BIG_READERS ?? "1,8,32,64").split(",").map(Number);
+const REREADS = (process.env.REREADS ?? "9:whole,9:delta,29:whole,29:delta").split(",").map((r) => r.split(":"));
 
 let addresses = 0;
 const address = () => {
@@ -37,7 +44,7 @@ const text = (bytes, seed) => `${"x".repeat(Math.max(0, bytes - 12))}${String(se
 async function put(name, writes, from = address()) {
   const res = await fetch(`${RELAY}/api/pad/${name}`, {
     method: "PUT",
-    headers: { "content-type": "application/json", "x-forwarded-for": from },
+    headers: { "content-type": "application/json", [ADDR]: from },
     body: JSON.stringify({ writes }),
   });
   await res.arrayBuffer();
@@ -65,7 +72,7 @@ async function readLevel(name, c) {
     while (Date.now() < end) {
       const t = performance.now();
       try {
-        const res = await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-forwarded-for": from } });
+        const res = await fetch(`${RELAY}/api/pad/${name}`, { headers: { [ADDR]: from } });
         const body = await res.arrayBuffer();
         statuses[res.status] = (statuses[res.status] ?? 0) + 1;
         if (res.status === 200) {
@@ -124,7 +131,7 @@ const frame = (channel, stream, target, payload) => {
 /** One peer in pad `room`: says hello, and resolves with its id once welcomed. */
 function peer(room, onDoc) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_URL, { headers: { "x-forwarded-for": address() } });
+    const ws = new WebSocket(WS_URL, { headers: { [ADDR]: address() } });
     ws.binaryType = "nodebuffer";
     const timer = setTimeout(() => reject(new Error("no welcome")), 15000);
     ws.on("open", () => ws.send(frame(0x01, 0, 0, Buffer.from(JSON.stringify({ t: "hello", session: room, role: "peer" })))));
@@ -135,6 +142,12 @@ function peer(room, onDoc) {
         if (msg.t === "welcome") {
           clearTimeout(timer);
           resolve({ ws, id: msg.participant_id });
+        } else if (msg.t === "error") {
+          // Refused at the door — past an address's limit, say — rather than
+          // waited out for the full 15 s, each of a level's refusals in turn.
+          clearTimeout(timer);
+          ws.close();
+          reject(new Error(msg.code ?? "refused"));
         }
       } else if (channel === 0x05) onDoc(data);
     });
@@ -186,7 +199,7 @@ async function rereadLevel(watchers, delta, files, each) {
   const name = `load-rr-${delta ? "d" : "w"}-${watchers}-${Date.now().toString(36)}`;
   await seed(name, files, each);
   const writer = address();
-  const first = await (await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-pad-open": "1", "x-forwarded-for": writer } })).json();
+  const first = await (await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-pad-open": "1", [ADDR]: writer } })).json();
   const people = Array.from({ length: watchers }, () => ({ from: address(), seq: first.seq }));
   const times = [];
   let bytes = 0;
@@ -202,7 +215,7 @@ async function rereadLevel(watchers, delta, files, each) {
       const t0 = performance.now();
       const res = await fetch(`${RELAY}/api/pad/${name}`, {
         headers: {
-          "x-forwarded-for": p.from,
+          [ADDR]: p.from,
           "x-pad-seq": String(p.seq),
           ...(delta ? { "x-pad-since": `${p.seq}.${first.created_ms}` } : {}),
         },
@@ -237,7 +250,7 @@ if (which === "reads" || which === "all") {
     console.log("read 40 KB pad", JSON.stringify(r));
   }
   results.readsBig = [];
-  for (const c of [1, 8, 32, 64]) {
+  for (const c of BIG_READERS) {
     const r = await readLevel(big, c);
     results.readsBig.push(r);
     console.log("read 5 MB pad", JSON.stringify(r));
@@ -261,12 +274,10 @@ if (which === "rooms" || which === "all") {
 }
 if (which === "rereads" || which === "all") {
   results.rereads = [];
-  for (const watchers of [9, 29]) {
-    for (const delta of [false, true]) {
-      const r = await rereadLevel(watchers, delta, 200, 25 * 1024);
-      results.rereads.push(r);
-      console.log("re-reads after a save", JSON.stringify(r));
-    }
+  for (const [watchers, how] of REREADS) {
+    const r = await rereadLevel(Number(watchers), how === "delta", 200, 25 * 1024);
+    results.rereads.push(r);
+    console.log("re-reads after a save", JSON.stringify(r));
   }
 }
 console.log(JSON.stringify(results));
