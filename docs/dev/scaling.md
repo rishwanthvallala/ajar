@@ -360,7 +360,7 @@ podman run -d --name relay-load --cpus 2 --memory 512m -p 18787:8787 \
   -v "$PWD/target/container/release/ajar-relay:/relay:ro" -e MALLOC_MMAP_THRESHOLD_=1048576 \
   docker.io/library/rust:1 /relay --bind 0.0.0.0:8787 --trust-forwarded-for \
   --pad-dir /tmp/pads --accounts-db /tmp/a.db
-RELAY=http://127.0.0.1:18787 node scripts/relay-load.mjs all   # reads, writes, rooms
+RELAY=http://127.0.0.1:18787 node scripts/relay-load.mjs all   # reads, writes, rooms, re-reads after a save
 podman rm -f relay-load
 ```
 
@@ -652,6 +652,81 @@ Tunnel) or the box gets more cores.
    Past that, a blob's own file and directory are what each save still
    costs. Small files kept in the database itself would take both away.
 3. **Or more cores.** Every number here is two Graviton2 cores, shared.
+
+## Measured again, 16 November
+
+Everything above that ran on this Mac, run again on the relay as of a39a3dd
+— group commit, delta re-reads, nginx in front — the same way, each against
+its earlier numbers. Podman on the maintainer's Mac, the relay held to the
+box's 2 CPUs and 512 MB: faster cores than Graviton2 and a cheaper disk sync
+than EBS, so relative, and the box lower (for the box itself, "On the box's
+own hardware" above). Never production.
+
+**The load test** (`scripts/relay-load.mjs`, as on 30 October):
+
+| | 30 October | 16 November |
+|---|---:|---:|
+| 40 KB pad, one reader | 320/s, 3 ms | **1,798/s, 1 ms** |
+| 40 KB pad, best | 1,845/s (8 readers) | **7,810/s** (32) |
+| 5 MB pad, one reader | 243 MB/s | **306 MB/s** |
+| 5 MB pad, best | 388 MB/s | **418 MB/s** (8) |
+| Saves, 10 people | 20/s, p99 428 ms (the first) | 20/s, p99 15 ms |
+| Saves, 100 people | 200/s, p50 2 ms, p99 11 ms | 200/s, 2 ms, 9 ms |
+| Saves, 400 people | 800/s, p50 1 ms, p99 6 ms | 801/s, 1 ms, 8 ms |
+| Rooms, 25 × 4, delivered | 1,470/s, p99 18 ms | 1,475/s, p99 15 ms |
+| Rooms, 250 × 4 (1,000 sockets) | 14,697/s, p99 39 ms | 14,749/s, p99 35 ms |
+| Rooms, 1 × 50 | 12,001/s, p99 18 ms | 12,045/s, p99 20 ms |
+
+Rooms were never the relay's limit and are where they were. The first full
+run stopped at 200 people saving: the client could not open a connection
+(`connect ETIMEDOUT`), right after the 5 MB reads had pushed 400 MB/s
+through podman's port forwarding on the Mac. The relay had logged nothing
+and was answering. Run again on its own, every level of saves went through,
+to 400.
+
+**Re-reads after a save** (`relay-load.mjs rereads`, new): a 5 MB pad of
+200 files, one person saving a file every 500 ms, everybody else reading the
+pad again after each save — whole, as before 14 November, or only what
+changed (item 1):
+
+| Room | Sent per save, whole | only what changed | Re-read p50 / p99, whole | only what changed |
+|---|---:|---:|---:|---:|
+| 10 | 45 MB | **246 KB** | 121 / 173 ms | **6 / 13 ms** |
+| 30 | 146 MB | **792 KB** | 325 / 405 ms | **7 / 16 ms** |
+
+The 45 MB is the estimate item 1 made for nine people watching a 5 MB pad.
+A room of thirty went from 284 MB a second out of the relay to 1.5.
+
+**Requests a second** (`scripts/relay-bench/run.sh`, as on 12 November), 64
+connections:
+
+| Two CPUs, the relay alone | 12 November | 16 November |
+|---|---:|---:|
+| `/healthz` | 185,000 | 250,000 |
+| `/api/limits`, not signed in | 108,000 | 103,000 |
+| `/api/limits`, signed in | 42,000 | 56,000 |
+| `/api/me` | 35,000 | 50,000 |
+| A small pad, read | 28,800 | **42,000** |
+| A small pad, read by its owner | 28,200 | 37,700 |
+| A pad unchanged since the page's sequence | 51,000 | 67,000 |
+| A 2 KB save, 500 pads | 1,500–2,100 | **7,200** |
+
+| Two CPUs shared with the front, TLS | Caddy | nginx (`run.sh nginx`) |
+|---|---:|---:|
+| `/healthz` | 32,100 | **116,100** |
+| `/api/limits`, not signed in | 22,500 | 69,000 |
+| `/api/me` | 21,400 | 36,800 |
+| A small pad, read | 16,600 | **28,000** |
+| A small pad, read by its owner | 15,600 | 23,900 |
+| A pad unchanged since the page's sequence | 21,700 | 42,000 |
+| A 2 KB save | 6,800 | 5,800 |
+
+`run.sh nginx` is new: `deploy/nginx` as the box runs it, in Ubuntu 24.04's
+nginx, the relay behind it, both on the two CPUs. It differs from the box
+only in its certificate and ports, and in taking each request's address from
+wrk's X-Forwarded-For as the box takes CF-Connecting-IP from the tunnel
+(`nginx-front.sh`). Saves are the same through either: the disk sets their
+pace, not the front.
 
 ## In what order
 

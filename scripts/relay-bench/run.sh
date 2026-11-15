@@ -5,6 +5,7 @@
 #
 #   scripts/relay-bench/run.sh relay     # the relay alone, two CPUs and 512 MB, as the box
 #   scripts/relay-bench/run.sh caddy     # Caddy with TLS in front, the two sharing those CPUs
+#   scripts/relay-bench/run.sh nginx     # deploy/nginx with TLS in front, the same — the box since 14 November
 #   scripts/relay-bench/run.sh proxies   # Caddy and nginx in front, one CPU each
 #
 # Needs the relay's Linux build (below) and, for caddy and proxies, Caddy's
@@ -56,6 +57,16 @@ caddy)
     wrk_run -e U=https://ajar-bench-relay:8443 -e CONNS="${CONNS:-64 256}" -e DUR="${DUR:-10}" $WRK_IMAGE bash /b/inside.sh
     podman stats --no-stream --format '{{.Name}} cpu {{.CPUPerc}} mem {{.MemUsage}}' $R
     ;;
+nginx)
+    # deploy/nginx as the box runs it, in the box's nginx (Containerfile.nginx),
+    # and the relay behind it, on the box's two CPUs between them — what
+    # nginx-front.sh changes from the box, and why, is said there.
+    podman image exists ajar-bench-nginx || podman build -q -t ajar-bench-nginx -f "$B/Containerfile.nginx" "$B" >/dev/null
+    podman run -d --name $R --network $NET --cpus 2 --memory 512m -v "$BIN:/relay:ro" \
+        -v "$PWD/deploy/nginx:/conf:ro" -v $VOL:/data -v "$B":/b ajar-bench-nginx bash /b/nginx-front.sh >/dev/null
+    wrk_run -e U=https://ajar-bench-relay:8443 -e CONNS="${CONNS:-64 256}" -e DUR="${DUR:-10}" $WRK_IMAGE bash /b/inside.sh
+    podman stats --no-stream --format '{{.Name}} cpu {{.CPUPerc}} mem {{.MemUsage}}' $R
+    ;;
 proxies)
     [ -x "$CADDY" ] || { echo "no Caddy build at $CADDY — deploy/caddy/build.sh" >&2; exit 1; }
     podman run -d --name $R --network $NET --cpus 2 --memory 512m -v "$BIN:/relay:ro" -v $VOL:/data \
@@ -82,5 +93,5 @@ proxies)
         sh -c 'openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/key.pem -out /tmp/cert.pem -days 1 -subj /CN=ajar-bench-proxy 2>/dev/null && exec nginx -g "daemon off;"' >/dev/null
     sleep 3; bench
     ;;
-*) echo "relay, caddy or proxies" >&2; exit 2 ;;
+*) echo "relay, caddy, nginx or proxies" >&2; exit 2 ;;
 esac

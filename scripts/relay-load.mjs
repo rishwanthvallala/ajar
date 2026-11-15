@@ -8,7 +8,7 @@
 // Caddy sends it) rather than all of them meeting the per-address limits at
 // once. Never at production: it is a load test.
 //
-//   RELAY=http://127.0.0.1:18787 node scripts/relay-load.mjs [reads|writes|rooms|all]
+//   RELAY=http://127.0.0.1:18787 node scripts/relay-load.mjs [reads|writes|rooms|rereads|all]
 //
 // STEP_S sets how long each level runs (default 12 s).
 
@@ -174,6 +174,56 @@ async function roomLevel(rooms, size) {
   return { rooms, size, sockets: people.length, joinFailures: failed, deliveredPerSecond: Math.round(delivered / seconds), expectedPerSecond: Math.round(expected / seconds), p50ms: pct(latencies, 50), p99ms: pct(latencies, 99) };
 }
 
+/**
+ * A room of `watchers` + 1 around one pad of `files` files of `each` bytes:
+ * one person saves a file every 500 ms, as typing that pauses does, and
+ * everyone else reads the pad again after each save, as a page does on the
+ * nudge — whole, as before 14 November, or with `delta` only what changed
+ * since it last read it (x-pad-since, Store::open_since). The next save
+ * waits for every read, so a room the relay cannot keep up with saves less.
+ */
+async function rereadLevel(watchers, delta, files, each) {
+  const name = `load-rr-${delta ? "d" : "w"}-${watchers}-${Date.now().toString(36)}`;
+  await seed(name, files, each);
+  const writer = address();
+  const first = await (await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-pad-open": "1", "x-forwarded-for": writer } })).json();
+  const people = Array.from({ length: watchers }, () => ({ from: address(), seq: first.seq }));
+  const times = [];
+  let bytes = 0;
+  let saves = 0;
+  let refused = 0;
+  const started = Date.now();
+  while (Date.now() - started < STEP_MS) {
+    const tick = Date.now();
+    const status = await put(name, [{ path: `f${saves % files}.txt`, content: text(each, saves + files) }], writer);
+    if (status !== 200) { refused += 1; await sleep(500); continue; }
+    saves += 1;
+    await Promise.all(people.map(async (p) => {
+      const t0 = performance.now();
+      const res = await fetch(`${RELAY}/api/pad/${name}`, {
+        headers: {
+          "x-forwarded-for": p.from,
+          "x-pad-seq": String(p.seq),
+          ...(delta ? { "x-pad-since": `${p.seq}.${first.created_ms}` } : {}),
+        },
+      });
+      const body = Buffer.from(await res.arrayBuffer());
+      times.push(performance.now() - t0);
+      if (res.status !== 200) { refused += 1; return; }
+      bytes += body.length;
+      const seq = /"seq":(\d+)/.exec(body.subarray(0, 512).toString())?.[1];
+      if (seq) p.seq = Number(seq);
+    }));
+    await sleep(Math.max(0, 500 - (Date.now() - tick)));
+  }
+  const seconds = (Date.now() - started) / 1000;
+  return {
+    room: watchers + 1, pad: `${files} × ${each / 1024} KB`, reads: delta ? "what changed" : "whole",
+    savesPerSecond: +(saves / seconds).toFixed(1), kbPerSave: Math.round(bytes / Math.max(saves, 1) / 1024),
+    mbPerSecond: +(bytes / seconds / 1048576).toFixed(1), p50ms: pct(times, 50), p99ms: pct(times, 99), refused,
+  };
+}
+
 const results = {};
 if (which === "reads" || which === "all") {
   const small = `load-small-${Date.now().toString(36)}`;
@@ -207,6 +257,16 @@ if (which === "rooms" || which === "all") {
     const r = await roomLevel(rooms, size);
     results.rooms.push(r);
     console.log("rooms", JSON.stringify(r));
+  }
+}
+if (which === "rereads" || which === "all") {
+  results.rereads = [];
+  for (const watchers of [9, 29]) {
+    for (const delta of [false, true]) {
+      const r = await rereadLevel(watchers, delta, 200, 25 * 1024);
+      results.rereads.push(r);
+      console.log("re-reads after a save", JSON.stringify(r));
+    }
   }
 }
 console.log(JSON.stringify(results));
