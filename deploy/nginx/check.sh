@@ -45,6 +45,10 @@ echo 'export {}' > "$tmp/pad/assets/app.js"
 echo '// host' > "$tmp/pad/vendor/wasmer/service-worker-host.js"
 echo '// relay' > "$tmp/pad/vendor/preview/relay.js"
 echo '// sw' > "$tmp/pad/vendor/preview/sw.js"
+head -c 100000 /dev/zero > "$tmp/pad/vendor/wasmer/sdk.wasm"
+printf 'brotli-wasm' > "$tmp/pad/vendor/wasmer/sdk.wasm.br"
+head -c 4096 /dev/zero > "$tmp/pad/assets/plain.wasm"
+head -c 4096 /dev/zero > "$tmp/pad/assets/icons.ttf"
 echo '<!doctype html><title>pad</title>' > "$tmp/pad/index.html"
 echo '<!doctype html><title>Privacy — pad</title>' > "$tmp/pad/privacy.html"
 echo '<!doctype html><title>Terms — pad</title>' > "$tmp/pad/terms.html"
@@ -165,6 +169,17 @@ e=$(curl -s --interface 127.0.0.3 --resolve "code.rishwanth.dev:$PORT:127.0.0.1"
 [ "$e" = br ] && [ "$(cat "$tmp/enc")" = brotli ] && ok "a browser taking brotli gets the brotli copy" || bad "brotli: '$e', $(head -c 20 "$tmp/enc")"
 e=$(curl -s --interface 127.0.0.3 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" -H "Accept-Encoding: gzip" "http://code.rishwanth.dev:$PORT/packages/big.webc" -o "$tmp/enc" -D - | tr -d '\r' | grep -i '^content-encoding' | awk '{print $2}' || true)
 [ "$e" = gzip ] && [ "$(cat "$tmp/enc")" = gzipped ] && ok "one taking only gzip, the gzip copy" || bad "gzip: '$e', $(head -c 20 "$tmp/enc")"
+# The SDK's wasm, as the build stores it (compress-static.mjs): its brotli
+# copy, as wasm — a browser compiles it as it arrives only with that type.
+h=$(curl -s --interface 127.0.0.4 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" -H "Accept-Encoding: br, gzip" "http://code.rishwanth.dev:$PORT/vendor/wasmer/sdk.wasm" -o "$tmp/enc" -D - | tr -d '\r')
+[ "$(echo "$h" | grep -i '^content-encoding' | awk '{print $2}')" = br ] && [ "$(cat "$tmp/enc")" = brotli-wasm ] && echo "$h" | grep -qi '^content-type: application/wasm' &&
+    ok "the SDK's wasm goes as its stored brotli copy, typed as wasm" || bad "the SDK's wasm: $(echo "$h" | grep -i '^content-')"
+# And wasm or a font the build stored no copy of is compressed all the same:
+# until 16 November they went out raw, 4.6 MB of the SDK's to every first visit.
+for f in plain.wasm icons.ttf; do
+    e=$(curl -s --interface 127.0.0.4 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" -H "Accept-Encoding: gzip" "http://code.rishwanth.dev:$PORT/assets/$f" -o /dev/null -D - | tr -d '\r' | grep -i '^content-encoding' | awk '{print $2}' || true)
+    [ "$e" = gzip ] && ok "$f with no stored copy is compressed on the way" || bad "$f went out as '${e:-raw}'"
+done
 
 echo "pad_dns: $DNS at once per address, then a trickle"
 r=$(spend "$DNS" 127.0.0.1 /dns-query)

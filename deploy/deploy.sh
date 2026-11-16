@@ -217,6 +217,10 @@ node pad/scripts/brotli-packages.mjs
 VITE_PREVIEW_ORIGIN="${AJAR_PREVIEW_ORIGIN:-https://preview.rishwanth.dev}" \
 VITE_WISP_URL="${AJAR_WISP_URL:-wss://code.rishwanth.dev/wisp}" \
     npm run build:pad --silent >/dev/null
+# And of the build itself: a brotli and a gzip copy beside each script, style,
+# wasm and font, for nginx to send as stored (compress-static.mjs). Without
+# them the SDK's 4.6 MB of wasm went to every first visit uncompressed.
+node pad/scripts/compress-static.mjs
 say "$(ls pad/public/packages/*.webc | wc -l | tr -d ' ') wasm packages mirrored, $(du -sh pad/public/packages | cut -f1) raw"
 
 if [ "$FRONT" = caddy ]; then
