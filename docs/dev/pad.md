@@ -1389,6 +1389,14 @@ started; once settled, its bytes fetched and still nothing started; Run then
 starts it and runs. And with data saver on, nothing fetched unasked.
 `check.ts` holds `spareConnection` to each case.
 
+On production after 7a69f59, from the maintainer's office, each a first visit
+with nothing cached (`first-visit.mjs`): somebody who only edits had the
+editor at 1.0 s and 1.02 MB, the page whole at 1.09 MB, and nothing of the
+runtime asked for until 3.0 s; on that fast link its bytes then came by
+themselves, done at 5.2 s, and it was not started. Somebody pressing Run at
+once had the editor at 0.64 s and the starter's output at 4.5 s — the Run
+starting the runtime itself, as nothing had been fetched yet.
+
 `user-check.mjs` holds back `sw.js` and the terminal's code on a first visit
 — in its own server: a service worker fetches its script past Playwright's
 routes, and a page with routes has its requests sent past its worker — and

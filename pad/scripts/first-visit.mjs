@@ -37,7 +37,7 @@ context.on("requestfinished", async (req) => {
   try {
     const sizes = await req.sizes();
     const res = await req.response();
-    seen.push({ url: req.url(), end: at(), start: at() - (req.timing().responseEnd > 0 ? (req.timing().responseEnd - req.timing().startTime) / 1000 : 0), body: sizes.responseBodySize, enc: (await res?.allHeaders())?.["content-encoding"] ?? "-", sw: !!req.serviceWorker() });
+    seen.push({ url: req.url(), end: at(), start: (req.timing().startTime - t0) / 1000, body: sizes.responseBodySize, enc: (await res?.allHeaders())?.["content-encoding"] ?? "-", sw: !!req.serviceWorker() });
   } catch {}
 });
 await page.goto(`${ORIGIN}/`, { waitUntil: "commit" });
