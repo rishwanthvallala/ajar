@@ -251,8 +251,9 @@ try {
   await page.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__pad && window.monaco, null, { timeout: 60_000 });
   await page.click("#terminal");
-  // The runtime starts at load. A typed command answering is the only proof
-  // that it has — the button and the prompt are both there before it is.
+  // Going into the terminal starts the runtime (App.warm). A typed command
+  // answering is the only proof that it is up — the button and the prompt
+  // are both there before it is.
   await type("echo ready");
   await shows(/\nready/, 240_000);
   await idle();
@@ -1388,6 +1389,70 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     }));
     expect("and the runtime's packages came through the service worker all the same", stats?.intercepted > 0, JSON.stringify(stats));
     await cold.close();
+  }
+
+  // ---- a first visit that only edits: nothing of the runtime started ----
+  // Most people only edit — data, most of them — and until 16 November the
+  // runtime started for every visitor as the page opened: 15 of a first
+  // visit's 16.5 MB, and seconds of compiling, for somebody who never ran
+  // anything. Now its bytes come once the page has settled, on a connection
+  // that can spare them, and it starts only when somebody runs something or
+  // edits a file Run can run (App.warm, App.prefetchSoon).
+  section = "a first visit that only edits";
+  if (!LIVE) {
+    const newcomer = async (connection) => {
+      const browser = await marked(await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined }), ORIGIN);
+      const context = await browser.newContext();
+      if (connection) await context.addInitScript((c) => Object.defineProperty(navigator, "connection", { value: c, configurable: true }), connection);
+      const tab = await context.newPage();
+      const fetched = [];
+      context.on("request", (r) => { if (/\.webc$|wasmer_sdk_js_bg\.wasm$/.test(new URL(r.url()).pathname)) fetched.push(new URL(r.url()).pathname); });
+      await tab.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
+      await tab.waitForFunction(() => window.__pad?.runtime && window.monaco?.editor.getEditors()[0]?.hasTextFocus(), null, { timeout: 60_000 });
+      return { browser, tab, fetched };
+    };
+    const state = (tab) => tab.evaluate(() => window.__pad.runtime());
+    // A table, made and typed into.
+    const { browser: first, tab, fetched } = await newcomer(null);
+    await tab.click('#files button[aria-label="New file"]');
+    await tab.locator("#files input.name-input").fill("table.csv");
+    await tab.locator("#files input.name-input").press("Enter");
+    await tab.waitForFunction(() => window.__pad.active() === "table.csv", null, { timeout: 15_000 });
+    await tab.keyboard.type("name,qty\nalpha,1\n");
+    const editing = await state(tab);
+    expect("a newcomer editing data starts no runtime", !editing.started, JSON.stringify(editing));
+    // Settled, its bytes come by themselves — the SDK's wasm and every
+    // package a start loads — and still nothing is started. A build without
+    // the mirror, as CI's, has no packages here to fetch.
+    const mirror = await fetch(`${ORIGIN}/packages/registry.json`).then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("json"), () => false);
+    const settled = await tab.waitForFunction(() => ["fetched", "failed", "skipped"].includes(window.__pad.runtime().bytes), null, { timeout: 120_000 }).then(() => state(tab), () => null);
+    const webc = fetched.filter((p) => p.endsWith(".webc")).length;
+    expect(
+      `once the page has settled the runtime's bytes come by themselves, and nothing is started (${webc} packages)`,
+      settled !== null && !settled.started && (mirror ? settled.bytes === "fetched" && webc >= 5 : settled.bytes === "failed"),
+      JSON.stringify({ settled, mirror, fetched }),
+    );
+    // Run, which starts it then. Its output counted against what the
+    // terminal showed already: the terminal opens on the pad's last run, and
+    // this server keeps one last run for every pad, another section's.
+    await tab.click('#files .row.file[data-path="main.py"]');
+    const outputs = () => tab.evaluate(() => ((document.querySelector("#terminal .xterm-rows")?.innerText ?? "").match(/wrote 10 rows/g) ?? []).length);
+    const already = await outputs();
+    const pressed = Date.now();
+    await tab.locator("#run").click();
+    const ran = await tab.waitForFunction((n) => ((document.querySelector("#terminal .xterm-rows")?.innerText ?? "").match(/wrote 10 rows/g) ?? []).length > n, already, { timeout: 480_000 }).then(() => true, () => false);
+    expect(
+      `and Run starts it, and runs (${((Date.now() - pressed) / 1000).toFixed(1)} s from the button)`,
+      ran && (await state(tab)).started,
+      JSON.stringify({ already, now: await outputs(), ran }),
+    );
+    await first.close();
+    // Data saver on: nothing of the runtime fetched unasked.
+    const { browser: second, tab: thrifty, fetched: none } = await newcomer({ saveData: true, effectiveType: "4g", downlink: 10 });
+    const thrift = await thrifty.waitForFunction(() => window.__pad.runtime().bytes !== "not yet", null, { timeout: 60_000 }).then(() => state(thrifty), () => null);
+    await thrifty.waitForTimeout(1_000);
+    expect("with data saver on, nothing of the runtime is fetched unasked", thrift?.bytes === "skipped" && !thrift.started && none.length === 0, JSON.stringify({ thrift, none }));
+    await second.close();
   }
 
   // ---- the guide, at /help ----

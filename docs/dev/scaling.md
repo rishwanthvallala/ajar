@@ -220,6 +220,14 @@ both ways at once: the SDK's wasm uncompressed, as it went out from the
 1.2 s less before anybody new can run anything. `pad/scripts/first-visit.mjs`
 measures a first visit like this one.
 
+**And the runtime waits to be asked for** (16 November; pad.md, "The runtime
+waits to be asked for"). It started for every visitor as the page opened; now
+its 15 MB come by themselves only once the page has settled, on a connection
+that can spare them, and it starts only when somebody runs something. A first
+visit that only edits is about 1.2 MB on a slow link or with data saver on —
+the page, the editor and the terminal — and on a fast one the rest arrives in
+the background, unstarted.
+
 ### 7. pip goes through one Node process on this box — in code, partly reported
 
 The egress endpoint (`deploy/wisp-server.mjs`) allows **64 tunnels in all and

@@ -175,6 +175,114 @@ export function prefetch(): void {
   void sdk();
 }
 
+/** What a sandbox starts with besides the shell (`Runtime.start`). */
+const START_PACKAGES = [
+  PACKAGES.python,
+  PACKAGES.grep,
+  PACKAGES.sed,
+  PACKAGES.find,
+  PACKAGES.jq,
+  PACKAGES.gzip,
+  PACKAGES.tar,
+  PACKAGES.quickjs,
+];
+
+/**
+ * The files of this origin's mirror a runtime's start downloads: the shell
+ * and `START_PACKAGES` at their pins, and what they use. Read off the
+ * recorded registry answers and the mirror's manifest, as the service worker
+ * serves them (sw.js), which hold one version of each package used.
+ */
+async function startFiles(): Promise<string[]> {
+  const [recorded, manifest] = await Promise.all([
+    fetch("/packages/registry.json").then((r) => r.json()),
+    fetch("/packages/manifest.json").then((r) => r.json()),
+  ]) as [Record<string, unknown>, Record<string, string>];
+  type Version = { version: string; v3?: { piritaDownloadUrl?: string | null; webcManifest?: string | null } };
+  const answers = ((recorded as { answers?: unknown }).answers ?? recorded) as Record<string, { data?: { getPackage?: { versions?: Version[] } } }>;
+  const files = new Set<string>();
+  const seen = new Set<string>();
+  const add = (spec: string) => {
+    const at = spec.lastIndexOf("@");
+    const name = at > 0 ? spec.slice(0, at) : spec;
+    const pin = at > 0 && spec.slice(at + 1).startsWith("=") ? spec.slice(at + 2) : null;
+    if (seen.has(name)) return;
+    seen.add(name);
+    const versions = answers[name]?.data?.getPackage?.versions ?? [];
+    const mirrored = (v: Version) => manifest[v.v3?.piritaDownloadUrl ?? ""];
+    // The pinned version; for what a package uses, by a range, the one
+    // version the mirror has.
+    const version = versions.find((v) => (pin === null || v.version === pin) && mirrored(v));
+    const file = version && mirrored(version);
+    if (!version || !file) return;
+    files.add(file);
+    try {
+      const uses = (JSON.parse(version.v3?.webcManifest ?? "{}") as { use?: Record<string, string> }).use ?? {};
+      for (const dep of Object.values(uses)) add(dep);
+    } catch {
+      // A manifest that does not parse: its own file is still fetched.
+    }
+  };
+  for (const spec of [PACKAGES.shell, ...START_PACKAGES]) add(spec);
+  return [...files];
+}
+
+let fetching: Promise<boolean> | null = null;
+
+/**
+ * Fetch what a runtime's start will download — the SDK's wasm and the
+ * packages — into the browser's cache, and start nothing: no module run, no
+ * wasm compiled, no sandbox. One file at a time and at low priority, so that
+ * whatever the page asks for meanwhile goes first; each body read through and
+ * let go, not kept. When the runtime does start, all of it comes from the
+ * cache. See `App.prefetchSoon`. Whether all of it came: with no mirror on
+ * this origin — a build without the packages, as CI's — none does, and the
+ * runtime fetches its packages from Wasmer's CDN when it starts.
+ */
+export function prefetchBytes(): Promise<boolean> {
+  fetching ??= (async () => {
+    const urls = [`${__SDK_URL__}/pkg/wasmer_sdk_js_bg.wasm`, ...(await startFiles())];
+    if (urls.length === 1) return false;
+    for (const url of urls) {
+      const res = await fetch(url, { priority: "low" } as RequestInit);
+      if (!res.ok) return false;
+      const reader = res.body?.getReader();
+      if (reader) for (;;) if ((await reader.read()).done) break;
+    }
+    return true;
+  })().catch(() => {
+    // Not kept: the runtime fetches whatever is missing when it starts.
+    fetching = null;
+    return false;
+  });
+  return fetching;
+}
+
+/** Megabits a second below which the runtime is not fetched unasked. */
+export const SPARE_MBPS = 5;
+
+/**
+ * Whether a connection can spare the runtime's 15 MB without being asked: not
+ * in data saver, not a slow link — by the browser's own estimate where it
+ * gives one (Chromium's `navigator.connection`), and where it does not
+ * (Safari, Firefox) by how fast `loaded`, this page's own larger downloads,
+ * came. A page whose downloads all came from the cache is a returning
+ * visitor's, whose runtime is in the cache too: it spares them.
+ */
+export function spareConnection(
+  connection: { saveData?: boolean; effectiveType?: string; downlink?: number } | undefined,
+  loaded: { transferSize: number; duration: number }[],
+): boolean {
+  if (connection?.saveData) return false;
+  if (connection?.effectiveType && connection.effectiveType !== "4g") return false;
+  if (typeof connection?.downlink === "number") return connection.downlink >= SPARE_MBPS;
+  const big = loaded.filter((e) => e.transferSize > 200_000 && e.duration > 0);
+  if (big.length === 0) return true;
+  const bits = big.reduce((sum, e) => sum + e.transferSize, 0) * 8;
+  const seconds = big.reduce((sum, e) => sum + e.duration, 0) / 1000;
+  return bits / seconds / 1e6 >= SPARE_MBPS;
+}
+
 export interface Ran {
   exitCode: number;
   stdout: string;
@@ -290,16 +398,7 @@ export class Runtime {
     const box = await wasmer.sandboxes.create({
       packages: [
         shellPkg,
-        ...(install?.packages ?? [
-          PACKAGES.python,
-          PACKAGES.grep,
-          PACKAGES.sed,
-          PACKAGES.find,
-          PACKAGES.jq,
-          PACKAGES.gzip,
-          PACKAGES.tar,
-          PACKAGES.quickjs,
-        ]),
+        ...(install?.packages ?? START_PACKAGES),
       ],
       shell: bash,
       // Omitted by default, which the SDK reads as `disabled` — that is why a

@@ -1341,7 +1341,7 @@ compressed. What it waited for:
 - **The service worker.** On a first visit `bootstrap.ts` waited for the
   worker that serves the runtime's packages to install — three files fetched,
   then an activation — before it made the app at all. The runtime alone waits
-  now (`AppHooks.mirrored`, in `ensureRuntime` and `warm`), so its first
+  now (`AppHooks.mirrored`, in `ensureRuntime`, `warm` and `prefetchSoon`), so its first
   download still goes through the worker. With nothing between the workspace
   and the app any more, `bootstrap.ts`'s own answer to Run, and its
   `data-wanted`, went too: `App` answers from the first paint.
@@ -1358,6 +1358,36 @@ slowed. The terminal and the shell are no later than they were: the runtime
 starts after the terminal, as before. The 500-file pad
 [above](#opening-a-pad-of-500-files), local, one run each: editor 0.29 →
 0.21 s, ready 0.36 → 0.26 s, its `find` answering 1.59 → 1.47 s.
+
+**The runtime waits to be asked for** (16 November). Until then it started for
+every visitor as soon as the folder was on screen (`App.warm`): the SDK's wasm
+and the packages a start loads — Python, bash, coreutils and the rest, 15 of a
+first visit's 16.5 MB — downloaded, then Python compiled and a shell opened,
+whether or not the visitor ever ran anything. Most people only edit, data most
+of them, and paid for it in bytes and in seconds of a busy CPU. Now:
+
+- **Opening a pad** is the editor and the terminal, as before — the terminal's
+  prompt and line editing are the page's own (`Console`), and need no runtime.
+- **Its bytes** come by themselves once the page has settled: loaded, drawn, 2
+  s more and the browser idle (`App.prefetchSoon`). Only on a connection that
+  can spare them: no data saver, and 5 Mbit/s or better by the browser's own
+  estimate where it gives one (Chromium's `navigator.connection`), or by how
+  fast this page's larger files came where it does not (`spareConnection`).
+  The SDK's wasm and the files of every package a start loads, worked out from
+  the mirror's recorded answers (`startFiles`), one at a time at low priority,
+  each body read through and dropped — into the browser's cache, nothing
+  compiled, nothing run (`prefetchBytes`).
+- **The start** — Python compiled, the shell opened — waits for somebody to
+  reach for it: Run, a command, going into the terminal, or editing a file Run
+  can run (`App.warmFor`). Editing a table, or anything Run does not run,
+  starts nothing, and nor does a change arriving from somebody else in such a
+  file. A Run on a fast link starts from the cache; on a slow one, or with data
+  saver on, it downloads what it needs then, as it did before 25 September.
+
+`user-check.mjs` has a newcomer type into a new `table.csv`: no runtime
+started; once settled, its bytes fetched and still nothing started; Run then
+starts it and runs. And with data saver on, nothing fetched unasked.
+`check.ts` holds `spareConnection` to each case.
 
 `user-check.mjs` holds back `sw.js` and the terminal's code on a first visit
 — in its own server: a service worker fetches its script past Playwright's

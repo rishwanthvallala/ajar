@@ -22,7 +22,7 @@ import { DOC_AWARENESS, DOC_NONE, DOC_UPDATE, DOC_WANT, Peers, streamFor } from 
 import { JavacBridge } from "./javac/bridge";
 import { FetchBridge } from "./fetch-bridge";
 import { PreviewBrowser } from "./preview";
-import { at, interpreterFor, prefetch, ROOT, Runtime } from "./runtime";
+import { at, interpreterFor, prefetch, prefetchBytes, ROOT, Runtime, spareConnection } from "./runtime";
 import { neededBy, quoted, runnerFor, TOOLCHAINS } from "./toolchains";
 import { type Finished, type Shell } from "./shell";
 import type { TerminalSession } from "./terminals";
@@ -51,6 +51,12 @@ import type { EditorGroupView } from "@ajar/workspace-ui";
  * browser that never will.
  */
 const DOC_ANSWER_WAIT = 5000;
+/**
+ * How long after the page has loaded the runtime's bytes are fetched unasked
+ * (`App.prefetchSoon`): after what somebody does first with the page, a save
+ * or a paste, has had the connection to itself.
+ */
+const PREFETCH_AFTER_MS = 2000;
 
 /**
  * How long a viewer's document may sit with updates it cannot place before it
@@ -394,6 +400,8 @@ export class App {
   /** Latest durable revision applied by this tab. */
   private storeSeq = 0;
   private prefetched = false;
+  /** The runtime's bytes fetched unasked, for the checks: see `prefetchSoon`. */
+  private bytes: "not yet" | "skipped" | "fetching" | "fetched" | "failed" = "not yet";
   /** See `AppHooks.mirrored`. */
   private readonly mirrored: Promise<unknown>;
   /** The runtime has started, not merely been asked for. */
@@ -611,6 +619,9 @@ export class App {
       counts: () => this.peers?.counts,
       room: () => this.peers?.seen,
       shellBusy: () => this.anyBusy,
+      // Whether the runtime has been started, is up, and whether its bytes
+      // were fetched unasked (`warm`, `prefetchSoon`).
+      runtime: () => ({ started: this.runtime !== null, ready: this.runtimeReady, bytes: this.bytes }),
       terminals: () => this.sessions.map((t) => ({ number: t.number, busy: t.busy, front: t === this.session })),
       preview: () => this.preview?.state(),
       lastOutput: () => this.session?.lastOutput ?? "",
@@ -719,9 +730,10 @@ export class App {
     if (this.disposed) return;
     void this.showLastRun();
     this.expose();
-    // Last, so the runtime is seeded with every file above and nothing it does
-    // competes with putting the editor on screen. See `warm`.
-    this.warm();
+    // The runtime is not started here: most of what people do is edit, and
+    // its bytes come once the page has settled, on a connection that can
+    // spare them. See `warm`.
+    this.prefetchSoon();
   }
 
   // ----------------------------------------------------------------- peers
@@ -1464,7 +1476,7 @@ export class App {
       }
     }
     this.editor.onDidChangeModelContent(() => {
-      this.warm();
+      this.warmFor(this.active);
       if (this.editor === editor) this.paintStarter();
       this.renderMarkdownSoon();
     });
@@ -1578,7 +1590,7 @@ export class App {
 
   /** A file's text changed, in its model or as text. */
   private changed(path: string): void {
-    this.warm();
+    this.warmFor(path);
     this.search?.invalidate();
     if (this.orphaned.has(path)) return;
     // A change the page just wrote in on somebody else's behalf is not an
@@ -2600,18 +2612,20 @@ export class App {
   // --------------------------------------------------------------- runtime
 
   /**
-   * Fetch and start the runtime as soon as the folder is on screen.
+   * Fetch and start the runtime, for somebody about to use it: who pressed
+   * Run, typed a command, went into the terminal, or is editing a file Run
+   * can run (`warmFor`). It does nothing twice.
    *
-   * It used to wait for the first keystroke, so that someone opening a link
-   * only to read it downloaded nothing. Measured on 25 September, that made the
-   * commonest first act — pressing Run on the code as it stands — the slowest
-   * thing in the product: 7.7 to 10.1 s from the button to any output, all of
-   * it the download. Started here, it overlaps the seconds spent reading.
-   *
-   * The price is paid by every first-time visitor, readers included: 18.6 MB,
-   * once, then cached for a year. A returning visitor downloads nothing, and
-   * starting here also puts the python start — 1.5 s from cache — behind them
-   * before they reach for Run. Editing still calls this; it does nothing twice.
+   * Until 16 November it started for everybody as soon as the folder was on
+   * screen. It had waited for the first keystroke before that, and measured
+   * on 25 September, that made pressing Run on the code as it stands the
+   * slowest thing in the product: 7.7 to 10.1 s from the button to any
+   * output, all of it the download. But most people only edit — data, most
+   * of them — and starting it for them cost every first visit 15 of its
+   * 16.5 MB and a couple of seconds of compiling, for nothing. Now the bytes
+   * come by themselves once the page has settled, if the connection can
+   * spare them (`prefetchSoon`), and only the start waits to be asked for: a
+   * Run on a fast link starts from the cache.
    */
   private warm(): void {
     if (this.prefetched) return;
@@ -2625,6 +2639,39 @@ export class App {
     void this.ensureRuntime()
       .then(() => this.session?.ensureShell())
       .catch(() => {});
+  }
+
+  /** `warm`, for an edit to `path` — a file Run can run. Editing data starts nothing. */
+  private warmFor(path: string): void {
+    if (interpreterFor(path)) this.warm();
+  }
+
+  /**
+   * The runtime's bytes, without starting it, once the page has settled —
+   * loaded, drawn, and the browser idle a moment — and only on a connection
+   * that can spare them: no data saver, and fast, by the browser's estimate or
+   * by how fast this page came (`spareConnection`). One file at a time, at low
+   * priority (`prefetchBytes`). On a slow link nothing comes unasked, and Run
+   * downloads what it needs then.
+   */
+  private prefetchSoon(): void {
+    const settled = () => {
+      if (this.disposed || this.prefetched) return;
+      const loaded = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+      const connection = (navigator as { connection?: Parameters<typeof spareConnection>[0] }).connection;
+      if (!spareConnection(connection, loaded)) {
+        this.bytes = "skipped";
+        return;
+      }
+      this.bytes = "fetching";
+      void this.mirrored.then(prefetchBytes).then((all) => {
+        this.bytes = all ? "fetched" : "failed";
+      });
+    };
+    const idle = (window as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => void }).requestIdleCallback;
+    const later = () => setTimeout(() => (idle ? idle(settled, { timeout: 5_000 }) : settled()), PREFETCH_AFTER_MS);
+    if (document.readyState === "complete") later();
+    else window.addEventListener("load", later, { once: true, signal: this.events.signal });
   }
 
   private ensureRuntime(): Promise<Runtime> {
@@ -3286,6 +3333,9 @@ export class App {
   private async openTerminal(): Promise<void> {
     if (this.sessions.length) return;
     await this.addTerminal(this.el.terminal);
+    // Going into the terminal is reaching for the runtime: started then, it is
+    // up by the time the first command is typed.
+    this.el.terminal.addEventListener("focusin", () => this.warm(), { once: true, signal: this.events.signal });
     this.el.newTerminal.title = "Another terminal, in the same folder (its own bash)";
     this.el.newTerminal.onclick = () => void this.addTerminal();
     this.el.split.title = "Two terminals side by side";

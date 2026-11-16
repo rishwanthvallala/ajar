@@ -5,7 +5,7 @@
  * this page is driven by `scripts/browser-check.mjs` under headless Chromium.
  */
 import { parsePadLink } from "./access";
-import { interpreterFor, mirrorPackages, Runtime } from "./runtime";
+import { interpreterFor, mirrorPackages, Runtime, SPARE_MBPS, spareConnection } from "./runtime";
 import { DelimitedState, tokenizeLine } from "@ajar/workspace-ui/delimited-tokens";
 import { applied, carryOver, merge, putBack } from "./carry";
 import type * as Monaco from "monaco-editor";
@@ -1444,6 +1444,22 @@ async function main() {
     const peers = new Peers("ws://127.0.0.1:9/", "nowhere", { onMoved: () => {}, onPresence: () => {}, onDoc: () => {} });
     is(peers.doc(1, DOC_UPDATE, new Uint8Array(MAX_DOC_MESSAGE - 8), "a-long-enough-name.txt"), false, "a name counts toward the relay's limit");
     peers.close();
+  }
+
+  // ---- whether the runtime's bytes are fetched unasked ----
+  //
+  // Most people only edit, and the runtime is 15 of a first visit's 16.5 MB:
+  // it comes by itself only on a connection that can spare it (App.prefetchSoon).
+  {
+    const fast = [{ transferSize: 600_000, duration: 300 }]; // 16 Mbit/s
+    const slow = [{ transferSize: 600_000, duration: 2_400 }]; // 2 Mbit/s
+    is(spareConnection({ saveData: true, effectiveType: "4g", downlink: 10 }, fast), false, "data saver on: never, however fast");
+    is(spareConnection({ effectiveType: "3g", downlink: 10 }, fast), false, "a link the browser calls 3g: no");
+    is(spareConnection({ effectiveType: "4g", downlink: SPARE_MBPS }, slow), true, "the browser's own estimate, when it has one, over this page's");
+    is(spareConnection({ effectiveType: "4g", downlink: 1.5 }, fast), false, "and below the bar it says no");
+    is(spareConnection(undefined, fast), true, "with no estimate (Safari, Firefox), a page that came fast: yes");
+    is(spareConnection(undefined, slow), false, "and one that came slowly: no");
+    is(spareConnection(undefined, [{ transferSize: 0, duration: 5 }]), true, "a page all from the cache is a return visit, whose runtime is cached too");
   }
 
   // ---- the seed's client id ----
