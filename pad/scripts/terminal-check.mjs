@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 const { chromium } = createRequire(new URL("../../web/package.json", import.meta.url))("playwright");
+import { marked } from "./check-mark.mjs";
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5207;
 const LIVE = process.env.PAD_ORIGIN ?? null;
@@ -53,7 +54,9 @@ if (!LIVE) await new Promise((r) => server.listen(PORT, r));
 const ORIGIN = LIVE ?? `http://127.0.0.1:${PORT}`;
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-terminal-")));
-const context = await chromium.launchPersistentContext(profile, { channel: process.env.PAD_BROWSER_CHANNEL || undefined, headless: true, viewport: { width: 1280, height: 800 } });
+// Marked as a check's, so that on the live site none of this is counted as
+// use (check-mark.mjs).
+const context = await marked(await chromium.launchPersistentContext(profile, { channel: process.env.PAD_BROWSER_CHANNEL || undefined, headless: true, viewport: { width: 1280, height: 800 } }), ORIGIN);
 const page = context.pages()[0] ?? (await context.newPage());
 
 let failures = 0;

@@ -359,6 +359,9 @@ async fn count_run(
     let Ok(run) = serde_json::from_slice::<Run>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
+    if is_check(&headers) {
+        return StatusCode::NO_CONTENT;
+    }
     let from = crate::caller_ip(&headers, peer.ip(), state.trust_forwarded);
     let usage = state.usage.clone();
     let counted =
@@ -367,6 +370,22 @@ async fn count_run(
         warn!("counting a run failed: {e}");
     }
     StatusCode::NO_CONTENT
+}
+
+/// The mark a check puts on what it does — the cookie `ajar_check`, which a
+/// browser sends with the page's requests and its room's socket alike, or the
+/// header `x-ajar-check` from a script — so that none of it is counted.
+///
+/// The checks run against production too (`PAD_ORIGIN=…`), each visit a
+/// first one that opens pads and runs programs, and until 16 November their
+/// visits were a good part of what these counts showed
+/// (`scripts/usage-history.py`). Anyone may send the mark; all it does is
+/// leave them out of the counts.
+pub const CHECK_COOKIE: &str = "ajar_check";
+
+pub fn is_check(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-ajar-check")
+        || crate::http_accounts::cookie(headers, CHECK_COOKIE).is_some()
 }
 
 /// Count a pad's page opening it, off the request's way.

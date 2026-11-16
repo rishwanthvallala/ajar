@@ -1443,6 +1443,74 @@ async fn a_page_that_has_the_pad_whole_at_a_sequence_is_sent_only_what_changed_s
 }
 
 #[tokio::test]
+async fn what_a_check_does_is_not_counted_as_use() {
+    // The live checks open pads and run programs on production as anybody
+    // does, and until 16 November their visits were much of what /admin's
+    // usage counts showed (usage::is_check).
+    let relay = Relay::new("");
+    relay.state.pads.write("p", &[put("a.txt", "x")]).unwrap();
+    let total = |pick: fn(&crate::usage::UsageStats) -> &Vec<crate::accounts::Day>| {
+        let stats = relay.state.usage.stats(2, crate::usage::now()).unwrap();
+        pick(&stats).iter().map(|d| d.n).sum::<i64>()
+    };
+    let run = |headers: &[(&str, &str)]| {
+        let mut all = vec![("content-type", "application/json")];
+        all.extend_from_slice(headers);
+        request(
+            "POST",
+            "/api/usage/run",
+            &all,
+            Body::from(r#"{"language":"python","via":"run"}"#),
+        )
+    };
+    for mark in [("cookie", "ajar_check=1"), ("x-ajar-check", "1")] {
+        let opened = relay
+            .call(get("/api/pad/p", &[("x-pad-open", "1"), mark]))
+            .await;
+        assert_eq!(opened.status, StatusCode::OK, "{mark:?}");
+        assert_eq!(
+            relay.call(run(&[mark])).await.status,
+            StatusCode::NO_CONTENT
+        );
+    }
+    // Counted off the request's way: wait for an unmarked one to land, then
+    // every count is that one alone.
+    relay.call(get("/api/pad/p", &[("x-pad-open", "1")])).await;
+    relay.call(run(&[])).await;
+    for _ in 0..100 {
+        if total(|s| &s.opens) == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(total(|s| &s.opens), 1, "only the unmarked open is counted");
+    assert_eq!(total(|s| &s.runs), 1, "only the unmarked run is counted");
+}
+
+#[tokio::test]
+async fn a_check_s_socket_is_in_the_room_and_not_among_the_people_online() {
+    // Marked by the cookie a check's browser sends with its room's socket as
+    // with everything else (usage::is_check, ws::Gate::counted).
+    let relay = Relay::new("");
+    let addr = relay.serve().await;
+    let hello = encoded(&peer_hello("p"));
+    let mut check = open(addr, &[("cookie", "ajar_check=1")]).await;
+    say(&mut check, &hello).await;
+    assert!(matches!(
+        next_control(&mut check).await,
+        Some(Control::Welcome { .. })
+    ));
+    let mut person = open(addr, &[]).await;
+    say(&mut person, &hello).await;
+    assert!(matches!(
+        next_control(&mut person).await,
+        Some(Control::Welcome { .. })
+    ));
+    let census = relay.state.registry.census();
+    assert_eq!((census.pad_rooms, census.pad_people), (1, 1), "{census:?}");
+}
+
+#[tokio::test]
 async fn the_limits_are_told_as_the_store_holds_pads_to_them() {
     let relay = Relay::with_ceiling("", 3 * 1024 * 1024 * 1024);
     let answer = relay.call(get("/api/limits", &[])).await;

@@ -1136,7 +1136,9 @@ async fn read_pad(
         Looked::Opened(opened) => opened,
     };
     if let (Some(pad), Ok(_)) = (counted, &opened) {
-        usage::count_open(&state, pad);
+        if !usage::is_check(&headers) {
+            usage::count_open(&state, pad);
+        }
     }
     match opened {
         // `exists` and who you are to this pad, then the stored object's own
@@ -2122,6 +2124,9 @@ async fn upgrade(
         session: user
             .and(http_accounts::session_token(&state, &headers))
             .map(|t| accounts::session_key(&t)),
+        // A check's socket is somebody in the room, and not one of the
+        // people online the usage counts keep (usage::is_check).
+        counted: !usage::is_check(&headers),
     };
     // Cap what one client may send in a single frame. The largest legitimate
     // payload is a workspace snapshot, which the store already refuses above

@@ -12,6 +12,8 @@ Read-only, and counts only — no name, email, address or pad name is printed:
 
 Our own test pads (load-*, loadtest-*, bench-*, pair-*) are left out of the
 pad counts; pads made by the live checks have ordinary names and are not.
+The usage counts leave the live checks out since 16 November (they mark
+themselves, docs/dev/accounts.md); before that, they include them.
 
     ssh ajar-relay 'sudo python3 -' < scripts/usage-history.py
 """

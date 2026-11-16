@@ -50,6 +50,9 @@ pub struct Gate {
     pub user: Option<i64>,
     /// The sign-in `user` came from, as the room remembers an owner by it.
     pub session: Option<crate::session::SessionKey>,
+    /// Whether this socket counts among the people online
+    /// (`usage::is_check`).
+    pub counted: bool,
 }
 
 /// The first byte of a pad's doc payload, from `pad/src/peers.ts`: asking for
@@ -337,6 +340,9 @@ pub async fn handle(
     };
 
     info!(session = %session_id, participant = me.id, role = ?me.role, "joined");
+    if !gate.counted {
+        registry.uncount(&session_id, me.id);
+    }
     if me.role == Role::Peer {
         beats.store(true, std::sync::atomic::Ordering::Relaxed);
     }

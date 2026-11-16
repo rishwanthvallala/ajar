@@ -25,6 +25,7 @@ import { createRequire } from "node:module";
 import { fail, finish, linkOf, ok, Procs, sleep, waitForHealth } from "./lib/wire.mjs";
 
 const { chromium } = createRequire(new URL("../web/package.json", import.meta.url))("playwright");
+import { marked } from "../pad/scripts/check-mark.mjs";
 
 const PORT = 8835;
 const LIVE = process.env.AJAR_RELAY ?? null;
@@ -87,7 +88,9 @@ async function main() {
   });
   const { session, key } = await linkOf(agent, 30_000);
 
-  browser = await chromium.launch({ headless: true });
+  // Marked as a check's, so that on the live relay none of this is counted
+  // as use (pad/scripts/check-mark.mjs).
+  browser = await marked(await chromium.launch({ headless: true }), HTTP);
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

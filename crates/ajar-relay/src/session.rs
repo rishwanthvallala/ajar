@@ -103,6 +103,10 @@ pub struct Session {
     /// version mismatch can be reported rather than felt.
     pub host_protocol: u32,
     next_id: u32,
+    /// Participants here for a check (`usage::is_check`), whom the census
+    /// leaves out of the people online. Ids are never given twice in a
+    /// session, so one left here after its socket goes counts nobody.
+    uncounted: HashSet<u32>,
 }
 
 impl Session {
@@ -118,6 +122,7 @@ impl Session {
             guests: HashMap::new(),
             owners: Default::default(),
             locked: false,
+            uncounted: HashSet::new(),
             host_protocol: ajar_proto::PROTOCOL_UNVERSIONED,
             // In a hosted session 1 is reserved for the host, so guests start
             // at 2. A peer session has no reserved id and starts at 1 — but
@@ -543,18 +548,27 @@ impl Registry {
     pub fn census(&self) -> RoomCensus {
         let mut c = RoomCensus::default();
         for s in self.sessions.iter() {
+            let counted = |conn: &Conn| !s.uncounted.contains(&conn.participant.id);
+            let guests = s.guests.values().filter(|g| counted(g)).count();
             match s.shape {
                 Shape::Peer => {
                     c.pad_rooms += 1;
-                    c.pad_people += s.guests.len();
+                    c.pad_people += guests;
                 }
                 Shape::Hosted => {
                     c.sessions += 1;
-                    c.session_people += s.guests.len() + usize::from(s.host.is_some());
+                    c.session_people += guests + usize::from(s.host.as_ref().is_some_and(counted));
                 }
             }
         }
         c
+    }
+
+    /// Leave `participant` out of the census: somebody here for a check.
+    pub fn uncount(&self, id: &str, participant: u32) {
+        if let Some(mut s) = self.sessions.get_mut(id) {
+            s.uncounted.insert(participant);
+        }
     }
 
     pub fn with<R>(&self, id: &str, f: impl FnOnce(&Session) -> R) -> Option<R> {
@@ -920,6 +934,37 @@ mod tests {
     }
 
     // ---- peer sessions ----------------------------------------------
+
+    #[test]
+    fn a_check_in_a_room_is_there_and_not_one_of_the_people_online() {
+        // The live checks join pads' rooms as people do, and the usage counts'
+        // peak of people online took them for people (usage::is_check).
+        let r = Registry::new();
+        let (a, _ra) = tx();
+        let (b, _rb) = tx();
+        let (person, _) = r.join_peer("pad", a, None).unwrap();
+        let (check, _) = r.join_peer("pad", b, None).unwrap();
+        assert_eq!(r.census().pad_people, 2);
+        r.uncount("pad", check.id);
+        let census = r.census();
+        assert_eq!(
+            (census.pad_rooms, census.pad_people),
+            (1, 1),
+            "the room is still there"
+        );
+        r.with("pad", |s| {
+            assert!(s.guests.contains_key(&check.id) && s.guests.contains_key(&person.id))
+        })
+        .unwrap();
+        // A hosted session's host is left out the same way.
+        let (h, _rh) = tx();
+        let host = r
+            .open_locked("session", h, false, ajar_proto::PROTOCOL_VERSION, None)
+            .unwrap();
+        assert_eq!(r.census().session_people, 1);
+        r.uncount("session", host.0.id);
+        assert_eq!(r.census().session_people, 0);
+    }
 
     #[test]
     fn signing_out_closes_only_the_owner_connections_that_sign_in_made() {

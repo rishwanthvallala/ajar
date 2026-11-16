@@ -92,7 +92,10 @@ front's config, one fresh-browser visit that runs a command
 (`PAD_ORIGIN=https://code.rishwanth.dev node pad/scripts/app-check.mjs`) — the
 Content-Security-Policy is real only there. Live checks share a rate limit (a
 runtime file 100 times at once per address, then two a minute): run them
-once, not in a loop; a 429 looks like a broken page.
+once, not in a loop; a 429 looks like a broken page. They mark themselves
+(`pad/scripts/check-mark.mjs`, the `ajar_check` cookie) so that `/admin`'s
+usage counts leave them out; a new live check opens its browser through
+`marked()` too.
 
 The agent (`crates/ajar`) is released separately, by tag; ask the maintainer
 before tagging one. A change to the wire format releases first (operations.md,

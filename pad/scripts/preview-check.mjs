@@ -21,6 +21,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const { chromium } = createRequire(import.meta.url)("playwright");
+import { marked } from "./check-mark.mjs";
 
 // Against the deployed site nothing local is involved: no relay to spawn, no
 // dist to serve, and the preview origin is already a real host. Without this
@@ -241,9 +242,11 @@ await fetch(`${ORIGIN}/api/pad/${name}`, {
   body: JSON.stringify({ writes: [{ path: "serve.py", content: SERVER }, { path: "app.py", content: APP }, { path: "api.py", content: API }] }),
 });
 
-const browser = await chromium.launch({
+// Marked as a check's, so that on the live site none of this is counted as
+// use (check-mark.mjs).
+const browser = await marked(await chromium.launch({
   channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
-});
+}), ORIGIN);
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log(`      pageerror: ${e.message.slice(0, 160)}`));
 page.on("console", (m) => m.type() === "error" && console.log(`      console: ${m.text().slice(0, 160)}`));

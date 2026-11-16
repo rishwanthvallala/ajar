@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { marked } from "./check-mark.mjs";
 
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5200;
@@ -147,9 +148,11 @@ const ok = (m) => results.push(`ok   ${m}`);
 const fail = (m) => results.push(`FAIL ${m}`);
 const is = (a, b, m) => (a === b ? ok(m) : fail(`${m} — got ${JSON.stringify(a)}`));
 
-const browser = await chromium.launch({
+// Marked as a check's, so that on the live site none of this is counted as
+// use (check-mark.mjs).
+const browser = await marked(await chromium.launch({
   channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
-});
+}), ORIGIN);
 const page = await browser.newPage();
 
 // The live site limits each file to 100 fetches an hour per address, and every
@@ -929,10 +932,10 @@ try {
     if (LIVE) fail("the live site has no /packages/registry.json, so every start still needs registry.wasmer.io");
     else results.push("note: no registry.json in this build — run fetch-packages.mjs --registry-only; the check without the registry is skipped");
   } else {
-    const cut = await chromium.launch({
+    const cut = await marked(await chromium.launch({
       channel: process.env.PAD_BROWSER_CHANNEL || (process.platform === "win32" ? "msedge" : undefined),
       args: ["--host-resolver-rules=MAP registry.wasmer.io ~NOTFOUND"],
-    });
+    }), ORIGIN);
     try {
       const tab = await cut.newPage();
       watchLimits(tab, "no registry");

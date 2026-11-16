@@ -27,6 +27,9 @@ const which = process.argv[2] ?? "all";
 const ADDR = (process.env.ADDR_HEADER ?? "x-forwarded-for").toLowerCase();
 const BIG_READERS = (process.env.BIG_READERS ?? "1,8,32,64").split(",").map(Number);
 const REREADS = (process.env.REREADS ?? "9:whole,9:delta,29:whole,29:delta").split(",").map((r) => r.split(":"));
+// Every request marked as a check's, so a relay counting use leaves it out
+// (usage.rs, `is_check`).
+const MARK = { "x-ajar-check": "1" };
 
 let addresses = 0;
 const address = () => {
@@ -44,7 +47,7 @@ const text = (bytes, seed) => `${"x".repeat(Math.max(0, bytes - 12))}${String(se
 async function put(name, writes, from = address()) {
   const res = await fetch(`${RELAY}/api/pad/${name}`, {
     method: "PUT",
-    headers: { "content-type": "application/json", [ADDR]: from },
+    headers: { "content-type": "application/json", [ADDR]: from, ...MARK },
     body: JSON.stringify({ writes }),
   });
   await res.arrayBuffer();
@@ -72,7 +75,7 @@ async function readLevel(name, c) {
     while (Date.now() < end) {
       const t = performance.now();
       try {
-        const res = await fetch(`${RELAY}/api/pad/${name}`, { headers: { [ADDR]: from } });
+        const res = await fetch(`${RELAY}/api/pad/${name}`, { headers: { [ADDR]: from, ...MARK } });
         const body = await res.arrayBuffer();
         statuses[res.status] = (statuses[res.status] ?? 0) + 1;
         if (res.status === 200) {
@@ -131,7 +134,7 @@ const frame = (channel, stream, target, payload) => {
 /** One peer in pad `room`: says hello, and resolves with its id once welcomed. */
 function peer(room, onDoc) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_URL, { headers: { [ADDR]: address() } });
+    const ws = new WebSocket(WS_URL, { headers: { [ADDR]: address(), ...MARK } });
     ws.binaryType = "nodebuffer";
     const timer = setTimeout(() => reject(new Error("no welcome")), 15000);
     ws.on("open", () => ws.send(frame(0x01, 0, 0, Buffer.from(JSON.stringify({ t: "hello", session: room, role: "peer" })))));
@@ -199,7 +202,7 @@ async function rereadLevel(watchers, delta, files, each) {
   const name = `load-rr-${delta ? "d" : "w"}-${watchers}-${Date.now().toString(36)}`;
   await seed(name, files, each);
   const writer = address();
-  const first = await (await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-pad-open": "1", [ADDR]: writer } })).json();
+  const first = await (await fetch(`${RELAY}/api/pad/${name}`, { headers: { "x-pad-open": "1", [ADDR]: writer, ...MARK } })).json();
   const people = Array.from({ length: watchers }, () => ({ from: address(), seq: first.seq }));
   const times = [];
   let bytes = 0;
@@ -216,6 +219,7 @@ async function rereadLevel(watchers, delta, files, each) {
       const res = await fetch(`${RELAY}/api/pad/${name}`, {
         headers: {
           [ADDR]: p.from,
+          ...MARK,
           "x-pad-seq": String(p.seq),
           ...(delta ? { "x-pad-since": `${p.seq}.${first.created_ms}` } : {}),
         },

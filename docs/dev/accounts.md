@@ -453,6 +453,20 @@ Kept: the daily counts about thirteen months, the five-minute figures 30
 days. The page says when counting began, so an empty chart before it reads
 as no counting, not no use.
 
+**Our own checks are not counted** (16 November). The live checks —
+`app-check.mjs` and the others run with `PAD_ORIGIN` against production —
+open pads, run programs and sit in rooms as people do, every browser a
+first visit, and `scripts/usage-history.py` showed them to be much of what
+these counts held. Their browsers carry the cookie `ajar_check=1`
+(`pad/scripts/check-mark.mjs`), which a browser sends with the page's
+requests and its room's socket alike; a script can send `x-ajar-check`
+instead (`relay-load.mjs` does). The relay counts no open and no run that
+carries either, and its census leaves out a socket that joined with one
+(`usage::is_check`, `Registry::uncount`). The check's pads and saves are
+real as anyone's: only the counting skips it. Anybody may send the mark,
+and all it does is leave them out. Counts from before the 16th still
+include the checks.
+
 **Signing out ends what the sign-in gave, in the room too** (4 October).
 Owner is the one role a room hands out from a sign-in, and it was decided at
 the door: a page that signed out — or another tab of it — went on editing the

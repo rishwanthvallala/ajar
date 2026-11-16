@@ -29,6 +29,7 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 
 const { chromium } = createRequire(new URL("../../web/package.json", import.meta.url))("playwright");
+import { marked } from "./check-mark.mjs";
 const ROOT = fileURLToPath(new URL("../dist/", import.meta.url));
 const PORT = 5208;
 const LIVE = process.env.PAD_ORIGIN ?? null;
@@ -146,12 +147,14 @@ const BIN = LIVE ? "https://httpbin.org" : `http://bin.test:${BIN_PORT}`;
 const CLOSED = LIVE ? "https://example.com/" : `http://bin.test:${BIN_PORT}/closed`;
 
 const profile = process.env.PROFILE ?? (await mkdtemp(join(tmpdir(), "pad-user-")));
-const context = await chromium.launchPersistentContext(profile, {
+// Marked as a check's, so that on the live site none of this is counted as
+// use (check-mark.mjs).
+const context = await marked(await chromium.launchPersistentContext(profile, {
   channel: process.env.PAD_BROWSER_CHANNEL || undefined,
   headless: true,
   viewport: { width: 1280, height: 800 },
   args: ["--host-resolver-rules=MAP bin.test 127.0.0.1"],
-});
+}), ORIGIN);
 const page = context.pages()[0] ?? (await context.newPage());
 const pageErrors = [];
 // Which part of the run a page error came from, and where in the page, so
@@ -1340,7 +1343,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
   if (!LIVE) {
     let release;
     holding = new Promise((r) => (release = r));
-    const cold = await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined });
+    const cold = await marked(await chromium.launch({ channel: process.env.PAD_BROWSER_CHANNEL || undefined }), ORIGIN);
     const first = await (await cold.newContext()).newPage();
     await first.goto(`${ORIGIN}/`, { waitUntil: "domcontentloaded" });
     const typeable = await first.waitForFunction(() => window.monaco?.editor.getEditors()[0]?.hasTextFocus(), null, { timeout: 60_000 }).then(() => true, () => false);
