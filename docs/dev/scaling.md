@@ -209,6 +209,17 @@ wasm and fonts on the fly besides: the SDK's wasm 4.6 MB → 1.2, awk's
 0.4 → 0.1, the page's main script 0.65 → 0.53. About 16.5 MB for a first
 visit, three quarters of it the runtime's packages and most of that Python.
 
+**After the fix** (689d1c7, deployed): **16.5 MB** for the same first visit —
+the SDK's wasm 1.17 MB, the page's scripts 0.98, awk's wasm 0.10, the font
+0.05, the packages 14.1 as before. Its times say little: the office network
+was three to four times slower than at the first measurement (the same,
+unchanged Python package came at 1.9 MB/s, against 7 before), and the visit
+took 9.3 s to the starter's output. The fair comparison is the same file
+both ways at once: the SDK's wasm uncompressed, as it went out from the
+14th, 4.8 MB in 2.40 s; as it goes out now, 1.2 MB in 1.19 s. On that link,
+1.2 s less before anybody new can run anything. `pad/scripts/first-visit.mjs`
+measures a first visit like this one.
+
 ### 7. pip goes through one Node process on this box — in code, partly reported
 
 The egress endpoint (`deploy/wisp-server.mjs`) allows **64 tunnels in all and
