@@ -195,6 +195,20 @@ origin fetches from EC2 are free; or Cloudflare, proposed on 5 November in
 egress — keeping the CORP and CORS headers the page needs; warm the runtime for
 a reader only once they act; brotli for the browsers that do not take zstd.
 
+**Measured, 16 November**, one first visit to production from the
+maintainer's office, nothing cached, pressing Run at once: the editor on
+screen at **1.2 s**, the starter's output at **4.9 s**, **20.6 MB** in all
+— the page's scripts 1.2 MB, the SDK's wasm 4.6 MB, the packages 14.1 MB
+(Python 9.3 of them), awk's wasm 0.4 MB. The SDK's wasm, awk's and the
+editor's font went out uncompressed: Caddy had compressed them on the fly,
+and nginx compresses only what `gzip_types` names, which left out wasm and
+fonts, from the switch on the 14th. The deploy now stores a brotli and a
+gzip copy of every script, style, wasm and font in the build
+(`pad/scripts/compress-static.mjs`, 22.4 MB → 5.0 MB), and nginx compresses
+wasm and fonts on the fly besides: the SDK's wasm 4.6 MB → 1.2, awk's
+0.4 → 0.1, the page's main script 0.65 → 0.53. About 16.5 MB for a first
+visit, three quarters of it the runtime's packages and most of that Python.
+
 ### 7. pip goes through one Node process on this box — in code, partly reported
 
 The egress endpoint (`deploy/wisp-server.mjs`) allows **64 tunnels in all and
