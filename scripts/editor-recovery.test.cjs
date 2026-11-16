@@ -23,6 +23,8 @@ function load(file) {
     if (name === './proto') return load('web/src/proto.ts');
     // Other UI/services aren't used by the methods under test.
     if (name === './peers') return { streamFor: () => 1 };
+    // Nothing here runs: an edit starts no runtime (App.warmFor).
+    if (name === './runtime') return { interpreterFor: () => null };
     return {};
   };
   const source = fs.readFileSync(file, 'utf8').replaceAll('import.meta.env', '({})');

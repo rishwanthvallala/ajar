@@ -1360,7 +1360,9 @@ export class App {
       // The document is also the source executed by the sandbox. Keeping only
       // Monaco current lets the next harmless command publish stale runtime
       // bytes over somebody else's edit.
-      void this.runtime?.then((rt) => this.intoSandbox(rt, path, () => doc.contents()));
+      // A runtime that fails to start is said where it was asked for (Run, a
+      // command); here, with none yet, there is no sandbox to write to.
+      void this.runtime?.then((rt) => this.intoSandbox(rt, path, () => doc.contents()), () => {});
     }
     else if (kind === DOC_AWARENESS) doc.applyAwareness(bytes);
     else if (kind === DOC_WANT) {
@@ -1715,7 +1717,7 @@ export class App {
     else this.renderFiles();
     // Into the sandbox too, so `python notes.py` works without pressing Run
     // first to bring the file into existence.
-    void this.runtime?.then((rt) => rt.write(name, ""));
+    void this.runtime?.then((rt) => rt.write(name, ""), () => {});
     // Saved now, empty as it is. Nothing changes in a file nobody has typed
     // in yet, so nothing used to save it: gone on reload, and never seen by
     // anyone else, until a command happened to publish it.
@@ -1737,7 +1739,7 @@ export class App {
   private addFolder(name: string): void {
     if (this.replacing) return;
     this.tree?.addPendingFolder(name);
-    void this.runtime?.then((rt) => rt.write(`${name}/${MARKER}`, "").catch(() => {}));
+    void this.runtime?.then((rt) => rt.write(`${name}/${MARKER}`, "").catch(() => {}), () => {});
     this.renderFiles();
     if (this.viewer) return this.say("", "a new folder here stays in this tab");
     void this.keepFolder(name);
