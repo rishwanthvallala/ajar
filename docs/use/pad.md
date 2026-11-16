@@ -215,8 +215,8 @@ lines it stays quiet.
 
 The suggestions come from a small model that runs in your tab: your code is
 not sent anywhere for them. The model is a 17 MB download the first time you
-type in a pad, once per browser, and the **Suggest** switch beside Format
-turns it off. It does not load on a phone, or with your browser's data saver
+type code in a pad, once per browser — typing text, notes or a table does not
+fetch it — and the **Suggest** switch beside Format turns it off. It does not load on a phone, or with your browser's data saver
 on. They are yours alone: nobody else on the pad sees your grey text, only
 what you take.
 

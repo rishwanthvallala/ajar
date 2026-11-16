@@ -127,6 +127,19 @@ try {
   is(modelFetches(), 0, "nothing of the model is fetched before a key is typed");
   is(await page.getAttribute("#suggest", "aria-pressed"), "true", "the Suggest switch is there, on");
 
+  // A table typed into fetches none of it: the model suggests code, and its
+  // 17 MB went to somebody editing a table at their first key (complete.ts,
+  // NOT_CODE). Then the starter, which is code.
+  await page.click('#files button[aria-label="New file"]');
+  await page.locator("#files input.name-input").fill("table.csv");
+  await page.locator("#files input.name-input").press("Enter");
+  await page.waitForFunction(() => window.__pad?.active() === "table.csv", null, { timeout: 15_000 });
+  await page.keyboard.type("name,qty\nalpha,1\n");
+  await page.waitForTimeout(1500);
+  is(modelFetches(), 0, "typing into a table fetches nothing of the model");
+  await page.click('#files .row.file[data-path="main.py"]');
+  await page.waitForFunction(() => window.__pad?.active() === "main.py", null, { timeout: 15_000 });
+
   // The end of the starter file, and a function to write there.
   await page.click("#editor .view-lines");
   await page.keyboard.press("Control+End");
@@ -195,7 +208,9 @@ try {
   const stored = await fetch(`${ORIGIN}/api/pad/${name}`).then((r) => r.json());
   const mainFile = Object.values(stored.files ?? {}).find((f) => (f.content ?? "").includes("def median"));
   is(!!mainFile && mainFile.content.includes("return ordered[middle]"), true, "what was typed and taken is saved");
-  const synced = await peer.waitForFunction(() => window.monaco.editor.getEditors()[0]?.getModel()?.getValue().includes("return ordered[middle]"), null, { timeout: 20_000 })
+  // main.py's text, whichever file it has open: the table made above is in
+  // the pad too.
+  const synced = await peer.waitForFunction(() => window.__pad?.text("main.py")?.includes("return ordered[middle]"), null, { timeout: 20_000 })
     .then(() => true, () => false);
   is(synced, true, "the other browser has the file as typed, suggestion taken included");
   is(await ghost(peer), "", "and no grey text of the first browser's");

@@ -68,7 +68,8 @@ export class Suggestions {
     this.typed = this.editor.onKeyDown(e => {
       const key = e.browserEvent.key;
       if (this.on && this.state === "waiting" && !e.ctrlKey && !e.metaKey && (key.length === 1 || key === "Enter" || key === "Tab")) {
-        if (!this.editor.getOption(this.monaco.editor.EditorOption.readOnly)) this.start();
+        const language = this.editor.getModel()?.getLanguageId() ?? "plaintext";
+        if (!this.editor.getOption(this.monaco.editor.EditorOption.readOnly) && !NOT_CODE.has(language)) this.start();
       }
     });
   }
@@ -142,6 +143,15 @@ export class Suggestions {
     this.completer?.dispose();
   }
 }
+
+/**
+ * What typing does not fetch the model for: text, notes and data — a table is
+ * `csv` to the editor (the sheet's own). The model suggests code, and until 16 November
+ * the first key typed anywhere fetched its 17 MB: into a table, by somebody
+ * who only edits tables, for nothing. Typing code fetches it as before, and
+ * once it is here it suggests wherever it is asked.
+ */
+const NOT_CODE = new Set(["plaintext", "markdown", "json", "yaml", "xml", "ini", "csv", "tsv"]);
 
 /** Not on a phone, not with Save-Data, and only where the engine can run. */
 function suitable(): boolean {
