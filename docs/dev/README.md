@@ -27,6 +27,7 @@ settings and the conventions — in one place.
 | [networking.md](networking.md) | How the sandbox reaches PyPI and nothing else, the preview, and the measurements behind both |
 | [workspace-ui.md](workspace-ui.md) | The shell both clients share — layout, theme, languages and landmarks — the bundle measurements behind it, and what each product keeps for itself |
 | [testing.md](testing.md) | The gate, what each suite actually proves, and how checks lie |
+| [performance.md](performance.md) | Every number for how fast and how big the pad is — a newcomer's first open on four links, typing, Run, rooms, the server — measured in the perf lab, against a baseline, and the rule that no change trades one away unseen |
 | [scaling.md](scaling.md) | Where it breaks first as people, pads and rooms grow, on the one server — ranked, measured where it could be, with the load test and what was fixed on 30 October |
 | [cloudflare.md](cloudflare.md) | Cloudflare in front of the box, proposed on 5 November: a tunnel rather than the proxy alone (WARP and visitors' addresses), free bandwidth for the runtime, what has to hold behind it, the cutover step by step, backups to R2, and what moving all of it would take. Caddy's side of visitors' addresses is built |
 | [operations.md](operations.md) | Deploying, signing in and its secrets, reaching the server, setting up a new machine, the AWS account, cutting a release |

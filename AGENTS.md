@@ -120,6 +120,29 @@ before tagging one. A change to the wire format releases first (operations.md,
   `…/actions/runs/<id>/jobs`, then `…/check-runs/<job id>/annotations`, whose
   failure annotation carries the suite's `FAIL` lines.
 
+## Performance: change one, check them all
+
+Every number that says how fast and how big the pad is — a newcomer's first
+open on four links, a return visit, typing, saving, Run, a command, two people
+typing together, the relay's and nginx's requests a second, the load test,
+production's own first visit and DNS — is listed in
+[performance.md](docs/dev/performance.md), with a baseline in
+`docs/dev/perf-baseline.json`. **A change made for speed or size runs the
+scorecard before and after, and lands only with nothing else worse past its
+tolerance**:
+
+```sh
+npm run build:pad && node pad/scripts/compress-static.mjs     # the build the deploy ships
+node scripts/perf/run.mjs                    # the browser scenarios in the perf lab, ~25 min; exits 1 on a regression
+node scripts/perf/run.mjs --server           # and the relay, nginx and load benchmarks, when the relay or the front changed
+node scripts/perf/run.mjs --only live        # production, once, after the deploy (a live check)
+node scripts/perf/run.mjs --save             # the new numbers become the baseline, in the same commit as the change
+```
+
+The lab (`scripts/perf/lab.sh`) is production's nginx and the relay in podman
+on a shaped link, so a number moves because the code did, not the network.
+On mains power, lid open, nothing else heavy running.
+
 ## Tests
 
 The gate is `scripts/check.sh` (parts: `rust web ajar pad pad-more`);

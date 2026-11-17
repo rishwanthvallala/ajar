@@ -1,6 +1,7 @@
 # The box's nginx: Ubuntu 24.04's, with the modules deploy/nginx loads, for
-# run.sh's `nginx` mode to put in front of the relay.
+# run.sh's `nginx` mode to put in front of the relay, and for the perf lab
+# (scripts/perf/lab.sh) — with iproute2, whose `tc` shapes the lab's link.
 FROM docker.io/library/ubuntu:24.04
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
       nginx libnginx-mod-http-headers-more-filter libnginx-mod-http-brotli-static libnginx-mod-http-brotli-filter \
-      openssl ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*
+      openssl ca-certificates iproute2 curl >/dev/null && rm -rf /var/lib/apt/lists/*
