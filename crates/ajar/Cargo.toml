@@ -22,6 +22,11 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
 base64 = "0.23.1"
+# The folder as the only place a guest's file operations can reach: paths are
+# resolved beneath it, a component at a time, so a symlink swapped in while
+# one is under way leads nowhere outside (fileops.rs).
+cap-std = "4.0.3"
+regex = "1.13.1"
 sysinfo = "0.39.6"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "net", "time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }

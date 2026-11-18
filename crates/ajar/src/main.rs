@@ -7,6 +7,7 @@ mod archive;
 mod checkpoint;
 mod client;
 mod docs;
+mod fileops;
 mod guard;
 mod ids;
 mod limits;
@@ -159,6 +160,12 @@ struct Host {
     next_download: u32,
     /// Where a download being built off the loop comes back to it.
     built_tx: mpsc::UnboundedSender<Built>,
+    /// Uploads on their way in, by guest and the number the guest gave it.
+    uploads: HashMap<(u32, u32), Upload>,
+    /// Each guest's latest search, so one overtaken while it ran is dropped.
+    latest_find: HashMap<u32, u32>,
+    /// Where a search or a replace run off the loop comes back to it.
+    worked_tx: mpsc::UnboundedSender<Worked>,
 }
 
 impl Host {
@@ -410,6 +417,7 @@ async fn run() -> Result<()> {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<PtyOutput>();
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<PtyExit>();
     let (built_tx, mut built_rx) = mpsc::unbounded_channel::<Built>();
+    let (worked_tx, mut worked_rx) = mpsc::unbounded_channel::<Worked>();
     state.read_only = args.read_only;
     state.sync = if args.no_sync {
         " · keeping no copy — guests lose the files while you are away".into()
@@ -448,6 +456,9 @@ async fn run() -> Result<()> {
         latest_download: HashMap::new(),
         next_download: 1,
         built_tx,
+        uploads: HashMap::new(),
+        latest_find: HashMap::new(),
+        worked_tx,
     };
 
     let mut online = false;
@@ -565,6 +576,11 @@ async fn run() -> Result<()> {
             built = built_rx.recv() => {
                 if let Some(built) = built {
                     on_built(built, &mut host);
+                }
+            }
+            worked = worked_rx.recv() => {
+                if let Some(worked) = worked {
+                    on_worked(worked, &mut host);
                 }
             }
             output = out_rx.recv() => {
@@ -809,6 +825,19 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
                 reflow(host);
             }
             Pty::Close { pty_id } => {
+                // Read-only is watching: it stops a guest's keys, and so it
+                // stops this too. No page offered it until 0.0.9, and a
+                // guest who sent it anyway ended a terminal they could not
+                // type in.
+                if host.state.read_only {
+                    return Ok(());
+                }
+                let who = host
+                    .guests
+                    .get(&frame.target)
+                    .cloned()
+                    .unwrap_or_else(|| "someone".into());
+                host.log(format!("{who} closed terminal {pty_id}"));
                 host.ptys.remove(pty_id);
                 host.outbound.send(Frame::json(
                     Channel::Pty,
@@ -833,7 +862,20 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             }
         }
 
+        // stream 0 is JSON; anything else is bytes of an upload a guest was
+        // told would be taken.
+        Channel::Fs if frame.stream_id != STREAM_CONTROL => on_upload_bytes(frame, host),
+
         Channel::Fs => match frame.parse_json::<Fs>() {
+            Ok(
+                op @ (Fs::Make { .. }
+                | Fs::Rename { .. }
+                | Fs::Remove { .. }
+                | Fs::Put { .. }
+                | Fs::Find { .. }
+                | Fs::Replace { .. }
+                | Fs::Bytes { .. }),
+            ) => on_file_op(op, frame.target, host),
             Ok(Fs::Read { path }) => {
                 let content = host.workspace.read(&path);
                 host.outbound
@@ -1106,6 +1148,7 @@ fn broadcast_roster(host: &Host) -> Result<()> {
         &Presence::Roster {
             workspace: host.folder_name.clone(),
             people,
+            can: CAN.iter().map(|c| c.to_string()).collect(),
         },
     )?)?;
     Ok(())
@@ -1340,6 +1383,8 @@ fn forget(participant_id: u32, host: &mut Host) {
     host.passes.remove(&participant_id);
     host.downloads.retain(|(to, _), _| *to != participant_id);
     host.latest_download.remove(&participant_id);
+    host.uploads.retain(|(from, _), _| *from != participant_id);
+    host.latest_find.remove(&participant_id);
     for (path, contents) in host.docs.drop_reader(participant_id) {
         write_last(&path, &contents, host);
     }
@@ -1726,6 +1771,429 @@ fn pump(key: (u32, u32), host: &mut Host) {
             .outbound
             .send(Frame::stream(Channel::Fs, key.1, key.0, chunk));
         transfer.sent = end;
+    }
+}
+
+// ------------------------------------------------- a guest's file operations
+
+/// What this agent does for a guest's page beyond reading, said in the
+/// roster so a page offers it — and offers none of it to an agent that says
+/// nothing, which is every one before 0.0.9.
+const CAN: [&str; 3] = ["write", "search", "bytes"];
+
+/// A file on its way in from a guest: held until it is whole, then written.
+struct Upload {
+    path: String,
+    replace: bool,
+    expected: u64,
+    data: Vec<u8>,
+    /// How much the guest has been told arrived.
+    acked: u64,
+}
+
+/// How much of an upload arrives between acknowledgements. The page sends a
+/// megabyte ahead of the last one and waits.
+const UPLOAD_ACK_EVERY: u64 = 256 * 1024;
+
+/// A search or a replace, run off the loop and come back.
+enum Worked {
+    Found {
+        target: u32,
+        id: u32,
+        groups: Vec<ajar_proto::FoundFile>,
+        truncated: bool,
+    },
+    Replaced {
+        target: u32,
+        id: u32,
+        paths: Vec<String>,
+        done: fileops::Replaced,
+    },
+}
+
+/// The answer to a guest's request: how it ended, in words they can be shown.
+fn answer(host: &Host, target: u32, id: u32, result: Result<String, String>) {
+    let (ok, message) = match result {
+        Ok(message) => (true, message),
+        Err(message) => (false, message),
+    };
+    if let Ok(f) = Frame::json(Channel::Fs, target, &Fs::Done { id, ok, message }) {
+        let _ = host.outbound.send(f);
+    }
+}
+
+fn name_of(host: &Host, guest: u32) -> String {
+    host.guests
+        .get(&guest)
+        .cloned()
+        .unwrap_or_else(|| "someone".into())
+}
+
+/// The tree, and any document open on these paths, told now rather than
+/// when the watcher gets to it: a file made from the page is in the page's
+/// tree as the answer arrives.
+fn touched(paths: Vec<String>, host: &mut Host) {
+    on_fs_event(FsEvent::Touched(paths), host);
+}
+
+/// `rel` and every folder on the way to it.
+fn with_parents(rel: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(slash) = rel[at..].find('/') {
+        out.push(rel[..at + slash].to_string());
+        at += slash + 1;
+    }
+    out.push(rel.to_string());
+    out
+}
+
+/// What a guest's page asked to be done to the folder. Each is the agent
+/// acting on a guest's word, outside any sandbox: `fileops` holds every path
+/// to the folder and to what the tree shows, and this to what the host
+/// allows — nothing that changes anything while the session is read-only.
+fn on_file_op(op: Fs, guest: u32, host: &mut Host) {
+    const READ_ONLY: &str = "the host has made this session read-only";
+    let filter = host.workspace.filter();
+    let who = name_of(host, guest);
+    match op {
+        Fs::Make { id, path, dir } => {
+            if host.state.read_only {
+                return answer(host, guest, id, Err(READ_ONLY.into()));
+            }
+            let result = fileops::make(&filter, &path, dir);
+            if result.is_ok() {
+                host.log(format!(
+                    "{who} made {} {path}",
+                    if dir { "the folder" } else { "the file" }
+                ));
+                touched(with_parents(&path), host);
+            }
+            answer(host, guest, id, result.map(|()| String::new()));
+        }
+        Fs::Rename {
+            id,
+            from,
+            to,
+            replace,
+        } => {
+            if host.state.read_only {
+                return answer(host, guest, id, Err(READ_ONLY.into()));
+            }
+            // What is typed and not yet on disk goes to disk first, under
+            // the old name, so it moves with the file.
+            let open = host.docs.paths_under(&from);
+            for (doc, path, contents) in host.docs.pending_writes() {
+                if open.contains(&path) {
+                    save(doc, &path, &contents, host);
+                }
+            }
+            let result = fileops::rename(&filter, &from, &to, replace);
+            if result.is_ok() && from != to {
+                host.log(format!("{who} moved {from} to {to}"));
+                // Every page's tabs on it follow it, before the tree's patch
+                // closes the documents under the old name.
+                if let Ok(f) = Frame::json(
+                    Channel::Fs,
+                    TARGET_ALL,
+                    &Fs::Moved {
+                        from: from.clone(),
+                        to: to.clone(),
+                    },
+                ) {
+                    let _ = host.outbound.send(f);
+                }
+                let mut paths = with_parents(&to);
+                paths.push(from);
+                paths.extend(open);
+                touched(paths, host);
+            }
+            answer(host, guest, id, result.map(|()| String::new()));
+        }
+        Fs::Remove { id, path } => {
+            if host.state.read_only {
+                return answer(host, guest, id, Err(READ_ONLY.into()));
+            }
+            let open = host.docs.paths_under(&path);
+            let result = fileops::remove(&filter, &path);
+            if let Ok(was_dir) = result {
+                host.log(format!(
+                    "{who} deleted {}{path}",
+                    if was_dir { "the folder " } else { "" }
+                ));
+                let mut paths = vec![path];
+                paths.extend(open);
+                touched(paths, host);
+            }
+            answer(host, guest, id, result.map(|_| String::new()));
+        }
+        Fs::Put {
+            id,
+            path,
+            bytes,
+            replace,
+        } => {
+            if host.state.read_only {
+                return answer(host, guest, id, Err(READ_ONLY.into()));
+            }
+            if bytes > ajar_proto::UPLOAD_MAX_BYTES {
+                return answer(
+                    host,
+                    guest,
+                    id,
+                    Err(format!(
+                        "it is {}, and one upload is at most {}",
+                        crate::usage::human_bytes(bytes),
+                        crate::usage::human_bytes(ajar_proto::UPLOAD_MAX_BYTES)
+                    )),
+                );
+            }
+            if let Err(why) = fileops::may_put(&filter, &path, replace) {
+                return answer(host, guest, id, Err(why));
+            }
+            // One at a time from each guest: a second replaces the first.
+            host.uploads.retain(|(from, _), _| *from != guest);
+            let upload = Upload {
+                path,
+                replace,
+                expected: bytes,
+                data: Vec::new(),
+                acked: 0,
+            };
+            if bytes == 0 {
+                return finish_upload(guest, id, upload, host);
+            }
+            host.uploads.insert((guest, id), upload);
+            if let Ok(f) = Frame::json(Channel::Fs, guest, &Fs::Taking { id }) {
+                let _ = host.outbound.send(f);
+            }
+        }
+        Fs::Find {
+            id,
+            query,
+            folder,
+            match_case,
+            whole_word,
+        } => {
+            // Read off the loop: a large folder takes long enough to freeze
+            // every terminal while it is searched.
+            host.latest_find.insert(guest, id);
+            let entries = host.workspace.under("");
+            let tx = host.worked_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let options = fileops::FindOptions {
+                    query,
+                    folder,
+                    match_case,
+                    whole_word,
+                };
+                let (groups, truncated) = fileops::find(&filter, &entries, &options);
+                let _ = tx.send(Worked::Found {
+                    target: guest,
+                    id,
+                    groups,
+                    truncated,
+                });
+            });
+        }
+        Fs::Replace {
+            id,
+            query,
+            match_case,
+            whole_word,
+            replacement,
+            files,
+        } => {
+            if host.state.read_only {
+                return answer(host, guest, id, Err(READ_ONLY.into()));
+            }
+            // What is typed into any of them and not yet on disk goes to
+            // disk first: the guest's preview was of the file on disk, and a
+            // file written over typing would lose it.
+            let wanted: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+            for (doc, path, contents) in host.docs.pending_writes() {
+                if wanted.contains(&path) {
+                    save(doc, &path, &contents, host);
+                }
+            }
+            let tx = host.worked_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let options = fileops::FindOptions {
+                    query,
+                    folder: String::new(),
+                    match_case,
+                    whole_word,
+                };
+                let done = fileops::replace(&filter, &options, &replacement, &files);
+                let _ = tx.send(Worked::Replaced {
+                    target: guest,
+                    id,
+                    paths: wanted,
+                    done,
+                });
+            });
+        }
+        Fs::Bytes { id, path } => match fileops::view(&filter, &path) {
+            Ok(bytes) => {
+                host.log(format!(
+                    "{who} looked at {path} ({})",
+                    crate::usage::human_bytes(bytes.len() as u64)
+                ));
+                let stream = host.next_download;
+                host.next_download = host.next_download.wrapping_add(1).max(1);
+                if let Ok(f) = Frame::json(
+                    Channel::Fs,
+                    guest,
+                    &Fs::Sight {
+                        id,
+                        stream,
+                        path,
+                        bytes: bytes.len() as u64,
+                    },
+                ) {
+                    let _ = host.outbound.send(f);
+                }
+                // In one go: it is under the relay's bound on what it queues
+                // for one guest, and the page asks for one at a time.
+                for chunk in bytes.chunks(DOWNLOAD_CHUNK) {
+                    let _ = host.outbound.send(Frame::stream(
+                        Channel::Fs,
+                        stream,
+                        guest,
+                        chunk.to_vec(),
+                    ));
+                }
+            }
+            Err(why) => answer(host, guest, id, Err(why)),
+        },
+        _ => {}
+    }
+}
+
+/// Bytes of an upload. Acknowledged as they come, so the page sends no more
+/// than a window ahead; past what was announced, the upload is dropped.
+fn on_upload_bytes(frame: Frame, host: &mut Host) {
+    let key = (frame.target, frame.stream_id);
+    // Made read-only while it was on its way: it stops here.
+    if host.state.read_only {
+        if host.uploads.remove(&key).is_some() {
+            answer(
+                host,
+                key.0,
+                key.1,
+                Err("the host has made this session read-only".into()),
+            );
+        }
+        return;
+    }
+    let Some(upload) = host.uploads.get_mut(&key) else {
+        return;
+    };
+    upload.data.extend_from_slice(&frame.payload);
+    let received = upload.data.len() as u64;
+    if received > upload.expected {
+        host.uploads.remove(&key);
+        return answer(
+            host,
+            key.0,
+            key.1,
+            Err("more arrived than was announced".into()),
+        );
+    }
+    if received == upload.expected {
+        let Some(upload) = host.uploads.remove(&key) else {
+            return;
+        };
+        return finish_upload(key.0, key.1, upload, host);
+    }
+    if received - upload.acked >= UPLOAD_ACK_EVERY {
+        upload.acked = received;
+        if let Ok(f) = Frame::json(
+            Channel::Fs,
+            key.0,
+            &Fs::Got {
+                id: key.1,
+                received,
+            },
+        ) {
+            let _ = host.outbound.send(f);
+        }
+    }
+}
+
+/// An upload whole: written, said, and answered.
+fn finish_upload(guest: u32, id: u32, upload: Upload, host: &mut Host) {
+    let filter = host.workspace.filter();
+    let result = fileops::put(&filter, &upload.path, &upload.data, upload.replace);
+    if result.is_ok() {
+        let who = name_of(host, guest);
+        host.log(format!(
+            "{who} uploaded {} ({})",
+            upload.path,
+            crate::usage::human_bytes(upload.data.len() as u64)
+        ));
+        touched(with_parents(&upload.path), host);
+    }
+    answer(host, guest, id, result.map(|()| String::new()));
+}
+
+fn on_worked(worked: Worked, host: &mut Host) {
+    match worked {
+        Worked::Found {
+            target,
+            id,
+            groups,
+            truncated,
+        } => {
+            // Asked again, or gone, while this was being read.
+            if host.latest_find.get(&target) != Some(&id) {
+                return;
+            }
+            if let Ok(f) = Frame::json(
+                Channel::Fs,
+                target,
+                &Fs::Found {
+                    id,
+                    groups,
+                    truncated,
+                },
+            ) {
+                let _ = host.outbound.send(f);
+            }
+        }
+        Worked::Replaced {
+            target,
+            id,
+            paths,
+            done,
+        } => {
+            let who = name_of(host, target);
+            let count = |n: usize, one: &str, many: &str| {
+                format!("{n} {}", if n == 1 { one } else { many })
+            };
+            let mut said = format!(
+                "{} in {}",
+                count(done.replacements, "replacement", "replacements"),
+                count(done.files, "file", "files")
+            );
+            if done.files > 0 {
+                host.log(format!("{who} made {said}"));
+                // The open ones take it as they take any change on disk.
+                touched(paths, host);
+            }
+            if !done.skipped.is_empty() {
+                said.push_str(&format!(". Left alone: {}", done.skipped.join("; ")));
+            }
+            let result = if done.files > 0 || done.skipped.is_empty() {
+                Ok(format!("{said}."))
+            } else {
+                Err(format!(
+                    "nothing was changed. Left alone: {}",
+                    done.skipped.join("; ")
+                ))
+            };
+            answer(host, target, id, result);
+        }
     }
 }
 

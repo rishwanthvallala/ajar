@@ -444,7 +444,151 @@ pub enum Fs {
         path: String,
         message: String,
     },
+
+    // What follows is what a guest's page asks the host to do to the folder
+    // beyond reading it, since 0.0.9. An agent from before it does not know
+    // these and drops them, so a page asks only a host whose roster says it
+    // can (`Presence::Roster::can`). Each request carries a number, and its
+    // answer the same one.
+    /// A new file, empty, or a new folder, with the folders on the way.
+    Make {
+        id: u32,
+        path: String,
+        dir: bool,
+    },
+    /// A file or a folder to a new path. Onto a file that is there only with
+    /// `replace`; never onto a folder, and a folder never onto anything.
+    Rename {
+        id: u32,
+        from: String,
+        to: String,
+        #[serde(default)]
+        replace: bool,
+    },
+    /// A file, or a folder and everything in it.
+    Remove {
+        id: u32,
+        path: String,
+    },
+    /// A file to write, `bytes` long. The host answers `Taking`, and the
+    /// bytes follow as stream frames on this channel, `id` their stream; or
+    /// it answers `Done` with why not.
+    Put {
+        id: u32,
+        path: String,
+        bytes: u64,
+        #[serde(default)]
+        replace: bool,
+    },
+    Taking {
+        id: u32,
+    },
+    /// The host has `received` bytes of upload `id`. The page sends a window
+    /// ahead of this and no further: the relay cuts off a host whose queue
+    /// grows past its bound, as it does a guest.
+    Got {
+        id: u32,
+        received: u64,
+    },
+    /// How a make, a rename, a remove, an upload or a replace ended — and
+    /// why a file's bytes could not be sent, for a `Bytes` that failed.
+    Done {
+        id: u32,
+        ok: bool,
+        message: String,
+    },
+    /// Something was renamed or moved by a guest's page. To everyone: tabs
+    /// open on it follow it to its new name.
+    Moved {
+        from: String,
+        to: String,
+    },
+    /// Search the text of every file the tree shows, or those under
+    /// `folder`: literal text on one line, as the pad's search has it.
+    Find {
+        id: u32,
+        query: String,
+        #[serde(default)]
+        folder: String,
+        #[serde(default)]
+        match_case: bool,
+        #[serde(default)]
+        whole_word: bool,
+    },
+    Found {
+        id: u32,
+        groups: Vec<FoundFile>,
+        /// There were more than [`FIND_LIMIT`]; these are the first.
+        truncated: bool,
+    },
+    /// Replace what the same search finds, in the files named — each only
+    /// if it is still the text its `sum` is the SHA-256 of, which is the
+    /// text the guest was shown a preview of.
+    Replace {
+        id: u32,
+        query: String,
+        #[serde(default)]
+        match_case: bool,
+        #[serde(default)]
+        whole_word: bool,
+        replacement: String,
+        files: Vec<ReplaceFile>,
+    },
+    /// A file's bytes, to look at rather than keep: an image. Up to
+    /// [`VIEW_MAX_BYTES`]. Answered by `Sight` and then the bytes, or `Done`
+    /// with why not.
+    Bytes {
+        id: u32,
+        path: String,
+    },
+    /// What is coming for a `Bytes`: stream frames on this channel, `stream`
+    /// theirs, `bytes` in all.
+    Sight {
+        id: u32,
+        stream: u32,
+        path: String,
+        bytes: u64,
+    },
 }
+
+/// One file's matches in a search, in the order they are in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundFile {
+    pub path: String,
+    pub matches: Vec<FoundMatch>,
+}
+
+/// One match. Offsets and the column are in UTF-16 units, as the browser's
+/// editor counts them; `line` and `column` start at 1. `before` and `after`
+/// are what is on its line either side, up to 80 units of each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundMatch {
+    pub start: u64,
+    pub end: u64,
+    pub line: u32,
+    pub column: u32,
+    pub before: String,
+    pub hit: String,
+    pub after: String,
+}
+
+/// A file a replace may change, and the SHA-256, in hex, of the text it must
+/// still be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplaceFile {
+    pub path: String,
+    pub sum: String,
+}
+
+/// A search stops at this many matches, as the pad's does.
+pub const FIND_LIMIT: usize = 5000;
+
+/// The most of a file sent to be looked at. Under the relay's bound on what
+/// it queues for one guest, since it is sent in one go.
+pub const VIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The most one upload may be.
+pub const UPLOAD_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Files above this never travel whole. Source is small; anything bigger is
 /// usually generated, and a client cannot usefully render it anyway.
@@ -604,6 +748,12 @@ pub enum Presence {
     Roster {
         workspace: String,
         people: Vec<Person>,
+        /// What this agent does for a guest's page beyond reading: `write`
+        /// (make, rename, remove, upload), `search` and `bytes`. A page
+        /// offers none of them to a host that does not say so — an agent
+        /// from before 0.0.9 says nothing here.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        can: Vec<String>,
     },
 }
 
@@ -618,6 +768,164 @@ pub struct Person {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guests_file_requests_are_named_on_the_wire_as_the_page_names_them() {
+        // The page's half is TypeScript (web/src/proto.ts), written by hand:
+        // these are the names it sends and reads, and a variant renamed here
+        // would be a request the agent drops in silence.
+        let named = |msg: &Fs| {
+            serde_json::to_value(msg).unwrap()["t"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let path = || "src/a.py".to_string();
+        let cases = [
+            (
+                Fs::Make {
+                    id: 1,
+                    path: path(),
+                    dir: false,
+                },
+                "make",
+            ),
+            (
+                Fs::Rename {
+                    id: 1,
+                    from: path(),
+                    to: path(),
+                    replace: false,
+                },
+                "rename",
+            ),
+            (
+                Fs::Remove {
+                    id: 1,
+                    path: path(),
+                },
+                "remove",
+            ),
+            (
+                Fs::Put {
+                    id: 1,
+                    path: path(),
+                    bytes: 3,
+                    replace: false,
+                },
+                "put",
+            ),
+            (Fs::Taking { id: 1 }, "taking"),
+            (Fs::Got { id: 1, received: 3 }, "got"),
+            (
+                Fs::Done {
+                    id: 1,
+                    ok: true,
+                    message: String::new(),
+                },
+                "done",
+            ),
+            (
+                Fs::Moved {
+                    from: path(),
+                    to: path(),
+                },
+                "moved",
+            ),
+            (
+                Fs::Find {
+                    id: 1,
+                    query: "x".into(),
+                    folder: String::new(),
+                    match_case: false,
+                    whole_word: false,
+                },
+                "find",
+            ),
+            (
+                Fs::Found {
+                    id: 1,
+                    groups: Vec::new(),
+                    truncated: false,
+                },
+                "found",
+            ),
+            (
+                Fs::Replace {
+                    id: 1,
+                    query: "x".into(),
+                    match_case: false,
+                    whole_word: false,
+                    replacement: "y".into(),
+                    files: vec![ReplaceFile {
+                        path: path(),
+                        sum: "00".into(),
+                    }],
+                },
+                "replace",
+            ),
+            (
+                Fs::Bytes {
+                    id: 1,
+                    path: path(),
+                },
+                "bytes",
+            ),
+            (
+                Fs::Sight {
+                    id: 1,
+                    stream: 9,
+                    path: path(),
+                    bytes: 3,
+                },
+                "sight",
+            ),
+        ];
+        for (msg, name) in &cases {
+            assert_eq!(named(msg), *name);
+            let back: Fs = serde_json::from_value(serde_json::to_value(msg).unwrap()).unwrap();
+            assert_eq!(named(&back), *name);
+        }
+        // What a page may leave out, it may: a search of everything, a
+        // rename that replaces nothing.
+        let find: Fs = serde_json::from_str(r#"{"t":"find","id":2,"query":"x"}"#).unwrap();
+        assert!(
+            matches!(find, Fs::Find { folder, match_case: false, whole_word: false, .. } if folder.is_empty())
+        );
+        let rename: Fs =
+            serde_json::from_str(r#"{"t":"rename","id":2,"from":"a","to":"b"}"#).unwrap();
+        assert!(matches!(rename, Fs::Rename { replace: false, .. }));
+    }
+
+    #[test]
+    fn a_roster_says_what_the_host_can_do_only_when_it_can() {
+        let people = vec![Person {
+            id: 1,
+            name: "h".into(),
+            role: Role::Host,
+        }];
+        // From an agent before 0.0.9: nothing said, and read as nothing.
+        let old: Presence =
+            serde_json::from_str(r#"{"t":"roster","workspace":"w","people":[]}"#).unwrap();
+        assert!(matches!(old, Presence::Roster { can, .. } if can.is_empty()));
+        let none = serde_json::to_value(Presence::Roster {
+            workspace: "w".into(),
+            people: people.clone(),
+            can: Vec::new(),
+        })
+        .unwrap();
+        assert!(
+            none.get("can").is_none(),
+            "an agent that can do nothing says nothing"
+        );
+        let some = serde_json::to_value(Presence::Roster {
+            workspace: "w".into(),
+            people,
+            can: vec!["write".into()],
+        })
+        .unwrap();
+        assert_eq!(some["can"], serde_json::json!(["write"]));
+    }
 
     #[test]
     fn roundtrips_a_stream_frame() {

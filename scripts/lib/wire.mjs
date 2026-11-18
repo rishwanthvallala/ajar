@@ -187,6 +187,7 @@ export class Guest {
     this.store = []; // store messages, in order
     this.snapshot = null; // sealed bytes of the stored copy
     this.fs = []; // every fs message, in order
+    this.fsBytes = new Map(); // stream id -> bytes that came on it
     this.docMessages = []; // json on the doc channel
     this.onDoc = null; // (streamId, kind, bytes) for binary doc frames
     this.tree = new Map(); // path -> entry, kept current by patches
@@ -326,6 +327,16 @@ export class Guest {
           return;
         }
         if (f.channel === CH_FS) {
+          // Stream 0 is JSON; any other is bytes of a download, or of a file
+          // asked for to look at.
+          if (f.streamId !== STREAM_CONTROL) {
+            const had = this.fsBytes.get(f.streamId) ?? new Uint8Array();
+            const next = new Uint8Array(had.length + f.payload.length);
+            next.set(had);
+            next.set(f.payload, had.length);
+            this.fsBytes.set(f.streamId, next);
+            return;
+          }
           this.applyFs(JSON.parse(text(f.payload)));
           return;
         }
@@ -432,6 +443,58 @@ export class Guest {
 
   readFile(path) {
     this.send(json(CH_FS, { t: "read", path }));
+  }
+
+  /**
+   * Ask the host to do something to the folder, as a guest's page does
+   * (`make`, `rename`, `remove`, `replace`), and wait for how it ended:
+   * `{ ok, message }`.
+   */
+  async fileOp(message, timeoutMs = 15_000) {
+    const id = (this.nextOp = (this.nextOp ?? 0) + 1);
+    this.send(json(CH_FS, { ...message, id }));
+    await this.waitUntil((g) => g.fs.some((m) => m.t === "done" && m.id === id), `an answer to ${message.t}`, timeoutMs);
+    return this.fs.find((m) => m.t === "done" && m.id === id);
+  }
+
+  /** Upload a file whole, a window at a time against the host's acknowledgements, as the page does. */
+  async putFile(path, bytes, replace = false) {
+    const id = (this.nextOp = (this.nextOp ?? 0) + 1);
+    this.send(json(CH_FS, { t: "put", id, path, bytes: bytes.length, replace }));
+    await this.waitUntil((g) => g.fs.some((m) => (m.t === "taking" || m.t === "done") && m.id === id), "the host to take the upload");
+    const done = () => this.fs.find((m) => m.t === "done" && m.id === id);
+    let sent = 0;
+    while (!done() && sent < bytes.length) {
+      const acked = Math.max(0, ...this.fs.filter((m) => m.t === "got" && m.id === id).map((m) => m.received));
+      if (sent - acked >= 1024 * 1024) {
+        await sleep(10);
+        continue;
+      }
+      const end = Math.min(sent + 64 * 1024, bytes.length);
+      this.send(encode({ channel: CH_FS, streamId: id, payload: bytes.subarray(sent, end) }));
+      sent = end;
+    }
+    await this.waitUntil(() => done(), "the upload to be answered", 30_000);
+    return done();
+  }
+
+  /** Search the folder's text on the host: `{ groups, truncated }`. */
+  async find(query, options = {}) {
+    const id = (this.nextOp = (this.nextOp ?? 0) + 1);
+    this.send(json(CH_FS, { t: "find", id, query, folder: "", match_case: false, whole_word: false, ...options }));
+    await this.waitUntil((g) => g.fs.some((m) => m.t === "found" && m.id === id), "the search's answer");
+    return this.fs.find((m) => m.t === "found" && m.id === id);
+  }
+
+  /** A file's bytes, to look at — or the `done` that says why not. */
+  async viewFile(path) {
+    const id = (this.nextOp = (this.nextOp ?? 0) + 1);
+    this.send(json(CH_FS, { t: "bytes", id, path }));
+    await this.waitUntil((g) => g.fs.some((m) => (m.t === "sight" || m.t === "done") && m.id === id), "the file's bytes to be announced");
+    const sight = this.fs.find((m) => m.t === "sight" && m.id === id);
+    if (!sight) return this.fs.find((m) => m.t === "done" && m.id === id);
+    await this.waitUntil((g) => (g.fsBytes.get(sight.stream)?.length ?? 0) >= sight.bytes, "the file's bytes");
+    return { ...sight, data: this.fsBytes.get(sight.stream) ?? new Uint8Array() };
   }
 
   /** All terminal output this guest has seen, across every pty. */

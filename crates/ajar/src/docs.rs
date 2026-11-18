@@ -157,6 +157,16 @@ impl Docs {
         self.by_path.get(path).copied()
     }
 
+    /// The open documents at `path` or under it, as a folder.
+    pub fn paths_under(&self, path: &str) -> Vec<String> {
+        let inside = format!("{path}/");
+        self.by_path
+            .keys()
+            .filter(|p| *p == path || p.starts_with(&inside))
+            .cloned()
+            .collect()
+    }
+
     #[cfg(test)]
     pub fn is_open(&self, path: &str) -> bool {
         self.by_path.contains_key(path)
