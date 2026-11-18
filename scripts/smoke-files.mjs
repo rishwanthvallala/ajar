@@ -245,8 +245,12 @@ async function main() {
   found = await guest.find("alpha");
   const look = await guest.viewFile("dot.png");
   check(found.groups.some((g) => g.path === "main.py") && look.t === "sight", "searching and looking, which change nothing, still work");
+  // Said after this press: a guest is told "not read-only" as it joins too,
+  // and waiting for any such message waited for nothing — the close below
+  // then raced the host's key, and lost on a slow machine (CI, 18 November).
+  const said = guest.ptyMessages.length;
   agent.press("l");
-  await guest.waitUntil((g) => g.ptyMessages.some((m) => m.t === "read_only" && !m.read_only), "the session to take changes again");
+  await guest.waitUntil((g) => g.ptyMessages.slice(said).some((m) => m.t === "read_only" && !m.read_only), "the session to take changes again");
   guest.send(json(CH_PTY, { t: "close", pty_id: pty }));
   await guest.waitUntil((g) => !g.ptys.has(pty), "the terminal to close").catch(() => {});
   check(!guest.ptys.has(pty), "a terminal's tab closes it, once the session takes changes again");
