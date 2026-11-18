@@ -415,6 +415,27 @@ directories, so while it copies a page can be served old and new files
 together; it records the commit as deployed before that check; and there is
 no release swap and no rollback.
 
+**A deploy cuts whoever is opening a large pad, and the page does not try
+again** (17 November). `deploy.sh` restarts the relay on every deploy — one
+of scripts and documents alone too, as `796106b` was — and the restart drops
+a pad read in flight. The page's open has no second try: `store.read` fails
+with "can't reach the server right now — check your connection" (`request`,
+`pad/src/store.ts`), `open()` in `app.ts` says it and stops, though the relay
+is back in seconds; a save, by contrast, is tried again. Met on production
+that day at about 16:27 IST, on a pad of one 47.7 MB file — 49.5 MB to read,
+12 s from the office — which is how long an open can sit across a restart.
+Two fixes, neither started: the open tried again after a dropped connection,
+as saves are; and the relay finishing the reads it has begun before it goes
+(axum's graceful shutdown; it has none), or `deploy.sh` leaving the relay
+alone when its binary and unit have not changed.
+
+Found the same week and not started either, each written where it belongs:
+the suggestion model's 17 MB holding up a typist's other traffic
+([performance.md](dev/performance.md), "What the scorecard found"); an office
+behind one address meeting `MAX_OPEN_PER_IP = 8`
+([scaling.md](dev/scaling.md)); and the Python package's 9.3 MB, the largest
+part of a first Run.
+
 ### `playwright` is declared in the wrong workspace
 
 `web/package.json` declares it and nothing in `web/` uses it; the root
