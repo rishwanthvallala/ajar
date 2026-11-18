@@ -21,6 +21,12 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job that only checks has a limit, a few times what it takes with
+# nothing cached (the longest is eleven minutes warm). Without one a step
+# that hangs — `playwright install --with-deps webkit` sat for half an hour
+# on 18 November, in a job that takes ninety seconds — holds the run, and
+# the deploy that waits for it, for GitHub's six hours. `deploy` has none on
+# purpose: it is never to be stopped half way through a swap.
 jobs:
   # Search and its native keyboard modifiers, without the WASIX runtime.
   search:
@@ -39,6 +45,7 @@ jobs:
           - os: ubuntu-latest
             browser: webkit
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -61,6 +68,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -77,6 +85,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -150,6 +159,7 @@ jobs:
   # Linux, so Linux alone: on a Mac they took a third of that job's time.
   pad:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -174,6 +184,7 @@ jobs:
   # builds it, without the rest of `web`'s checks, which the job above runs.
   pad-more:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -203,6 +214,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -225,6 +237,7 @@ jobs:
   deploy-ready:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       ok: ${{ steps.files.outputs.ok }}
     steps:
