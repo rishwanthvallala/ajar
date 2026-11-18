@@ -1,76 +1,19 @@
 /*
- * The account pages, the share dialog and the kit they share (ui.ts).
- *
- * Built only from theme.css's tokens, so light and dark both come for free,
- * plus a few derived here: a tint of the accent, the colour that reads on the
- * accent (the page background does, in both themes), a field outline, three
- * radii and a shadow.
+ * The account pages and the share dialog. The kit they are built from —
+ * buttons, toasts, the modal, the tokens derived from the theme's — is
+ * @ajar/workspace-ui's kit.css, loaded before this.
  */
-:root {
-  --accent-soft: color-mix(in srgb, var(--accent) 9%, var(--surface));
-  --on-accent: var(--bg);
-  --hard-soft: color-mix(in srgb, var(--hard) 9%, var(--surface));
-  --field-line: color-mix(in srgb, var(--ink) 24%, var(--surface));
-  --lift: 0 1px 2px rgb(15 20 30 / 0.05), 0 8px 28px rgb(15 20 30 / 0.07);
-  /* Three radii, and only three: controls, small containers, cards. */
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 12px;
-  --gutter: clamp(1rem, 4vw, 2rem);
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}
 
 /* ------------------------------------------------------------------ kit */
 
 /* `hidden` means hidden, whatever display a class gives — `.btn` is
    inline-flex, and a hidden New pad stayed on screen. */
-.acct [hidden], .modal [hidden] { display: none !important; }
+.acct [hidden] { display: none !important; }
 
-/* Out of sight, still read aloud: a label an icon stands in for. */
-.vh { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-
-.icon { display: inline-flex; flex: none; line-height: 0; }
-.icon svg { width: 1rem; height: 1rem; }
-.mono { font-family: var(--mono); }
-.mark .mark-bg { fill: var(--accent); }
-.mark .mark-lines { stroke: var(--on-accent); }
-
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
-  height: 2.25rem; padding: 0 0.9rem; border-radius: var(--r-sm);
-  border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
-  font: 500 0.8125rem/1 var(--sans); text-decoration: none; cursor: pointer; white-space: nowrap;
-  transition: background 120ms, border-color 120ms, color 120ms;
-}
-.btn:hover:not(:disabled, [aria-disabled="true"]) { border-color: var(--field-line); background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }
-.btn:active:not(:disabled, [aria-disabled="true"]) { transform: translateY(0.5px); }
-.btn:disabled { opacity: 0.5; cursor: default; }
 .btn:focus-visible, .provider:focus-visible, .account-button:focus-visible, .menu-item:focus-visible, .select:focus-visible,
 .share-url:focus-visible, .acct a:focus-visible, .modal a:focus-visible, .pad-shell a:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.btn-primary:hover:not(:disabled, [aria-disabled="true"]) { background: color-mix(in srgb, var(--accent) 88%, var(--ink)); border-color: transparent; }
-/* A primary that cannot be pressed looks quiet, not broken. */
-.btn-primary:disabled, .btn-primary[aria-disabled="true"] { opacity: 1; background: var(--surface-2); border-color: var(--rule); color: var(--muted); cursor: default; }
-.btn-danger { background: var(--hard); border-color: var(--hard); color: var(--on-accent); }
-.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--hard) 88%, var(--ink)); border-color: transparent; }
-.btn-quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
-.btn-quiet:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; }
-.btn-quiet-danger { color: var(--ink-2); }
-.btn-quiet-danger:hover:not(:disabled) { color: var(--hard); border-color: color-mix(in srgb, var(--hard) 40%, var(--rule)); background: var(--hard-soft); }
-.btn-ghost { background: transparent; }
-.btn-small { height: 2rem; padding: 0 0.7rem; font-size: 0.78rem; }
-.btn-icon { width: 2.25rem; padding: 0; }
-.btn-small.btn-icon { width: 2rem; }
-.btn-block { display: flex; width: 100%; }
-.btn[aria-busy="true"] { position: relative; color: transparent; }
-.btn[aria-busy="true"] .icon { opacity: 0; }
-.btn[aria-busy="true"]::after {
-  content: ""; position: absolute; width: 0.9rem; height: 0.9rem; border-radius: 50%;
-  border: 2px solid var(--on-accent); border-right-color: transparent; animation: spin 0.7s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
 
 .skeleton {
   display: block; height: 0.8rem; width: 60%; border-radius: var(--r-sm);
@@ -92,49 +35,7 @@
 .divider { display: flex; align-items: center; gap: 0.75rem; color: var(--muted); font-size: 0.75rem; margin: 1.1rem 0; }
 .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
 
-/* Toasts: one region on the page and one in each dialog, there from the start
-   so that what is written into them is announced. */
-.toasts {
-  position: fixed; left: 50%; bottom: 1.25rem; transform: translateX(-50%); z-index: 1000;
-  display: grid; gap: 0.5rem; justify-items: center; pointer-events: none; width: max-content; max-width: calc(100vw - 2rem);
-}
-.toasts > div { display: grid; gap: 0.5rem; justify-items: center; }
-.toast {
-  display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.9rem; border-radius: var(--r-md);
-  background: var(--ink); color: var(--bg); font: 500 0.8125rem/1.35 var(--sans); box-shadow: var(--lift);
-  animation: toast-in 160ms ease-out; pointer-events: auto;
-}
-.toast-error { background: var(--hard); color: var(--on-accent); }
-.toast.leaving { opacity: 0; transform: translateY(4px); transition: opacity 300ms, transform 300ms; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
-
-/* ---------------------------------------------------------------- modals */
-
-.modal {
-  width: min(32rem, calc(100vw - 1.5rem)); max-height: calc(100dvh - 2rem); padding: 0; overflow: auto;
-  border: 1px solid var(--rule); border-radius: var(--r-lg); background: var(--surface); color: var(--ink);
-  font-family: var(--sans); box-shadow: 0 24px 64px rgb(10 14 22 / 0.28);
-}
-/* Held near the top rather than centred: centred, the dialog moved every
-   time a change made it taller, and the control just used slid away. */
 .modal.share-dialog { margin-top: max(1rem, 8vh); margin-bottom: auto; }
-.modal[open] { animation: pop 150ms ease-out; }
-.modal::backdrop { background: rgb(10 14 22 / 0.42); backdrop-filter: blur(2px); animation: fade 150ms ease-out; }
-@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.985); } }
-@keyframes fade { from { opacity: 0; } }
-.modal-head { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1.1rem 1.2rem 0.9rem; }
-.modal-titles { min-width: 0; flex: 1; }
-.modal-head h2 { margin: 0; font-size: 1.05rem; font-weight: 650; }
-.modal-sub { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
-.modal-close { margin: -0.3rem -0.4rem 0 0; }
-.modal-body { padding: 0 1.2rem 1.2rem; }
-
-.modal-confirm { width: min(25rem, calc(100vw - 1.5rem)); }
-.confirm-body { padding: 1.3rem 1.3rem 0.4rem; }
-.confirm-body h2 { margin: 0 0 0.45rem; font-size: 1.02rem; font-weight: 650; overflow-wrap: anywhere; }
-.confirm-body h2 .mono { font-size: 0.95em; }
-.confirm-body p { margin: 0; color: var(--ink-2); font-size: 0.875rem; line-height: 1.5; }
-.confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.3rem 1.2rem; }
 /* A text field in a dialog: Copy a pad's link, Delete account's word. */
 .field-label { display: block; margin: 0 0 0.35rem; font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); }
 .text-field {
@@ -147,13 +48,6 @@
 .field-problem { margin: 0.55rem 0 0; color: var(--hard); font-size: 0.8125rem; line-height: 1.5; }
 .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.1rem; }
 .copy-dialog { width: min(30rem, calc(100vw - 1.5rem)); }
-.confirm-typed-label { display: block; margin: 0.9rem 0 0.35rem; color: var(--ink-2); font-size: 0.8125rem; }
-.confirm-typed-label strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
-.confirm-typed {
-  width: 100%; height: 2.35rem; padding: 0 0.75rem; border-radius: var(--r-sm);
-  border: 1px solid var(--field-line); background: var(--surface); color: var(--ink); font: 500 0.875rem var(--mono);
-}
-.confirm-typed:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A pad's name, chosen or left to three words: the field says as it is
    typed whether the name can be had. */
 .name-dialog-input:disabled { opacity: 0.6; }

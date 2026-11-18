@@ -10,8 +10,8 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 import { WebSocketServer } from "ws";
-import { inFolder, matchesIn, replaced, searchFile } from "../src/search-match.ts";
-import { searchShortcut, shortcutLabel } from "../src/search-keys.ts";
+import { inFolder, matchesIn, replaced, searchFile } from "../../packages/workspace-ui/src/search-match.ts";
+import { searchShortcut, shortcutLabel } from "../../packages/workspace-ui/src/search-keys.ts";
 
 const options = { query: "cat", mode: "contents", folder: "", matchCase: false, wholeWord: false };
 assert.equal(inFolder("src/a.py", "src"), true);

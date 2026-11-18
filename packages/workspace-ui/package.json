@@ -8,13 +8,42 @@
     "./theme": "./src/theme.ts",
     "./delimited-tokens": "./src/delimited-tokens.ts",
     "./eol": "./src/eol.ts",
+    "./kit": "./src/kit.ts",
+    "./icons": "./src/icons.ts",
+    "./names": "./src/names.ts",
+    "./images": "./src/images.ts",
+    "./markdown": "./src/markdown.ts",
+    "./format": "./src/format.ts",
+    "./starters": "./src/starters.ts",
+    "./problems": "./src/problems.ts",
+    "./search": "./src/search.ts",
+    "./search-match": "./src/search-match.ts",
+    "./search-keys": "./src/search-keys.ts",
     "./theme.css": "./src/theme.css",
-    "./workspace.css": "./src/workspace.css"
+    "./workspace.css": "./src/workspace.css",
+    "./kit.css": "./src/kit.css",
+    "./tools.css": "./src/tools.css"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@wasm-fmt/clang-format": "23.1.1",
+    "@wasm-fmt/gofmt": "0.7.3",
+    "@wasm-fmt/lua_fmt": "0.3.3",
+    "@wasm-fmt/mago_fmt": "1.44.0",
+    "@wasm-fmt/markdown": "0.1.6",
+    "@wasm-fmt/ruff_fmt": "0.15.20",
+    "@wasm-fmt/shfmt": "0.2.7",
+    "@wasm-fmt/sql_fmt": "0.2.2",
+    "@wasm-fmt/taplo_fmt": "0.2.5",
+    "@wasm-fmt/web_fmt": "0.2.9",
+    "@wasm-fmt/yamlfmt": "0.2.1",
+    "dompurify": "3.4.8",
+    "jsonc-parser": "3.3.1",
+    "marked": "14.0.0"
   }
 }

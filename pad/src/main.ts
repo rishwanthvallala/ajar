@@ -1,7 +1,9 @@
 import { applyStoredTheme } from "@ajar/workspace-ui/theme";
 import "@ajar/workspace-ui/theme.css";
 import "@ajar/workspace-ui/workspace.css";
+import "@ajar/workspace-ui/tools.css";
 import "./style.css";
+import "@ajar/workspace-ui/kit.css";
 import "./accounts.css";
 import { loadEditor, opensAPad } from "./editor-load";
 

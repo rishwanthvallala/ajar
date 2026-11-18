@@ -18,13 +18,13 @@ import { decodeAnswer, decodeRequest, encodeAnswer, encodeRequest } from "./java
 import { seedFiles } from "./seed";
 import { Texts } from "./texts";
 import { nameProblem, pathFor } from "./files";
-import { formatterFor, formatText, problemOf, usesTabs } from "./format";
-import { starterFor } from "./starters";
+import { formatterFor, formatText, problemOf, usesTabs } from "@ajar/workspace-ui/format";
+import { starterFor } from "@ajar/workspace-ui/starters";
 import { answer, decodeRequest as decodeFetch, encodeAnswer as encodeFetched, headersFor, type LocalFetch, vet } from "./fetch-bridge";
 import { diff, fromBase64, ignored, knownFrom, textOf, toBase64, unstorable } from "./sync";
 import { crc32, makeZip, prepareImport, readZip, ZipError } from "./zip";
 import { DEFAULT_LIMITS, limitsFrom, loadLimits, padLimits } from "./limits";
-import { placesIn, problemsIn } from "./problems";
+import { placesIn, problemsIn } from "@ajar/workspace-ui/problems";
 import { pipInstalled, requirementLines, requirementName } from "./requirements";
 
 const results: string[] = [];

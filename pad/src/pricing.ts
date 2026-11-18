@@ -12,7 +12,7 @@
  */
 import { account, type Billing, type Me, type Payment } from "./access";
 import { accountMenu, footer, shell, topbar } from "./dashboard";
-import type { IconName } from "./icons";
+import type { IconName } from "@ajar/workspace-ui/icons";
 import { button, el, icon, providerButtons, setBusy, toast, toastRegions } from "./ui";
 
 /** One plan's limits, as `/api/limits` gives them under `plans`. */

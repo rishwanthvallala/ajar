@@ -7,7 +7,7 @@
  * someone arrives back from signing in. Styles are in accounts.css.
  */
 import { account, AccountError, codeFor, type Edit, type Me, type PadInfo, type PadLink, parsePadLink, PROVIDERS, size, type View } from "./access";
-import type { IconName } from "./icons";
+import type { IconName } from "@ajar/workspace-ui/icons";
 import { openShare } from "./share";
 import { type Change, type Pad, Store, StoreError } from "./store";
 import { brand, button, clearBusy, confirmDialog, el, icon, isBusy, modal, nameDialog, providerButtons, setBusy, themeToggle, toast, toastRegions, uid } from "./ui";

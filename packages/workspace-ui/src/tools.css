@@ -1,0 +1,173 @@
+/*
+ * What both products put in the shared shell and draw alike: the search
+ * panel, the bar of icons over the files, the editor's tools and an empty
+ * file's starter, a Markdown file formatted, an image in place of the editor,
+ * a terminal's tab that closes it, a phone's missing keys, and a phone on its
+ * side. The pad had each first (pad/src/style.css, which keeps what is the
+ * pad's own); here since 19 November, scoped to the shell both products are
+ * in, so the guest's page of an ajar session draws them the same.
+ */
+
+/* Project search shares the file sidebar; the magnifier sits immediately after Files. */
+.shell .files[hidden], .shell .project-search[hidden], .shell .search-options[hidden], .shell .search-replace[hidden] { display: none; }
+.shell .search-toggle { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.shell .search-toggle[aria-expanded="true"] { color: var(--accent); background: var(--surface-2); }
+.shell .search-mobile { display: none !important; }
+.shell.narrow .search-mobile { display: inline-flex !important; }
+.shell .project-search { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.65rem; padding: 0.65rem; overflow: auto; font-size: 0.75rem; }
+.shell .project-search > label { display: flex; flex-direction: column; gap: 0.3rem; }
+.shell .project-search input:not([type="checkbox"]), .shell .project-search select { min-width: 0; width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; padding: 0.45rem; }
+.shell .search-options { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.shell .search-options label { display: flex; align-items: center; gap: 0.25rem; }
+.shell .search-replace summary { cursor: pointer; margin-bottom: 0.5rem; }
+.shell .search-replace .btn { margin-top: 0.5rem; }
+.shell .search-status { color: var(--muted); margin: 0; }
+.shell .search-results { min-width: 0; }
+.shell .search-group { margin-bottom: 0.65rem; }
+.shell .search-file-head { display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.25rem; }
+.shell .search-file-head strong { overflow-wrap: anywhere; flex: 1; }
+.shell .search-file-head .btn { flex: none; font-size: 0.6875rem; padding: 0.2rem; }
+.shell .search-hit { display: flex; width: 100%; gap: 0.5rem; border: 0; border-radius: 3px; background: transparent; color: var(--ink-2); padding: 0.4rem 0.2rem; text-align: left; cursor: pointer; font: 0.75rem/1.5 var(--mono); }
+.shell .search-hit:hover, .shell .search-hit:focus-visible { background: var(--surface-2); }
+.shell .search-line { color: var(--muted); flex: none; }
+.shell .search-snippet { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.shell .search-hit mark { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+.shell .project-search :focus-visible, .shell .search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.search-preview .search-diff-before, .search-preview .search-diff-after { font: 0.75rem/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 0.25rem; }
+.search-preview .search-diff-before { background: color-mix(in srgb, var(--hard) 12%, var(--surface)); }
+.search-preview .search-diff-after { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.search-preview-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+@media (pointer: coarse) {
+  .shell .search-toggle, .shell .project-search button, .shell .project-search input:not([type="checkbox"]), .shell .project-search select { min-height: 2.75rem; min-width: 2.75rem; }
+  .shell .project-search input:not([type="checkbox"]), .shell .project-search select { font-size: 1rem; }
+}
+
+/* Format and the indent: quiet beside Colours, as it is. */
+.shell .editor-tools { display: flex; align-items: center; gap: 0.15rem; }
+.shell .editor-tools[hidden], .shell .editor-tool[hidden] { display: none; }
+.shell .editor-tool {
+  flex: none; font: inherit; font-size: 0.75rem; line-height: 1.4; padding: 0.35rem 0.65rem;
+  border: 1px solid transparent; border-radius: 5px; background: var(--surface); color: var(--ink-2); cursor: pointer;
+}
+.shell .editor-tool:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.shell .editor-tool:disabled { color: var(--muted); cursor: progress; }
+/* An empty file's offer of what it could start as, on its first line. */
+/* Monaco sets a widget's display itself, so the space between is a margin. */
+.shell .starter-hint { padding-left: 0.3rem; white-space: nowrap; font: 0.75rem/1.6 system-ui, sans-serif; color: var(--muted); }
+.shell .starter-hint span { margin-left: 0.35rem; }
+.shell .starter-hint button { font: inherit; padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; }
+.shell .starter-hint button:hover { text-decoration: underline; }
+
+/* The bar of icons over the files, and any button that is only an icon. */
+.shell .tree-bar { display: flex; gap: 2px; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--rule); }
+.shell button.icon { border: 0; background: transparent; padding: 0.25rem; border-radius: 3px; color: var(--muted); line-height: 0; cursor: pointer; }
+.shell button.icon:hover { background: var(--surface-2); color: var(--ink); }
+.shell button.icon svg { width: 0.9375rem; height: 0.9375rem; }
+.shell .tree-bar-end { margin-left: auto; display: flex; gap: 2px; }
+.shell .tree-bar button { min-width: 1.5rem; min-height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; }
+
+/* The terminal's Screen reader button: as its neighbours, and marked when on. */
+.shell .screen-reader { padding: 0.35rem 0.65rem; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink-2); font-size: 0.75rem; cursor: pointer; }
+.shell .screen-reader:hover { border-color: var(--accent); color: var(--accent); }
+.shell .screen-reader[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+/* What a finger can hit: 44 px on a touch screen, as phones do, and rows of
+   the file tree as tall. */
+@media (pointer: coarse) {
+  .shell { --tree-row: 2.75rem; }
+  .shell :is(.pad-action, .editor-tool, .side-toggle, .theme-toggle, .highlight-toggle, .terminal-actions button, .tree-bar button) { min-height: 2.75rem; min-width: 2.75rem; }
+}
+/* A phone on its side: the headers thinner, so the terminal has rows to
+   show — it had three. */
+@media (max-height: 30rem) and (orientation: landscape) {
+  .shell :is(.viewer-head, .terminal-head) { min-height: 2rem; padding-block: 0.1rem; }
+}
+/* And on a touch screen, the editor and the terminal side by side, each the
+   screen's height: one above the other, the terminal still had two rows
+   (verification of 18 October). Not for a zoomed desktop window of the same
+   shape, which keeps its splitter. */
+@media (max-height: 30rem) and (orientation: landscape) and (pointer: coarse) {
+  .shell .main { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1px; background: var(--rule); }
+  .shell .main > .splitter { display: none; }
+  .shell .main > :is(.viewer, .terminals) { grid-row: 1; min-width: 0; }
+}
+
+/* The editor fills its group, with what can stand beside it or in its place. */
+.shell .editor { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+/* An image in place of the editor: a plot, a picture. On a checkerboard, so
+   a transparent one shows where it is transparent. */
+.shell .image-view { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; padding: 1rem; overflow: auto;
+  background-color: var(--surface); background-image: linear-gradient(45deg, var(--surface-2) 25%, transparent 25%, transparent 75%, var(--surface-2) 75%), linear-gradient(45deg, var(--surface-2) 25%, transparent 25%, transparent 75%, var(--surface-2) 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+.shell .image-view[hidden] { display: none; }
+.shell .image-view img { max-width: 100%; max-height: calc(100% - 2rem); object-fit: contain; box-shadow: 0 1px 4px rgb(0 0 0 / 0.15); background: #fff; }
+.shell .image-caption { margin: 0; font-size: 0.75rem; color: var(--muted); background: var(--surface); padding: 0.1rem 0.5rem; border-radius: 4px; }
+
+/* A Markdown file formatted. Over the editor where its group is narrow —
+   hidden, not merely covered, so typing cannot go on unseen — and beside it
+   where both fit. Each editor group is its own container for that. */
+.shell .md-view { position: absolute; inset: 0; overflow: auto; background: var(--surface); color: var(--ink); outline: 0; }
+.shell .md-view[hidden] { display: none; }
+/* Every editor group is its own Markdown layout container. */
+.shell .has-editor-groups { display: flex !important; flex-direction: column; }
+.shell .editor-group-content { container-type: inline-size; }
+.shell .editor-group-content.md-shown > .editor { visibility: hidden; }
+.shell .editor-group-content .editor[hidden] ~ .md-view { display: none; }
+@container (min-width: 48rem) {
+  .shell .editor-group-content.md-shown > .editor { visibility: visible; right: 50%; }
+  .shell .editor-group-content.md-shown > .md-view { left: 50%; border-left: 1px solid var(--rule); }
+}
+.shell .editor-tool.on { border-color: var(--rule); background: var(--surface-2); color: var(--ink); }
+/* Suggest switched off reads as Colours does. */
+.shell .editor-tool.off { color: var(--muted); text-decoration: line-through; }
+.shell .md-note { margin: 1.5rem; color: var(--muted); font-size: 0.875rem; }
+/* The help page is the guide in the same type. */
+.help { padding: 1rem 0 2rem; background: var(--surface); color: var(--ink); }
+:is(.shell, .help) .md-body { max-width: 50rem; margin: 0 auto; padding: 1.25rem 1.75rem 3rem; font: 0.9375rem/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-wrap: break-word; }
+:is(.shell, .help) .md-body > :first-child { margin-top: 0; }
+:is(.shell, .help) .md-body :is(h1, h2, h3, h4, h5, h6) { margin: 1.5em 0 0.6em; line-height: 1.25; font-weight: 600; scroll-margin-top: 0.75rem; }
+:is(.shell, .help) .md-body h1 { font-size: 1.85em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
+:is(.shell, .help) .md-body h2 { font-size: 1.45em; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule); }
+:is(.shell, .help) .md-body h3 { font-size: 1.2em; }
+:is(.shell, .help) .md-body h4 { font-size: 1em; }
+:is(.shell, .help) .md-body :is(h5, h6) { font-size: 0.875em; color: var(--ink-2); }
+:is(.shell, .help) .md-body :is(p, ul, ol, blockquote, pre, table, details, .md-table) { margin: 0 0 1em; }
+:is(.shell, .help) .md-body :is(ul, ol) { padding-left: 2em; }
+:is(.shell, .help) .md-body li + li { margin-top: 0.25em; }
+:is(.shell, .help) .md-body :is(ul, ol) :is(ul, ol) { margin: 0.25em 0 0; }
+:is(.shell, .help) .md-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
+:is(.shell, .help) .md-body li > input[type="checkbox"] { margin: 0 0.45em 0 0; vertical-align: -0.1em; }
+:is(.shell, .help) .md-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
+:is(.shell, .help) .md-body code { font: 0.85em var(--mono); padding: 0.15em 0.35em; border-radius: 4px; background: var(--surface-2); }
+:is(.shell, .help) .md-body pre { overflow: auto; padding: 0.85rem 1rem; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--rule); line-height: 1.45; }
+:is(.shell, .help) .md-body pre code { padding: 0; background: none; font-size: 0.8125rem; white-space: pre; }
+:is(.shell, .help) .md-body blockquote { padding: 0 1em; color: var(--ink-2); border-left: 0.25em solid var(--rule); }
+:is(.shell, .help) .md-body hr { height: 0; margin: 1.5em 0; border: 0; border-top: 1px solid var(--rule); }
+:is(.shell, .help) .md-body img { max-width: 100%; height: auto; background: #fff; }
+:is(.shell, .help) .md-body .md-table { overflow-x: auto; }
+:is(.shell, .help) .md-body table { border-collapse: collapse; margin: 0; }
+:is(.shell, .help) .md-body :is(th, td) { padding: 0.4em 0.8em; border: 1px solid var(--rule); text-align: left; }
+:is(.shell, .help) .md-body th { font-weight: 600; background: var(--surface-2); }
+:is(.shell, .help) .md-body tr:nth-child(2n) td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+:is(.shell, .help) .md-body details { padding: 0.5em 0.75em; border: 1px solid var(--rule); border-radius: 6px; }
+:is(.shell, .help) .md-body summary { cursor: pointer; font-weight: 600; }
+:is(.shell, .help) .md-body kbd { font: 0.8em var(--mono); padding: 0.1em 0.4em; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-2); }
+:is(.shell, .help) .md-body .md-missing, :is(.shell, .help) .md-body .md-image-outside { display: inline-block; padding: 0.15em 0.5em; border: 1px dashed var(--rule); border-radius: 4px; font-size: 0.85em; color: var(--muted); }
+
+/* A tab a terminal, from the second on; its close beside it, as a file's delete is. */
+.shell .tab-wrap { position: relative; display: inline-flex; align-items: center; flex: none; }
+.shell .tab-wrap > .tab { padding-right: 1.6rem; }
+.shell .tab-close { position: absolute; right: 0.25rem; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 0.9rem; line-height: 1; padding: 0.1rem 0.25rem; border-radius: 3px; cursor: pointer; opacity: 0; }
+.shell .tab-wrap:hover .tab-close, .shell .tab-close:focus-visible { opacity: 1; }
+.shell .tab-close:hover { color: var(--hard); background: var(--surface-2); }
+@media (hover: none) { .shell .tab-close { opacity: 0.7; } }
+
+/* A phone keyboard's missing keys, under the terminal's header on a touch
+   screen (App.addTouchKeys): a row of their own, scrolled sideways when
+   narrow. */
+.shell .terminal-head:has(.term-keys) { flex-wrap: wrap; row-gap: 0.35rem; }
+.shell .term-keys { order: 3; flex: 1 0 100%; display: flex; gap: 0.3rem; overflow-x: auto; scrollbar-width: none; }
+.shell .term-key { flex: none; min-width: 2.4rem; height: 2rem; padding: 0 0.6rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface-2); color: var(--ink); font: 600 0.75rem var(--mono); touch-action: manipulation; }
+.shell .term-key:active { background: color-mix(in srgb, var(--accent) 18%, var(--surface-2)); }
+/* Monaco's own button for bringing up an iPad's or a phone's keyboard: kept,
+   since it is how a touch screen gets one, but at the size of the rest of the
+   page's controls rather than a 58-pixel block over the code. */
+.shell .monaco-editor .iPadShowKeyboard { transform: scale(0.65); transform-origin: bottom right; opacity: 0.55; }

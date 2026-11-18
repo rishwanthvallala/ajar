@@ -15,8 +15,8 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 
 import { Console } from "./console";
-import { IMAGE_OSC } from "./images";
-import { type Place, placesIn } from "./problems";
+import { IMAGE_OSC } from "@ajar/workspace-ui/images";
+import { type Place, placesIn } from "@ajar/workspace-ui/problems";
 import type { Runtime } from "./runtime";
 import { type Finished, Shell } from "./shell";
 

@@ -9,7 +9,7 @@
  */
 import GUIDE from "../../docs/use/pad.md?raw";
 import { footer, shell, topbar } from "./dashboard";
-import { renderMarkdown, slug } from "./markdown";
+import { renderMarkdown, slug } from "@ajar/workspace-ui/markdown";
 import { el } from "./ui";
 
 /** Where the guide's links to the rest of the documentation go. */

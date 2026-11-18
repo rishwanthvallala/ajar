@@ -1,6 +1,6 @@
 import { WorkspaceShell, EditorGroups, type EditorGroupView, type LayoutStorage } from "@ajar/workspace-ui";
 
-import { ICONS } from "./icons";
+import { ICONS } from "@ajar/workspace-ui/icons";
 
 const RUN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5l7 4.5-7 4.5V3.5Z" fill="currentColor"/></svg>`;
 const PREVIEW_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h9A1.5 1.5 0 0 1 14 4.5v7A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2 6h12" stroke="currentColor" stroke-width="1.2"/></svg>`;

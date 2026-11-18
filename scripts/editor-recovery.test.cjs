@@ -16,9 +16,9 @@ function load(file) {
   const mod = { exports: {} };
   cache.set(file, mod);
   const dependencies = name => {
-    if (name === '@ajar/workspace-ui/eol') return load('packages/workspace-ui/src/eol.ts');
+    if (name === '@ajar/workspace-ui/eol' || name === '@ajar/workspace-ui/images') return load(`packages/workspace-ui/src/${name.split('/').pop()}.ts`);
     if (name === 'yjs' || name === 'y-protocols/awareness') return padRequire(name);
-    if (['./carry', './sync', './texts', './editing', './images'].includes(name)) return load(`pad/src/${name.slice(2)}.ts`);
+    if (['./carry', './sync', './texts', './editing'].includes(name)) return load(`pad/src/${name.slice(2)}.ts`);
     if (name === './editor-layout') return load('packages/workspace-ui/src/editor-layout.ts');
     if (name === './proto') return load('web/src/proto.ts');
     // Other UI/services aren't used by the methods under test.

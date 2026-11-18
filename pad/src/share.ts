@@ -10,7 +10,7 @@
  * Anonymous pads have no dialog. Share copies the link, as it always has.
  */
 import { account, type Access, AccountError, type Edit, linkTo, type PadInfo, resetLink, type View } from "./access";
-import type { IconName } from "./icons";
+import type { IconName } from "@ajar/workspace-ui/icons";
 import { button, confirmDialog, copyText, el, icon, modal, toast, uid } from "./ui";
 
 export interface ShareContext {

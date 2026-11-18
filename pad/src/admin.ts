@@ -11,7 +11,7 @@
 import { account, type Me, PROVIDERS, size } from "./access";
 import { accountMenu, footer, shell, showPrivate, topbar } from "./dashboard";
 import { rupees } from "./pricing";
-import type { IconName } from "./icons";
+import type { IconName } from "@ajar/workspace-ui/icons";
 import { button, el, icon, toast, toastRegions } from "./ui";
 
 interface Count {

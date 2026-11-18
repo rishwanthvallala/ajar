@@ -1,7 +1,19 @@
-import type { PadWorkspace } from "./workspace";
-import { button, el, modal } from "./ui";
+import type { WorkspaceShell } from "./index";
+import { button, el, modal } from "./kit";
 import { isApple, searchShortcut, shortcutLabel } from "./search-keys";
 import { replaced, type ReplacementFile, type ReplacementPlan, type SearchFile, type SearchGroup, type SearchMatch, type SearchOptions, type SearchRequest, type SearchResults } from "./search-match";
+
+/** Where the search is drawn: what either product's workspace gives it. */
+export interface SearchSurface {
+  readonly shell: WorkspaceShell;
+  /** The panel, in the sidebar where the files are. */
+  readonly searchHost: HTMLElement;
+  /** The magnifiers: beside Files, and in the header on a phone. */
+  readonly searchButtons: HTMLButtonElement[];
+  onSearch: () => void;
+  /** The panel in place of the files, or the files back. */
+  showSearch(open: boolean): void;
+}
 
 export interface SearchHooks {
   files(): Array<{ path: string; text?: string }>;
@@ -39,7 +51,7 @@ export class ProjectSearch {
   private dialog: HTMLDialogElement | null = null;
   private readonly apple = isApple(navigator.platform || navigator.userAgent);
 
-  constructor(private readonly ui: PadWorkspace, private readonly hooks: SearchHooks) {
+  constructor(private readonly ui: SearchSurface, private readonly hooks: SearchHooks) {
     const label = (name: string, control: HTMLElement) => {
       control.setAttribute("aria-label", name);
       return el("label", {}, el("span", {}, name), control);
