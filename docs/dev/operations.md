@@ -633,6 +633,16 @@ Cloudflare Tunnel, is proposed in [cloudflare.md](cloudflare.md).
 docker build -t ajar-relay .
 ```
 
+The image is the relay and the guest's page, for a relay of one's own;
+production does not run it (`deploy.sh` copies a binary). Nothing in CI
+builds it either — only that each `COPY` has its source — and by 19
+November it neither built on arm64 nor started anywhere
+([open-points.md](../open-points.md), "Closed on 19 November"). After a
+change to what the page is built from, or to the relay's flags, build it
+and ask it for `/healthz`: `podman run -p 127.0.0.1:8899:8787 ajar-relay`.
+It keeps everything under `/var/lib/ajar`, its one volume, and serves no
+suggestion model, so its page shows no Suggest.
+
 Release tarballs are `ajar-<target>.tar.gz` with a `.sha256` beside each; the
 installer verifies and refuses on a mismatch (a missing checksum file is
 tolerated). `install.sh` is compiled into the relay and served at

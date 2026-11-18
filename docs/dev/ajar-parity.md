@@ -73,6 +73,23 @@ guest of it. So each thing the pad does is one of four:
   the wire; `fileops`' unit tests; and, for a host that says nothing of what
   it can do, `scripts/check-editor-documents.cjs`.
 
+## Live
+
+Deployed by CI on 19 November, 04:27 IST (`8f48ea4`), and checked against
+production once: this tree's `ajar` — the one that says what it can do —
+sharing a scratch folder through `ajar.rishwanth.dev`, and a browser
+joining it. New file and Upload offered, and a file named in the tree made
+on the host's disk; Format, under the site's real policy; the editor's own
+find; a search of contents answered by the host; a Markdown file formatted
+with its picture drawn; Suggest offered, its model loaded from ajar's site
+in three seconds, and grey text; the guide at `/help`; no page errors and
+nothing the policy refused. Eleven checks, all passed.
+
+Not checked live: a host on a released `ajar`, 0.0.8 or older, which is
+every host there is until 0.0.9 is cut ([open-points.md](../open-points.md)).
+That such a host is offered none of the host's half is held by
+`check-editor-documents.cjs`, against a roster that says nothing.
+
 ## Found on the way
 
 - **`ajar <folder>` died at start on a machine with a global gitignore**,

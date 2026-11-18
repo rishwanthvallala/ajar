@@ -144,6 +144,15 @@ a store request ahead of it that stalled on the network. Store requests have
 had a deadline since 11 October, so a stall now fails and is retried rather
 than holding the queue; if it recurs, it was something else.
 
+**A runner's browser install hung, once.** On 18 November
+`npx playwright install --with-deps webkit`, twenty seconds of a
+ninety-second job, sat for over half an hour in run 44410512915 while every
+other job passed — the runner's package mirror, as far as can be told from
+outside. No job had a time limit, so the run and its deploy would have
+waited GitHub's six hours. Each checking job has one now (`ci.yml`); if it
+recurs the job fails in fifteen minutes and is run again from the Actions
+tab.
+
 **A pad page threw "Atomics.wait cannot be called in this context", once.**
 On 7 October, on the macOS runner (CI run 37622394950), the second editor
 `accounts-check` opens on a pad raised it as a page error; Linux passed the
@@ -161,7 +170,11 @@ each in [code-review-fixes-2026-09-16.md](code-review-fixes-2026-09-16.md).
 on `cat poem.txt | grep two` inside the sandbox, so the page never finished.
 That happened twice on CI on 16 October. The first time, a rerun passed. The
 second was on 52113b2, which changed nothing the check runs. Locally it has
-not happened.
+not happened. A third on 18 November (run 44415000832, on 6eaeb94, which
+changed one of ajar's smoke suites and nothing of the pad's): the page never
+finished, stopped at `awk '{print $1}' poem.txt | head -1`, the first pipe
+after `sort`. It held that run's deploy; the run before and the run after
+passed the same check.
 The review of 17 October caught it on screen in the pad: `pip install numpy
 pandas matplotlib 2>&1 | tail -2` stayed busy for 10 to 30 minutes in four of
 eight tries, where the same install without the pipe takes 10 to 20 seconds
@@ -456,21 +469,15 @@ behind one address meeting `MAX_OPEN_PER_IP = 8`
 ([scaling.md](dev/scaling.md)); and the Python package's 9.3 MB, the largest
 part of a first Run.
 
-### The container build does not build on arm64
+### Nothing builds the container image but a person
 
-Found on 19 November, checking that the Dockerfile still builds the page
-once the page needed `packages/complete` and the guide (it did not copy
-them, and does now). On an arm64 machine — an Apple Silicon Mac's podman, a
-Graviton box — `npm ci` in its first stage stops at `bufferutil`, an
-optional native part of `ws` that has no prebuilt binary for arm64 with
-musl and wants Python and a compiler to make one, which `node:24-alpine`
-has not got. For x86-64 (`--platform linux/amd64`) the stage builds, and
-that is all that was tried: the image as a whole was not built or run.
-Nothing in CI builds it — the gate checks only that each `COPY` has its
-source. Either `npm ci --ignore-scripts` in that stage (nothing the page's
-build needs is made by an install script), or the first stage on
-`node:24` rather than alpine; and a CI job that builds the image, which is
-what would have said so.
+The Dockerfile had not made a relay that starts since accounts (mid
+October), and nothing said so: the gate checks only that each `COPY` has
+its source ([dev/operations.md](dev/operations.md), "Releasing"). It builds
+and runs again as of 19 November, tried by hand in podman on an arm64 Mac.
+A CI job that builds it and asks the container for `/healthz` is what would
+have caught all three of what was wrong; it is a few minutes a run, mostly
+the relay's release build, and not written.
 
 ### `playwright` is declared in the wrong workspace
 
@@ -807,6 +814,14 @@ the previous build in place, and the check then measures the fix it was meant
 to be deprived of. See [dev/testing.md](dev/testing.md).
 
 ---
+
+## Closed on 19 November
+
+| | |
+|---|---|
+| The container image did not build the guest's page once the page needed `packages/complete` and the guide: the Dockerfile copied neither | `25ffea7` |
+| It did not build at all on arm64 — a Graviton box, an Apple Silicon Mac: `npm ci` stopped at `bufferutil`, an optional native part of `ws` with no prebuilt binary for arm64 and musl, wanting a compiler `node:24-alpine` has not got. Installed without scripts now; nothing the page's build needs is made by one | this commit |
+| And built, it did not start: the accounts database's default is `./ajar-accounts.db`, which in the image is `/`, where its user can write nothing — every image since accounts landed. It is in the volume, beside the pads. Built on arm64, started, and joined: this tree's `ajar` sharing a folder through the container, a browser making a file, formatting, searching and previewing in it | this commit |
 
 ## Closed on 12 October
 
