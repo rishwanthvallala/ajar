@@ -74,6 +74,12 @@ impl Filter {
     /// too — so a change under, say, a `sub/build/` that only a nested file
     /// excluded reached every guest until the next resync.
     pub fn build(root: &Path) -> Result<Self> {
+        Self::build_with(root, ignore::gitignore::gitconfig_excludes_path())
+    }
+
+    /// `build`, with git's global excludes read from `global` — the file
+    /// `core.excludesFile` names, or `~/.config/git/ignore`.
+    fn build_with(root: &Path, global: Option<PathBuf>) -> Result<Self> {
         let mut outer = Vec::new();
         // Above the shared folder, up to the repository it sits in, if any.
         let top = root.ancestors().find(|d| d.join(".git").exists());
@@ -91,8 +97,18 @@ impl Filter {
                 outer.extend(b.build().ok());
             }
         }
-        let (global, _) = Gitignore::global();
-        outer.push(global);
+        // Git's global excludes, matched from the repository's top, or from
+        // the shared folder outside one. `Gitignore::global()` matches from
+        // the directory `ajar` was started in, and asked about a path that is
+        // not under it, panics: with any global ignore file on the machine —
+        // most developers have one — `ajar ~/some/project` from anywhere but
+        // inside that project died at start, "path is expected to be under
+        // the root" (found 19 November; every release up to 0.0.8).
+        if let Some(file) = global.filter(|f| f.is_file()) {
+            let mut b = GitignoreBuilder::new(top.unwrap_or(root));
+            let _ = b.add(file);
+            outer.extend(b.build().ok());
+        }
         Ok(Self {
             root: root.to_path_buf(),
             outer,
@@ -303,6 +319,25 @@ mod tests {
         fs::write(root.join("sub/.gitignore"), "*.tmp\n").unwrap();
         f.changed(&root.join("sub/.gitignore"));
         assert!(f.is_ignored(&root.join("sub/new.tmp"), false));
+    }
+
+    #[test]
+    fn global_excludes_apply_wherever_ajar_was_started() {
+        // The folder is not under this process's directory, as it is not
+        // when someone runs `ajar ~/some/project` from elsewhere. Asked about
+        // a path there, the global matcher used to panic.
+        let root = scratch("global");
+        let config = scratch("global-config");
+        let global = config.join("ignore");
+        fs::write(&global, "*.swp\n*~\n").unwrap();
+        assert!(!root.starts_with(std::env::current_dir().unwrap()));
+        let f = Filter::build_with(&root, Some(global)).unwrap();
+        assert!(f.is_ignored(&root.join("notes.txt.swp"), false));
+        assert!(f.is_ignored(&root.join("sub/draft~"), false));
+        assert!(!f.is_ignored(&root.join("notes.txt"), false));
+        // And none at all is no rule at all.
+        let bare = Filter::build_with(&root, Some(config.join("absent"))).unwrap();
+        assert!(!bare.is_ignored(&root.join("notes.txt.swp"), false));
     }
 
     #[test]
