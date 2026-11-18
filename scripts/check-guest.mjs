@@ -362,17 +362,33 @@ async function main() {
     "and Enter opens a file",
   );
   // A terminal takes every key, so focus that went in could not come out.
+  // F6 goes round the parts of the page, as in the pad: from the terminal to
+  // the header, the files, the editor and back; Shift+F6 the other way.
+  const part = () =>
+    ana.evaluate(() => {
+      const at = document.activeElement;
+      for (const [name, selector] of [["header", ".workspace-head"], ["files", "#sidebar"], ["editor", "#viewer-pane"], ["terminal", ".terminals"]]) {
+        if (at?.closest(selector)) return name;
+      }
+      return at?.tagName ?? null;
+    });
   await ana.locator(".term.shown .xterm").first().click();
-  await ana.keyboard.press("F6");
-  const out = await focused();
-  check(out === "new-terminal" || out === "split", "F6 leaves the terminal", String(out));
+  const round = [await part()];
+  for (let i = 0; i < 4; i++) {
+    await ana.keyboard.press("F6");
+    round.push(await part());
+  }
+  check(round.join(" ") === "terminal header files editor terminal", "F6 leaves the terminal, and goes round the parts of the page", round.join(" "));
+  await ana.keyboard.press("Shift+F6");
+  const stepBack = await part();
+  check(stepBack === "editor", "and Shift+F6 goes back the other way", String(stepBack));
 
   // ---- by mouse ----------------------------------------------------------------
   // A click is a press and a release on the same row. Every change in the
   // folder repaints the tree, and a repaint used to replace every row, so a
   // file arriving between the two swallowed the click. It sorts below the
   // row pressed, so that row stays under the pointer.
-  await ana.locator("#close-file").click();
+  await ana.locator(".editor-group.focused .editor-tab.active .editor-tab-close").click();
   await sleep(300);
   const row = await ana.locator('.tree-row[data-path="note.txt"]').boundingBox();
   await ana.mouse.move(row.x + row.width / 2, row.y + row.height / 2);
@@ -392,11 +408,11 @@ async function main() {
   // here, and that folder alone was what came down.
   {
     const fresh = await guestPage(browser, link, "fresh");
-    const button = fresh.locator("#sidebar-actions button.download");
-    const label = await button.textContent();
+    const button = fresh.locator(".tree-bar button.download");
+    const label = await button.getAttribute("title");
     const [first] = await Promise.all([fresh.waitForEvent("download", { timeout: 30_000 }), button.click()]);
     check(
-      label === "Download all" && first.suggestedFilename() !== "nothing-here.zip",
+      label === "Download the whole workspace as a zip" && first.suggestedFilename() !== "nothing-here.zip",
       "Download all on a fresh page downloads everything, not the first folder",
       `${label} → ${first.suggestedFilename()}`,
     );
@@ -406,8 +422,8 @@ async function main() {
   // file as itself. The zip is over a megabyte, so it only arrives whole if
   // each window is acknowledged and the next one sent.
   await ana.locator('.tree-row[data-path="note.txt"]').click();
-  const allButton = ana.locator("#sidebar-actions button.download");
-  await until(async () => (await allButton.textContent()) === "Download all", 5000);
+  const allButton = ana.locator(".tree-bar button.download");
+  await until(async () => (await allButton.getAttribute("title")) === "Download the whole workspace as a zip", 5000);
   const [zipDownload] = await Promise.all([ana.waitForEvent("download", { timeout: 30_000 }), allButton.click()]);
   const zipPath = join(workdir, "..", `${zipDownload.suggestedFilename()}`);
   await zipDownload.saveAs(zipPath);
@@ -426,12 +442,14 @@ async function main() {
   );
   await rm(zipPath, { force: true });
   await open(ana, "note.txt");
-  const [fileDownload] = await Promise.all([ana.waitForEvent("download", { timeout: 15_000 }), ana.locator("#editor-actions button.download").click()]);
+  // Each row has its own arrow, as a pad's has: a file as itself.
+  await ana.locator('.tree-row[data-path="note.txt"]').hover();
+  const [fileDownload] = await Promise.all([ana.waitForEvent("download", { timeout: 15_000 }), ana.locator('.tree-row[data-path="note.txt"] .row-actions .get').click()]);
   const filePath = join(workdir, "..", `downloaded-${fileDownload.suggestedFilename()}`);
   await fileDownload.saveAs(filePath);
   check(
     fileDownload.suggestedFilename() === "note.txt" && (await readFile(filePath, "utf8")) === (await readFile(join(workdir, "note.txt"), "utf8")),
-    "and the open file downloads as itself",
+    "and a file's own arrow downloads it as itself",
   );
   await rm(filePath, { force: true });
 

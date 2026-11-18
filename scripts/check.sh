@@ -76,6 +76,9 @@ part_ajar() {
   echo "── smoke: workspace ──────────────────────────────────"
   node scripts/smoke-workspace.mjs
 
+  echo "── smoke: what the host does to the folder for a guest ─"
+  node scripts/smoke-files.mjs
+
   echo "── smoke: editing ────────────────────────────────────"
   node scripts/smoke-editing.mjs
 
@@ -109,6 +112,13 @@ part_ajar() {
   else
     echo "── ui: a guest's page through what goes wrong ────────"
     node scripts/check-guest.mjs
+  fi
+
+  if [ "${AJAR_SKIP_UI:-}" = "1" ]; then
+    echo "── ui: a guest's page, with what the pad's has ─── skipped (AJAR_SKIP_UI=1) ──"
+  else
+    echo "── ui: a guest's page, with what the pad's has ───────"
+    node scripts/check-guest-tools.mjs
   fi
 
   if [ "${AJAR_SKIP_UI:-}" = "1" ]; then

@@ -176,7 +176,38 @@ export type Fs =
   | { t: "download"; path: string }
   | { t: "archive"; id: number; path: string; name: string; bytes: number; files: number }
   | { t: "received"; id: number; received: number }
-  | { t: "download_error"; path: string; message: string };
+  | { t: "download_error"; path: string; message: string }
+  // What follows is asked only of a host that has said it can (`Roster.can`):
+  // an agent from before it drops what it does not know.
+  /** A new file, empty, or a new folder, with the folders on the way. */
+  | { t: "make"; id: number; path: string; dir: boolean }
+  /** A file or a folder to a new path. Onto a file that is there only with `replace`. */
+  | { t: "rename"; id: number; from: string; to: string; replace: boolean }
+  /** A file, or a folder and everything in it. */
+  | { t: "remove"; id: number; path: string }
+  /** A file to write, `bytes` long; its bytes follow as stream frames, `id` their stream, once the host says `taking`. */
+  | { t: "put"; id: number; path: string; bytes: number; replace: boolean }
+  | { t: "taking"; id: number }
+  /** The host has `received` bytes of upload `id`: the page sends a window ahead of this and no further. */
+  | { t: "got"; id: number; received: number }
+  /** How a make, a rename, a remove, an upload or a replace ended. */
+  | { t: "done"; id: number; ok: boolean; message: string }
+  /** Something was renamed or moved, by anyone here: open tabs follow it. */
+  | { t: "moved"; from: string; to: string }
+  /** Search the folder's text, on the host's disk. */
+  | { t: "find"; id: number; query: string; folder: string; match_case: boolean; whole_word: boolean }
+  | { t: "found"; id: number; groups: FoundFile[]; truncated: boolean }
+  /** Replace what a search found, in the files named, each only if it is still the text `sum` is the SHA-256 of. */
+  | { t: "replace"; id: number; query: string; match_case: boolean; whole_word: boolean; replacement: string; files: { path: string; sum: string }[] }
+  /** A file's bytes, to look at: an image. They come as stream frames, `stream` theirs, after `sight`. */
+  | { t: "bytes"; id: number; path: string }
+  | { t: "sight"; id: number; stream: number; path: string; bytes: number };
+
+/** One file's matches, as the host found them: offsets and columns in UTF-16 units, as the editor counts. */
+export interface FoundFile {
+  path: string;
+  matches: { start: number; end: number; line: number; column: number; before: string; hit: string; after: string }[];
+}
 
 export type Doc =
   | { t: "open"; path: string }
@@ -203,7 +234,12 @@ export type Presence =
   | { t: "report"; active_pty: number | null }
   | { t: "update"; participant_id: number; active_pty: number | null }
   | { t: "iam"; name: string; resume?: string }
-  | { t: "roster"; workspace: string; people: Person[] };
+  /**
+   * `can` is what this host's ajar does for a guest beyond reading: "write"
+   * (make, rename, remove, upload), "search" and "bytes". Absent from an
+   * agent older than 0.0.9, which does none of it.
+   */
+  | { t: "roster"; workspace: string; people: Person[]; can?: string[] };
 
 export type Pty =
   | { t: "open"; cols: number; rows: number }

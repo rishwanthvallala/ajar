@@ -53,7 +53,7 @@ async function main() {
   assert.equal(await page.evaluate(() => localStorage.getItem('ajar.sidebar')), 'hidden');
   const initial = await box('#viewer-pane'), main = await box('.main');
   assert(Math.abs(initial.height / (main.height - 8) - 0.6) < 0.02, 'editor defaults to 60%');
-  await page.getByRole('button', { name: 'Close file', exact: true }).click();
+  await page.locator('.editor-group.focused .editor-tab.active .editor-tab-close').click();
   assert(await page.locator('#editor-empty').isVisible());
   assert(Math.abs((await box('#viewer-pane')).height - initial.height) < 1, 'close preserves editor height');
   assert(await page.locator('.xterm').isVisible(), 'close preserves terminal');
@@ -141,7 +141,7 @@ async function main() {
     });
     await settled();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no page overflow at ${width}`);
-    for (const id of ['side-toggle', 'theme-toggle', 'highlight-toggle', 'close-file', 'new-terminal', 'split']) {
+    for (const id of ['side-toggle', 'theme-toggle', 'highlight-toggle', 'indent', 'new-terminal', 'split']) {
       const bounds = await box(`#${id}`);
       assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y + bounds.height <= height, `${id} reachable at ${width}`);
     }
@@ -150,11 +150,12 @@ async function main() {
       await page.getByRole('button', { name: 'Files', exact: true }).click();
       assert.equal((await box('.main')).width, mainWidth, 'drawer does not compress content');
       assert.equal(await page.locator('#sidebar').getAttribute('aria-modal'), 'true');
-      await page.getByRole('button', { name: 'Close files', exact: true }).focus();
+      // The magnifier is the drawer's first stop since 19 November, as in the pad's.
+      await page.locator('.side-head .search-toggle').focus();
       await page.keyboard.press('Shift+Tab');
       assert(await page.evaluate(() => document.activeElement?.classList.contains('tree-row')), 'drawer focus wraps backwards');
       await page.keyboard.press('Tab');
-      assert.equal(await page.evaluate(() => document.activeElement?.id), 'drawer-close');
+      assert(await page.locator('.side-head .search-toggle').evaluate(node => node === document.activeElement), 'drawer focus wraps forwards, to the search icon');
       await page.keyboard.press('Escape');
       assert.equal(await page.evaluate(() => document.activeElement?.id), 'side-toggle');
       await page.getByRole('button', { name: 'Files', exact: true }).click();
@@ -369,7 +370,7 @@ async function checkSession() {
   await page.getByRole('button', { name: 'Join', exact: true }).click();
   await page.getByRole('treeitem', { name: 'main.ts', exact: true }).waitFor();
   await page.getByRole('treeitem', { name: 'main.ts', exact: true }).click();
-  await page.getByRole('button', { name: 'Close file', exact: true }).click();
+  await page.locator('.editor-group.focused .editor-tab.active .editor-tab-close').click();
   releaseViewer();
   await page.evaluate(() => import('/src/viewer.ts'));
   assert(await page.locator('#editor-empty').isVisible(), 'closing during lazy load stays empty');
@@ -440,7 +441,7 @@ async function checkSession() {
   assert(await page.locator('.remote-9-caret').count() > 0, 'an honest cursor beside it still draws, whatever its name');
   await page.getByRole('button', { name: 'New terminal', exact: true }).click();
   await page.locator('.xterm').waitFor();
-  await page.getByRole('button', { name: 'Close file', exact: true }).click();
+  await page.locator('.editor-group.focused .editor-tab.active .editor-tab-close').click();
   wire.send(frame(3, { t: 'content', path: 'main.ts', text: 'late content', binary: false, truncated: false }));
   wire.send(frame(5, { t: 'opened', doc_id: 12, path: 'main.ts' }));
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

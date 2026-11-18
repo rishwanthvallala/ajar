@@ -88,8 +88,10 @@ export function toast(text: string, kind: "ok" | "error" = "ok", heard = false):
   const region = wrap.querySelector(kind === "ok" ? ".toasts-polite" : ".toasts-alert")!;
   const t = el("div", { className: `toast toast-${kind}${heard ? " vh" : ""}` }, icon(kind === "ok" ? "check" : "alert"), el("span", {}, sentence));
   region.append(t);
-  // Failures stay long enough to read twice, and while a pointer is on them.
-  const life = kind === "ok" ? 2600 : 9000;
+  // Failures stay long enough to read twice, and while a pointer is on them;
+  // a confirmation as long as it takes to read — "Link copied" its 2.6
+  // seconds, a sentence about what the host just did longer.
+  const life = kind === "ok" ? Math.max(2600, Math.min(8000, sentence.length * 65)) : 9000;
   let timer = setTimeout(() => leave(), life);
   const leave = () => {
     t.classList.add("leaving");

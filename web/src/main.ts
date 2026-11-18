@@ -5,9 +5,18 @@ import { applyStoredTheme, applyTheme, isDark, onThemeChange, THEME_CHOICES, the
 import "@ajar/workspace-ui/theme.css";
 import "./style.css";
 import "@ajar/workspace-ui/workspace.css";
+import "@ajar/workspace-ui/tools.css";
+import "@ajar/workspace-ui/kit.css";
+import "./session.css";
+import { confirmDialog, toast, toastRegions } from "@ajar/workspace-ui/kit";
+import type { Place } from "@ajar/workspace-ui/problems";
+import { ProjectSearch } from "@ajar/workspace-ui/search";
+import { matchesIn, type ReplacementPlan } from "@ajar/workspace-ui/search-match";
 
 import { colourFor } from "./colours";
 import { Connection, ConnState } from "./connection";
+import { type FindOptions, HostFiles, sumOf } from "./ops";
+import { placeLinks, Places, screenReaderToggle, screenReaderWanted, touchKeys } from "./terminal-extras";
 import { FileTree } from "./tree";
 import { Workspace } from "./workspace";
 import { SessionDocuments } from "./documents";
@@ -46,6 +55,9 @@ function sessionFromPath(): string | null {
 const session = sessionFromPath();
 if (import.meta.env.DEV && new URLSearchParams(location.search).get("preview") === "workspace") {
   void import("./workspace-preview").then(({ renderPreview }) => renderPreview(app));
+} else if (/^\/help\/?$/.test(location.pathname)) {
+  // The guide, as a page of the site — as the pad's is of its own.
+  void import("./help").then(({ renderHelp }) => renderHelp(app, themeButton));
 } else if (!session) {
   renderLanding();
 } else if (!hasKey(location.hash)) {
@@ -128,13 +140,39 @@ function incompleteLink(session: string) {
 
 // ------------------------------------------------------------ landing page
 
+/** The same three choices as the workspace, kept under the same name: for the pages that are not one. */
+function themeButton(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "theme-toggle landing-theme";
+  const paint = () => {
+    const now = themeChoice();
+    const next = THEME_CHOICES[(THEME_CHOICES.indexOf(now) + 1) % THEME_CHOICES.length]!;
+    button.textContent = `Theme: ${now[0]!.toUpperCase()}${now.slice(1)}`;
+    button.setAttribute("aria-label", `Theme: ${now}. Switch to ${next}.`);
+  };
+  button.onclick = () => {
+    const now = themeChoice();
+    const next = THEME_CHOICES[(THEME_CHOICES.indexOf(now) + 1) % THEME_CHOICES.length]!;
+    try {
+      localStorage.setItem("ajar.theme", next);
+    } catch {
+      // Not kept, but still applied for this page.
+    }
+    applyTheme(next);
+    paint();
+  };
+  paint();
+  return button;
+}
+
 function renderLanding() {
   app.innerHTML = `
     <main class="landing">
       <header class="landing-head">
         <h1>ajar</h1>
         <p class="tagline">Leave a machine open to someone.</p>
-        <button type="button" class="theme-toggle landing-theme" id="landing-theme"></button>
+        <span id="landing-theme"></span>
       </header>
 
       <p class="lede">
@@ -204,29 +242,12 @@ function renderLanding() {
 
       <footer class="landing-foot">
         Already have a link? It looks like <code>/j/quiet-ember-4417</code>.
+        <a href="/help">The guide</a> has the rest: what a guest can do, the
+        panel's keys, and what happens when your connection drops.
       </footer>
     </main>`;
 
-  // The same three choices as the workspace, kept under the same name.
-  const themeButton = document.getElementById("landing-theme") as HTMLButtonElement;
-  const paintTheme = () => {
-    const now = themeChoice();
-    const next = THEME_CHOICES[(THEME_CHOICES.indexOf(now) + 1) % THEME_CHOICES.length]!;
-    themeButton.textContent = `Theme: ${now[0]!.toUpperCase()}${now.slice(1)}`;
-    themeButton.setAttribute("aria-label", `Theme: ${now}. Switch to ${next}.`);
-  };
-  themeButton.onclick = () => {
-    const now = themeChoice();
-    const next = THEME_CHOICES[(THEME_CHOICES.indexOf(now) + 1) % THEME_CHOICES.length]!;
-    try {
-      localStorage.setItem("ajar.theme", next);
-    } catch {
-      // Not kept, but still applied for this page.
-    }
-    applyTheme(next);
-    paintTheme();
-  };
-  paintTheme();
+  document.getElementById("landing-theme")!.replaceWith(themeButton());
 
   const copy = document.getElementById("copy") as HTMLButtonElement;
   copy.onclick = async () => {
@@ -288,6 +309,9 @@ interface TerminalTab {
 
 function renderSession(session: string, name: string, sealer: Sealer | null) {
   const workspace = new Workspace(app, session);
+  // There before the first thing is said: a live region made together with
+  // its first message is one screen readers often miss.
+  toastRegions();
 
   const statusEl = document.getElementById("status")!;
   /** Beside the status, not in it: the retry countdown is not news. */
@@ -306,7 +330,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   termHint.className = "term-hint";
   termHint.id = "term-hint";
   termHint.textContent = "F6 leaves the terminal";
-  document.querySelector(".terminal-head")?.appendChild(termHint);
+  document.querySelector(".terminal-head .region-label")?.after(termHint);
   /** Why the last New terminal did nothing, until one opens. */
   const termNotice = document.createElement("span");
   termNotice.className = "term-notice";
@@ -378,7 +402,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     // less: a large folder is read whole before the host answers.
     downloadWait = setTimeout(() => {
       downloadWait = null;
-      toast("No answer from the host after a minute. Their ajar may be too old to send downloads — ask them to update.");
+      toast("No answer from the host after a minute. Their ajar may be too old to send downloads — ask them to update.", "error");
     }, 60_000);
   }
 
@@ -421,48 +445,235 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     toast(`Downloaded ${d.name}.`);
   }
 
-  // Everything, or the folder the file tree is on; and the open file.
-  const downloadAll = document.createElement("button");
-  downloadAll.type = "button";
-  downloadAll.className = "quiet-button download";
-  const labelDownloadAll = () => {
-    const folder = tree.focusedFolder;
-    downloadAll.textContent = folder ? `Download ${folder.split("/").pop()}/` : "Download all";
-    downloadAll.title = folder ? `Download ${folder} as a zip` : "Download the whole workspace as a zip";
-  };
-  downloadAll.onclick = () => requestDownload(tree.focusedFolder ?? "");
-  document.getElementById("sidebar-actions")?.appendChild(downloadAll);
-  const downloadFile = document.createElement("button");
-  downloadFile.type = "button";
-  downloadFile.className = "quiet-button download";
-  downloadFile.textContent = "Download";
-  downloadFile.hidden = true;
-  downloadFile.onclick = () => {
-    if (workspace.editor.path) requestDownload(workspace.editor.path);
-  };
-  document.getElementById("editor-actions")?.appendChild(downloadFile);
+  // ---- what the host does for a guest ----------------------------------
+  // Beyond reading: making, renaming, removing and taking uploads; searching
+  // every file's text; a file's bytes to look at. Asked only of a host that
+  // has said it can, in its roster — an older ajar is never shown a button
+  // it would not answer.
+  const files = new HostFiles((frame) => conn.send(frame));
+  /** Whether the host would change the folder for this guest now. */
+  const writable = () => files.does("write") && connState === "open" && hostHeard && !hostAway && !readOnly;
+  const whyNot = () => (readOnly ? "the host made this session read-only" : hostAway ? "the host is away" : "not connected to the host");
+  let wasWritable = false;
+  /** What the page may do changed: the tree's buttons, the search's Replace and a terminal's cross follow. */
+  function abilityChanged() {
+    wasWritable = writable();
+    tree.refresh();
+    search.invalidate();
+    drawTabs();
+  }
 
   const documents = new SessionDocuments(workspace.editor, {
     send: frame => conn.send(frame), online: () => connState === "open", away: () => hostAway,
     readOnly: () => readOnly, user: () => ({ id: me, name }), unsent: setUnsent, copy: () => offlineFiles,
+    skip: path => workspace.editor.image(path),
   });
-  const tree = new FileTree(document.getElementById("tree")!, async path => {
+
+  async function openFile(path: string) {
     const focus = workspace.fileSelected();
     await workspace.editor.open(path);
     documents.retry(path);
     if (focus) workspace.editor.focus();
     requestAnimationFrame(layout);
+  }
+
+  /** A file made from the tree, to open once the host's tree has it. */
+  let openWhenMade: string | null = null;
+
+  /** One at a time, each sent a window at a time: said as they go, and how it ended. */
+  async function upload(folder: string, picked: File[] | null) {
+    const chosen = picked ?? await pickFiles();
+    if (!chosen.length || !writable()) return;
+    const tooBig = chosen.filter((f) => f.size > UPLOAD_MAX);
+    const taking = chosen.filter((f) => f.size <= UPLOAD_MAX);
+    const where = folder ? `${folder}/` : "the top of the folder";
+    const pathOf = (f: File) => (folder ? `${folder}/${f.name}` : f.name);
+    const taken = taking.filter((f) => tree.has(pathOf(f)));
+    if (taken.length) {
+      const names = taken.length === 1 ? taken[0]!.name : `${taken.length} files`;
+      const yes = await confirmDialog({
+        title: `Replace ${names}?`,
+        body: `${taken.length === 1 ? "A file of that name is" : "Files of those names are"} already in ${where}. ${taken.length === 1 ? "Yours replaces it" : "Yours replace them"} on the host's machine, for everyone here.`,
+        confirm: "Replace",
+        danger: true,
+      });
+      if (!yes) return;
+    }
+    let done = 0;
+    const failed: string[] = [];
+    for (const file of taking) {
+      toast(`Uploading ${file.name}${taking.length > 1 ? ` (${done + 1} of ${taking.length})` : ""}…`, "ok", taking.length > 1 && done > 0);
+      const outcome = await files.put(pathOf(file), new Uint8Array(await file.arrayBuffer()), tree.has(pathOf(file)));
+      if (outcome.ok) done++;
+      else failed.push(`${file.name}: ${outcome.message}`);
+    }
+    for (const file of tooBig) failed.push(`${file.name}: over ${UPLOAD_MAX / 1024 / 1024} MB, more than is taken in one upload`);
+    if (done) toast(`Uploaded ${done} ${done === 1 ? "file" : "files"} to ${where}.`);
+    if (failed.length) toast(`Not uploaded — ${failed.slice(0, 3).join("; ")}${failed.length > 3 ? `; and ${failed.length - 3} more` : ""}.`, "error");
+  }
+
+  const tree = new FileTree(document.getElementById("tree")!, {
+    onOpen: (path) => void openFile(path),
+    onDownload: (path) => requestDownload(path),
+    offered: () => files.does("write"),
+    writable,
+    whyNot,
+    onCreate: async (path, dir, open) => {
+      if (open && !dir) openWhenMade = path;
+      const outcome = await files.make(path, dir);
+      if (!outcome.ok) {
+        if (openWhenMade === path) openWhenMade = null;
+        toast(`${path} was not made: ${outcome.message}.`, "error");
+      }
+    },
+    onMove: async (from, dir, to) => {
+      let replace = false;
+      if (tree.has(to)) {
+        // Dragged onto a name that is taken. A folder never goes over anything.
+        if (dir || tree.kindOf(to) === "dir") return void toast(`There is already something called ${to}.`, "error");
+        replace = await confirmDialog({
+          title: `Replace ${to}?`,
+          body: `${to} is already there. Moving ${from} onto it replaces it on the host's machine, for everyone here.`,
+          confirm: "Replace",
+          danger: true,
+        });
+        if (!replace) return;
+      }
+      const outcome = await files.rename(from, to, replace);
+      if (!outcome.ok) toast(`${from} was not moved: ${outcome.message}.`, "error");
+    },
+    onDelete: async (path, dir) => {
+      const yes = await confirmDialog({
+        title: ["Delete ", Object.assign(document.createElement("span"), { className: "mono", textContent: path }), "?"],
+        body: dir
+          ? "The folder and everything in it — what this list does not show of it too — are deleted on the host's machine, for everyone here. There is no bin to take them back out of."
+          : "It is deleted on the host's machine, for everyone here. There is no bin to take it back out of.",
+        confirm: "Delete",
+        danger: true,
+      });
+      if (!yes) return;
+      const outcome = await files.remove(path);
+      if (outcome.ok) toast(`Deleted ${path}.`);
+      else toast(`${path} was not deleted: ${outcome.message}.`, "error");
+    },
+    onUpload: (folder, picked) => void upload(folder, picked),
   });
   workspace.editor.onSelect = path => {
-    tree.setActive(path); downloadFile.hidden = !path;
+    tree.setActive(path);
     documents.sync();
   };
   workspace.editor.onViews = () => documents.sync();
-  tree.onFocusMove = labelDownloadAll;
-  labelDownloadAll();
   (document.getElementById("close-file") as HTMLButtonElement).onclick = () => {
     workspace.editor.close(); workspace.editor.focus(); requestAnimationFrame(layout);
   };
+
+  // ---- a file's bytes, to look at ---------------------------------------
+  // An image opens as a picture, and a formatted Markdown file shows its
+  // own. Kept until the file changes: a file formatted again at every key
+  // would ask the host for its pictures at every key.
+  const pictures = new Map<string, Promise<{ url: string; bytes: number } | { why: string }>>();
+  workspace.editor.use({
+    say: (text, kind) => toast(text, kind),
+    kind: (path) => tree.kindOf(path),
+    viewable: () => files.does("bytes"),
+    bytes: (path, type) => {
+      let got = pictures.get(path);
+      if (!got) {
+        got = files.bytes(path).then((bytes) => (typeof bytes === "string" ? { why: bytes } : { url: `data:${type};base64,${toBase64(bytes)}`, bytes: bytes.length }));
+        pictures.set(path, got);
+        // What could not be had is asked for again next time.
+        void got.then((result) => { if ("why" in result && pictures.get(path) === got) pictures.delete(path); });
+      }
+      return got;
+    },
+    download: (path) => requestDownload(path),
+  });
+
+  // ---- reading a file whole, for a replacement's preview ----------------
+  const reads = new Map<string, Array<(text: string | null) => void>>();
+  function readText(path: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const waiting = reads.get(path);
+      if (waiting) return void waiting.push(resolve);
+      reads.set(path, [resolve]);
+      conn.send(jsonFrame(Channel.Fs, TARGET_ALL, { t: "read", path } satisfies Fs));
+      setTimeout(() => answerRead(path, null), 30_000);
+    });
+  }
+  function answerRead(path: string, text: string | null) {
+    const waiting = reads.get(path);
+    if (!waiting) return;
+    reads.delete(path);
+    for (const resolve of waiting) resolve(text);
+  }
+
+  // ---- search -------------------------------------------------------------
+  // Names are matched here, from the tree. Contents are searched on the
+  // host's disk, where the files are: the page holds only the ones open.
+  let searched: FindOptions | null = null;
+  const search = new ProjectSearch(workspace.search, {
+    words: { here: "this folder", whole: "Whole folder", everyone: "everyone in this session, on the host's machine" },
+    files: () => tree.paths.files.map((path) => ({ path })),
+    folders: () => tree.paths.folders.sort(),
+    canReplace: () => files.does("search") && writable(),
+    unavailable: () =>
+      !files.does("search") ? "The host's ajar is too old to search inside files (it needs 0.0.9). File names can still be searched — or ask them to run the install command again."
+        : hostAway || connState !== "open" ? "The host is away: file contents can be searched when they are back." : null,
+    find: async (options) => {
+      searched = { query: options.query, folder: options.folder, matchCase: options.matchCase, wholeWord: options.wholeWord };
+      const found = await files.find(searched);
+      return { groups: found.groups.map((g) => ({ path: g.path, revision: 0, matches: g.matches })), truncated: found.truncated };
+    },
+    texts: async (groups) => {
+      const texts = new Map<string, string>();
+      for (const group of groups) {
+        const text = await readText(group.path);
+        if (text !== null) texts.set(group.path, text);
+      }
+      return texts;
+    },
+    open: (path, match) => {
+      if (match) void workspace.editor.openAt(path, match.line, match.column, match.end - match.start).then(() => documents.retry(path));
+      else void openFile(path).then(() => workspace.editor.focus());
+      workspace.fileSelected();
+    },
+    prepare: async (found, replacement) => {
+      // Only where what the host found is still what the file says: a file
+      // changed since the search is left out, and said to be.
+      const options = searched;
+      const plan: ReplacementPlan = { files: [], replacement, skipped: [] };
+      for (const file of found) {
+        const now = options ? matchesIn(file.before, { ...options, mode: "contents" }) : [];
+        const same = now.length === file.matches.length && now.every((m, i) => m.start === file.matches[i]!.start && m.end === file.matches[i]!.end);
+        if (same) plan.files.push(file);
+        else plan.skipped.push(`${file.path} (changed since it was searched)`);
+      }
+      return plan;
+    },
+    apply: async (plan) => {
+      if (!searched) throw new Error("search again first");
+      const sums = await Promise.all(plan.files.map(async (f) => ({ path: f.path, sum: await sumOf(f.before) })));
+      const outcome = await files.replace(searched, plan.replacement, sums);
+      if (!outcome.ok) throw new Error(outcome.message);
+      return outcome.message;
+    },
+  });
+
+  /** The folder's files, as a terminal's output may name them. */
+  const places = new Places();
+  function filesChanged() {
+    places.set(tree.paths.files);
+    search.invalidate();
+    if (openWhenMade && tree.has(openWhenMade)) {
+      const path = openWhenMade;
+      openWhenMade = null;
+      void openFile(path).then(() => workspace.editor.focus());
+    }
+  }
+  /** A file and line from a terminal, opened there in the editor. */
+  function openPlace(place: Place) {
+    void workspace.editor.openAt(place.path, place.line, place.column).then(() => documents.retry(place.path));
+  }
 
   const tabs = new Map<number, TerminalTab>();
   /** From the host's roster. The relay never sends names. */
@@ -515,6 +726,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     paintStatus();
     // Typing the host has not sent back may have gone down with the socket.
     if (s === "reconnecting") documents.disconnected();
+    // And nothing asked of the host on it will be answered.
+    if (s !== "open") files.lost("the connection to the host dropped");
   }
 
   /**
@@ -534,6 +747,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     newBtn.disabled = connState !== "open" || hostAway || readOnly || !hostHeard;
     newBtn.title = readOnly ? "The host made terminals read-only" : hostAway ? "The host is away" : "";
     for (const tab of tabs.values()) tab.term.options.disableStdin = readOnly || hostAway;
+    if (writable() !== wasWritable) abilityChanged();
   }
 
   /** Whether closing the tab now would lose typing, and the prompt if so. */
@@ -687,6 +901,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
           // Terminals stay alive on the host the whole time; this is only
           // the socket between us and them.
           hostAway = true;
+          // What was asked of it and not yet answered went with it.
+          files.lost("the host is away");
           awayUntil = Date.now() + msg.grace_secs * 1000;
           copyNote = "";
           if (awayTimer) clearInterval(awayTimer);
@@ -761,7 +977,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       } else if (msg.t === "refused") {
         // Said out loud: a button that silently does nothing reads as a bug.
         termNotice.textContent = `No new terminal: ${msg.reason}`;
-        toast(`No new terminal: ${msg.reason}.`);
+        toast(`No new terminal: ${msg.reason}.`, "error");
       } else if (msg.t === "closed") {
         closeTab(msg.pty_id);
       } else if (msg.t === "resize") {
@@ -782,6 +998,7 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         const flipped = readOnly !== msg.read_only;
         readOnly = msg.read_only;
         readOnlyEl.hidden = !readOnly;
+        if (readOnly) search.invalidate();
         if (flipped) documents.permissionsChanged();
         readOnlyEl.title = readOnly ? "The host has made this session read-only: you can watch and read, not type or edit." : "";
         if (flipped && firstTerminalSettled) {
@@ -817,6 +1034,14 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         document.getElementById("workspace")!.title = msg.workspace;
         drawPeople();
         drawTabs();
+        // What this host's ajar does for a guest. Absent from an older one,
+        // which does none of it — and then none of it is offered.
+        if (files.learn(msg.can)) {
+          abilityChanged();
+          workspace.editor.refreshImages();
+          documents.sync();
+        }
+        if (writable() !== wasWritable) abilityChanged();
       }
       return;
     }
@@ -840,20 +1065,39 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
 
     if (f.channel === Channel.Fs) {
       if (isStream(f)) {
-        receiveDownload(f.streamId, f.payload);
+        if (!files.stream(f.streamId, f.payload)) receiveDownload(f.streamId, f.payload);
         return;
       }
       const msg = parseJson<Fs>(f);
+      if (files.message(msg)) return;
       switch (msg.t) {
+        case "moved": {
+          // Renamed or moved, by anyone here: the tabs open on it follow,
+          // each asking for its file again under the new name.
+          const within = (path: string) => path === msg.from || path.startsWith(`${msg.from}/`);
+          const moves = [...workspace.editor.groups.paths].filter(within).map((path) => [path, msg.to + path.slice(msg.from.length)] as const);
+          for (const [from] of moves) {
+            documents.moved(from);
+            workspace.editor.forget(from);
+            pictures.delete(from);
+          }
+          if (moves.length) {
+            workspace.editor.groups.renameMany(moves);
+            documents.sync();
+          }
+          break;
+        }
         case "archive":
           startReceiving(msg.id, msg.name, msg.bytes);
           break;
         case "download_error":
           downloadAnswered();
-          toast(`Can't download ${msg.path || "the workspace"}: ${msg.message}.`);
+          toast(`Can't download ${msg.path || "the workspace"}: ${msg.message}.`, "error");
           break;
         case "tree":
+          pictures.clear();
           tree.setEntries(msg.entries);
+          filesChanged();
           if (!editorsRestored) {
             editorsRestored = true;
             const paths = new Set(msg.entries.filter(entry => entry.kind === "file").map(entry => entry.path));
@@ -864,12 +1108,20 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         case "patch":
           tree.applyPatch(msg.added, msg.changed, msg.removed);
           fileCountEl.textContent = fileCount(tree.count);
+          // A picture that changed is fetched again where it is on screen.
+          for (const path of [...msg.changed.map((e) => e.path), ...msg.removed]) {
+            if (pictures.delete(path)) workspace.editor.refreshImages(path);
+          }
+          filesChanged();
           break;
         case "content":
+          // Whole, as text, or not at all: half a file is not one to replace in.
+          answerRead(msg.path, msg.binary || msg.truncated ? null : msg.text);
           documents.content(msg.path, msg.text, msg.truncated, msg.binary);
           break;
         case "read_error":
-          workspace.editor.problem(msg.path, msg.message);
+          if (reads.has(msg.path)) answerRead(msg.path, null);
+          else workspace.editor.problem(msg.path, msg.message);
           break;
       }
     }
@@ -897,6 +1149,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       disableStdin: readOnly || hostAway,
       allowProposedApi: true,
       theme: terminalTheme(),
+      // What it prints, for screen readers too, when asked for (the Screen
+      // reader button beside New terminal).
+      screenReaderMode: screenReaderWanted(),
+      // Text held to WCAG AA against its background in either theme — grey
+      // notes included, which programs print dim.
+      minimumContrastRatio: 4.5,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -918,17 +1176,11 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
 
     // A terminal takes every key, Tab and Escape included, so keyboard focus
     // that went in could not come out. F6 is the conventional way between
-    // regions: forward to the terminal's controls, Shift+F6 back to the
-    // editor.
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.key !== "F6") return true;
-      if (e.type === "keydown") {
-        e.preventDefault();
-        if (e.shiftKey) workspace.editor.focus();
-        else (newBtn.disabled ? splitBtn : newBtn).focus();
-      }
-      return false;
-    });
+    // regions, left to bubble to the page's own handler (`cycleRegion`).
+    term.attachCustomKeyEventHandler((e) => e.key !== "F6");
+    // A traceback's file and line, a compiler's: a link to the place, when
+    // it is one of the folder's files.
+    term.registerLinkProvider(placeLinks(term, places, openPlace));
 
     term.onData((data) => {
       // The host drops these anyway when terminals are read-only; not
@@ -956,15 +1208,23 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
     select(ptyId);
   }
 
-  /** Rebuilds the tab strip, including who else is watching each terminal. */
+  /**
+   * Rebuilds the tab strip, including who else is watching each terminal.
+   * Each tab has the cross that closes its terminal, as a pad's has — for
+   * everyone here, since the terminal is the host's and everyone's, so it
+   * asks first. The host has always closed one when asked; the page never
+   * asked.
+   */
   function drawTabs() {
-    for (const b of Array.from(tabsEl.querySelectorAll(".tab"))) b.remove();
+    for (const b of Array.from(tabsEl.querySelectorAll(".tab-wrap"))) b.remove();
     for (const ptyId of [...tabs.keys()].sort((a, b) => a - b)) {
       const others = people
         .filter((p) => p.id !== me && watching.get(p.id) === ptyId)
         .map((p) => p.name);
 
       const pane = panes.indexOf(ptyId);
+      const wrap = document.createElement("span");
+      wrap.className = "tab-wrap";
       const b = document.createElement("button");
       b.className =
         "tab" + (pane === focused ? " active" : pane >= 0 ? " shown" : "");
@@ -984,7 +1244,24 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
       }
       b.onclick = () => select(ptyId);
       b.setAttribute("aria-pressed", String(pane === focused));
-      tabsEl.appendChild(b);
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "tab-close";
+      close.textContent = "×";
+      close.title = `Close terminal ${ptyId}, for everyone`;
+      close.setAttribute("aria-label", `Close terminal ${ptyId}`);
+      close.hidden = readOnly || hostAway || connState !== "open";
+      close.onclick = async () => {
+        const yes = await confirmDialog({
+          title: `Close terminal ${ptyId}?`,
+          body: `It closes for everyone here${others.length ? ` — ${others.join(", ")} ${others.length === 1 ? "is" : "are"} in it` : ""}, and whatever is running in it stops.`,
+          confirm: "Close it",
+          danger: true,
+        });
+        if (yes && tabs.has(ptyId)) conn.send(jsonFrame(Channel.Pty, TARGET_ALL, { t: "close", pty_id: ptyId } satisfies Pty));
+      };
+      wrap.append(b, close);
+      tabsEl.appendChild(wrap);
     }
   }
 
@@ -1122,6 +1399,49 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   }
   newBtn.onclick = requestTerminal;
 
+  // The terminal's text for a screen reader, and on a touch screen the keys
+  // a phone's keyboard lacks: both the pad's, for every terminal here.
+  newBtn.before(screenReaderToggle((on) => {
+    for (const tab of tabs.values()) tab.term.options.screenReaderMode = on;
+  }));
+  const keys = touchKeys((data) => {
+    const id = active();
+    if (id === null || readOnly || hostAway) return;
+    conn.send(streamFrame(Channel.Pty, id, textEncoder.encode(data)));
+    tabs.get(id)?.term.focus();
+  });
+  if (keys) document.querySelector(".terminal-head")?.append(keys);
+
+  /**
+   * Focus to the next part of the page, or the one before: the header, the
+   * files, the editor, the terminal. What a keyboard needs to leave the
+   * terminal, where Tab completes and Esc belongs to the program (WCAG
+   * 2.1.2). It went from the terminal to its buttons and nowhere else until
+   * 19 November.
+   */
+  function cycleRegion(back: boolean) {
+    const sidebar = document.getElementById("sidebar")!;
+    const viewer = document.getElementById("viewer-pane")!;
+    const head = document.querySelector<HTMLElement>(".workspace-head")!;
+    const regions: Array<{ holds: (el: Element) => boolean; focus: () => void }> = [
+      { holds: (el) => head.contains(el), focus: () => document.getElementById("side-toggle")!.focus() },
+      {
+        holds: (el) => sidebar.contains(el),
+        focus: () => {
+          // Shown first, where it is folded away or a drawer.
+          if (sidebar.hidden) workspace.showFiles();
+          (sidebar.querySelector<HTMLElement>('.tree-row[tabindex="0"], .tree-viewport[tabindex="0"]') ?? sidebar.querySelector<HTMLElement>("input, button"))?.focus();
+        },
+      },
+      { holds: (el) => viewer.contains(el), focus: () => workspace.editor.focus() },
+      { holds: (el) => termsEl.parentElement!.contains(el), focus: () => { const id = active(); if (id !== null) tabs.get(id)?.term.focus(); else newBtn.focus(); } },
+    ];
+    const at = document.activeElement;
+    const here = at ? regions.findIndex((r) => r.holds(at)) : -1;
+    const next = here < 0 ? (back ? regions.length - 1 : 0) : (here + (back ? -1 : 1) + regions.length) % regions.length;
+    regions[next]!.focus();
+  }
+
   workspace.onLayout = () => {
     const px = codeFontPx();
     for (const tab of tabs.values()) {
@@ -1133,6 +1453,8 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   function dispose() {
     if (disposed) return;
     documents.dispose();
+    search.dispose();
+    files.lost("the session ended");
     disposed = true;
     if (awayTimer) clearInterval(awayTimer);
     awayTimer = null;
@@ -1162,6 +1484,12 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
   // edited and has the host name its terminals again.
   window.addEventListener("pageshow", (e) => {
     if (e.persisted && !disposed) conn.resume();
+  }, { signal: pageEvents.signal });
+  // F6 and Shift-F6: to the next part of the page and back.
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "F6" || e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
+    e.preventDefault();
+    cycleRegion(e.shiftKey);
   }, { signal: pageEvents.signal });
 
   /** A screen that ends the session view, with a way back in. */
@@ -1262,26 +1590,26 @@ const STATE_WORDS: Record<ConnState, string> = {
   closed: "disconnected",
 };
 
-/**
- * A passing note: shown for a few seconds, read out once. The region is
- * always in the page — one shown only when there is something to say is
- * often missed by screen readers — and outside the workspace's grid.
- */
-function toast(text: string) {
-  let region = document.getElementById("toasts");
-  if (!region) {
-    region = document.createElement("div");
-    region.id = "toasts";
-    region.className = "toasts";
-    region.setAttribute("role", "status");
-    region.setAttribute("aria-live", "polite");
-    document.body.appendChild(region);
-  }
-  const item = document.createElement("div");
-  item.className = "toast";
-  item.textContent = text;
-  region.appendChild(item);
-  setTimeout(() => item.remove(), 5000);
+/** The most the host takes in one upload (`UPLOAD_MAX` in the agent). */
+const UPLOAD_MAX = 50 * 1024 * 1024;
+
+/** Ask for files from this computer. None when the person thinks better of it. */
+function pickFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.addEventListener("change", () => resolve([...(input.files ?? [])]), { once: true });
+    input.addEventListener("cancel", () => resolve([]), { once: true });
+    input.click();
+  });
+}
+
+/** Bytes as base64, a piece at a time: a whole image spread into one call's arguments overflows the stack. */
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
 
 /** Refusals worth waiting out, for a page that has been in the session. */

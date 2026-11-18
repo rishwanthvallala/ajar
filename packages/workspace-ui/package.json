@@ -10,6 +10,7 @@
     "./eol": "./src/eol.ts",
     "./kit": "./src/kit.ts",
     "./icons": "./src/icons.ts",
+    "./tree-icons": "./src/tree-icons.ts",
     "./names": "./src/names.ts",
     "./images": "./src/images.ts",
     "./markdown": "./src/markdown.ts",
@@ -19,6 +20,7 @@
     "./search": "./src/search.ts",
     "./search-match": "./src/search-match.ts",
     "./search-keys": "./src/search-keys.ts",
+    "./suggest": "./src/suggest.ts",
     "./theme.css": "./src/theme.css",
     "./workspace.css": "./src/workspace.css",
     "./kit.css": "./src/kit.css",
@@ -28,9 +30,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "monaco-editor": "^0.55.0",
     "typescript": "^5.9.0"
   },
   "dependencies": {
+    "@ajar/complete": "0.0.0",
     "@wasm-fmt/clang-format": "23.1.1",
     "@wasm-fmt/gofmt": "0.7.3",
     "@wasm-fmt/lua_fmt": "0.3.3",

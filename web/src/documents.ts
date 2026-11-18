@@ -22,6 +22,8 @@ interface DocumentOptions {
   user: () => { id: number; name: string };
   unsent: (value: boolean) => void;
   copy: () => Map<string, string> | null;
+  /** A file that is shown some other way than as text to edit: a picture. No document is asked for it. */
+  skip?: (path: string) => boolean;
 }
 
 /** Per-file document recovery and per-group views. The host protocol stays unchanged. */
@@ -60,6 +62,7 @@ export class SessionDocuments {
         if (file.doc && file.ready && !visible.has(file.path) && !file.doc.waiting && !this.options.away()) this.release(file, true);
       }
       for (const path of visible) {
+        if (this.options.skip?.(path)) continue;
         if (![...this.editor.viewers.values()].some(viewer => viewer.current === path)) continue;
         const file = this.file(path);
         if (this.options.away()) { if (!file.doc && !file.held) this.showCopy(file); }
@@ -77,6 +80,20 @@ export class SessionDocuments {
       if (host) { if (active?.ready) host.dataset.editing = active.path; else delete host.dataset.editing; }
       this.settle();
     } finally { this.syncing = false; }
+  }
+  /**
+   * A file renamed or moved on the host, by anyone: what this page held for
+   * its old name is let go, and its new name is asked for like any other.
+   * The host wrote the document out before it moved the file.
+   */
+  moved(from: string) {
+    const file = this.files.get(from);
+    if (!file) return;
+    file.holding?.dispose();
+    this.release(file, false);
+    this.files.delete(from);
+    this.shownCopies.delete(from);
+    this.settle();
   }
   /** A permanently refused file still offers a way to keep or discard its local typing. */
   private recovery(file: OpenFile) {
@@ -117,7 +134,7 @@ export class SessionDocuments {
     if (text !== undefined) void this.editor.show(file.path, text, false, true, "saved copy, read-only while the host is away");
     else this.editor.problem(file.path, this.options.copy() ? "not in the saved copy — it opens when the host is back" : "the host is away — waiting for the saved copy");
   }
-  copyChanged() { for (const path of this.editor.groups.visiblePaths) { const file = this.file(path); if (!file.doc && !file.held) this.showCopy(file); } }
+  copyChanged() { for (const path of this.editor.groups.visiblePaths) { if (this.options.skip?.(path)) continue; const file = this.file(path); if (!file.doc && !file.held) this.showCopy(file); } }
   disconnected() { this.settle(); }
   welcome() {
     this.early.clear(); this.earlyBytes = this.earlyCount = 0; this.pendingStreams.clear(); this.shownCopies.clear();
@@ -253,6 +270,8 @@ export class SessionDocuments {
     this.sync();
   }
   content(path: string, text: string, truncated: boolean, binary: boolean) {
+    // Read for something other than the editor: a search's preview.
+    if (!this.files.has(path) && !this.editor.groups.paths.has(path)) return;
     const file = this.file(path); if (file.held || file.doc) return;
     if (binary) this.editor.problem(path, "binary file");
     else void this.editor.show(path, text, truncated, true, file.failed ? `read-only: ${file.failed}` : undefined);

@@ -40,6 +40,20 @@
 }
 
 ajar.rishwanth.dev {
+	# The suggestion model, which a guest's page offers as the pad does since
+	# 19 November: the pad's own copy, served here so the page asks its own
+	# origin. Its list asked again each visit, the model kept; nothing else
+	# under /packages is this site's. As deploy/nginx/sites.conf has it.
+	@model path /packages/ajar-complete.json /packages/ajar-complete-*.bin
+	handle @model {
+		root * /srv/ajar/pad
+		header /packages/*.json Cache-Control "no-cache"
+		header /packages/*.bin Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed br gzip
+		}
+	}
+
 	# The relay serves the web client, the join pages, /install.sh and /ws.
 	reverse_proxy 127.0.0.1:8787 {
 		# Replace rather than append, so a caller cannot prepend its own

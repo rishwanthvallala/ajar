@@ -50,7 +50,12 @@ Download waits a minute and is told it may be too old. 0.0.8 (8 October) is
 the first Linux build that runs on any distribution; it also stops `ajar`
 using a whole CPU core when run without a terminal, says why when the relay
 cannot be reached, and keeps the folder's copy on the relay after the relay
-restarts.
+restarts. 0.0.9 is what lets a guest's page make, rename, delete and upload
+files, search inside them and open an image (below): with an older `ajar`
+the page offers none of that, rather than buttons that do nothing. It also
+fixes `ajar ~/some/project` dying at start — "path is expected to be under
+the root" — on a machine with a global gitignore, when run from anywhere
+but inside that project.
 
 One binary, nothing to configure, for macOS and Linux on x86_64 or arm64. On
 Linux it is static, so it runs on any distribution, glibc or musl, old or
@@ -121,7 +126,7 @@ incomplete link".
 |---|---|
 | `k` | Disconnect a guest — type the number beside their name, then Enter; Backspace takes a digit back, any other key cancels. Someone you disconnect can join again unless the session is locked, so lock it first to keep them out |
 | `x` | Lock the session — nobody new can join. People already in stay, through a dropped connection, a reload or the relay restarting; a new tab, even one of theirs, counts as someone new. Guests are told when you lock or unlock |
-| `l` | Read-only — guests can look and download, but not type in a terminal, open a new one, or edit a file. Their pages say so when it changes |
+| `l` | Read-only — guests can look, search and download, but not type in a terminal, open or close one, edit a file, or make, rename, delete or upload one. Their pages say so when it changes, and the buttons for those go grey, saying why |
 | `d` | Stop keeping the offline copy, and forget the one already stored; press it again to keep one again. The line under the sandbox's says what is being kept |
 | `c` | Copy the link to the clipboard, where the terminal allows it: kitty, WezTerm and Windows Terminal do; iTerm2 once "Applications in terminal may access clipboard" is on; tmux with `set -g set-clipboard on`; Terminal.app never. The link wraps rather than being cut, so it can always be selected whole |
 | `q` | Close — ends every terminal and kills the link. Ctrl-C does the same |
@@ -144,6 +149,78 @@ can type in the same file at once, and their typing survives a terminal
 rewriting or appending to the file underneath them. Each file opens where you
 last left it, and stays there through a dropped connection.
 
+Since 19 November their page has what the [pad's](pad.md) has, wherever your
+machine's own tools are not already the better way — the same file list,
+search and editor.
+
+**The file list.** A bar of buttons above it, and each row's own at its end,
+shown as the pointer comes to it:
+
+- **New file** and **New folder** open a row in the list where the thing
+  will be — in the folder the list is on, or beside the open file — and its
+  name is typed there. Enter makes it, Escape does not, and a name that is
+  taken or will not do is said under it as it is typed. A `/` in the name
+  makes the folders on the way (`src/app.py`).
+- **Rename** — the pencil on a row, or F2 — turns the row into its name,
+  ready to type over. Dragging a row onto a folder moves it there. A tab open
+  on what moved follows it, with what was typed.
+- **Delete** — the bin, or the Delete key — asks first. There is no bin to
+  take it back out of: in a git repository the checkpoint `ajar` made when
+  the session opened is what puts it back (below) — all of it but what git
+  ignores, which no checkpoint has.
+- **Upload** takes files from their computer into the folder the list is
+  on, and so does dropping files on the list — up to 50 MB each, as they
+  are: a zip stays a zip, for `unzip` in the terminal.
+- **Download**, the down arrow: in the bar, the whole workspace as a zip, or
+  the folder the list is on; on a row, that file as it is, or that folder as
+  a zip.
+
+A right click on a row, or Shift+F10, has the same as a menu. Everything a
+guest does this way happens on your disk, inside the shared folder and
+nowhere else. What the file list hides cannot be named to be changed —
+nothing your ignore files name, no `.git`, none of the generated folders —
+and nothing is done through a symlink. One thing to know: a folder deleted
+or moved goes whole, with whatever is hidden inside it — its `node_modules`,
+and a gitignored `.env` — as it would for `rm -r` or `mv` in a terminal; the
+guest is told so before they confirm. Your panel's activity log says who
+made, moved, deleted, uploaded or looked at what.
+
+**Search.** The magnifying glass beside **Files** searches the folder:
+**File names** for a file by its name or path, **File contents** for text in
+the files, which is run on your machine, over every text file the list shows
+up to 1 MB each. **In folder** keeps it to one folder; **Match case** and
+**Whole word** narrow it. It is literal text on one line, never a pattern.
+A result opens its file at that line. Ctrl-P and Ctrl-Shift-F (⌘P and ⌘⇧F on
+a Mac) open it from the keyboard; in a terminal off a Mac those keys stay
+the shell's. **Replace** previews each changed line before **Apply
+replacements** changes the files, on your disk, for everyone; a file that
+changed since the preview is left alone and named.
+
+**The editor.** Beside **Colours**, above it:
+
+- **Format** formats the file — Python with Ruff, C, C++ and Java with
+  clang-format, Go with gofmt, JavaScript, TypeScript, CSS and HTML with
+  Biome's formatters, and JSON, SQL, YAML, TOML, Markdown, shell, PHP and
+  Lua. Shift-Alt-F does the same, and so does Format Document in the
+  right-click menu. The formatter runs in the guest's browser, not on your
+  machine, and what it changes arrives as typing does.
+- **Preview**, for a Markdown file (or ⇧⌘V, Ctrl-Shift-V off a Mac), shows it
+  formatted as GitHub would — beside the text where the editor is wide
+  enough, in place of it where it is not — with its pictures, and its links
+  to other files opening them.
+- **Spaces: 4** is how much an indent is; click it for 2. Each guest's own.
+- **Suggest**, where the relay has the suggestion model to serve: the rest
+  of the line in grey as they type, Tab to take it, from a small model that
+  runs in their tab — your code is not sent anywhere for it. 17 MB, fetched
+  the first time code is typed. `ajar.rishwanth.dev` has it; a relay of your
+  own has it only if the pad's packages are served beside it.
+
+An empty file of a kind there is a starter for offers one on its first line.
+An image — PNG, JPEG, GIF, WebP and the like, up to 5 MB — opens as a
+picture rather than as a file that will not open. Ctrl-F finds and replaces
+within a file, and the editor has its own right-click menu, comment
+toggling, folding and several cursors, as the pad's has.
+
 **Editor tabs and groups.** Opening a file keeps a tab in the focused editor
 group. Use the split icon for another pane beside it, or the **⋯** menu for
 **Split down**. Each group has its own tabs; the same file can appear in more
@@ -161,24 +238,31 @@ Shift splits down. **⌘1–9** focuses a group (**Ctrl-1–9**).
 arrows, Home, End, Delete, and Shift-F10 for its menu. Terminal keys stay with
 the terminal.
 
-The top bar lists who is here, with "(host)" and "(you)" beside the names and
-a dot in the colour of each person's cursor; on a phone, just the dots and a
-count. A terminal's tab names whoever else is looking at it, and **Split**
-shows two terminals side by side.
-
-**Download all**, above the file tree, saves the whole workspace as a zip;
-when the tree is on a folder the button names it — **Download src/** — and
-saves that folder instead. **Download** above the editor saves the open file
-as it is on your disk. Only what the file tree shows goes in: nothing your
-ignore files hide, no `.git`, and none of the generated folders `ajar` always
-leaves out, such as `node_modules`, `target`, `dist` and `.venv`. A download
-over 100 MB or 20,000 files is refused, with the reason. Read-only guests can
-download too, and your panel's activity log says who downloaded what.
+**The terminals.** The top bar lists who is here, with "(host)" and "(you)"
+beside the names and a dot in the colour of each person's cursor; on a phone,
+just the dots and a count. A terminal's tab names whoever else is looking at
+it, **Split** shows two terminals side by side, and the cross on a tab
+closes that terminal — for everyone, so it asks first. A file and line in
+what a program printed — a Python traceback's, a compiler's error, a stack
+frame's — is a link: click it and the file opens at that line. **Screen
+reader**, beside New terminal, lets a screen reader read what the terminals
+print. On a phone or a tablet, whose keyboard has none of Tab, Ctrl or the
+arrows, a row of them sits under the terminal's header: Tab, Ctrl-C, ↑ ↓ ← →,
+Esc and Ctrl-D; and a phone on its side shows the editor and the terminal
+side by side.
 
 Everything works from the keyboard. The file tree is one stop: the arrow
 keys move through it, Home and End go to the first and last row, → and ← open
-and close folders, and Enter opens a file. A terminal takes every key, so
-**F6** leaves it for the terminal's buttons, and Shift+F6 goes to the editor.
+and close folders, Enter opens a file, F2 renames, Delete deletes and
+Shift+F10 opens the row's menu. A terminal takes every key, so **F6** leaves
+it: F6 and Shift+F6 go round the parts of the page — the header, the files,
+the editor, the terminal.
+
+A download is only what the file tree shows: nothing your ignore files hide,
+no `.git`, and none of the generated folders `ajar` always leaves out, such
+as `node_modules`, `target`, `dist` and `.venv`. One over 100 MB or 20,000
+files is refused, with the reason. Read-only guests can download, search and
+look too.
 
 A link that is cut short — everything after the `#` is the key that decrypts
 the session — says so rather than opening a session that cannot be read, and
@@ -188,15 +272,17 @@ is asked for the whole link again; `c` on your panel copies it.
 A few files open read-only, with the reason beside the name: files over 1 MB,
 of which the first megabyte is shown, and text the browser's editor would
 quietly change — not UTF-8, a byte-order mark, mixed line endings, or a
-carriage return on its own. A binary file shows only that it is one. If a
-file you have open is deleted, moved, turned binary or grows past 1 MB on the
-host, it stays on screen, read-only, with the reason, so nothing you typed is
-lost to you.
+carriage return on its own. A binary file that is not an image shows only
+that it is one. If a file you have open is deleted, moved by a command,
+turned binary or grows past 1 MB on the host, it stays on screen, read-only,
+with the reason, so nothing you typed is lost to you.
 
 Files are coloured by language — about eighty of them, plus CSV and TSV with
 each column in its own colour. **Colours** above the editor switches that off
 for plain text. The button at the end of the top bar picks the theme: System
 (follow the device), Light, or Dark. Each guest's browser keeps its own choice.
+
+This guide is on the site too, at `ajar.rishwanth.dev/help`.
 
 If your laptop sleeps or your wifi drops, guests keep the session rather than
 losing it. Once the relay notices you have gone — at once if the connection

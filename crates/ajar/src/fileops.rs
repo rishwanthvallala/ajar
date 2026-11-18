@@ -172,6 +172,14 @@ pub fn rename(filter: &Filter, from: &str, to: &str, replace: bool) -> Result<()
 }
 
 /// A file, or a folder and everything in it. There is no bin.
+///
+/// Everything: a folder goes whole, with what the tree hides inside it — a
+/// `node_modules`, a gitignored `.env` — as it would for `rm -r` in the
+/// guest's shell. What is hidden cannot be named here to be removed, but it
+/// is not kept back from under what is; a folder emptied of all but its
+/// hidden files and left standing would be a stranger thing to find. The
+/// page says so before it asks, since a checkpoint has none of what git
+/// ignores to put back.
 pub fn remove(filter: &Filter, rel: &str) -> Result<bool, String> {
     let dir = folder(filter)?;
     let meta = dir
@@ -802,6 +810,28 @@ mod tests {
         assert!(!root.join("src").exists());
         assert!(root.join("keep.txt").exists());
         assert!(remove(&f, "src").is_err());
+    }
+
+    #[test]
+    fn a_folder_goes_with_what_is_hidden_inside_it_and_what_is_hidden_is_not_named() {
+        // Decided, not overlooked: see `remove`.
+        let root = scratch("remove-hidden");
+        fs::create_dir_all(root.join("app/node_modules/dep")).unwrap();
+        fs::write(root.join("app/node_modules/dep/index.js"), "x").unwrap();
+        fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        fs::write(root.join("app/.env"), "TOKEN=1").unwrap();
+        fs::write(root.join("app/main.py"), "x").unwrap();
+        let f = filter(&root);
+        // Named, each is refused, and is still there.
+        assert!(remove(&f, "app/.env").is_err());
+        assert!(remove(&f, "app/node_modules").is_err());
+        assert!(remove(&f, "app/node_modules/dep/index.js").is_err());
+        assert!(
+            root.join("app/.env").exists() && root.join("app/node_modules/dep/index.js").exists()
+        );
+        // Under a folder that is removed, they go with it.
+        assert!(remove(&f, "app").unwrap());
+        assert!(!root.join("app").exists());
     }
 
     #[test]

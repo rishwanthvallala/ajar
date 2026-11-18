@@ -22,9 +22,36 @@ export interface SearchHooks {
   open(path: string, match?: SearchMatch, before?: string): void;
   prepare(files: ReplacementFile[], replacement: string): Promise<ReplacementPlan>;
   apply(plan: ReplacementPlan): Promise<string>;
+  /** What is searched, in the panel's words: a pad's unless said. */
+  words?: Partial<SearchWords>;
+  /**
+   * File contents searched somewhere other than in this page: on the host of
+   * an ajar session, whose files the page does not hold. Asked in place of
+   * the worker for a search of contents; names are still matched here.
+   */
+  find?(options: SearchOptions): Promise<Pick<SearchResults, "groups" | "truncated">>;
+  /** Why contents cannot be searched now, where they cannot: said in place of results. */
+  unavailable?(): string | null;
+  /** The text each file's matches were found in, for a replacement's preview, where `files()` does not hold it. */
+  texts?(groups: SearchGroup[]): Promise<Map<string, string>>;
 }
 
-/** The pad's sidebar search. Its worker owns the index; App owns text and edits. */
+/** What the panel calls the thing it searches. */
+export interface SearchWords {
+  /** "this pad", in "Type to search this pad." */
+  here: string;
+  /** "Entire pad": everything, where a folder could be chosen instead. */
+  whole: string;
+  /** "everyone on this pad": whom a replacement changes the files for. */
+  everyone: string;
+}
+const PAD_WORDS: SearchWords = { here: "this pad", whole: "Entire pad", everyone: "everyone on this pad" };
+
+/**
+ * The sidebar's search, the pad's and the guest's page of an ajar session's
+ * alike. Its worker owns the index of what the page holds; the product owns
+ * text and edits.
+ */
 export class ProjectSearch {
   private readonly events = new AbortController();
   private readonly query = el("input", { type: "search", placeholder: "Search…" });
@@ -50,14 +77,16 @@ export class ProjectSearch {
   private previousFocus: HTMLElement | null = null;
   private dialog: HTMLDialogElement | null = null;
   private readonly apple = isApple(navigator.platform || navigator.userAgent);
+  private readonly words: SearchWords;
 
   constructor(private readonly ui: SearchSurface, private readonly hooks: SearchHooks) {
+    this.words = { ...PAD_WORDS, ...hooks.words };
     const label = (name: string, control: HTMLElement) => {
       control.setAttribute("aria-label", name);
       return el("label", {}, el("span", {}, name), control);
     };
     this.mode.append(new Option("File contents", "contents"), new Option("File names", "names"));
-    this.folder.append(new Option("Entire pad", ""));
+    this.folder.append(new Option(this.words.whole, ""));
     this.query.setAttribute("aria-label", "Search query");
     this.query.setAttribute("autocomplete", "off");
     this.replacement.setAttribute("aria-label", "Replacement text");
@@ -136,7 +165,7 @@ export class ProjectSearch {
     this.paintControls();
     if (this.timer) clearTimeout(this.timer);
     this.results.replaceChildren();
-    this.status.textContent = this.query.value ? "Searching…" : "Type to search this pad.";
+    this.status.textContent = this.query.value ? "Searching…" : `Type to search ${this.words.here}.`;
     this.results.setAttribute("aria-busy", String(!!this.query.value));
     this.timer = setTimeout(() => this.run(), 150);
   }
@@ -158,7 +187,7 @@ export class ProjectSearch {
     if (!this.opened) return;
     const selected = this.folder.value;
     const folders = this.hooks.folders();
-    this.folder.replaceChildren(new Option("Entire pad", ""), ...folders.map((p) => new Option(p, p)));
+    this.folder.replaceChildren(new Option(this.words.whole, ""), ...folders.map((p) => new Option(p, p)));
     if (selected && !folders.includes(selected)) this.folder.append(new Option(`${selected} (unavailable)`, selected));
     this.folder.value = selected;
     if (selected && !folders.includes(selected)) {
@@ -166,8 +195,30 @@ export class ProjectSearch {
       this.results.setAttribute("aria-busy", "false"); return;
     }
     if (!this.query.value || /[\r\n]/.test(this.query.value)) {
-      this.status.textContent = this.query.value ? "Search for text on a single line." : "Type to search this pad.";
+      this.status.textContent = this.query.value ? "Search for text on a single line." : `Type to search ${this.words.here}.`;
       this.results.setAttribute("aria-busy", "false"); return;
+    }
+    if (this.mode.value === "contents") {
+      const why = this.hooks.unavailable?.() ?? null;
+      if (why) {
+        this.status.textContent = why;
+        this.results.setAttribute("aria-busy", "false"); return;
+      }
+      if (this.hooks.find) {
+        // Found where the files are, and what is found shown as the
+        // worker's would be. An answer to a search since overtaken is not one.
+        const generation = this.generation;
+        this.hooks.find(this.options()).then((found) => {
+          if (!this.opened || generation !== this.generation) return;
+          this.result = { generation, ...found };
+          this.render();
+        }, (e: Error) => {
+          if (!this.opened || generation !== this.generation) return;
+          this.status.textContent = `Search did not finish: ${e.message}`;
+          this.results.setAttribute("aria-busy", "false"); this.paintControls();
+        });
+        return;
+      }
     }
     try {
       if (!this.worker) {
@@ -241,16 +292,23 @@ export class ProjectSearch {
   private async prepare(path?: string): Promise<void> {
     if (this.preparing || this.applying || this.dialog || !this.hooks.canReplace() || !this.result || this.result.truncated) return;
     const groups: SearchGroup[] = this.result.groups.filter((g) => !path || g.path === path);
-    const files = groups.flatMap((g) => {
+    const held = groups.flatMap((g) => {
       const file = this.indexed.get(g.path);
       return file?.text !== undefined && file.revision === g.revision ? [{ path: g.path, before: file.text, matches: g.matches }] : [];
     });
-    if (!files.length) return;
+    if (!held.length && !this.hooks.texts) return;
     this.preparing = true; this.paintControls();
     try {
+      let files = held;
+      if (this.hooks.texts) {
+        // Not held here: asked for, as they are now, for the preview to show.
+        const texts = await this.hooks.texts(groups);
+        if (this.events.signal.aborted) return;
+        files = groups.flatMap((g) => (texts.has(g.path) ? [{ path: g.path, before: texts.get(g.path)!, matches: g.matches }] : []));
+      }
       const plan = await this.hooks.prepare(files, this.replacement.value);
       if (this.events.signal.aborted) return;
-      const { dialog, body } = modal("Preview replacements", "Changes apply to everyone on this pad.", "search-preview");
+      const { dialog, body } = modal("Preview replacements", `Changes apply to ${this.words.everyone}.`, "search-preview");
       this.dialog = dialog;
       const count = plan.files.reduce((n, f) => n + f.matches.length, 0);
       body.append(el("p", {}, `${count} ${count === 1 ? "replacement" : "replacements"} in ${plan.files.length} ${plan.files.length === 1 ? "file" : "files"}. No project-wide undo. Long lines are shown as excerpts.`));

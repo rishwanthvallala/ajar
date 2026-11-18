@@ -35,6 +35,8 @@ export interface MarkdownHooks {
   image(path: string): Promise<string | null>;
   /** A code block coloured as the editor would colour it, as HTML; null leaves it plain. */
   colorize(code: string, language: string): Promise<string | null>;
+  /** What the files are in, for saying a picture is not there: "this pad" unless said. */
+  where?: string;
 }
 
 /** What renders, fetched the first time a file is shown formatted rather than with the page. */
@@ -160,11 +162,11 @@ export async function renderMarkdown(source: string, path: string, hooks: Markdo
     if (link.kind === "file") {
       work.push(hooks.image(link.path).then((url) => {
         if (url) img.src = url;
-        else img.replaceWith(missing(`${img.alt || link.path} — no image ${link.path} in this pad`));
+        else img.replaceWith(missing(`${img.alt || link.path} — no image ${link.path} in ${hooks.where ?? "this pad"}`));
       }));
     } else if (link.kind === "outside") {
-      // The pad's CSP lets no image in from another site, rightly: a file
-      // could learn who opened it. A link to it instead.
+      // Neither product's CSP lets an image in from another site, rightly: a
+      // file could learn who opened it. A link to it instead.
       const a = document.createElement("a");
       a.className = "md-image-outside";
       a.href = link.url;

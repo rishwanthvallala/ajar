@@ -39,6 +39,9 @@ printf 'gzipped' > "$tmp/pad/packages/big.webc.gz"
 echo small > "$tmp/pad/packages/small.webc"
 echo '{}' > "$tmp/pad/packages/manifest.json"
 echo '{}' > "$tmp/pad/packages/registry.json"
+echo '{"format":1}' > "$tmp/pad/packages/ajar-complete.json"
+head -c 50000 /dev/zero > "$tmp/pad/packages/ajar-complete-model-0a1b2c3d4e5f.bin"
+printf 'brotli-model' > "$tmp/pad/packages/ajar-complete-model-0a1b2c3d4e5f.bin.br"
 echo 'export {}' > "$tmp/pad/vendor/sdk.js"
 echo 'export {}' > "$tmp/pad/vendor/module.mjs"
 echo 'export {}' > "$tmp/pad/assets/app.js"
@@ -180,6 +183,21 @@ for f in plain.wasm icons.ttf; do
     e=$(curl -s --interface 127.0.0.4 --resolve "code.rishwanth.dev:$PORT:127.0.0.1" -H "Accept-Encoding: gzip" "http://code.rishwanth.dev:$PORT/assets/$f" -o /dev/null -D - | tr -d '\r' | grep -i '^content-encoding' | awk '{print $2}' || true)
     [ "$e" = gzip ] && ok "$f with no stored copy is compressed on the way" || bad "$f went out as '${e:-raw}'"
 done
+
+# The suggestion model on the session client's site: the pad's copy, under
+# that site's own policy. And nothing else of the pad's packages with it.
+echo "the suggestion model, on ajar's site"
+h=$(headers ajar.rishwanth.dev /packages/ajar-complete.json)
+body=$(curl -s --resolve "ajar.rishwanth.dev:$PORT:127.0.0.1" "http://ajar.rishwanth.dev:$PORT/packages/ajar-complete.json")
+[ "$body" = '{"format":1}' ] && echo "$h" | grep -qi '^content-type: application/json' && echo "$h" | grep -qi '^cache-control: no-cache' &&
+    ok "its list is served there, as JSON, and asked again each visit" || bad "the model's list on ajar's site: ${body:0:40} / $(echo "$h" | grep -iE '^(content-type|cache-control)')"
+h=$(curl -s --resolve "ajar.rishwanth.dev:$PORT:127.0.0.1" -H "Accept-Encoding: br, gzip" "http://ajar.rishwanth.dev:$PORT/packages/ajar-complete-model-0a1b2c3d4e5f.bin" -o "$tmp/enc" -D - | tr -d '\r')
+[ "$(cat "$tmp/enc")" = brotli-model ] && echo "$h" | grep -qi '^content-encoding: br' && echo "$h" | grep -q immutable &&
+    ok "the model goes as its stored brotli copy, and is kept" || bad "the model on ajar's site: $(echo "$h" | grep -iE '^(content-encoding|cache-control)')"
+echo "$h" | grep -qi "^content-security-policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'" &&
+    ok "under that site's own policy" || bad "the model on ajar's site has no policy, or the pad's: $(echo "$h" | grep -i '^content-security-policy' | cut -c1-90)"
+body=$(curl -s --resolve "ajar.rishwanth.dev:$PORT:127.0.0.1" "http://ajar.rishwanth.dev:$PORT/packages/big.webc" | head -c 5 | od -An -c | tr -d ' \n')
+[ "$body" != '\0\0\0\0\0' ] && ok "and no other package of the pad's is served from there" || bad "ajar's site served the pad's packages"
 
 echo "pad_dns: $DNS at once per address, then a trickle"
 r=$(spend "$DNS" 127.0.0.1 /dns-query)

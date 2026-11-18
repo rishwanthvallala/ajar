@@ -55,7 +55,11 @@ export function renderPreview(app: HTMLElement): () => void {
       unbind = model?.onDidChangeContent(() => { contents[path] = model.getValue(); }) ?? null;
       if (focus) workspace.editor.focus();
     }
-    const tree = new FileTree(workspace.el("tree"), path => { void open(path); });
+    // Looked at, not changed: the fixture has no host to make or move anything.
+    const tree = new FileTree(workspace.el("tree"), {
+      onOpen: path => { void open(path); }, onDownload: () => {}, offered: () => false, writable: () => false, whyNot: () => "this is a preview",
+      onCreate: () => {}, onMove: () => {}, onDelete: () => {}, onUpload: () => {},
+    });
     const entries: Entry[] = scenario === "empty" ? [] : [
       { path: "src", kind: "dir", size: 0 },
       ...Object.entries(files).map(([path, text]) => ({ path, kind: "file" as const, size: text.length })),

@@ -43,9 +43,6 @@
 .shell .sidebar-actions, .shell .workspace-actions, .shell .editor-actions { display: flex; align-items: center; gap: 0.4rem; }
 .shell .workspace-actions { margin-left: auto; }
 .shell .people:not(:empty) + .workspace-actions { margin-left: 0; }
-.shell .tree-row { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 0 0.75rem; height: var(--tree-row); font-size: 0.8125rem; font-weight: 400; color: var(--ink-2); }
-.shell .tree-row:hover { background: var(--surface-2); }
-.shell .tree-row.active { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); box-shadow: inset 2px 0 var(--accent); }
 /* The last column, by line: past the sidebar and its separator's track when
    there are three, the only one when there is one. The separator is inside
    the sidebar now and no longer takes the middle one by its place. */

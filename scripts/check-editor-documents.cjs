@@ -73,6 +73,27 @@ async function run() {
     await page.locator('#name').fill('Editor check'); await page.getByRole('button', {name:'Join',exact:true}).click();
     const open = async file => { await page.locator(`.tree-row[data-path="${file}"]`).click(); await page.waitForFunction(file => document.querySelector('#viewer')?.dataset.editing === file, file); };
     await open('main.ts');
+    // A host that says nothing of what it does for a guest — every ajar
+    // before 0.0.9, and this fixture until it says so below — is offered
+    // none of it: no button that would be sent to an agent that drops it.
+    const barOf = () => page.locator('.tree-bar button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')));
+    const rowOf = () => page.locator('.tree-row[data-path="main.ts"] .row-actions button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')));
+    assert.deepEqual(await barOf(), ['Download the whole workspace as a zip'], 'an older host is offered no New file, New folder or Upload');
+    assert.deepEqual(await rowOf(), ['Download main.ts'], 'nor Rename or Delete on a row');
+    await page.locator('#sidebar .search-toggle').click();
+    await page.getByRole('searchbox', {name:'Search query'}).fill('main');
+    await page.waitForFunction(() => /too old to search inside files/.test(document.querySelector('.search-status')?.textContent ?? ''));
+    assert.equal(await page.locator('.search-hit').count(), 0, 'and a search of contents says why it cannot, rather than finding nothing');
+    await page.locator('#project-search select').first().selectOption('names');
+    await page.waitForFunction(() => document.querySelector('.search-results')?.getAttribute('aria-busy') === 'false' && document.querySelectorAll('.search-hit').length === 1);
+    await page.getByRole('button', {name:'Back to files', exact:true}).click();
+    const roster = can => wire.send(frame(4, {t:'roster', workspace:'editor-documents', people:[{id:1,name:'host',role:'host'},{id:2,name:'Editor check',role:'guest'}], ...(can ? {can} : {})}));
+    roster(['write','search','bytes']);
+    await page.getByRole('button', {name:'New file', exact:true}).waitFor();
+    assert.deepEqual(await barOf(), ['New file', 'New folder', 'Upload files', 'Download the whole workspace as a zip'], 'a host that says it can is offered all of it');
+    assert.deepEqual(await rowOf(), ['Rename main.ts', 'Download main.ts', 'Delete main.ts']);
+    roster(null);
+    await page.waitForFunction(() => document.querySelectorAll('.tree-bar button').length === 1);
     await page.locator('.editor-group.focused').getByRole('button', {name:/^Split right /}).click();
     await page.waitForFunction(() => document.querySelectorAll('.monaco-editor').length === 2);
     assert.equal(opened.filter(p => p === 'main.ts').length, 1, 'two views open one host subscription');
