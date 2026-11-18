@@ -5,7 +5,7 @@ to reach and deploy them, how to test, and the conventions this repository
 keeps. The reasons behind them are in [docs/dev/](docs/dev/README.md) — read
 [architecture.md](docs/dev/architecture.md) first, and
 [operations.md](docs/dev/operations.md) before touching the server. Kept as of
-30 October 2026; when something here stops being true, fix it here.
+19 November 2026; when something here stops being true, fix it here.
 
 Nothing secret is in this file or anywhere in the repository. Sign-in's client
 secrets live on the server alone (below).
@@ -22,9 +22,20 @@ Two products and one relay:
 | `preview.rishwanth.dev` | What somebody runs inside a pad, kept off the pad's origin |
 
 Shared: `packages/workspace-ui` (the shell both clients draw, editor tabs and
-groups), `packages/complete` (in-tab code suggestions). `deploy/` is
-everything the server runs; `scripts/` the gate and the repository-wide
-checks; `pad/scripts/` the pad's checks and package builds.
+groups, and since 19 November what a page does in it that is not one
+product's own: search, the formatters, a Markdown file formatted, starters,
+the dialogs' kit, the Suggest switch, and their styles), `packages/complete`
+(in-tab code suggestions). `deploy/` is everything the server runs;
+`scripts/` the gate and the repository-wide checks; `pad/scripts/` the pad's
+checks and package builds.
+
+**A thing the pad's page gains, the guest's page of a session gains too**,
+unless it is the pad's by nature — its runtime, its store, its accounts.
+The two had drifted for a month by 19 November;
+[ajar-parity.md](docs/dev/ajar-parity.md) is the list, and where each lives.
+Build it in `packages/workspace-ui` and use it from both; what a session
+needs done to the folder, the host's `ajar` does (`crates/ajar/src/fileops.rs`)
+and says it can in its roster, so an older agent is never asked.
 
 ## The server
 
@@ -163,6 +174,9 @@ node pad/scripts/pair-check.mjs                       # two browsers, one pad
 node pad/scripts/complete-check.mjs                   # skips without the model in pad/public/packages
 (cd pad && VITE_PREVIEW_ORIGIN=http://127.0.0.1:5251 npx vite build && node scripts/preview-check.mjs)   # then build:pad again
 node scripts/test-ui.cjs                              # needs `npm run build`
+node scripts/smoke-files.mjs                          # the agent's file operations for a guest, on the wire; needs `cargo build`
+node scripts/check-guest-tools.mjs                    # the guest's page: tree, search, editor tools; `npm run build:ajar` and `cargo build`
+node scripts/check-guest.mjs                          # the guest's page through what goes wrong around it
 ```
 
 - **One browser suite at a time.** They start relays and servers on fixed
@@ -175,6 +189,12 @@ node scripts/test-ui.cjs                              # needs `npm run build`
   symlinks before `git worktree remove --force`, or the removal follows them.
 - Don't run `scripts/smoke-abuse.mjs`, or the whole of `check.sh`, on the
   maintainer's work Mac (below); CI runs them.
+- **A change to a stylesheet both products load** (`workspace.css`,
+  `tools.css`, `kit.css`) is checked against the other product too: build
+  it, screenshot it in the states the sheet draws, before and after, and
+  compare the bytes. Thirty of the pad's were identical across the move of
+  19 November; a rule moved between sheets changes which of two equal
+  selectors wins.
 
 ## The pad's packages and builds
 

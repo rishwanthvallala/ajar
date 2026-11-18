@@ -331,6 +331,72 @@ A guest may also hold only 16 documents open at once, and the host 256 in
 all: each is a file of up to 1 MB in the agent's memory, and nothing stopped
 a client opening every file in the folder.
 
+## What a guest's page can change
+
+Until 0.0.9, nothing but the files it had open: the review of 7 October left
+making, renaming, deleting and uploading out on purpose — "the shell does all
+of it, and a second way to change the host's disk is a second thing to
+secure." They are in since 19 November, because the pad's page has them and
+the guest's is to have what the pad's has. This is the second thing, and how
+it is secured.
+
+**It is the agent acting, not the sandbox.** A guest's shell is confined by
+Seatbelt or Landlock; whatever it does, it does inside that. The agent is not
+confined at all. So a file made from the page is the agent making a file, on
+a guest's word, with the host's whole filesystem in reach. Everything rests
+on what `fileops.rs` will and will not do with a path.
+
+- **Nowhere but the folder.** The folder is opened once as a `cap-std`
+  directory, and every operation is on a path resolved beneath it — a
+  component at a time, by descriptor. A `..`, an absolute path, or a symlink
+  that leads out is an error. That holds against the case a check cannot: a
+  guest with a shell who swaps a folder for a symlink in the moment between a
+  path being checked and being used. Checking with the standard library and
+  then using the path would leave that moment open — and the prize is
+  writing, or moving a file over, anything the host can write.
+- **Nothing the tree hides.** A path is refused when the ignore rules hide
+  it — `.git/hooks/pre-commit`, a gitignored `.env`, `node_modules` — as
+  written, and when it goes through a link at all, since a link inside the
+  folder may lead to what is hidden. This is a check, and a guest with a shell
+  can race it; but what they would reach is inside the folder, which their
+  shell could reach anyway.
+- **Read-only refuses every change**, at the agent, whatever a page sends —
+  and, since the same release, a guest's `Pty::Close`, which ended a terminal
+  for a guest who could not type in it.
+- **Nothing is lost quietly.** A make or an upload never replaces what is
+  there unless told to, and the page asks first; a rename never replaces a
+  folder, and a folder never replaces anything. A delete has no bin: in a git
+  repository the checkpoint taken when the session opened restores what was
+  there.
+- **Every one is said.** The activity pane has a line for each, with who.
+
+Searching and looking are reading, and go where reading goes: the tree's own
+list, each file through the same two gates. A search is literal — the query
+is escaped, never compiled as a guest's pattern — over files of up to 1 MB,
+and stops at 5,000 matches. A file to look at is at most 5 MB.
+
+What it does not bound: how much a guest writes. An upload is at most 50 MB
+and one at a time from each guest, but nothing counts the uploads; a guest
+with a shell could always fill the disk with `dd`.
+
+**And a folder goes whole.** What is hidden cannot be named — `app/.env`
+is refused — but deleting `app` deletes it, and its `node_modules`, and a
+repository's `.git` if `app` is one; moving `app` moves them, and a file
+hidden by a rule that names its path (`/app/secrets.yml`) is no longer
+hidden under the new name. Both are what `rm -r` and `mv` do in the guest's
+shell, which every guest who may change anything has; the other choices —
+refusing a folder with anything hidden in it, which on a Mac is any folder
+Finder has opened, or leaving a folder standing with only its hidden files
+— were worse. The page's dialog says so, and a unit test holds it as
+decided. What it costs that a shell's `rm` does not: a click and a
+confirmation are easier to do by mistake, and the checkpoint has none of
+what git ignores.
+
+Checked by `fileops`' unit tests (each gate taken out fails them),
+`scripts/smoke-files.mjs` against a real agent — seven spellings of a path
+out of the folder or into what is hidden, for each operation, and read-only
+— and `scripts/check-guest-tools.mjs` in a browser.
+
 ## The credential scan is a warning, not a boundary
 
 Filenames by convention (`.env`, `*.pem`, `id_rsa`, `.npmrc`) and a
@@ -785,7 +851,8 @@ the code.
 
 ## Markdown, shown formatted
 
-A Markdown file's Preview (`pad/src/markdown.ts`) puts HTML that came from a
+A Markdown file's Preview (`packages/workspace-ui/src/markdown.ts`, the
+pad's until 19 November and a session's page's too since) puts HTML that came from a
 pad's text into the pad's own page — the page that holds the viewer's session
 cookie, and for an owner, the right to delete. The text is anyone's who can
 edit the pad, and an open pad's is anyone's at all. So marked's HTML goes

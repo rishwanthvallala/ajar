@@ -1950,6 +1950,12 @@ Monaco actions, so they have Shift-Alt-F, the right-click menu and F1.
 
 ## Project search
 
+(`search.ts` and the three beside it, like `format.ts`, `starters.ts`,
+`markdown.ts`, `images.ts` and `problems.ts` named in the sections above,
+are in `packages/workspace-ui/src` since 19 November: a session's page uses
+them too — [workspace-ui.md](workspace-ui.md), "What the page is built
+from".)
+
 The magnifiers beside Files open `ProjectSearch` (`search.ts`) in the same
 sidebar, retaining the tree. The mobile entry opens the existing drawer.
 `search-keys.ts` owns platform labels and exact modifier matching; a capture

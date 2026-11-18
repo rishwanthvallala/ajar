@@ -309,7 +309,10 @@ the viewer's behaviour is in `app.ts`. They are built from
 one small kit — `ui.ts` (buttons, the provider buttons, modals, a confirm
 dialog, toasts, the theme switch), `icons.ts` (inline SVG, since the CSP allows
 images only from this origin) and `accounts.css`, which uses only the theme's
-tokens, so both themes come for free. The dashboard lists pads with chips for
+tokens, so both themes come for free. (Since 19 November the parts of it a
+session's page uses too — buttons, modals, the confirm dialog, toasts, the
+icons and their styles — are `packages/workspace-ui`'s `kit.ts`, `icons.ts`
+and `kit.css`; `ui.ts` passes them on and keeps the rest.) The dashboard lists pads with chips for
 who can view and edit; settings and links live in the share dialog, the same
 one the pad opens. **Your pads** sits in the header beside Share, and is hidden
 on a phone, where the header has no room.

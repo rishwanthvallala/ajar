@@ -56,6 +56,26 @@ not what would be nice.
 
 ## Waiting on a decision
 
+### The agent's share of 19 November is in no release
+
+A guest's page makes, renames, deletes and uploads files, searches inside
+them and opens an image only where the host's `ajar` does it for it and says
+so ([ajar-parity.md](dev/ajar-parity.md)) — which no released `ajar` does.
+The page is live with the rest; with every host today, 0.0.8 or older, it
+offers none of that, by design. So is the fix for `ajar <folder>` dying at
+start on a machine with a global gitignore (`4ef2aec`).
+
+Both reach a host with a release, which is the maintainer's to cut
+([operations.md](dev/operations.md), "Cutting one"): the workspace version
+to 0.0.9 — the number the page and the guide already name — and the tag.
+Nothing about the order matters this time: the protocol's version did not
+move, and the page already serves hosts with and without it.
+
+Worth doing first, against production once the release exists, as 0.0.3 was
+verified: 0.0.9 from the release, joined in a real browser — the bar over
+the files has New file, and a file made there is on the host's disk; and
+0.0.8, downloaded — no New file, and a search of contents says why.
+
 ### Cloudflare in front of the box
 
 Proposed on 5 November ([cloudflare.md](dev/cloudflare.md)): DNS to
@@ -435,6 +455,22 @@ the suggestion model's 17 MB holding up a typist's other traffic
 behind one address meeting `MAX_OPEN_PER_IP = 8`
 ([scaling.md](dev/scaling.md)); and the Python package's 9.3 MB, the largest
 part of a first Run.
+
+### The container build does not build on arm64
+
+Found on 19 November, checking that the Dockerfile still builds the page
+once the page needed `packages/complete` and the guide (it did not copy
+them, and does now). On an arm64 machine — an Apple Silicon Mac's podman, a
+Graviton box — `npm ci` in its first stage stops at `bufferutil`, an
+optional native part of `ws` that has no prebuilt binary for arm64 with
+musl and wants Python and a compiler to make one, which `node:24-alpine`
+has not got. For x86-64 (`--platform linux/amd64`) the stage builds, and
+that is all that was tried: the image as a whole was not built or run.
+Nothing in CI builds it — the gate checks only that each `COPY` has its
+source. Either `npm ci --ignore-scripts` in that stage (nothing the page's
+build needs is made by an install script), or the first stage on
+`node:24` rather than alpine; and a CI job that builds the image, which is
+what would have said so.
 
 ### `playwright` is declared in the wrong workspace
 

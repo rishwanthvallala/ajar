@@ -184,6 +184,46 @@ not. An agent from before downloads ignores the request; the page says so
 after a minute without an answer — a minute, because a large folder is read
 whole before the host answers at all.
 
+## What a guest asks the host to do to the folder
+
+Since 0.0.9. A guest's page makes a file, renames one, deletes one, uploads
+one, searches every file's text, replaces what it found and opens an image —
+as the pad's page does — and for each it can only ask: the folder is the
+host's. Every request is an `Fs` message with an `id`, and its answer carries
+the same one.
+
+| The page sends | The host answers |
+|---|---|
+| `Make { id, path, dir }` — a new file, empty, or a folder, with the folders on the way | `Done { id, ok, message }` |
+| `Rename { id, from, to, replace }` — onto a file that is there only with `replace`; never onto a folder, and a folder never onto anything | `Done`, and to everyone `Moved { from, to }`, so tabs open on it follow |
+| `Remove { id, path }` — a file, or a folder and everything in it | `Done` |
+| `Put { id, path, bytes, replace }`, then the bytes as stream frames, `id` their stream | `Taking { id }` first, or `Done` saying why not; `Got { id, received }` every 256 KB, and `Done` when it is written |
+| `Find { id, query, folder, match_case, whole_word }` | `Found { id, groups, truncated }` |
+| `Replace { id, query, match_case, whole_word, replacement, files: [{ path, sum }] }` | `Done`, its message saying how many were made and what was left alone |
+| `Bytes { id, path }` — a file to look at | `Sight { id, stream, path, bytes }` and the bytes on `stream`, or `Done` saying why not |
+
+An upload is windowed the way a download is, the other way round: the page
+sends no more than a megabyte past the last `Got`, because the relay cuts off
+a host whose queue grows past its bound exactly as it does a guest. A file to
+look at is at most 5 MB and sent in one go, which is under that bound; the
+page asks for one at a time.
+
+A search is literal text on one line, never a pattern of the guest's. A match
+is `{ start, end, line, column, before, hit, after }`, the offsets and the
+column in UTF-16 units — what the browser's editor counts in — and found by
+the same rules as the page's own search (`search-match.ts`), so the two agree
+on what a word is. It stops at 5,000 matches, and says so. A replace names
+the files and, for each, the SHA-256 of the text the guest was shown a
+preview of: the host changes a file only if that is still what it is.
+
+**None of this changed what an older agent is sent.** An agent that does not
+know a message drops it (`Channel::Fs`, `_ => {}`), as it always has; the page
+would wait for an answer that never comes. So the host says what it can do,
+in the roster it already sends: `Presence::Roster { can: ["write", "search",
+"bytes"] }`, absent from every agent before 0.0.9. The page offers New file,
+Rename, Delete, Upload, a search of contents and a picture only to a host
+that has said so, and `PROTOCOL_VERSION` stays 1.
+
 ## Versions, because the agent is not ours to deploy
 
 `PROTOCOL_VERSION` in `ajar-proto` is what a build speaks on the content

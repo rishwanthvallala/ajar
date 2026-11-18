@@ -903,6 +903,15 @@ Run again on 15 November with the Mac awake (`caffeinate -i`, no sleep in
 - The access logs leave out the query string altogether.
 - No HTTP/3: Ubuntu's nginx 1.24 has none.
 
+**One thing on `ajar.rishwanth.dev` is not the relay's**, since 19 November:
+the suggestion model, which a guest's page offers as the pad does. It is the
+pad's own copy — `/packages/ajar-complete.json` and the two files it names,
+served from `/srv/ajar/pad` under that site's own headers — so the page asks
+its own origin and its policy stays `'self'`. The Caddyfile has the same.
+A relay with no front, or a front without this, answers that address with
+the page, which is not a model's list, and the page then shows no Suggest
+switch at all.
+
 **Checked** by `deploy/nginx/check.sh`, in CI against a real nginx with
 Ubuntu's modules: the rate limits by file and address, the tunnel's visitors
 and claimed addresses, the routes, the headers and what is cached, the

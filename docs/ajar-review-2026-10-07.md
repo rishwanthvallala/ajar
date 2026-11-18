@@ -118,6 +118,11 @@ with the fix reverted — a row that names none has no check of its own),
 - Creating, renaming and deleting files from the tree. The shell does all of
   it, and a second way to change the host's disk is a second thing to secure.
 - Uploading files from the browser, for the same reason.
+
+  *Both done on 19 November, when the guest's page was brought up to the
+  pad's: [dev/ajar-parity.md](dev/ajar-parity.md), and how the second thing
+  is secured in [dev/security.md](dev/security.md), "What a guest's page can
+  change".*
 - Printing the link before the panel takes the screen: the link now wraps and
   `[c]` copies it, which serve the same need while the panel is up.
 

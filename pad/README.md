@@ -40,11 +40,11 @@ npm run check --workspace=ajar-pad
 | `src/zip.ts` | Zips in and out — read, written and checked in the browser |
 | `src/monaco-languages.ts` | The formats the editor colours, each tokenizer fetched on first use |
 | `src/toolchains.ts` | C, C++, Go, Java, Node, PHP and Lisp, fetched the first time a line names one or Run runs its file |
-| `src/format.ts`, `src/starters.ts`, `src/markdown.ts` | Format, the starter an empty file offers, and a Markdown file shown formatted |
-| `src/problems.ts` | The files and lines a run's errors point at: links in the terminal, marks in the editor |
+| `@ajar/workspace-ui`: `format.ts`, `starters.ts`, `markdown.ts`, `search*.ts`, `images.ts` | Format, the starter an empty file offers, a Markdown file shown formatted, the sidebar's search, which files are pictures — in `packages/workspace-ui/src` since 19 November, because a session's page uses them too |
+| `@ajar/workspace-ui/problems` | The files and lines a run's errors point at: links in the terminal, marks in the editor |
 | `src/requirements.ts` | What a typed `pip install` adds to `requirements.txt` |
 | `src/usage.ts` | A run's language, sent for the usage counts |
-| `src/complete.ts` | Suggestions as you type: when the model loads, and the Suggest switch (the model is `packages/complete`) |
+| `src/complete.ts` | Suggestions as you type, for the pad: the shared Suggest switch (`@ajar/workspace-ui/suggest`) told that this build has a model (the model is `packages/complete`) |
 | `src/app.ts` | Everything wired together |
 | `src/main.ts` | The page's entry: the stored theme first, then the layout preview or `bootstrap.ts` |
 | `src/bootstrap.ts` | Sends `/dashboard` (and `/login`, `/signup`, `/account`, `/settings`, which go there) and `/admin` to their pages, takes a link's code out of the address bar, mints or reads the name, then starts the app |
@@ -52,7 +52,7 @@ npm run check --workspace=ajar-pad
 | `src/dashboard.ts` | Your pads, signing in, and the private and deleted screens |
 | `src/share.ts` | The Share dialog: settings and links |
 | `src/admin.ts` | `/admin`, the operator's view |
-| `src/ui.ts`, `src/icons.ts`, `src/accounts.css` | The small kit those pages are built from — buttons, dialogs, toasts, the theme switch, inline icons |
+| `src/ui.ts`, `src/accounts.css` | What those pages are built from that is the pad's own — the brand, the sign-in buttons, the theme switch, the name dialog. Buttons, dialogs, toasts and inline icons are the shared kit's (`@ajar/workspace-ui/kit`, `icons`, `kit.css`), which `ui.ts` passes on |
 | `public/privacy.html` | `/privacy` |
 | `src/workspace.ts` | The pad's layout, built on the shared `WorkspaceShell` |
 | `src/workspace-preview.ts` | The layout on its own, for `?preview=workspace` and the layout checks |

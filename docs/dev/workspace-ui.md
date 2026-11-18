@@ -102,6 +102,51 @@ fetched only when a folder has a CSV, Colours across a reload, and Dark
 reaching Monaco and xterm. The tokenizer's edge cases are in
 `pad/src/check.ts`.
 
+## What the page is built from, beyond the shell — 19 November 2026
+
+Until then the package was the shell and its layout, and everything a page
+did inside it was each product's own. The pad's did a great deal more by
+November — search, a Markdown file formatted, Format, starters, a tree that
+makes and moves things — and the guest's page of a session had none of it:
+[ajar-parity.md](ajar-parity.md). What is not the pad's own by nature now
+lives here, and both import it:
+
+| Module | What |
+|---|---|
+| `kit.ts`, `kit.css` | Elements, buttons, toasts, the modal, the confirm dialog. Out of `pad/src/ui.ts`, which keeps the pad's brand, sign-in buttons and name dialog and passes the rest on |
+| `icons.ts`, `tree-icons.ts` | The inline SVG both draw |
+| `names.ts` | What a name typed into a file tree may be, and where a dragged row may land |
+| `search.ts`, `search-match.ts`, `search-keys.ts`, `search-worker.ts` | The sidebar's search. Drawn on a `SearchSurface` either product's workspace is; its words ("this pad", "this folder") and, for contents, where it searches — in its worker, or wherever the product says (`find`: the host of a session) — are the product's |
+| `markdown.ts` | A Markdown file formatted and sanitised |
+| `format.ts` | The formatters, each fetched when first used |
+| `starters.ts` | What an empty file can start as |
+| `problems.ts` | Where a program's output points into the folder |
+| `images.ts` | Which files are pictures |
+| `suggest.ts` | The Suggest switch over `@ajar/complete`, told by each product whether there is a model to load |
+| `tools.css` | The styles of all of the above that are drawn in the shell — the search panel, the editor's tools, a formatted file, an image, a terminal's keys and tab, a phone on its side — scoped to `.shell`, which both are in |
+
+Their dependencies — the formatters, marked, DOMPurify, jsonc-parser — are
+this package's now.
+
+**Moved without moving a pixel of the pad.** Its stylesheets were split by
+where the rules stood, and thirty screenshots of the built pad — light and
+dark, a phone upright and on its side, search, the replace preview, a name
+being typed, a starter, the dialogs, the dashboard, the guide, the plans —
+were the same bytes before and after.
+
+What stays each product's: the pad's tree is a list of buttons drawn whole,
+which a pad's few hundred files allow, and the session's is windowed and one
+stop for the keyboard, for a folder of twenty thousand; they share their
+icons, their naming rules and their look, not their code. And what each does
+with a search's result, a formatted file's link or a starter is its own —
+the pad's `app.ts`, the session's `workspace.ts` and `viewer.ts`.
+
+One difference between the two editors that sharing uncovered: the pad's
+Monaco (0.55) loads the editor's standard features — find and replace, the
+right-click menu, folding, grey text for a suggestion — whenever a language
+is registered; the session's (0.56) does not, and until this change had
+none of them. It asks for them by name now (`features/register.all`).
+
 ## Development previews
 
 ```sh

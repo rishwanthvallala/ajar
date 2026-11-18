@@ -159,6 +159,31 @@ rule as any guest read, so nothing the ignore rules hide is in it.
 | Read-only | Allowed — it is reading |
 | Leaving | A guest who goes takes their downloads with them |
 
+## What a guest's page asks to be done
+
+Since 0.0.9 the agent does to the folder what a guest's page asks: makes a
+file or a folder, renames or moves one, removes one, writes an upload,
+searches every file's text, replaces what was found, and sends a file's bytes
+to look at ([protocol.md](protocol.md), "What a guest asks the host to do to
+the folder"). `fileops.rs` is each of them against the folder; `main.rs`
+(`on_file_op`) is what the host allows, and what it says.
+
+| | |
+|---|---|
+| Where | The folder, opened as a `cap-std` directory: every path is resolved beneath it, a component at a time. See [security.md](security.md), "What a guest's page can change" |
+| What | Only what the tree shows: a path the ignore rules hide is refused, and so is one that goes through a link |
+| Read-only | Refuses every one that changes anything, and an upload part-way through. Searching and looking are reading, and carry on |
+| Said | Each is a line in the activity pane: who made, moved, deleted, uploaded, replaced in or looked at what |
+| The tree | Told at once — the changed paths go through the same door as the watcher's — so a file made from the page is in the page's tree as the answer arrives |
+| Open documents | What is typed and not yet on disk is written before a rename or a replace touches the file; after a replace the document takes the change as it takes any change on disk; after a rename it is closed under its old name and every page told where the file went |
+| Uploads | Held in memory until whole — 50 MB at most, one at a time from each guest — then written beside the file under a name of their own and renamed over it |
+| Search and replace | Off the agent's loop, like a download: a large folder freezes no terminal. A search overtaken by the same guest's next is dropped when it comes back |
+| A file to look at | 5 MB at most, sent in one go |
+
+It says so in the roster (`can`), which is how a page knows to offer any of
+it. The panel has no switch for it beyond read-only: a guest's shell could
+always do all of this.
+
 ## The copy kept for when you drop
 
 Losing wifi used to make the folder go dead for everyone reading it. The agent

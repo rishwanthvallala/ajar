@@ -36,12 +36,13 @@ guest of it. So each thing the pad does is one of four:
 | New file, New folder, typed into the tree | **host** |
 | Rename (the pencil, F2), move by dragging | **host** |
 | Delete a file or a folder | **host** |
-| Upload: a zip's files, or files dropped on the tree | **host** |
+| Upload: a zip's files, or files dropped on the list | **host** — files, as they are: a zip stays a zip, for the host's own `unzip` in the terminal |
 | Format, Shift-Alt-F, Format Document in the menu | **page** |
+| The editor's own: Ctrl-F, its right-click menu, comment toggling, folding | **page** — the session's Monaco did not load them (below) |
 | Spaces: 4 or 2 | **page** |
 | A starter for an empty file | **page** |
 | Markdown Preview, beside the text or over it; links between files | **page**; its pictures **host** |
-| Suggestions as you type, and the Suggest switch | **page** |
+| Suggestions as you type, and the Suggest switch | **page**, where the relay's front serves the model: `ajar.rishwanth.dev` does |
 | An image opens to view | **host** — the bytes come from the host |
 | A file and line in the terminal's output is a link | **page** |
 | A phone's missing keys under the terminal's header | **page** |
@@ -57,6 +58,39 @@ guest of it. So each thing the pad does is one of four:
 | Share, Your pads, plans, link previews | not ajar's: the link is the host's, and sealed |
 | A viewer's own copy, Save as my copy | not ajar's: read-only is the host's `l` |
 
+## Where it is
+
+- The page: `web/src/` — `tree.ts` (the list), `workspace.ts` and `viewer.ts`
+  (the editor and its tools), `ops.ts` (what it asks of the host),
+  `terminal-extras.ts`, `help.ts`, `session.css`.
+- What both products share: `packages/workspace-ui`
+  ([workspace-ui.md](workspace-ui.md), "What the page is built from").
+- The host: `crates/ajar/src/fileops.rs`, and `on_file_op` in `main.rs`
+  ([agent.md](agent.md), [protocol.md](protocol.md)).
+- Checked by `scripts/check-guest-tools.mjs` in a browser, under the
+  Content-Security-Policy production's front sends, with the folder
+  read off the host's disk after each step; `scripts/smoke-files.mjs` on
+  the wire; `fileops`' unit tests; and, for a host that says nothing of what
+  it can do, `scripts/check-editor-documents.cjs`.
+
+## Found on the way
+
+- **`ajar <folder>` died at start on a machine with a global gitignore**,
+  unless started from inside that folder: every release up to 0.0.8. No
+  suite that starts an agent on a temporary folder could run on the
+  maintainer's Mac, which had gained a `~/.config/git/ignore` ten days
+  before. Fixed in `Filter::build` (`4ef2aec`).
+- **The session's editor had none of Monaco's own features** — no Ctrl-F, no
+  right-click menu, no folding. The pad's Monaco loads them with any
+  language; the session's, a version on, does not. Asked for by name now.
+- **A read-only guest could close a terminal.** The agent closed one for
+  anyone who asked; no page asked until this one offered the cross on a tab.
+  Refused when read-only now.
+- **The tree's keys acted on the row it thought had the focus**, which was
+  not always the one that did: Delete pressed on a row reached by anything
+  but the arrows or a click asked about another row. Whatever row has the
+  focus is the tree's stop now.
+
 ## What the host says it can do
 
 A guest's page is served by the relay and is always the newest; the host's
@@ -71,6 +105,15 @@ is sent or must understand:
   only when the host has said it can — never a button that does nothing.
 - `PROTOCOL_VERSION` stays 1.
 
+## What it cost the page
+
+The guest's page is bigger for it: its first script went from 399 KB to
+464 KB (105 to 125 KB compressed) and its stylesheet from 29 to 49 KB (6 to
+10 compressed). The editor's own features, which it had been without, are in
+the editor's chunk, fetched with the first file opened as before. The
+formatters, the Markdown renderer and the suggestion model are each fetched
+when first used, and not before.
+
 ## What reverses a decision
 
 The review of 7 October left out, on purpose, "creating, renaming and
@@ -81,10 +124,11 @@ page is to have what the pad has. What that costs, and what holds it:
 
 - The agent itself is not in the sandbox the guest's shell is in, so each of
   these is the agent writing to the host's disk on a guest's word. Every path
-  goes through one gate (`Workspace::place`): inside the shared folder as
-  written and as it resolves, through no symlink out of it, and never
-  anything the tree hides — `.git`, what the ignore files name, the
-  generated folders.
+  goes through one gate (`fileops::checked`) and is then used only beneath
+  the folder, opened as a `cap-std` directory: inside the shared folder as
+  written and as it resolves, through no symlink at all, and never anything
+  the tree hides — `.git`, what the ignore files name, the generated
+  folders. [security.md](security.md), "What a guest's page can change".
 - Read-only refuses all of them, at the agent, as it refuses typing.
 - Each is a line in the host's activity pane, with who did it.
 - A delete is a delete: there is no bin. In a git repository `ajar`'s
