@@ -239,9 +239,15 @@ async function main() {
     "read-only refuses every change, at the host, whatever a page sends",
     JSON.stringify(while_.map((r) => r.message)),
   );
+  // Judged by what the host says, here and below: `closed`, for this
+  // terminal. Not by whether this guest still holds it — until 19 November
+  // the stand-in took a shell's last bytes, which can follow `closed`, as
+  // the terminal back again, so "still held" could be said of one closed.
+  const closed = (since) => guest.ptyMessages.slice(since).some((m) => m.t === "closed" && m.pty_id === pty);
+  const asked = guest.ptyMessages.length;
   guest.send(json(CH_PTY, { t: "close", pty_id: pty }));
   await sleep(700);
-  check(guest.ptys.has(pty), "and a terminal is not closed by a guest who may only watch");
+  check(!closed(asked) && guest.ptys.has(pty), "and a terminal is not closed by a guest who may only watch");
   found = await guest.find("alpha");
   const look = await guest.viewFile("dot.png");
   check(found.groups.some((g) => g.path === "main.py") && look.t === "sight", "searching and looking, which change nothing, still work");
@@ -252,8 +258,9 @@ async function main() {
   agent.press("l");
   await guest.waitUntil((g) => g.ptyMessages.slice(said).some((m) => m.t === "read_only" && !m.read_only), "the session to take changes again");
   guest.send(json(CH_PTY, { t: "close", pty_id: pty }));
-  await guest.waitUntil((g) => !g.ptys.has(pty), "the terminal to close").catch(() => {});
-  check(!guest.ptys.has(pty), "a terminal's tab closes it, once the session takes changes again");
+  await guest.waitUntil(() => closed(said), "the terminal to close").catch(() => {});
+  await sleep(300);
+  check(closed(said) && !guest.ptys.has(pty), "a terminal's tab closes it, once the session takes changes again — and stays closed, whatever its shell said last");
 
   // ---- the host's own account -----------------------------------------------------
   const panel = agent.output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");

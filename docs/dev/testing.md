@@ -318,7 +318,7 @@ Three ways these measured the wrong thing before they were fixed:
 
 ## Checks that passed for the wrong reason
 
-Thirty-four so far, and they are the most transferable lesson in this repository.
+Thirty-five so far, and they are the most transferable lesson in this repository.
 The pattern is always the same: **the thing under test could produce the
 passing evidence by accident.**
 
@@ -356,7 +356,8 @@ passing evidence by accident.**
 | check-host-drop's "open for editing" | It waited for Monaco to drop a `read-only` class Monaco never sets, and swallowed the timeout, so it waited for nothing. It now waits for `#viewer[data-editing]`, which the page sets only once the document is bound |
 | Typing kept when editing is locked mid-save | It passed whenever the lock reached the editor before its save left, which is every local run. The other order — the save in flight when the demotion lands, so the demotion finds nothing unsaved — lost the typing, and only CI's macOS runner was slow enough to hit it, on 5 October. The editor's save is now held until the lock has landed, so that order is the one tested |
 | A rename to a path outside the folder is refused (`fileops`, 19 November) | The file to be renamed did not exist, so every rename was refused — for that, not for where it was going. It names a file that is there now, and requires it to be there after |
-| A terminal closes once the session takes changes again (`smoke-files`, 19 November) | It waited for the host to say "not read-only" before asking to close — and a guest is told exactly that as it joins, so the wait was over before the host's key was pressed, and the close raced it. It won on a laptop and in CI once, and lost in CI the next run. It waits for one said after the press |
+| A terminal closes once the session takes changes again (`smoke-files`, 19 November) | It waited for the host to say "not read-only" before asking to close — and a guest is told exactly that as it joins, so the wait was over before the host's key was pressed, and the close raced it. It waits for one said after the press. That was a real race and not the one CI kept losing: the next row |
+| A terminal a guest still holds is one the host has not closed (`smoke-files`, and `wire.mjs`'s guest, 19 November) | The stand-in guest kept a terminal's bytes under its number and made the entry if there was none — so a shell's last bytes, which on Linux follow the host's `closed` now and then (bash's parting newline and prompt), made a closed terminal one the guest had again. "It closes" then failed, one run in a handful, on CI's Ubuntu and never on a Mac; and "read-only does not close it" could have passed with the terminal closed. Caught in a Linux container on the fourth run, with the host's two `closed` messages and the bytes after them printed side by side. The stand-in drops bytes for a terminal said closed, as the page does, and both checks go by the host's `closed`; with the agent's read-only gate taken out, the second fails |
 | Replace changed what it said it would (`check-guest-tools`, 19 November) | It waited for the dialog to say "replacement", which "Applying replacements…" says while it is still working: the wait was over at once, and the disk was read before anything had been written. It waits for the count |
 
 **Wait for what you check; never look once.** Three more on 7 October, all on

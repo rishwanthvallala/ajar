@@ -180,6 +180,7 @@ export class Guest {
   reset() {
     this.participantId = null;
     this.ptys = new Map(); // ptyId -> accumulated text
+    this.closedPtys = new Set(); // said closed by the host: what comes for one after is dropped
     this.ptyMessages = []; // json on the pty channel, in order
     this.control = [];
     this.presence = [];
@@ -307,8 +308,15 @@ export class Guest {
             if (msg.t === "opened" && !this.ptys.has(msg.pty_id)) {
               this.ptys.set(msg.pty_id, "");
             }
-            if (msg.t === "closed") this.ptys.delete(msg.pty_id);
-          } else {
+            if (msg.t === "closed") {
+              this.ptys.delete(msg.pty_id);
+              this.closedPtys.add(msg.pty_id);
+            }
+          } else if (!this.closedPtys.has(f.streamId)) {
+            // A shell's last bytes can come after the host has said its
+            // terminal is closed — on Linux, bash's parting newline and
+            // prompt. The page drops bytes for a tab it has not got; taken
+            // here, they made a closed terminal one this guest had again.
             this.ptys.set(f.streamId, (this.ptys.get(f.streamId) ?? "") + text(f.payload));
           }
           return;

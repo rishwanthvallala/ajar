@@ -85,10 +85,25 @@ with its picture drawn; Suggest offered, its model loaded from ajar's site
 in three seconds, and grey text; the guide at `/help`; no page errors and
 nothing the policy refused. Eleven checks, all passed.
 
-Not checked live: a host on a released `ajar`, 0.0.8 or older, which is
-every host there is until 0.0.9 is cut ([open-points.md](../open-points.md)).
-That such a host is offered none of the host's half is held by
-`check-editor-documents.cjs`, against a roster that says nothing.
+**Released as v0.0.9 the same day**, and each side of it checked against
+production once more, the agent this time installed as a person installs
+it — `curl -sSf https://ajar.rishwanth.dev/install.sh | sh`, in a fresh
+Linux container:
+
+- **0.0.9**, which is what the installer now gives: it says `ajar 0.0.9`;
+  the page offers New file and Upload, and a file named in the tree is on
+  the host's disk; a search of contents is answered by the host; a Markdown
+  file's picture is drawn; and the rest as above. Twelve checks, all passed.
+- **0.0.8**, pinned with `AJAR_VERSION=v0.0.8`: the bar over the files has
+  Download and nothing else, a row has Download and nothing else; a search
+  of contents says the host's `ajar` is too old and that it needs 0.0.9,
+  and file names are still searched; a Markdown file is formatted, without
+  pictures; Format, the editor's find, Suggest and `/help` work as for any
+  host. Twelve checks, all passed.
+
+The release's twelve assets are published — four targets, the two Linux
+ones under their old `-gnu` names too, a checksum beside each — and each
+target's tarball matches its checksum.
 
 ## Found on the way
 
