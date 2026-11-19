@@ -56,26 +56,6 @@ not what would be nice.
 
 ## Waiting on a decision
 
-### The agent's share of 19 November is in no release
-
-A guest's page makes, renames, deletes and uploads files, searches inside
-them and opens an image only where the host's `ajar` does it for it and says
-so ([ajar-parity.md](dev/ajar-parity.md)) — which no released `ajar` does.
-The page is live with the rest; with every host today, 0.0.8 or older, it
-offers none of that, by design. So is the fix for `ajar <folder>` dying at
-start on a machine with a global gitignore (`4ef2aec`).
-
-Both reach a host with a release, which is the maintainer's to cut
-([operations.md](dev/operations.md), "Cutting one"): the workspace version
-to 0.0.9 — the number the page and the guide already name — and the tag.
-Nothing about the order matters this time: the protocol's version did not
-move, and the page already serves hosts with and without it.
-
-Worth doing first, against production once the release exists, as 0.0.3 was
-verified: 0.0.9 from the release, joined in a real browser — the bar over
-the files has New file, and a file made there is on the host's disk; and
-0.0.8, downloaded — no New file, and a search of contents says why.
-
 ### Cloudflare in front of the box
 
 Proposed on 5 November ([cloudflare.md](dev/cloudflare.md)): DNS to
@@ -819,6 +799,7 @@ to be deprived of. See [dev/testing.md](dev/testing.md).
 
 | | |
 |---|---|
+| What a guest's page asks the host to do to the folder — make, rename, delete, upload, search and replace inside files, open an image — was on main and in no release, so no host could be asked: the page offers it only to an `ajar` that says it can ([ajar-parity.md](dev/ajar-parity.md)). With it, the fix for `ajar <folder>` dying at start on a machine with a global gitignore (`4ef2aec`), a read-only guest no longer able to close a terminal, and a relay's `unavailable` waited out rather than ending the session (18 October) | v0.0.9 |
 | The container image did not build the guest's page once the page needed `packages/complete` and the guide: the Dockerfile copied neither | `25ffea7` |
 | It did not build at all on arm64 — a Graviton box, an Apple Silicon Mac: `npm ci` stopped at `bufferutil`, an optional native part of `ws` with no prebuilt binary for arm64 and musl, wanting a compiler `node:24-alpine` has not got. Installed without scripts now; nothing the page's build needs is made by one | this commit |
 | And built, it did not start: the accounts database's default is `./ajar-accounts.db`, which in the image is `/`, where its user can write nothing — every image since accounts landed. It is in the volume, beside the pads. Built on arm64, started, and joined: this tree's `ajar` sharing a folder through the container, a browser making a file, formatting, searching and previewing in it | this commit |

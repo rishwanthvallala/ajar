@@ -258,6 +258,6 @@ the next hello carries the host key, which takes its place back from its own
 stale socket. `host_taken`, `rate_limited` and `unavailable` — a relay that
 cannot check its accounts just now, which refuses rather than guesses — are
 waited out, at least two seconds; any other refusal ends the session.
-`unavailable` is waited out since 18 October and in no release yet: v0.0.8
-and older end the session on it. See
+`unavailable` is waited out since 18 October, in v0.0.9: v0.0.8 and older
+end the session on it. See
 [protocol.md](protocol.md#what-survives-what).

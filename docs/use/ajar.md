@@ -50,9 +50,10 @@ Download waits a minute and is told it may be too old. 0.0.8 (8 October) is
 the first Linux build that runs on any distribution; it also stops `ajar`
 using a whole CPU core when run without a terminal, says why when the relay
 cannot be reached, and keeps the folder's copy on the relay after the relay
-restarts. 0.0.9 is what lets a guest's page make, rename, delete and upload
-files, search inside them and open an image (below): with an older `ajar`
-the page offers none of that, rather than buttons that do nothing. It also
+restarts. 0.0.9 (19 November) is what lets a guest's page make, rename,
+delete and upload files, search inside them and open an image (below): with
+an older `ajar` the page offers none of that, rather than buttons that do
+nothing. It also
 fixes `ajar ~/some/project` dying at start — "path is expected to be under
 the root" — on a machine with a global gitignore, when run from anywhere
 but inside that project.
