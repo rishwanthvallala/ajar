@@ -129,8 +129,11 @@ than holding the queue; if it recurs, it was something else.
 ninety-second job, sat for over half an hour in run 44410512915 while every
 other job passed — the runner's package mirror, as far as can be told from
 outside. No job had a time limit, so the run and its deploy would have
-waited GitHub's six hours. Each checking job has one now (`ci.yml`); if it
-recurs the job fails in fifteen minutes and is run again from the Actions
+waited GitHub's six hours. Each checking job has one now (`ci.yml`), many
+times what the job takes: the first set, a few times, cancelled `first-run`
+the next morning on a runner that was only slow — nineteen minutes over
+twelve image pulls that take two — with every check in the run passing. If
+a hang recurs the job fails at its limit and is run again from the Actions
 tab.
 
 **A pad page threw "Atomics.wait cannot be called in this context", once.**
