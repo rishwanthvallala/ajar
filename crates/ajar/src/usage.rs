@@ -22,23 +22,89 @@ pub struct Usage {
 
 pub struct Sampler {
     system: System,
+    /// Each terminal's shell and everything under it, as last looked up.
+    subtrees: Vec<(u32, u32, Vec<Pid>)>,
+    /// Samples since that was looked up.
+    since_listing: u32,
 }
+
+/// How many samples a terminal nobody is using goes between looks at what is
+/// running under it. One that is being used is looked at every time.
+const LIST_EVERY: u32 = 10;
 
 impl Sampler {
     pub fn new() -> Self {
         Self {
-            system: System::new_with_specifics(
-                RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-            ),
+            system: System::new_with_specifics(RefreshKind::nothing()),
+            subtrees: Vec::new(),
+            since_listing: 0,
         }
     }
 
     /// Sample every pty's process subtree. CPU is measured between calls, so
     /// the first sample after startup reads as zero.
-    pub fn sample(&mut self, roots: &[(u32, u32)]) -> HashMap<u32, Usage> {
-        self.system
-            .refresh_processes(ProcessesToUpdate::All, /* remove_dead */ true);
+    ///
+    /// What a terminal is running is found by asking every process on the
+    /// machine for its parent, which is most of what this costs — a fortieth
+    /// of a core when it was done every second, with each one's command line
+    /// and environment read as well, for as long as a session stood open. So
+    /// it is asked when something may have changed: `busy` says a terminal
+    /// was typed into or printed since the last sample, which is when a
+    /// command starts or ends; a terminal is new; or it has been
+    /// [`LIST_EVERY`] samples. In between, only the processes already known
+    /// are asked what they are using — and nothing at all is, with no
+    /// terminal open.
+    pub fn sample(&mut self, roots: &[(u32, u32)], busy: bool) -> HashMap<u32, Usage> {
+        if roots.is_empty() {
+            self.subtrees.clear();
+            return HashMap::new();
+        }
+        let same = self.subtrees.len() == roots.len()
+            && self
+                .subtrees
+                .iter()
+                .zip(roots)
+                .all(|((id, root, _), (pty, pid))| id == pty && root == pid);
+        self.since_listing += 1;
+        if busy || !same || self.since_listing >= LIST_EVERY {
+            self.list(roots);
+        }
 
+        let ours: Vec<Pid> = self
+            .subtrees
+            .iter()
+            .flat_map(|(_, _, pids)| pids.iter().copied())
+            .collect();
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&ours),
+            /* remove_dead */ true,
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
+
+        let mut out = HashMap::new();
+        for (pty_id, _, pids) in &self.subtrees {
+            let mut usage = Usage::default();
+            for pid in pids {
+                if let Some(process) = self.system.process(*pid) {
+                    usage.cpu += process.cpu_usage();
+                    usage.memory_bytes += process.memory();
+                    usage.processes += 1;
+                }
+            }
+            out.insert(*pty_id, usage);
+        }
+        out
+    }
+
+    /// Who is whose child, for every process, and so what is under each
+    /// terminal's shell.
+    fn list(&mut self, roots: &[(u32, u32)]) {
+        self.since_listing = 0;
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            /* remove_dead */ true,
+            ProcessRefreshKind::nothing(),
+        );
         // One pass to build the parent map, so the subtree walk is linear
         // rather than quadratic in the number of processes.
         let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
@@ -47,24 +113,20 @@ impl Sampler {
                 children.entry(parent).or_default().push(*pid);
             }
         }
-
-        let mut out = HashMap::new();
-        for (pty_id, root_pid) in roots {
-            let mut usage = Usage::default();
-            let mut stack = vec![Pid::from_u32(*root_pid)];
-            while let Some(pid) = stack.pop() {
-                if let Some(process) = self.system.process(pid) {
-                    usage.cpu += process.cpu_usage();
-                    usage.memory_bytes += process.memory();
-                    usage.processes += 1;
+        self.subtrees = roots
+            .iter()
+            .map(|(pty_id, root_pid)| {
+                let mut pids = Vec::new();
+                let mut stack = vec![Pid::from_u32(*root_pid)];
+                while let Some(pid) = stack.pop() {
+                    pids.push(pid);
+                    if let Some(kids) = children.get(&pid) {
+                        stack.extend(kids);
+                    }
                 }
-                if let Some(kids) = children.get(&pid) {
-                    stack.extend(kids);
-                }
-            }
-            out.insert(*pty_id, usage);
-        }
-        out
+                (*pty_id, *root_pid, pids)
+            })
+            .collect();
     }
 }
 
@@ -113,7 +175,7 @@ mod tests {
     fn samples_our_own_process_tree() {
         let mut sampler = Sampler::new();
         let me = std::process::id();
-        let usage = sampler.sample(&[(1, me)]);
+        let usage = sampler.sample(&[(1, me)], false);
         let ours = usage.get(&1).expect("our own pid should be sampled");
         assert!(ours.processes >= 1, "expected to find at least ourselves");
         assert!(ours.memory_bytes > 0, "our process should be using memory");
@@ -122,7 +184,36 @@ mod tests {
     #[test]
     fn an_unknown_pid_samples_as_nothing() {
         let mut sampler = Sampler::new();
-        let usage = sampler.sample(&[(7, u32::MAX)]);
+        let usage = sampler.sample(&[(7, u32::MAX)], false);
         assert_eq!(usage.get(&7).copied(), Some(Usage::default()));
+    }
+
+    #[test]
+    fn a_child_started_since_is_counted_once_the_terminal_was_used() {
+        use std::io::Write;
+        // A shell of this test's own — not this process, under which the
+        // tests beside this one start and end things of theirs — that starts
+        // a child when told to.
+        let mut shell = std::process::Command::new("sh")
+            .args(["-c", "read go; sleep 4 & wait"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let root = [(1, shell.id())];
+        let mut sampler = Sampler::new();
+        let before = sampler.sample(&root, false)[&1].processes;
+        shell.stdin.take().unwrap().write_all(b"go\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        // Not looked for while nothing says anything changed…
+        let quiet = sampler.sample(&root, false)[&1].processes;
+        // …and found at the next sample after the terminal was used.
+        let busy = sampler.sample(&root, true)[&1].processes;
+        let _ = shell.kill();
+        let _ = shell.wait();
+        assert_eq!(
+            (before, quiet, busy),
+            (1, 1, 2),
+            "the shell alone, still alone with nothing to prompt a look, then with its child"
+        );
     }
 }

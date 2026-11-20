@@ -3,10 +3,17 @@
 //! `portable-pty` is blocking, so each pty's reader lives on its own OS
 //! thread and pushes bytes into an async channel. Output also lands in a
 //! fixed ring buffer, which is what a reconnecting client replays.
+//!
+//! A shell takes a while to start — half a second for a plain zsh, two for
+//! one with a framework in its start-up files — and until 20 November a
+//! guest who joined, or pressed New terminal, looked at an empty box for that
+//! long. So one shell is kept started that nobody has asked for yet
+//! ([`PtyRegistry::warm`]): the next terminal opened is that one, at its
+//! prompt, and another is started behind it.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -61,7 +68,24 @@ pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     input: Input,
     ring: Arc<Mutex<Ring>>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Whether what the shell prints is sent on as it comes. Not for a shell
+    /// kept ready, which is nobody's terminal yet: what it prints waits in
+    /// the ring. Read and set with the ring held, so every byte is either in
+    /// the replay a terminal starts with or sent after it, never both.
+    sending: Arc<AtomicBool>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+/// The size a shell is started at before anyone has said theirs.
+const UNASKED: (u16, u16) = (80, 24);
+
+/// A shell started ahead of being asked for.
+struct Spare {
+    id: u32,
+    session: PtySession,
+    /// What the host was running when it started, which its process limit
+    /// was set from.
+    in_use: Option<u32>,
 }
 
 /// A terminal's input, written by a thread of its own.
@@ -176,6 +200,8 @@ pub struct PtyRegistry {
     /// Variables removed from every guest shell's environment. See
     /// [`crate::secrets::withheld_env`].
     withheld: Vec<String>,
+    /// The shell kept ready for the next terminal, if there is one.
+    spare: Option<Spare>,
 }
 
 impl PtyRegistry {
@@ -208,6 +234,7 @@ impl PtyRegistry {
             limits,
             cwd,
             withheld,
+            spare: None,
         }
     }
 
@@ -251,7 +278,42 @@ impl PtyRegistry {
         self.sessions.remove(&id);
     }
 
-    /// Spawn a shell and start pumping its output into `out`.
+    /// A shell has ended. Whether it was a terminal, which everyone is then
+    /// told has closed — not when it was the one kept ready, which nobody
+    /// was ever told of.
+    pub fn exited(&mut self, id: u32) -> bool {
+        if self.spare.as_ref().is_some_and(|spare| spare.id == id) {
+            self.spare = None;
+            return false;
+        }
+        self.sessions.remove(&id).is_some()
+    }
+
+    /// Start a shell for whoever opens a terminal next, unless one is
+    /// waiting already. Its failing to start is nobody's problem yet: the
+    /// terminal that would have used it starts its own.
+    pub fn warm(&mut self, out: UnboundedSender<PtyOutput>, exits: UnboundedSender<PtyExit>) {
+        if self.spare.is_some() {
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        match self.spawn(id, UNASKED.0, UNASKED.1, 0, false, out, exits) {
+            Ok((session, in_use)) => {
+                self.spare = Some(Spare {
+                    id,
+                    session,
+                    in_use,
+                })
+            }
+            Err(e) => debug!("no shell kept ready: {e:#}"),
+        }
+    }
+
+    /// A terminal for `opened_by`: its id, and what its shell has printed
+    /// already — the prompt of the one kept ready, to be sent with the news
+    /// of it; nothing for one started now. `out` carries what it prints from
+    /// here on.
     pub fn open(
         &mut self,
         cols: u16,
@@ -259,10 +321,63 @@ impl PtyRegistry {
         opened_by: u32,
         out: UnboundedSender<PtyOutput>,
         exits: UnboundedSender<PtyExit>,
-    ) -> Result<u32> {
+    ) -> Result<(u32, Vec<u8>)> {
+        // Not for a terminal narrower than the one it was started at: what a
+        // shell prints as it starts is laid out for that width — zsh's mark
+        // for an unfinished line is a row of spaces exactly as wide — and
+        // replayed into a phone's forty columns it wraps into a line of its
+        // own above the prompt. A narrow terminal starts its own, as before.
+        let fits = self
+            .spare
+            .as_ref()
+            .is_some_and(|spare| cols >= spare.session.cols);
+        if let Some(mut spare) = if fits { self.spare.take() } else { None } {
+            // Its process limit is what the host was running when it started,
+            // and some. A host who has started a great deal since — a browser,
+            // a build — would leave this guest short: then it is not used.
+            let guests: Vec<u32> = self.roots().into_iter().map(|(_, pid)| pid).collect();
+            let roomy = match (spare.in_use, crate::limits::in_use(&guests)) {
+                (Some(then), Some(now)) => now <= then.saturating_add(self.limits.processes / 2),
+                _ => true,
+            };
+            let running = matches!(spare.session.child.try_wait(), Ok(None));
+            if roomy && running {
+                spare.session.opened_by = opened_by;
+                let _ = spare.session.resize(cols, rows);
+                let printed = {
+                    let ring = spare.session.ring.lock().expect("ring poisoned");
+                    spare.session.sending.store(true, Ordering::Release);
+                    ring.snapshot()
+                };
+                self.sessions.insert(spare.id, spare.session);
+                self.warm(out, exits);
+                return Ok((spare.id, printed));
+            }
+            // Dropped here, and its shell with it.
+        }
         let id = self.next_id;
         self.next_id += 1;
+        let (session, _) =
+            self.spawn(id, cols, rows, opened_by, true, out.clone(), exits.clone())?;
+        self.sessions.insert(id, session);
+        self.warm(out, exits);
+        Ok((id, Vec::new()))
+    }
 
+    /// Spawn a shell and start pumping its output into `out` — at once, or
+    /// only once it is somebody's (`sending`). With it, what the host was
+    /// running, which its process limit was set from.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn(
+        &self,
+        id: u32,
+        cols: u16,
+        rows: u16,
+        opened_by: u32,
+        sending: bool,
+        out: UnboundedSender<PtyOutput>,
+        exits: UnboundedSender<PtyExit>,
+    ) -> Result<(PtySession, Option<u32>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -276,11 +391,10 @@ impl PtyRegistry {
         // Limits outermost: rlimits are inherited across `exec`, so whatever
         // the sandbox launches inherits them too.
         let guests: Vec<u32> = self.roots().into_iter().map(|(_, pid)| pid).collect();
-        let (program, args) = self.limits.wrap(
-            self.launch.0.clone(),
-            self.launch.1.clone(),
-            crate::limits::in_use(&guests),
-        );
+        let in_use = crate::limits::in_use(&guests);
+        let (program, args) =
+            self.limits
+                .wrap(self.launch.0.clone(), self.launch.1.clone(), in_use);
         let mut cmd = CommandBuilder::new(&program);
         for arg in &args {
             cmd.arg(arg);
@@ -314,8 +428,10 @@ impl PtyRegistry {
             .context("cloning pty reader")?;
         let input = Input::start(id, pair.master.take_writer().context("taking pty writer")?)?;
         let ring = Arc::new(Mutex::new(Ring::new(RING_CAPACITY)));
+        let sending = Arc::new(AtomicBool::new(sending));
 
         let ring_for_thread = ring.clone();
+        let sending_for_thread = sending.clone();
         std::thread::Builder::new()
             .name(format!("ajar-pty-{id}"))
             .spawn(move || {
@@ -325,8 +441,12 @@ impl PtyRegistry {
                         Ok(0) => break,
                         Ok(n) => {
                             let bytes = buf[..n].to_vec();
-                            ring_for_thread.lock().expect("ring poisoned").push(&bytes);
-                            if out.send(PtyOutput { pty_id: id, bytes }).is_err() {
+                            let send = {
+                                let mut ring = ring_for_thread.lock().expect("ring poisoned");
+                                ring.push(&bytes);
+                                sending_for_thread.load(Ordering::Acquire)
+                            };
+                            if send && out.send(PtyOutput { pty_id: id, bytes }).is_err() {
                                 break;
                             }
                         }
@@ -340,8 +460,7 @@ impl PtyRegistry {
             })
             .context("spawning pty reader thread")?;
 
-        self.sessions.insert(
-            id,
+        Ok((
             PtySession {
                 cols,
                 rows,
@@ -350,10 +469,11 @@ impl PtyRegistry {
                 master: pair.master,
                 input,
                 ring,
-                _child: child,
+                sending,
+                child,
             },
-        );
-        Ok(id)
+            in_use,
+        ))
     }
 }
 
@@ -416,6 +536,149 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// A registry of plain shells in a folder of its own, and where what they print and their ends arrive.
+    fn registry() -> (
+        PtyRegistry,
+        tokio::sync::mpsc::UnboundedSender<PtyOutput>,
+        tokio::sync::mpsc::UnboundedReceiver<PtyOutput>,
+        tokio::sync::mpsc::UnboundedSender<PtyExit>,
+        tokio::sync::mpsc::UnboundedReceiver<PtyExit>,
+    ) {
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = tokio::sync::mpsc::unbounded_channel();
+        let registry = PtyRegistry {
+            sessions: HashMap::new(),
+            next_id: 1,
+            // A shell that says when it is up and then reads, as any does.
+            launch: (
+                "/bin/sh".into(),
+                vec!["-c".into(), "printf ready-%s 42; exec cat".into()],
+            ),
+            confined: false,
+            cargo_home: None,
+            limits: crate::limits::Limits::new(
+                crate::limits::DEFAULT_TERMINALS,
+                crate::limits::DEFAULT_PROCESSES,
+            ),
+            cwd: std::env::temp_dir(),
+            withheld: Vec::new(),
+            spare: None,
+        };
+        (registry, out_tx, out_rx, exit_tx, exit_rx)
+    }
+
+    fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready() {
+            assert!(std::time::Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_terminal_opened_is_the_shell_kept_ready_at_its_prompt_and_another_is_started() {
+        let (mut ptys, out_tx, mut out_rx, exit_tx, _exit_rx) = registry();
+        ptys.warm(out_tx.clone(), exit_tx.clone());
+        let spare = ptys.spare.as_ref().expect("a shell kept ready").id;
+        assert!(
+            ptys.ids().is_empty(),
+            "a shell nobody asked for is not a terminal"
+        );
+        assert!(ptys.roots().is_empty() && ptys.may_open().is_ok());
+
+        // It starts, and says so — into its ring, and to nobody.
+        wait_for("the shell's first words", || {
+            ptys.spare.as_ref().unwrap().session.replay() == b"ready-42"
+        });
+        assert!(
+            out_rx.try_recv().is_err(),
+            "what a spare shell printed was sent on"
+        );
+
+        // Opened: the same shell, at the asker's size, with what it had printed.
+        let (id, printed) = ptys
+            .open(132, 40, 7, out_tx.clone(), exit_tx.clone())
+            .unwrap();
+        assert_eq!((id, printed.as_slice()), (spare, b"ready-42".as_slice()));
+        let opened = ptys.get(id).unwrap();
+        assert_eq!((opened.cols, opened.rows, opened.opened_by), (132, 40, 7));
+        // And another is behind it, a terminal of nobody's.
+        let next = ptys.spare.as_ref().expect("another kept ready").id;
+        assert_ne!(next, id);
+        assert_eq!(ptys.ids(), vec![id]);
+
+        // What it prints from here on is sent, once, and nothing of before.
+        ptys.get_mut(id).unwrap().write(b"typed\n").unwrap();
+        let mut seen = Vec::new();
+        wait_for("its echo", || {
+            while let Ok(output) = out_rx.try_recv() {
+                assert_eq!(output.pty_id, id, "the next spare's words were sent on");
+                seen.extend_from_slice(&output.bytes);
+            }
+            String::from_utf8_lossy(&seen).matches("typed").count() >= 2
+        });
+        assert!(
+            !String::from_utf8_lossy(&seen).contains("ready-42"),
+            "sent twice: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+    }
+
+    #[test]
+    fn a_terminal_narrower_than_the_shell_kept_ready_starts_its_own() {
+        let (mut ptys, out_tx, _out_rx, exit_tx, _exit_rx) = registry();
+        ptys.warm(out_tx.clone(), exit_tx.clone());
+        let spare = ptys.spare.as_ref().unwrap().id;
+        wait_for("the shell's first words", || {
+            ptys.spare.as_ref().unwrap().session.replay() == b"ready-42"
+        });
+        // A phone: its own shell, and nothing printed for another width.
+        let (id, printed) = ptys
+            .open(44, 30, 7, out_tx.clone(), exit_tx.clone())
+            .unwrap();
+        assert_ne!(id, spare);
+        assert!(printed.is_empty());
+        // The one kept ready is still there for a terminal it fits.
+        assert_eq!(ptys.spare.as_ref().map(|s| s.id), Some(spare));
+        let (wide, printed) = ptys.open(80, 24, 7, out_tx, exit_tx).unwrap();
+        assert_eq!((wide, printed.as_slice()), (spare, b"ready-42".as_slice()));
+    }
+
+    #[test]
+    fn a_spare_shell_that_ends_is_nobodys_terminal_closing() {
+        let (mut ptys, out_tx, _out_rx, exit_tx, mut exit_rx) = registry();
+        ptys.launch = ("/bin/sh".into(), vec!["-c".into(), "exit 3".into()]);
+        ptys.warm(out_tx.clone(), exit_tx.clone());
+        let spare = ptys.spare.as_ref().unwrap().id;
+        let mut ended = None;
+        wait_for("its end", || {
+            ended = exit_rx.try_recv().ok().map(|e| e.pty_id);
+            ended.is_some()
+        });
+        assert_eq!(ended, Some(spare));
+        assert!(
+            !ptys.exited(spare),
+            "a shell nobody was told of was said to have closed"
+        );
+        assert!(ptys.spare.is_none());
+
+        // One that has ended and not been noticed yet is not handed out.
+        ptys.warm(out_tx.clone(), exit_tx.clone());
+        let dead = ptys.spare.as_ref().unwrap().id;
+        wait_for("the second one's end", || {
+            matches!(
+                ptys.spare.as_mut().unwrap().session.child.try_wait(),
+                Ok(Some(_))
+            )
+        });
+        ptys.launch = ("/bin/sh".into(), vec!["-c".into(), "exec cat".into()]);
+        let (id, printed) = ptys.open(80, 24, 7, out_tx, exit_tx).unwrap();
+        assert_ne!(id, dead);
+        assert!(printed.is_empty());
+        // A terminal that ends is one that closed.
+        assert!(ptys.exited(id));
     }
 
     #[test]

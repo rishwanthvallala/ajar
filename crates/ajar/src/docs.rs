@@ -19,7 +19,12 @@ use yrs::{GetString, OffsetKind, Options, ReadTxn, StateVector, Text, TextRef, T
 /// How long a document sits still before it is written back to disk. Long
 /// enough that a burst of typing is one write, short enough that switching to
 /// a terminal and running the file feels immediate.
-pub const WRITE_AFTER: Duration = Duration::from_millis(400);
+pub const WRITE_AFTER: Duration = Duration::from_millis(250);
+
+/// And the longest typing that does not stop goes unwritten: someone typing
+/// steadily never leaves a pause that long, and until 20 November their
+/// file on the host stood still for as long as they kept going.
+pub const WRITE_WITHIN: Duration = Duration::from_secs(2);
 
 /// The single shared text inside every document.
 const TEXT_KEY: &str = "content";
@@ -39,8 +44,11 @@ pub struct Doc {
     /// been written yet survives it.
     shadow: yrs::Doc,
     shadow_text: TextRef,
-    /// Set when the document has changed since the last write.
+    /// Set when the document has changed since the last write: when it
+    /// last did.
     dirty: Option<Instant>,
+    /// And when the oldest of what the disk has not got was typed.
+    unwritten_since: Option<Instant>,
     /// Participants with this file open. The document is dropped when the
     /// last one leaves.
     readers: HashSet<u32>,
@@ -65,6 +73,7 @@ impl Doc {
             shadow,
             shadow_text,
             dirty: None,
+            unwritten_since: None,
             readers: HashSet::new(),
         };
         made.settle();
@@ -101,7 +110,17 @@ impl Doc {
     }
 
     fn touch(&mut self) {
-        self.dirty = Some(Instant::now());
+        let now = Instant::now();
+        self.dirty = Some(now);
+        self.unwritten_since.get_or_insert(now);
+    }
+
+    /// When this is to be written: a pause after the last edit, or long
+    /// enough since the first that it will not wait for one.
+    fn write_due(&self) -> Option<Instant> {
+        let last = self.dirty?;
+        let first = self.unwritten_since.unwrap_or(last);
+        Some((last + WRITE_AFTER).min(first + WRITE_WITHIN))
     }
 }
 
@@ -298,6 +317,7 @@ impl Docs {
             // typed. Nothing to send, but the disk is now the reference.
             doc.written = on_disk.to_string();
             doc.dirty = None;
+            doc.unwritten_since = None;
             doc.settle();
             return None;
         }
@@ -348,24 +368,35 @@ impl Docs {
         // Dirty only if typing survived the merge: then the disk is missing
         // it, and gets the merged text once things go quiet.
         doc.dirty = (doc.contents() != on_disk).then(Instant::now);
+        doc.unwritten_since = doc.dirty;
         Some(doc.diff_since(&before))
     }
 
-    /// Documents that have been quiet long enough to write back.
-    pub fn due_for_write(&self, now: Instant) -> Vec<(u32, String, String)> {
+    /// Documents that have been quiet long enough to write back, or
+    /// unwritten long enough not to wait for quiet.
+    pub fn due_for_write(&mut self, now: Instant) -> Vec<(u32, String, String)> {
         let mut out = Vec::new();
-        for doc in self.docs.values() {
-            let Some(since) = doc.dirty else { continue };
-            if now.duration_since(since) < WRITE_AFTER {
+        for doc in self.docs.values_mut() {
+            let Some(due) = doc.write_due() else { continue };
+            if now < due {
                 continue;
             }
             let contents = doc.text.get_string(&doc.doc.transact());
             if contents == doc.written {
+                // Typed and taken back: nothing to write, and nothing due —
+                // left "due", the agent's loop would wake for it for ever.
+                doc.dirty = None;
+                doc.unwritten_since = None;
                 continue;
             }
             out.push((doc.id, doc.path.clone(), contents));
         }
         out
+    }
+
+    /// When the next of them is due, for the agent's loop to wake at.
+    pub fn next_write(&self) -> Option<Instant> {
+        self.docs.values().filter_map(Doc::write_due).min()
     }
 
     /// Every change not known to be on disk, regardless of debounce age.
@@ -391,7 +422,12 @@ impl Docs {
         doc.written = contents.to_string();
         if doc.contents() == contents {
             doc.dirty = None;
+            doc.unwritten_since = None;
             doc.settle();
+        } else {
+            // Typed into while it was being written: what is unwritten is
+            // from now, not from before this write.
+            doc.unwritten_since = Some(Instant::now());
         }
     }
 }

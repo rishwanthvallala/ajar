@@ -44,6 +44,9 @@ use crate::workspace::{FsEvent, Workspace, MAX_ENTRIES};
 /// tree is not cheap, so rebuild at most this often.
 const RESYNC_COOLDOWN: Duration = Duration::from_secs(1);
 
+/// The most of one terminal's output that goes in one frame.
+const PTY_FRAME: usize = 64 * 1024;
+
 /// How long the folder must sit still before a snapshot is offered. The copy
 /// exists so guests can keep reading when the host drops; it does not need to
 /// be current to the keystroke, and re-sending the whole thing on every save
@@ -126,6 +129,14 @@ struct Host {
     ui: Ui,
     state: ui::State,
     sampler: Sampler,
+    /// The folder's copy for the relay is being made, off the loop.
+    copying: bool,
+    /// And being sent, a piece at a time: the blob, and how much of it has
+    /// gone. None while none is, or when the relay takes it whole.
+    copy_out: Option<CopyOut>,
+    /// A terminal was typed into or printed since the panel last looked at
+    /// what the terminals are running: something may have started or ended.
+    pty_busy: bool,
     last_resync: Instant,
     /// Off means no copy is kept, and the relay is told to forget any it has.
     syncing: bool,
@@ -213,7 +224,9 @@ impl Host {
                 ))
             })
             .collect();
-        let sampled = self.sampler.sample(&self.ptys.roots());
+        let sampled = self
+            .sampler
+            .sample(&self.ptys.roots(), std::mem::take(&mut self.pty_busy));
         self.state.terminals = ui::terminal_rows(&self.ptys.ids(), &openers, &sampled);
     }
 }
@@ -436,6 +449,9 @@ async fn run() -> Result<()> {
         ui,
         state,
         sampler: Sampler::new(),
+        copying: false,
+        copy_out: None,
+        pty_busy: false,
         last_resync: Instant::now() - RESYNC_COOLDOWN,
         syncing: !args.no_sync,
         snapshot_due: Some(Instant::now()),
@@ -491,7 +507,19 @@ async fn run() -> Result<()> {
     host.ui.draw(&host.state)?;
 
     loop {
+        // When the next open document is to be written: woken for exactly
+        // then, where until 20 November a tick four times a second looked —
+        // a quarter of a second more, at worst, on every edit's way to the
+        // disk. A write that is failing is tried again on that tick instead,
+        // not as fast as the loop can turn.
+        let write_due = host
+            .docs
+            .next_write()
+            .filter(|_| host.failing_writes.is_empty());
         tokio::select! {
+            _ = async { tokio::time::sleep_until(write_due.expect("guarded").into()).await }, if write_due.is_some() => {
+                flush_documents(&mut host);
+            }
             _ = tokio::time::sleep_until(banner_deadline), if !banner_shown && !host.ui.is_panel() => {
                 banner(&host.state, &caps);
                 banner_shown = true;
@@ -537,8 +565,25 @@ async fn run() -> Result<()> {
                             host.log("reconnected — guests kept their session");
                             resend_after_gap(&mut host)?;
                         }
+                        // A shell started now, for whoever opens the first
+                        // terminal: at its prompt by the time they join,
+                        // where they used to wait for it to start. Last, with
+                        // the link printed and working: started any sooner,
+                        // counting what the host is running — which its
+                        // process limit is set from — put a twentieth of a
+                        // second on the way to the link. Not in a session
+                        // that begins read-only, where nobody may open one.
+                        if first && !host.state.read_only {
+                            host.ptys.warm(host.out_tx.clone(), host.exit_tx.clone());
+                        }
                     }
                     RelayEvent::Disconnected(why) => {
+                        // A copy part way to the relay went with the socket:
+                        // the relay has forgotten what it had of it, and it
+                        // is made and offered again.
+                        if host.copy_out.take().is_some() {
+                            host.snapshot_due = Some(Instant::now());
+                        }
                         if online {
                             debug!("relay connection lost: {why}");
                             host.log("lost the relay — reconnecting; terminals keep running");
@@ -584,8 +629,31 @@ async fn run() -> Result<()> {
                 }
             }
             output = out_rx.recv() => {
-                let Some(PtyOutput { pty_id, bytes }) = output else { break };
-                let _ = host.outbound.send(Frame::stream(Channel::Pty, pty_id, TARGET_ALL, bytes));
+                let Some(PtyOutput { pty_id, mut bytes }) = output else { break };
+                // A program printing fast is read eight kilobytes at a time,
+                // and each read was a frame: sealed, sent and drawn by
+                // itself. What is already waiting from the same terminal goes
+                // with it, up to a frame of sixty-four.
+                let mut next = None;
+                while bytes.len() < PTY_FRAME {
+                    match out_rx.try_recv() {
+                        Ok(more) if more.pty_id == pty_id => bytes.extend_from_slice(&more.bytes),
+                        Ok(other) => {
+                            next = Some(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                for PtyOutput { pty_id, bytes } in [Some(PtyOutput { pty_id, bytes }), next].into_iter().flatten() {
+                    // Not what a shell says as it dies, after its terminal
+                    // was closed and everyone told so: bytes for a terminal
+                    // nobody has.
+                    if host.ptys.get(pty_id).is_some() {
+                        host.pty_busy = true;
+                        let _ = host.outbound.send(Frame::stream(Channel::Pty, pty_id, TARGET_ALL, bytes));
+                    }
+                }
             }
             _ = resync_tick.tick() => {
                 flush_resync(&mut host);
@@ -661,6 +729,7 @@ async fn run() -> Result<()> {
                         } else {
                             host.synced = None;
                             host.pending_snapshot = None;
+                            host.copy_out = None;
                             // Tell the relay to forget what it has.
                             let _ = host.outbound.send(Frame::json(
                                 Channel::Store,
@@ -709,13 +778,17 @@ async fn run() -> Result<()> {
             }
             exit = exit_rx.recv() => {
                 let Some(PtyExit { pty_id }) = exit else { break };
-                host.ptys.remove(pty_id);
-                let _ = host.outbound.send(Frame::json(
-                    Channel::Pty,
-                    TARGET_ALL,
-                    &Pty::Closed { pty_id, exit_code: 0 },
-                )?);
-                host.log(format!("terminal {pty_id} closed"));
+                // A terminal a guest closed is gone from the list already and
+                // was said to be closed then; the shell kept ready was never
+                // anyone's. Only one that ended by itself is news.
+                if host.ptys.exited(pty_id) {
+                    let _ = host.outbound.send(Frame::json(
+                        Channel::Pty,
+                        TARGET_ALL,
+                        &Pty::Closed { pty_id, exit_code: 0 },
+                    )?);
+                    host.log(format!("terminal {pty_id} closed"));
+                }
             }
             _ = interrupt.recv() => {
                 host.state.status = Status::Closing;
@@ -800,7 +873,7 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
                     return Ok(());
                 }
                 host.sizes.insert(asker, (cols, rows));
-                let id =
+                let (id, printed) =
                     host.ptys
                         .open(cols, rows, asker, host.out_tx.clone(), host.exit_tx.clone())?;
                 host.outbound.send(Frame::json(
@@ -813,6 +886,13 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
                         opened_by: asker,
                     },
                 )?)?;
+                // The shell that was kept ready has its prompt up already:
+                // sent with the news of the terminal, as a late guest is sent
+                // what a terminal has printed.
+                if !printed.is_empty() {
+                    host.outbound
+                        .send(Frame::stream(Channel::Pty, id, TARGET_ALL, printed))?;
+                }
                 let who = host
                     .guests
                     .get(&asker)
@@ -855,6 +935,14 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
             if host.state.read_only {
                 return Ok(());
             }
+            // Enter, in a terminal: whatever it runs reads the files as they
+            // are on disk, and what was typed into one a moment ago may not
+            // be there yet. Written first — someone who edits a file and runs
+            // it at once runs what they see, not what was there before.
+            if frame.payload.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+                flush_all_documents(host);
+            }
+            host.pty_busy = true;
             if let Some(session) = host.ptys.get_mut(frame.stream_id) {
                 if let Err(e) = session.write(&frame.payload) {
                     warn!("write to pty {} failed: {e}", frame.stream_id);
@@ -949,23 +1037,37 @@ fn handle_frame(frame: Frame, host: &mut Host) -> Result<()> {
         }
 
         Channel::Store => match frame.parse_json::<Store>() {
-            Ok(Store::Accepted) => {
+            Ok(Store::Accepted { parts }) => {
                 if let Some(pending) = host.pending_snapshot.take() {
-                    let bytes = pending.len() as u64;
-                    host.outbound.send(Frame::stream(
-                        Channel::Store,
-                        SNAPSHOT_STREAM,
-                        TARGET_ALL,
-                        pending,
-                    ))?;
-                    host.synced = Some((bytes, host.pending_files));
-                    update_sync_line(host);
+                    if parts {
+                        // A piece at a time, each acknowledged, so that what
+                        // else is sent meanwhile — a key's echo, an edit — is
+                        // never behind more than a window of it.
+                        host.copy_out = Some(CopyOut {
+                            blob: pending,
+                            sent: 0,
+                        });
+                        send_copy(0, host);
+                    } else {
+                        // A relay from before pieces: whole, in one frame.
+                        let bytes = pending.len() as u64;
+                        host.outbound.send(Frame::stream(
+                            Channel::Store,
+                            SNAPSHOT_STREAM,
+                            TARGET_ALL,
+                            pending,
+                        ))?;
+                        host.synced = Some((bytes, host.pending_files));
+                        update_sync_line(host);
+                    }
                 }
             }
+            Ok(Store::Got { received }) => send_copy(received, host),
             Ok(Store::Rejected { reason }) => {
                 // Loudly, and then stop trying: a copy that is quietly
                 // missing files is worse than no copy at all.
                 host.pending_snapshot = None;
+                host.copy_out = None;
                 host.syncing = false;
                 host.synced = None;
                 host.log(format!("not keeping a copy — {reason}"));
@@ -1087,43 +1189,81 @@ fn flush_snapshot(host: &mut Host) {
     if due.elapsed() < SNAPSHOT_AFTER {
         return;
     }
-    host.snapshot_due = None;
-
-    let mut body = SnapshotBody::default();
-    for entry in match host.workspace.tree() {
-        Fs::Tree { entries } => entries,
-        _ => return,
-    } {
-        if entry.kind != ajar_proto::EntryKind::File {
-            continue;
-        }
-        // Binary and oversized files are already refused everywhere else;
-        // there is no reason to carry them here either.
-        if let Fs::Content {
-            text,
-            binary: false,
-            truncated: false,
-            ..
-        } = host.workspace.read(&entry.path)
-        {
-            body.files.push(SnapshotFile {
-                path: entry.path,
-                text,
-            });
-        }
+    // One at a time: what changes while this one is being made is in the
+    // next, which stays due.
+    if host.copying {
+        return;
     }
-
-    let files = body.files.len() as u32;
-    let Ok(plain) = serde_json::to_vec(&body) else {
+    let Fs::Tree { entries } = host.workspace.tree() else {
         return;
     };
-    let sealed = host.cipher.seal(&plain);
-    let bytes = sealed.len() as u64;
+    host.snapshot_due = None;
+    host.copying = true;
 
-    host.pending_snapshot = Some(sealed);
-    host.pending_files = files;
-    if let Ok(f) = Frame::json(Channel::Store, TARGET_ALL, &Store::Offer { bytes, files }) {
-        let _ = host.outbound.send(f);
+    // Every text file read, written out as one and sealed: off the loop. It
+    // was done here until 20 November, five seconds after each change — and
+    // for as long as that took, a few hundredths of a second for a small
+    // project and whole seconds for a large one, no terminal echoed a key
+    // and no edit moved.
+    let filter = host.workspace.filter();
+    let cipher = host.cipher.clone();
+    let tx = host.worked_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut body = SnapshotBody::default();
+        for entry in entries {
+            if entry.kind != ajar_proto::EntryKind::File {
+                continue;
+            }
+            // Binary and oversized files are already refused everywhere else;
+            // there is no reason to carry them here either.
+            if let Fs::Content {
+                text,
+                binary: false,
+                truncated: false,
+                ..
+            } = Workspace::read_with(&filter, &entry.path)
+            {
+                body.files.push(SnapshotFile {
+                    path: entry.path,
+                    text,
+                });
+            }
+        }
+        let files = body.files.len() as u32;
+        let sealed = serde_json::to_vec(&body)
+            .ok()
+            .map(|plain| cipher.seal(&plain));
+        let _ = tx.send(Worked::Copied { sealed, files });
+    });
+}
+
+/// The folder's copy on its way to the relay, a piece at a time.
+struct CopyOut {
+    blob: Vec<u8>,
+    sent: usize,
+}
+
+/// Send more of the copy: up to a window past what the relay says it has
+/// (`received`), and say it is kept once it has all of it.
+fn send_copy(received: u64, host: &mut Host) {
+    let Some(copy) = host.copy_out.as_mut() else {
+        return;
+    };
+    let received = (received as usize).min(copy.sent);
+    while copy.sent < copy.blob.len() && copy.sent - received < ajar_proto::COPY_WINDOW {
+        let end = (copy.sent + ajar_proto::COPY_PART).min(copy.blob.len());
+        let _ = host.outbound.send(Frame::stream(
+            Channel::Store,
+            SNAPSHOT_STREAM,
+            TARGET_ALL,
+            copy.blob[copy.sent..end].to_vec(),
+        ));
+        copy.sent = end;
+    }
+    if received == copy.blob.len() {
+        host.synced = Some((received as u64, host.pending_files));
+        host.copy_out = None;
+        update_sync_line(host);
     }
 }
 
@@ -1809,6 +1949,8 @@ enum Worked {
         paths: Vec<String>,
         done: fileops::Replaced,
     },
+    /// The folder's copy for the relay, sealed; none if it could not be made.
+    Copied { sealed: Option<Vec<u8>>, files: u32 },
 }
 
 /// The answer to a guest's request: how it ended, in words they can be shown.
@@ -2139,6 +2281,27 @@ fn finish_upload(guest: u32, id: u32, upload: Upload, host: &mut Host) {
 
 fn on_worked(worked: Worked, host: &mut Host) {
     match worked {
+        Worked::Copied { sealed, files } => {
+            host.copying = false;
+            // Switched off while it was being made: not offered.
+            let (true, Some(sealed)) = (host.syncing, sealed) else {
+                return;
+            };
+            let bytes = sealed.len() as u64;
+            host.pending_snapshot = Some(sealed);
+            host.pending_files = files;
+            // One being sent is overtaken: no more of it goes, and the
+            // relay forgets what it had of it when it takes this offer.
+            host.copy_out = None;
+            let offer = Store::Offer {
+                bytes,
+                files,
+                parts: true,
+            };
+            if let Ok(f) = Frame::json(Channel::Store, TARGET_ALL, &offer) {
+                let _ = host.outbound.send(f);
+            }
+        }
         Worked::Found {
             target,
             id,

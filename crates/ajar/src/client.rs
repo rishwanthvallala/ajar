@@ -20,6 +20,29 @@ use tracing::debug;
 
 const BACKOFF_BASE: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(8);
+/// After the first two tries, this many a second apart before the wait
+/// starts to double: half a minute.
+const STEADY_TRIES: u32 = 30;
+
+/// How long to wait before try number `attempt`, counted from 0.
+///
+/// A quarter of a second, a half, then a second at a time for half a minute,
+/// and only then doubling to eight. It doubled from the start until
+/// 20 November, so a connection that came back after ten seconds — a laptop
+/// changing networks, a relay restarting for a deploy — was not tried again
+/// for up to six more, with every guest looking at "the host's connection
+/// dropped". A try that cannot reach the relay costs nothing but a refused
+/// connection.
+fn backoff(attempt: u32) -> Duration {
+    match attempt {
+        0 => BACKOFF_BASE,
+        1 => BACKOFF_BASE * 2,
+        a if a < 2 + STEADY_TRIES => Duration::from_secs(1),
+        a => Duration::from_secs(1)
+            .saturating_mul(2u32.saturating_pow(a - (1 + STEADY_TRIES)))
+            .min(BACKOFF_MAX),
+    }
+}
 /// How often the agent asks the relay whether it is still there.
 const PING_EVERY: Duration = Duration::from_secs(15);
 /// Silence for this long, pings included, and the connection is gone.
@@ -120,9 +143,11 @@ pub fn spawn(
                     if code == "host_taken" || code == "rate_limited" || code == "unavailable" =>
                 {
                     let _ = ev_tx.send(RelayEvent::Disconnected(format!("{code}: {message}")));
-                    // At least a few seconds: a relay holding a stale socket
-                    // takes that long to let it go.
-                    attempt = attempt.max(3);
+                    // At least a few seconds, and longer each time: a relay
+                    // holding a stale socket takes that long to let it go,
+                    // and one that is turning connections away is not helped
+                    // by more of them.
+                    attempt = attempt.max(2 + STEADY_TRIES);
                 }
                 Ok(Outcome::Refused { code, message }) => {
                     let _ = ev_tx.send(RelayEvent::Refused(format!("{code}: {message}")));
@@ -135,9 +160,7 @@ pub fn spawn(
             if flag.load(Ordering::SeqCst) {
                 return;
             }
-            let delay = BACKOFF_BASE
-                .saturating_mul(2u32.saturating_pow(attempt))
-                .min(BACKOFF_MAX);
+            let delay = backoff(attempt);
             attempt = attempt.saturating_add(1);
             drain_for(&mut out_rx, delay).await;
         }
@@ -185,7 +208,11 @@ async fn session(
     ev_tx: &UnboundedSender<RelayEvent>,
     attempt: &mut u32,
 ) -> Result<Outcome> {
-    let (stream, response) = tokio_tungstenite::connect_async(url)
+    // Nagle's algorithm off: it holds a small write back until the one before
+    // it is acknowledged, and nearly everything sent here is small and wanted
+    // now — a key's echo, a line of output, an edit. A command's output came
+    // a round trip late for it, behind its own first frame.
+    let (stream, response) = tokio_tungstenite::connect_async_with_config(url, None, true)
         .await
         .with_context(|| format!("connecting to relay at {url}"))?;
     debug!("relay handshake: {}", response.status());
@@ -405,11 +432,22 @@ mod tests {
 
     #[test]
     fn backoff_is_bounded() {
-        for attempt in 0u32..40 {
-            let d = BACKOFF_BASE
-                .saturating_mul(2u32.saturating_pow(attempt))
-                .min(BACKOFF_MAX);
+        for attempt in [0u32, 1, 2, 31, 32, 33, 34, 35, 64, 1000, u32::MAX] {
+            let d = backoff(attempt);
             assert!(d <= BACKOFF_MAX, "attempt {attempt} produced {d:?}");
         }
+    }
+
+    #[test]
+    fn a_connection_back_within_half_a_minute_is_found_within_a_second() {
+        let waits: Vec<u64> = (0..36).map(|a| backoff(a).as_millis() as u64).collect();
+        assert_eq!(&waits[..3], &[250, 500, 1000]);
+        // A second at a time for the first half minute…
+        assert!(waits[2..32].iter().all(|w| *w == 1000), "{waits:?}");
+        assert!(waits[..32].iter().sum::<u64>() >= 30_000);
+        // …then doubling, to the most it ever waits.
+        assert_eq!(&waits[32..], &[2000, 4000, 8000, 8000]);
+        // A refusal that is waited out starts where the doubling does.
+        assert_eq!(backoff(2 + STEADY_TRIES), Duration::from_secs(2));
     }
 }

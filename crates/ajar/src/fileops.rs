@@ -317,21 +317,34 @@ fn is_mark(c: char) -> bool {
         | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x1D165..=0x1D169 | 0x1D16D..=0x1D172)
 }
 
-/// Every place `text` has the query, in order: literal text, never a pattern
-/// of the guest's own, and never across a line.
-fn hits(text: &str, o: &FindOptions, limit: usize) -> Vec<Hit> {
+/// What a search looks for, made ready once: literal text, never a pattern
+/// of the guest's own, and never across a line. None for a query that can
+/// match nothing.
+fn pattern_for(o: &FindOptions) -> Option<regex::Regex> {
     if o.query.is_empty() || o.query.contains(['\r', '\n']) {
-        return Vec::new();
+        return None;
     }
-    let Ok(pattern) = regex::RegexBuilder::new(&regex::escape(&o.query))
+    regex::RegexBuilder::new(&regex::escape(&o.query))
         .case_insensitive(!o.match_case)
         .build()
-    else {
-        return Vec::new();
-    };
+        .ok()
+}
+
+/// Every place `text` has the query, in order.
+fn hits(text: &str, o: &FindOptions, limit: usize) -> Vec<Hit> {
+    match pattern_for(o) {
+        Some(pattern) => hits_of(text, &pattern, o.whole_word, limit),
+        None => Vec::new(),
+    }
+}
+
+/// The same, with the pattern made already: a search of a folder makes it
+/// once, not once a file — which was a tenth of a millisecond each, and a
+/// third of what a search of five hundred files took.
+fn hits_of(text: &str, pattern: &regex::Regex, whole_word: bool, limit: usize) -> Vec<Hit> {
     let mut found = Vec::new();
     for m in pattern.find_iter(text) {
-        if o.whole_word {
+        if whole_word {
             let before = text[..m.start()].chars().next_back();
             let after = text[m.end()..].chars().next();
             if before.is_some_and(word_char) || after.is_some_and(word_char) {
@@ -412,7 +425,8 @@ fn describe(text: &str, found: &[Hit]) -> Vec<FoundMatch> {
 }
 
 /// A file's text, when it is text a search can read: not binary, not over
-/// the size the page would be shown, and UTF-8.
+/// the size the page would be shown, and UTF-8. `rel` is from `dir`, which
+/// for a search is the folder the file is in.
 fn text_of(dir: &Dir, rel: &str) -> Option<String> {
     let meta = dir.symlink_metadata(rel).ok()?;
     if !meta.is_file() || meta.len() as usize > MAX_FILE_BYTES {
@@ -430,14 +444,41 @@ fn text_of(dir: &Dir, rel: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// A folder of the tree, opened to read the files in it: held to what a path
+/// is held to — no link on the way, nothing hidden — once, for all of them.
+fn folder_of(filter: &Filter, dir: &Dir, rel: &str) -> Option<Dir> {
+    if rel.is_empty() {
+        return dir.try_clone().ok();
+    }
+    // Its shape, the ignore rules, and every folder on the way to it — and
+    // then itself, which `checked` leaves to whoever asked.
+    checked(filter, dir, rel, true).ok()?;
+    let meta = dir.symlink_metadata(rel).ok()?;
+    if meta.is_symlink() || !meta.is_dir() {
+        return None;
+    }
+    dir.open_dir(rel).ok()
+}
+
 /// Every match in the files the tree shows, or those under a folder of it,
 /// up to [`FIND_LIMIT`]; and whether there were more. `entries` is the tree's
 /// own list, so nothing hidden from it is searched.
+///
+/// Each folder is opened once and its files read from it by name. Until
+/// 20 November every file was found from the top of the shared folder, a
+/// part of its path at a time — which is what keeps a path from leading out
+/// of the folder, and costs a dozen system calls a part where the kernel has
+/// no one call for it, as on a Mac. A fifth of a millisecond a file: a tenth
+/// of a second for five hundred small files, and four for twenty thousand.
 pub fn find(filter: &Filter, entries: &[Entry], o: &FindOptions) -> (Vec<FoundFile>, bool) {
     let Ok(dir) = folder(filter) else {
         return (Vec::new(), false);
     };
+    let Some(pattern) = pattern_for(o) else {
+        return (Vec::new(), false);
+    };
     let inside = format!("{}/", o.folder);
+    let mut folders: std::collections::HashMap<&str, Option<Dir>> = Default::default();
     let mut groups = Vec::new();
     let mut count = 0;
     for entry in entries {
@@ -447,14 +488,22 @@ pub fn find(filter: &Filter, entries: &[Entry], o: &FindOptions) -> (Vec<FoundFi
         if !o.folder.is_empty() && !entry.path.starts_with(&inside) {
             continue;
         }
-        if checked(filter, &dir, &entry.path, false).is_err() {
+        let (parent, name) = entry.path.rsplit_once('/').unwrap_or(("", &entry.path));
+        let Some(within) = folders
+            .entry(parent)
+            .or_insert_with(|| folder_of(filter, &dir, parent))
+        else {
+            continue;
+        };
+        // The file itself, as written: not one the ignore rules hide.
+        if filter.is_ignored(&filter.root().join(&entry.path), false) {
             continue;
         }
-        let Some(text) = text_of(&dir, &entry.path) else {
+        let Some(text) = text_of(within, name) else {
             continue;
         };
         // One past the limit, to know there were more.
-        let found = hits(&text, o, FIND_LIMIT + 1 - count);
+        let found = hits_of(&text, &pattern, o.whole_word, FIND_LIMIT + 1 - count);
         if found.is_empty() {
             continue;
         }

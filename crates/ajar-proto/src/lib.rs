@@ -680,23 +680,31 @@ impl DocKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Store {
-    /// Agent → relay, before the blob.
+    /// Agent → relay, before the blob. `parts`: this agent can send the blob
+    /// a piece at a time (since 0.0.10) — absent from an older one, and
+    /// ignored by an older relay.
     Offer {
         bytes: u64,
         files: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        parts: bool,
     },
-    Accepted,
+    /// Relay → agent: send it. `parts`, said only to an agent that offered
+    /// them: in pieces on [`SNAPSHOT_STREAM`], each answered with [`Store::Got`]
+    /// — and no more than [`COPY_WINDOW`] ahead of what has been. Without it,
+    /// the blob whole, in one frame, as every agent sent it before.
+    Accepted {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        parts: bool,
+    },
+    /// Relay → agent: this much of the blob has arrived.
+    Got { received: u64 },
     /// Over a limit, or refused. Said out loud rather than truncating.
-    Rejected {
-        reason: String,
-    },
+    Rejected { reason: String },
     /// Guest → relay, when the host has gone away.
     Fetch,
     /// Relay → guest, before the blob.
-    Snapshot {
-        bytes: u64,
-        files: u32,
-    },
+    Snapshot { bytes: u64, files: u32 },
     /// Nothing stored — sync is off, or nothing offered yet.
     Empty,
 }
@@ -715,6 +723,20 @@ pub struct SnapshotFile {
 
 /// The stream id every snapshot blob rides on.
 pub const SNAPSHOT_STREAM: u32 = 1;
+
+/// How much of the folder's copy goes in one piece, and how far ahead of what
+/// the relay has acknowledged an agent sends.
+///
+/// The copy travels on the one socket that carries every key's echo and
+/// every edit, and whatever is written to a socket goes out in order. Sent
+/// whole — up to 25 MB, five seconds after each change to the folder — it
+/// held all of that back for as long as the host's uplink took to carry it:
+/// a second and a half for 10 MB at 50 Mbit/s, eight at 10. In pieces, with
+/// no more than this in flight, what else is sent waits behind an eighth of
+/// a megabyte at most.
+pub const COPY_PART: usize = 32 * 1024;
+pub const COPY_WINDOW: usize = 128 * 1024;
+const _: () = assert!(COPY_PART <= COPY_WINDOW);
 
 // --------------------------------------------------------------- PRESENCE
 
@@ -895,6 +917,34 @@ mod tests {
         let rename: Fs =
             serde_json::from_str(r#"{"t":"rename","id":2,"from":"a","to":"b"}"#).unwrap();
         assert!(matches!(rename, Fs::Rename { replace: false, .. }));
+    }
+
+    #[test]
+    fn a_copy_offered_in_pieces_reads_as_one_offered_whole_to_whoever_is_older() {
+        // An agent from before pieces says nothing of them, and is told
+        // nothing of them: both read as "whole".
+        let offer: Store = serde_json::from_str(r#"{"t":"offer","bytes":9,"files":1}"#).unwrap();
+        assert!(matches!(offer, Store::Offer { parts: false, .. }));
+        let accepted: Store = serde_json::from_str(r#"{"t":"accepted"}"#).unwrap();
+        assert!(matches!(accepted, Store::Accepted { parts: false }));
+        assert_eq!(
+            serde_json::to_string(&Store::Accepted { parts: false }).unwrap(),
+            r#"{"t":"accepted"}"#,
+            "what an older agent has always been sent"
+        );
+        // One that can says so, in a field an older relay does not look at.
+        let said = serde_json::to_value(Store::Offer {
+            bytes: 9,
+            files: 1,
+            parts: true,
+        })
+        .unwrap();
+        assert_eq!(
+            said,
+            serde_json::json!({"t": "offer", "bytes": 9, "files": 1, "parts": true})
+        );
+        let got = serde_json::to_value(Store::Got { received: 5 }).unwrap();
+        assert_eq!(got, serde_json::json!({"t": "got", "received": 5}));
     }
 
     #[test]

@@ -268,7 +268,13 @@ impl Workspace {
     /// Read a file for a guest. Never sends binary, never sends more than the
     /// cap, never resolves outside the workspace.
     pub fn read(&self, rel: &str) -> Fs {
-        match self.try_read(rel) {
+        Self::read_with(&self.filter, rel)
+    }
+
+    /// The same, with only the folder's rules in hand: for reading many
+    /// files off the agent's loop, which holds the workspace itself.
+    pub fn read_with(filter: &Filter, rel: &str) -> Fs {
+        match Self::try_read(filter, rel) {
             Ok(fs) => fs,
             Err(e) => Fs::ReadError {
                 path: rel.to_string(),
@@ -277,9 +283,8 @@ impl Workspace {
         }
     }
 
-    fn try_read(&self, rel: &str) -> Result<Fs> {
-        let path = self
-            .filter
+    fn try_read(filter: &Filter, rel: &str) -> Result<Fs> {
+        let path = filter
             .resolve_shared(rel)
             .with_context(|| format!("{rel} is not shared"))?;
         let meta = std::fs::metadata(&path).context("reading file")?;

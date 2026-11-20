@@ -430,7 +430,7 @@ pub async fn handle(
     // socket is a blip, and the session waits for it.
     let mut host_exit = HostExit::Dropped;
     // Set between an accepted offer and the blob that follows it.
-    let mut expecting: Option<(u64, u32)> = None;
+    let mut expecting: Option<Expecting> = None;
     // When the sign-in that made this socket the pad's owner runs out. The
     // room then lets it go as signing out would, and the page comes back as
     // whatever it is without it. It kept the owner's place for as long as
@@ -567,13 +567,35 @@ pub async fn handle(
                     // The blob for the offer we just accepted. Anything not
                     // announced is dropped rather than trusted.
                     match expecting.take() {
-                        Some((bytes, files))
+                        // A piece of it, from an agent that offered pieces:
+                        // kept, and said to have arrived, which is what the
+                        // agent waits for before sending far past it.
+                        Some(mut some) if some.parts => {
+                            some.got.extend_from_slice(&frame.payload);
+                            let received = some.got.len() as u64;
+                            if received > some.bytes {
+                                warn!(
+                                    session = %session_id,
+                                    advertised = some.bytes,
+                                    actual = received,
+                                    "snapshot pieces ran past their accepted offer; dropped"
+                                );
+                            } else {
+                                send_json(&tx, Channel::Store, &Store::Got { received });
+                                if received == some.bytes {
+                                    registry.put_snapshot(&session_id, some.got, some.files);
+                                } else {
+                                    expecting = Some(some);
+                                }
+                            }
+                        }
+                        Some(Expecting { bytes, files, .. })
                             if bytes <= MAX_SNAPSHOT_BYTES
                                 && frame.payload.len() as u64 == bytes =>
                         {
                             registry.put_snapshot(&session_id, frame.payload, files)
                         }
-                        Some((bytes, _)) => warn!(
+                        Some(Expecting { bytes, .. }) => warn!(
                             session = %session_id,
                             advertised = bytes,
                             actual = frame.payload.len(),
@@ -584,11 +606,22 @@ pub async fn handle(
                     continue;
                 }
                 match frame.parse_json::<Store>() {
-                    Ok(Store::Offer { bytes, files }) => {
+                    Ok(Store::Offer {
+                        bytes,
+                        files,
+                        parts,
+                    }) => {
                         match registry.offer_snapshot(&session_id, bytes, files) {
                             Ok(()) => {
-                                expecting = Some((bytes, files));
-                                send_json(&tx, Channel::Store, &Store::Accepted);
+                                // A new offer is a new blob: whatever of the
+                                // last had arrived is forgotten.
+                                expecting = Some(Expecting {
+                                    bytes,
+                                    files,
+                                    parts,
+                                    got: Vec::new(),
+                                });
+                                send_json(&tx, Channel::Store, &Store::Accepted { parts });
                             }
                             Err(reason) => {
                                 expecting = None;
@@ -777,6 +810,16 @@ fn send_json<T: serde::Serialize>(tx: &Outbox, channel: Channel, msg: &T) {
     if let Ok(f) = Frame::json(channel, TARGET_ALL, msg) {
         let _ = tx.send(f.encode());
     }
+}
+
+/// The copy of its folder a host has offered and been told to send: how much
+/// was announced, and — from an agent that sends it in pieces — what has
+/// arrived of it so far.
+struct Expecting {
+    bytes: u64,
+    files: u32,
+    parts: bool,
+    got: Vec<u8>,
 }
 
 fn send_error(tx: &Outbox, code: &str, message: &str) {

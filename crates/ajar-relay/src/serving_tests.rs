@@ -951,6 +951,176 @@ async fn a_hello_too_big_to_be_one_is_refused_unread() {
     assert!(welcomed(&answer), "{answer:?}");
 }
 
+// ------------------------------------------------- the folder's copy
+
+/// The next frame on the store channel: what it says, or the bytes it carries.
+async fn next_store(socket: &mut Socket) -> Result<ajar_proto::Store, Vec<u8>> {
+    let wait = std::time::Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout(wait, socket.next()).await {
+            Ok(Some(Ok(Message::Binary(bytes)))) => {
+                let frame = Frame::decode(&bytes).unwrap();
+                if frame.channel != Channel::Store {
+                    continue;
+                }
+                if frame.stream_id == ajar_proto::SNAPSHOT_STREAM {
+                    return Err(frame.payload);
+                }
+                return Ok(frame.parse_json().unwrap());
+            }
+            Ok(Some(Ok(_))) => continue,
+            other => panic!("no store frame: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_folder_s_copy_is_taken_whole_or_a_piece_at_a_time_each_acknowledged() {
+    use ajar_proto::{Store, SNAPSHOT_STREAM};
+    let relay = Relay::new("");
+    let addr = relay.serve().await;
+    let hello = |role: Role, key: Option<&str>| Control::Hello {
+        session: "quiet-ember-4417".into(),
+        role,
+        locked: false,
+        protocol: ajar_proto::PROTOCOL_VERSION,
+        code: None,
+        host_key: key.map(str::to_string),
+        resume: None,
+        admitted: Vec::new(),
+    };
+    let mut host = open(addr, &[]).await;
+    say(
+        &mut host,
+        &encoded(&hello(Role::Host, Some(&"a".repeat(64)))),
+    )
+    .await;
+    assert!(welcomed(&next_control(&mut host).await.unwrap()));
+    let mut guest = open(addr, &[]).await;
+    say(&mut guest, &encoded(&hello(Role::Guest, None))).await;
+    assert!(welcomed(&next_control(&mut guest).await.unwrap()));
+
+    let store = |message: &Store| {
+        Frame::json(Channel::Store, TARGET_ALL, message)
+            .unwrap()
+            .encode()
+    };
+    let piece = |bytes: &[u8]| {
+        Frame::stream(Channel::Store, SNAPSHOT_STREAM, TARGET_ALL, bytes.to_vec()).encode()
+    };
+    // What a guest is given when it asks: how much, and the bytes — or
+    // nothing, when none is kept.
+    async fn fetched(guest: &mut Socket, ask: &[u8]) -> (u64, Vec<u8>) {
+        say(guest, ask).await;
+        match next_store(guest).await {
+            Ok(Store::Snapshot { bytes, .. }) => (bytes, next_store(guest).await.unwrap_err()),
+            Ok(Store::Empty) => (0, Vec::new()),
+            other => panic!("neither a copy nor none: {other:?}"),
+        }
+    }
+    let ask = store(&Store::Fetch);
+
+    // An agent from before pieces: offered without them, accepted without
+    // them, sent whole.
+    let whole: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    say(
+        &mut host,
+        &store(&Store::Offer {
+            bytes: whole.len() as u64,
+            files: 3,
+            parts: false,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        next_store(&mut host).await,
+        Ok(Store::Accepted { parts: false })
+    ));
+    say(&mut host, &piece(&whole)).await;
+    // The guest's ask is answered once the blob before it has been taken.
+    let mut got = fetched(&mut guest, &ask).await;
+    for _ in 0..50 {
+        if got.1 == whole {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        got = fetched(&mut guest, &ask).await;
+    }
+    assert_eq!(
+        (got.0, got.1 == whole),
+        (whole.len() as u64, true),
+        "the whole copy, as sent"
+    );
+
+    // One that offers pieces: told to send them, each acknowledged with how
+    // much has arrived, and kept once all of it has.
+    let next: Vec<u8> = (0..150_000u32).map(|i| (i % 241) as u8).collect();
+    say(
+        &mut host,
+        &store(&Store::Offer {
+            bytes: next.len() as u64,
+            files: 4,
+            parts: true,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        next_store(&mut host).await,
+        Ok(Store::Accepted { parts: true })
+    ));
+    let mut sent = 0;
+    for part in next.chunks(64 * 1024) {
+        // Until the last piece is in, the copy a guest gets is the one before.
+        assert!(
+            fetched(&mut guest, &ask).await.1 == whole,
+            "a copy part way in was handed out"
+        );
+        say(&mut host, &piece(part)).await;
+        sent += part.len() as u64;
+        match next_store(&mut host).await {
+            Ok(Store::Got { received }) => assert_eq!(received, sent),
+            other => panic!("a piece was not acknowledged: {other:?}"),
+        }
+    }
+    let got = fetched(&mut guest, &ask).await;
+    assert_eq!(
+        (got.0, got.1 == next),
+        (next.len() as u64, true),
+        "the copy, put together"
+    );
+
+    // Pieces past what was offered are not a copy: dropped, and the last kept.
+    say(
+        &mut host,
+        &store(&Store::Offer {
+            bytes: 10,
+            files: 1,
+            parts: true,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        next_store(&mut host).await,
+        Ok(Store::Accepted { parts: true })
+    ));
+    say(&mut host, &piece(&[7; 64])).await;
+    say(
+        &mut host,
+        &store(&Store::Offer {
+            bytes: 1,
+            files: 1,
+            parts: false,
+        }),
+    )
+    .await;
+    // The next thing said is the answer to that offer: the overrun got none.
+    assert!(matches!(
+        next_store(&mut host).await,
+        Ok(Store::Accepted { parts: false })
+    ));
+    assert!(fetched(&mut guest, &ask).await.1 == next);
+}
+
 // ------------------------------------------------------------------ links
 
 #[tokio::test]

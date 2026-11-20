@@ -219,8 +219,11 @@ export type Doc =
 export const SNAPSHOT_STREAM = 1;
 
 export type Store =
-  | { t: "offer"; bytes: number; files: number }
-  | { t: "accepted" }
+  // Between the agent and the relay; a page sends and is sent neither.
+  // `parts`: the copy a piece at a time, each acknowledged (`got`), since 0.0.10.
+  | { t: "offer"; bytes: number; files: number; parts?: boolean }
+  | { t: "accepted"; parts?: boolean }
+  | { t: "got"; received: number }
   | { t: "rejected"; reason: string }
   | { t: "fetch" }
   | { t: "snapshot"; bytes: number; files: number }
