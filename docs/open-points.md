@@ -56,6 +56,38 @@ not what would be nice.
 
 ## Waiting on a decision
 
+### The agent's share of 20 November is in no release
+
+What made a session quicker on 20 November
+([ajar-performance.md](dev/ajar-performance.md)) is in two halves. The
+relay's and the page's are live with the deploy: the page's files compressed
+and kept, the editor fetched ahead, the page's own retries. The agent's reach
+a host only with a release, which is the maintainer's to cut — 0.0.10, the
+number the guide names: a file saved on the host on a guest's page a quarter
+of a second sooner, typing on the host's disk sooner and before a terminal's
+Enter, a shell kept ready for the next terminal, no freeze while the
+folder's copy is made, a search of a large folder in a fraction of the time,
+an idle agent idle, and a lost connection tried again every second.
+
+Nothing about the order matters: the protocol did not change, and neither
+half needs the other.
+
+### What a session's numbers leave to be decided
+
+From [ajar-performance.md](dev/ajar-performance.md), "What it does not
+cover, and what is left" — each a change of design, not of a timer:
+
+- **A key between two guests crosses four links**, by way of the host. The
+  relay could pass a guest's edit straight to the other guests; each frame is
+  sealed for the direction it travels, so it is a change to the protocol and
+  to what the seal covers.
+- **The first terminal waits a round trip for the page to ask for it.** The
+  host could open it as the guest joins; every suite that counts terminals
+  would have to be told.
+- **A megabyte of file is a megabyte on the wire**, since what is sealed
+  cannot be compressed after. Compressed before, a megabyte of text is a
+  fifth of that.
+
 ### Cloudflare in front of the box
 
 Proposed on 5 November ([cloudflare.md](dev/cloudflare.md)): DNS to

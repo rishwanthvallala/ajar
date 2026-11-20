@@ -189,6 +189,14 @@ node scripts/check-guest.mjs                          # the guest's page through
   symlinks before `git worktree remove --force`, or the removal follows them.
 - Don't run `scripts/smoke-abuse.mjs`, or the whole of `check.sh`, on the
   maintainer's work Mac (below); CI runs them.
+- **A change made for speed, or to anything on the path between a host's
+  disk and a guest's page**, is measured before and after:
+  `node scripts/perf/run.mjs --only ajar` (a session of ajar on three links,
+  ~25 min; [ajar-performance.md](docs/dev/ajar-performance.md)), as
+  `run.mjs` alone is for the pad. Nothing else worse past its tolerance, or
+  the trade written down. Compare in one sitting — the same machine gives
+  different times on different days: `AGENT`, `RELAY_BIN` and `WEB_DIST`
+  point the lab at a worktree's build of the commit before.
 - **A change to a stylesheet both products load** (`workspace.css`,
   `tools.css`, `kit.css`) is checked against the other product too: build
   it, screenshot it in the states the sheet draws, before and after, and

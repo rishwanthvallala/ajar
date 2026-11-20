@@ -53,8 +53,40 @@ macOS — and a write past that blocks; written from the agent's one loop, a
 paste into a terminal running `sleep` or `tail -f` stopped every terminal,
 every document, the panel and ctrl-c. Now only that terminal waits, as in any
 terminal emulator. A ctrl-c, ctrl-\\ or ctrl-z drops whatever is still queued
-ahead of it. A read-only session opens no terminals for guests: a shell nobody
+ahead of it. What a program prints fast goes out in frames of up to 64 KB:
+it is read 8 KB at a time, and each read used to be a frame, sealed, sent
+and drawn by itself. A read-only session opens no terminals for guests: a shell nobody
 may type into is a process for nothing.
+
+**One shell is kept started that nobody has asked for yet** (since
+20 November; `PtyRegistry::warm`). A shell takes a while to start — half a
+second for a plain zsh, two for one with a framework in its start-up files —
+and a guest who joined, or pressed New terminal, looked at an empty box for
+that long. The next terminal opened is the one kept ready, at its prompt,
+and another is started behind it.
+
+| | |
+|---|---|
+| Not a terminal | Until it is opened it is in no list, counts against no limit and is sampled by nothing; what it prints waits in its ring, sent with the news of the terminal when it becomes one |
+| Not for a narrower terminal | It starts at 80 columns, and what a shell prints as it starts is laid out for that width. A phone's terminal starts a shell of its own, as before |
+| Not when the host has started a great deal since | Its process limit is what the host was running when it started, plus the allowance. If that has grown by more than half the allowance, it is dropped and the terminal starts one now |
+| Not in a session that begins read-only | Nobody there may open a terminal |
+| If it ends by itself | Nobody is told a terminal closed: nobody was told of one |
+
+What a shell says as it dies, after its terminal was closed and everyone told
+so, is no longer sent: bytes for a terminal nobody has. A page dropped them;
+the suites' stand-in guest took them for the terminal back again
+([testing.md](testing.md), "Checks that passed for the wrong reason").
+
+The panel's figures are read when something may have changed, not every
+second. Finding what a terminal is running means asking every process on the
+machine for its parent; done each second, with each one's command line and
+environment read as well, it was a fortieth of a core for as long as a
+session stood open — most of what an idle agent did. Now the processes under
+a terminal are looked up when it has been typed into or has printed since
+the last look, when a terminal is new, and every ten seconds otherwise; in
+between only those already known are asked what they are using, and with no
+terminal open nothing is.
 
 ### A hazard worth knowing about
 
@@ -80,7 +112,17 @@ flood every guest with churn the scanner never showed them.
 | Never read | Anything the two rows above leave out, asked for by path — refused as "not shared", read-only guests or not, through a symlink or not |
 | Refused | Any path escaping the workspace, including through a symlink |
 
-Change arrives as a `patch` a few times a second. Past ~500 touched paths in
+**A change that comes out of quiet is sent as soon as what came with it
+has** — twelve milliseconds after its last event, fifty at most — not at the
+next beat of a clock (`workspace/watch.rs`, since 20 November). One save is
+several events, the file emptied and then written or one written beside it
+and renamed over it, a moment apart; the wait is for those. Until then every
+change waited for a tick four times a second: a file saved on the host
+reached a guest's page a quarter of a second late at worst and an eighth on
+average, before the network had carried it anywhere, and so did a file a
+guest's own command made. Flushes are at least a tenth of a second apart, and
+a quarter after one that carried more than 32 paths: a build still arrives as
+a `patch` a few times a second. Past ~500 touched paths in
 one flush the host sends a fresh `tree` instead — rebuilding is cheaper than
 shipping fifty thousand entries, and far cheaper than a client that falls
 behind forever. There is no separate "resync" message: a `tree` already means
@@ -109,7 +151,8 @@ The hard part is that the disk is not the document's private property:
 
 | Event | What happens |
 |---|---|
-| Someone types | Update reaches the host, is applied, fans out. Written back once typing stops for 400ms |
+| Someone types | Update reaches the host, is applied, fans out. Written back once typing stops for a quarter of a second, or after two seconds of typing that does not stop — at that moment, the loop woken for it, not at the next tick of four a second (20 November: it was 400 ms and then up to 250 more, and steady typing was never written) |
+| Someone presses Enter in a terminal | Every open document that has not been written is, first: what the command reads is what the page shows. Someone who edits a file and runs it at once used to run what was there before |
 | A terminal rewrites the file | The watcher reports it, and the change is merged into the document as an edit of its own: typing not yet written survives it, cursors too |
 | Our own write comes back | Ignored — compared against *what we last wrote*, not what the document says now |
 | A binary or oversized file | Refused with a reason; falls back to read-only rather than being corrupted |
@@ -196,6 +239,8 @@ goes away.
 | Who can read it | Anyone with the link, because it is sealed with the session key. **Not the relay** |
 | When it is used | Only while the host is away, and only read-only |
 | When it is offered | After the folder has been still for five seconds, and again after a relay restart, which loses it |
+| Sent | A piece at a time since 0.0.10, each acknowledged by the relay, never more than 128 KB ahead: sent whole it held every key's echo and every edit behind it for as long as the uplink took — see [protocol.md](protocol.md), "The folder's copy, to the relay". A copy part way there when the connection drops is made and offered again |
+| Made | Off the agent's loop since 20 November: every text file read, written out as one and sealed. Made on the loop, it stopped every terminal and every edit for as long as it took — 0.45 s for five thousand small files, five seconds after each change |
 | Limits | 25 MB and 5,000 files. Over either, sync switches off and says so |
 | Lifetime | It dies with the session |
 
@@ -251,8 +296,13 @@ opens no terminals here.
 
 ## Staying connected
 
-The agent redials with backoff — 250 ms doubling to 8 s — and starts again
-from 250 ms each time the relay lets it in. It pings every 15 s and gives up
+The agent redials after 250 ms, 500 ms, then a second at a time for half a
+minute, and only then doubling to 8 s (`backoff`, `client.rs`) — and starts
+again from 250 ms each time the relay lets it in. Until 20 November it
+doubled from the start, so a connection back after ten seconds was not tried
+again for up to six more. A guest's page keeps the same beat
+(`retryDelay`, `connection.ts`). The agent's socket has Nagle's algorithm
+off: what it sends is small and wanted now. It pings every 15 s and gives up
 on a connection silent for 45 s, since a socket can die with neither end told;
 the next hello carries the host key, which takes its place back from its own
 stale socket. `host_taken`, `rate_limited` and `unavailable` — a relay that

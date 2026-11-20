@@ -913,6 +913,17 @@ Run again on 15 November with the Mac awake (`caffeinate -i`, no sleep in
 - The access logs leave out the query string altogether.
 - No HTTP/3: Ubuntu's nginx 1.24 has none.
 
+**The session page's files go out as the relay sends them**, since
+20 November: compressed — a brotli and a gzip copy beside each, made at the
+deploy (`pad/scripts/compress-static.mjs web/dist`) and sent in its place —
+and with what a browser may keep: everything under `/assets/`, which the
+build names for its contents, for a year; the page itself asked about each
+time (`keep_page_files`, the relay's `main.rs`). Until then the relay said
+nothing and sent them whole; this front gzipped them on the way through, each
+time, and a browser guessed how long to keep them — it asked about every file
+again on every visit. A relay with no front now does the same as this one
+behind it.
+
 **One thing on `ajar.rishwanth.dev` is not the relay's**, since 19 November:
 the suggestion model, which a guest's page offers as the pad does. It is the
 pad's own copy — `/packages/ajar-complete.json` and the two files it names,

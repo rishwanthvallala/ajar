@@ -714,14 +714,18 @@ const scenarios = {
     }
   },
 
-  /** The host's line cut for three seconds: from its return to the page saying they are back. */
+  /**
+   * The host's line cut for ten seconds — a laptop changing networks, a relay
+   * restarting — and then back: from its return to the page saying the host
+   * is. Ten, because three is over before any two ways of trying again differ.
+   */
   async drop({ guest, links }, out) {
     if (!links) return;
     const { page } = guest;
     links.host.cut();
     await page.waitForFunction(() => document.getElementById("away")?.hidden === false, null, { timeout: 30_000 });
-    await sleep(3000);
-    out.host_back_ms = Math.round(await timed(guest, ["sel", "#away[hidden]"], () => {
+    await sleep(10_000);
+    out.host_back_after_10s_ms = Math.round(await timed(guest, ["sel", "#away[hidden]"], () => {
       const t = now();
       links.host.restore();
       return t;

@@ -77,7 +77,7 @@ release ran on three distributions of fifteen and nobody's tests noticed.
 | `scripts/check-first-run.sh` | A first install somewhere else. Given `dist`: the static Linux binary's `--version` in fresh containers of Ubuntu 20.04, 22.04 and 24.04, Debian 11 and 12, Rocky 8 and 9, Fedora 41, Amazon Linux 2 and 2023, openSUSE Leap 15.6 and Alpine; then, in Ubuntu, `install.sh` as a new bash, zsh and fish user, its PATH line run as printed and a new terminal finding `ajar`, `run.sh` pasted into a terminal still in the home folder, and a binary that cannot run said so at install. `--here` does the installer part on this machine, in a throwaway home — on a Mac, zsh as a login shell. Docker or podman; on a Mac, podman runs the containers as arm64. Against the 0.0.7 release binary ten of the twelve distributions fail, and against the installer before 8 October five of its checks |
 | `scripts/linux-sandbox.sh` | Eleven attempts to escape Landlock on a real kernel, and eight controls — that ordinary work still works, and that each probe can see a success when there is one |
 | `scripts/acceptance.mjs` | The v0 acceptance list — 11 automated, 3 that need a human |
-| `scripts/perf/` | Not a check: timings of what a person feels, against production — see [below](#measuring-what-a-person-feels) |
+| `scripts/perf/` | Not a check: every number for how fast and how big the pad is ([performance.md](performance.md)) and a session of ajar is ([ajar-performance.md](ajar-performance.md)), against a baseline — see [below](#measuring-what-a-person-feels) |
 
 Two habits of `scripts/lib/wire.mjs`, which every ajar suite uses. A
 relay that dies at start — its port already taken, by a relay a killed run
@@ -260,8 +260,8 @@ are measurements, not checks — nothing fails, and they are not in the gate.
 
 ```sh
 scripts/perf/network.sh                        # the floor: DNS, TCP, TLS, first byte
-node scripts/perf/ajar-session.mjs             # host start, guest join, echo, output
-AGENT=target/release/ajar node scripts/perf/ajar-session.mjs   # a local build
+node scripts/perf/run.mjs --only ajar          # a session of ajar, every number, on links of set lengths (ajar-performance.md)
+node scripts/perf/ajar-lab.mjs near disk 1     # one scenario of it, once; SAMPLES=1 prints every sample
 COLD=0,5000 WARM=3000,3000 node scripts/perf/pad-visit.mjs     # first and return visits
 node pad/scripts/typing-perf.mjs 125000 bursts                 # two people in one long file, locally
 node pad/scripts/open-perf.mjs big slow                        # a pad of 500 files opening, locally
@@ -281,7 +281,7 @@ keys before the terminal and the shell; those are in
 pad built first.
 
 Run them one at a time — two browsers on one machine slow each other down.
-`ajar-session.mjs` and `pad-visit.mjs` print a JSON line per result and append
+`ajar-lab.mjs` and `pad-visit.mjs` print a JSON line per result and append
 it to `$OUT` when that is set; the pad's two print one JSON line at the end and
 ignore `$OUT`. A first
 pad visit fetches every runtime file once, and production allows 100 fetches

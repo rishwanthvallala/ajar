@@ -150,6 +150,13 @@ can type in the same file at once, and their typing survives a terminal
 rewriting or appending to the file underneath them. Each file opens where you
 last left it, and stays there through a dropped connection.
 
+What a guest types into a file is on your disk a quarter of a second after
+they stop — and before anything they then run in a terminal reads it: Enter
+there writes every open file first. A file you save, or a command changes,
+is on their page as fast as your connection carries it. (Both were slower
+until `ajar` 0.0.10: a quarter of a second more on your side each way, and
+typing that never paused was not written until it did.)
+
 Since 19 November their page has what the [pad's](pad.md) has, wherever your
 machine's own tools are not already the better way — the same file list,
 search and editor.

@@ -119,7 +119,7 @@ without it.
 |---|---|
 | Guest's socket drops | Reconnects with backoff, reset only by a `welcome`; the host re-announces every terminal and replays its ring buffer, and the page closes any tab it did not name. The open file is reopened and what was typed meanwhile replayed onto it, the view where it was |
 | Guest's page goes into the back/forward cache | Kept as it is. Coming back, it opens a fresh socket at once — the one it had died while it was frozen |
-| Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away". The agent redials at 250 ms, doubling to 8 s, and starts again from 250 ms each time it is let in. Before 7 October the count only grew, so after a few blips in one long session every reconnect waited the full 8 s and "host away" lasted that much longer |
+| Host's socket drops | Session held 45s. Terminals keep running — the agent process never noticed. Guests see "host away". The agent redials at 250 ms, 500 ms, then every second for half a minute before doubling to 8 s, and starts again from 250 ms each time it is let in. Before 7 October the count only grew, so after a few blips in one long session every reconnect waited the full 8 s and "host away" lasted that much longer |
 | Host returns in the grace | `host_back`. The agent reconciles its guest list with the relay's, then resends the tree, every terminal and its replay, every open document's state and the roster. Each guest resends its name and its document's state |
 | A guest arrives while the host is away | The relay sends them `host_away` with the time left, after `welcome` |
 | Host's socket is dead but nobody was told | Both ends ping: the agent every 15 s, dropping a connection silent for 45 s; the relay every 20 s, treating 60 s of silence as the socket gone. The agent's next hello carries the session's key, and the relay lets it replace its own stale socket rather than refusing it as `host_taken`. That socket's end, when it comes, is not the host leaving. The relay pings guests and peers on the same terms, so a guest whose tab died silently is dropped within a minute and the host told they `left`, rather than lingering on everyone's roster |
@@ -169,6 +169,29 @@ and nothing sent it; the document stayed open and every keystroke went nowhere.
 naming every live terminal — on arrival and after a gap, on the one ordered
 stream — and the page closes any tab not named before it. A newcomer who finds
 none opens one, unless the session is read-only.
+
+## The folder's copy, to the relay
+
+The agent offers the copy it keeps on the relay (`Store::Offer { bytes,
+files }`), is told to send it (`Accepted`) or why not (`Rejected`), and
+sends it: the folder's text files, sealed as one blob, on the Store
+channel's stream.
+
+Until 0.0.10 that was one frame, of up to 25 MB, five seconds after each
+change to the folder — on the one socket that carries every key's echo and
+every edit, where whatever is written goes out in order. For as long as the
+host's uplink took to carry it, nothing else moved: a second and a half for
+10 MB at 50 Mbit/s, eight at 10.
+
+Since then an agent says it can send pieces (`Offer { parts: true }`), a
+relay that takes them says so (`Accepted { parts: true }`), and the blob
+goes 32 KB at a time, each piece answered with `Got { received }` and no
+more than 128 KB sent past what has been: what else is sent meanwhile waits
+behind an eighth of a megabyte at most. The relay keeps the copy when the
+last piece is in; until then a guest who asks is given the one before. A new
+offer overtakes one part way in. An older agent says nothing of pieces and
+is told nothing of them, and an older relay does not read the word: either
+way the blob goes whole, as before.
 
 ## Downloads
 
