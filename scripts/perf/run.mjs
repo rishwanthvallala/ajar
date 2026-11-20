@@ -8,8 +8,11 @@
 //   node scripts/perf/run.mjs                    # the browser scenarios in the perf lab (lab.sh): cable, fast, slow, cable-cpu4
 //   node scripts/perf/run.mjs --server           # and the relay's and nginx's benchmarks and the load test (podman, ~15 min)
 //   node scripts/perf/run.mjs --live             # and a newcomer on production, and DNS (a live check: once)
+//   node scripts/perf/run.mjs --ajar             # and a session of ajar: host, relay and guests, on links of set lengths (ajar-lab.mjs)
+//   node scripts/perf/run.mjs --only ajar-live   # a session through production, this tree's agent (a live check: once)
 //   node scripts/perf/run.mjs --save             # what this run measured becomes the baseline
-//   --profiles cable,slow   --scenarios collab   --runs 3   --only lab|server|live
+//   --profiles cable,slow   --scenarios collab   --runs 3   --only lab|server|live|ajar|ajar-live
+//   --ajar-profiles near,office
 //
 // Needs the pad built and compressed as the deploy does, and the relay's
 // Linux build (lab.sh says how). Results go to target/perf/<when>.json; the
@@ -28,7 +31,9 @@ const RUNS = Number(option("--runs", "3"));
 const ONLY = option("--only", null);
 /** In place of each profile's own scenarios (PROFILE), for measuring one again. */
 const ONLY_SCENARIOS = option("--scenarios", null);
-const want = (part) => (ONLY ? ONLY === part : part === "lab" || (part === "server" && flag("--server")) || (part === "live" && flag("--live")));
+const AJAR_PROFILES = option("--ajar-profiles", "near,office,abroad").split(",");
+const want = (part) =>
+  ONLY ? ONLY === part : part === "lab" || (part === "server" && flag("--server")) || (part === "live" && flag("--live")) || (part === "ajar" && flag("--ajar"));
 /**
  * Each profile: the lab's link, the page's CPU slowed or not, and which
  * scenarios it is worth — a slow link or CPU, only what a newcomer meets first.
@@ -87,6 +92,24 @@ if (want("lab")) {
       execFileSync(`${ROOT}scripts/perf/lab.sh`, ["stop"], { stdio: "inherit" });
     }
   }
+}
+
+// ---------------------------------------------------------------- a session of ajar
+
+if (want("ajar")) {
+  for (const bin of ["target/release/ajar", "target/release/ajar-relay", "web/dist/index.html"]) {
+    if (!existsSync(`${ROOT}${bin}`)) throw new Error(`no ${bin}: cargo build --release -p ajar -p ajar-relay && npm run build:ajar`);
+  }
+  // As the deploy ships it: a compressed copy beside each file, which the relay sends.
+  execFileSync("node", ["pad/scripts/compress-static.mjs", "web/dist"], { cwd: ROOT, stdio: "ignore" });
+  for (const profile of AJAR_PROFILES) {
+    say(`ajar, ${profile}: ${ONLY_SCENARIOS ?? "its scenarios"}, ${RUNS} runs`);
+    aggregate(`ajar.${profile}`, await capture("node", ["scripts/perf/ajar-lab.mjs", profile, ONLY_SCENARIOS ?? "", String(RUNS)]));
+  }
+}
+if (want("ajar-live")) {
+  say("ajar, live: a session through production, once");
+  aggregate("ajar.live", await capture("node", ["scripts/perf/ajar-lab.mjs", "live", ONLY_SCENARIOS ?? "", "1"]));
 }
 
 // ---------------------------------------------------------------- the server
@@ -175,7 +198,8 @@ writeFileSync(file, JSON.stringify(record, null, 2));
 say(`written: ${file}`);
 
 /** Which way is better for a metric, by its name. */
-const better = (key) => (/(rps|per_second|mb_per_second|delivered)$/.test(key) ? "higher" : /(_ms|bytes|bytes_[a-z_]+|heap_mb|layout_shift|kb_per_save)$/.test(key) ? "lower" : null);
+const better = (key) =>
+  /(rps|per_second|mb_per_second|delivered)$/.test(key) ? "higher" : /(_ms|bytes|bytes_[a-z_]+|heap_mb|rss_mb|binary_mb|cpu_pct|requests|layout_shift|kb_per_save)$/.test(key) ? "lower" : null;
 /** Worse by more than noise: times by 15% and 40 ms, bytes by 2% and 4 KB, throughput by 10%, memory by 15%. */
 function worse(key, base, now) {
   if (typeof base !== "number" || typeof now !== "number") return base !== now && typeof base === "boolean" ? true : false;
@@ -189,7 +213,11 @@ function worse(key, base, now) {
   if (/long_tasks/.test(key)) return now - base > 100;
   if (/_ms$/.test(key)) return now > base * 1.15 && now - base > 40;
   if (/bytes|kb_per_save/.test(key)) return now > base * 1.02 && now - base > 4096;
-  if (/heap_mb/.test(key)) return now > base * 1.15 && now - base > 5;
+  if (/heap_mb|rss_mb/.test(key)) return now > base * 1.15 && now - base > 5;
+  if (/binary_mb/.test(key)) return now > base * 1.05;
+  // An idle process's share of a core: a few hundredths of a second in ten.
+  if (/cpu_pct/.test(key)) return now > base * 1.5 && now - base > 1;
+  if (/requests$/.test(key)) return now > base + 1;
   if (/layout_shift/.test(key)) return now - base > 0.02;
   return false;
 }
@@ -197,6 +225,7 @@ function improved(key, base, now) {
   if (typeof base !== "number" || typeof now !== "number") return false;
   const dir = better(key);
   if (dir === "higher") return now > base * 1.1;
+  if (dir === "lower" && /cpu_pct|rss_mb|binary_mb|requests$/.test(key)) return now < base * 0.75;
   if (dir === "lower") return now < base * 0.85 && base - now > (/_ms$/.test(key) ? 40 : 4096);
   return false;
 }
@@ -222,7 +251,7 @@ if (flag("--save")) {
   const merged = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, "utf8")) : { metrics: {} };
   // What this run measured replaces the baseline's whole for that part —
   // a metric renamed or gone leaves nothing behind to compare against.
-  const measured = [...new Set(Object.keys(results).map((k) => k.split(".").slice(0, k.startsWith("lab.") ? (ONLY_SCENARIOS ? 3 : 2) : 1).join(".")))];
+  const measured = [...new Set(Object.keys(results).map((k) => k.split(".").slice(0, /^(lab|ajar)\./.test(k) ? (ONLY_SCENARIOS ? 3 : 2) : 1).join(".")))];
   const kept = Object.fromEntries(Object.entries(merged.metrics).filter(([k]) => !measured.some((p) => k.startsWith(`${p}.`))));
   writeFileSync(BASELINE, `${JSON.stringify({ ...record, metrics: { ...kept, ...results } }, null, 2)}\n`);
   console.log(`baseline saved: ${BASELINE}`);
