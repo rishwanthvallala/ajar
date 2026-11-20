@@ -348,6 +348,20 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
    */
   let firstTerminalSettled = false;
   /**
+   * The editor's files fetched ahead of the first file opened, once: when the
+   * page is next idle after the first terminal has printed, so that nothing
+   * a guest is waiting for — the page, the tree, the prompt — shares the
+   * link with it.
+   */
+  let editorWarmed = false;
+  function warmEditor() {
+    if (editorWarmed) return;
+    editorWarmed = true;
+    const idle = (window as { requestIdleCallback?: (run: () => void, options: { timeout: number }) => void }).requestIdleCallback;
+    if (idle) idle(() => workspace.editor.warm(), { timeout: 2000 });
+    else setTimeout(() => workspace.editor.warm(), 600);
+  }
+  /**
    * Files from the copy the relay keeps, used while the host is away.
    *
    * Read-only on purpose: the host is authoritative whenever it is online,
@@ -967,6 +981,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         // Hot path: raw terminal bytes, written straight through so UTF-8
         // sequences split across frames still land correctly.
         tabs.get(f.streamId)?.term.write(f.payload);
+        // The session is here now: the tree, and a terminal with something
+        // in it. Next comes a file, nearly always.
+        if (!editorWarmed) warmEditor();
         return;
       }
       const msg = parseJson<Pty>(f);
@@ -1018,6 +1035,9 @@ function renderSession(session: string, name: string, sealer: Sealer | null) {
         if (!firstTerminalSettled) {
           firstTerminalSettled = true;
           if (tabs.size === 0 && !readOnly) requestTerminal();
+          // And if no terminal ever prints — a session that is read-only
+          // and has none — the editor is fetched anyway, a little later.
+          setTimeout(warmEditor, 3000);
         }
       }
       return;

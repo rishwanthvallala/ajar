@@ -29,6 +29,18 @@ function relayUrl(): string {
 }
 
 /**
+ * How long before try number `attempt`, counted from 0: 250 ms, 500 ms, then
+ * a second at a time for half a minute, and only then 2 s, 4 s and every 8 s.
+ * It doubled from the start until 20 November, so a link back after ten
+ * seconds was not tried again for up to six more.
+ */
+export function retryDelay(attempt: number): number {
+  if (attempt < 2) return 250 * 2 ** attempt;
+  if (attempt < 32) return 1000;
+  return Math.min(1000 * 2 ** (attempt - 31), 8000);
+}
+
+/**
  * One socket to the relay, with backoff. The agent keeps running while we're
  * away — terminals stay alive and output keeps filling its ring buffers — so
  * reconnecting is a matter of saying hello again and replaying.
@@ -143,9 +155,7 @@ export class Connection {
         this.opts.onState("closed");
         return;
       }
-      // 250ms, 500ms, 1s, 2s, 4s, then every 8s. A blip under about thirty
-      // seconds should be invisible once replay is wired up.
-      const delay = Math.min(250 * 2 ** this.attempt, 8000);
+      const delay = retryDelay(this.attempt);
       this.attempt += 1;
       this.opts.onState("reconnecting", `retrying in ${Math.round(delay / 100) / 10}s`);
       this.retry = setTimeout(() => this.open(), delay);

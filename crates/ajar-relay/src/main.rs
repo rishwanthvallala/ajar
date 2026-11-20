@@ -844,12 +844,65 @@ fn router(state: AppState, web: Option<&str>) -> Router {
         .with_state(state);
 
     // In development the client is served by Vite; in a release build we can
-    // hand out the compiled assets from the same process.
+    // hand out the compiled assets from the same process. Compressed, where
+    // the build left a copy beside the file (`pad/scripts/compress-static.mjs`
+    // on web/dist, as deploy.sh runs it): brotli at its best is a quarter
+    // smaller than what a front compresses on the way through, and a relay
+    // with no front sent them whole — four megabytes for the editor.
     if let Some(dir) = web {
-        let index = ServeFile::new(format!("{dir}/index.html"));
-        app = app.fallback_service(ServeDir::new(dir).fallback(index));
+        let index = ServeFile::new(format!("{dir}/index.html"))
+            .precompressed_br()
+            .precompressed_gzip();
+        let files = ServeDir::new(dir)
+            .precompressed_br()
+            .precompressed_gzip()
+            .fallback(index);
+        app = app.fallback_service(
+            Router::new()
+                .fallback_service(files)
+                .layer(axum::middleware::from_fn(keep_page_files)),
+        );
     }
     app
+}
+
+/// What a browser may keep of the web client's files.
+///
+/// The build names everything under `/assets/` for what is in it, so a file
+/// there never changes and never needs asking for again: kept for a year. The
+/// page itself, and anything else, is asked about each time — it is what
+/// names the assets, and a deploy has to reach a browser that was here
+/// yesterday.
+///
+/// Until 20 November nothing was said, and a browser guessed: every file was
+/// asked about again on every visit — thirteen requests to open a link a
+/// second time, each a round trip to be told nothing had changed.
+///
+/// A path under `/assets/` that names no file is answered with the page, as
+/// any unknown path is. That is not kept: a browser that asked for a script a
+/// deploy has since removed must not hold the page in its place for a year.
+async fn keep_page_files(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
+    let named_for_its_contents = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+        let page = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .is_some_and(|t| t.as_bytes().starts_with(b"text/html"));
+        let keep = if named_for_its_contents && !page {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static(keep));
+    }
+    response
 }
 
 /// How long a readiness check waits for the databases to answer.

@@ -715,6 +715,99 @@ async fn no_other_site_is_told_it_may_call_the_api() {
 }
 
 #[tokio::test]
+async fn the_web_clients_files_are_sent_compressed_and_kept_by_what_they_are() {
+    let relay = Relay::new("");
+    let web = Dir::new();
+    std::fs::create_dir_all(web.0.join("assets")).unwrap();
+    std::fs::write(web.0.join("index.html"), "<!doctype html>the page").unwrap();
+    std::fs::write(web.0.join("assets/app-1a2b.js"), "console.log('whole')").unwrap();
+    // Stand-ins for the copies the build leaves: what matters is which is sent.
+    std::fs::write(web.0.join("assets/app-1a2b.js.br"), "as-brotli").unwrap();
+    std::fs::write(web.0.join("assets/app-1a2b.js.gz"), "as-gzip").unwrap();
+    std::fs::write(web.0.join("assets/plain-3c4d.css"), "body{}").unwrap();
+    let web = web.0.to_str().unwrap().to_string();
+    let ask = |path: &'static str, accepts: &'static str| {
+        let relay = &relay;
+        let web = web.clone();
+        async move {
+            let headers: &[(&str, &str)] = if accepts.is_empty() {
+                &[]
+            } else {
+                &[("accept-encoding", accepts)]
+            };
+            relay.call_with(Some(&web), get(path, headers)).await
+        }
+    };
+    let said = |answer: &Answer, name: header::HeaderName| {
+        answer
+            .headers
+            .get(name)
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+    const FOR_GOOD: &str = "public, max-age=31536000, immutable";
+
+    // A file named for its contents: the smallest copy the browser takes,
+    // and never asked for again.
+    let br = ask("/assets/app-1a2b.js", "gzip, deflate, br").await;
+    assert_eq!(
+        (
+            br.body.as_str(),
+            said(&br, header::CONTENT_ENCODING).as_deref()
+        ),
+        ("as-brotli", Some("br"))
+    );
+    assert_eq!(said(&br, header::CACHE_CONTROL).as_deref(), Some(FOR_GOOD));
+    assert!(
+        said(&br, header::CONTENT_TYPE).is_some_and(|t| t.contains("javascript")),
+        "a compressed script is still a script: {:?}",
+        br.headers.get(header::CONTENT_TYPE)
+    );
+    let gz = ask("/assets/app-1a2b.js", "gzip, deflate").await;
+    assert_eq!(
+        (
+            gz.body.as_str(),
+            said(&gz, header::CONTENT_ENCODING).as_deref()
+        ),
+        ("as-gzip", Some("gzip"))
+    );
+    let whole = ask("/assets/app-1a2b.js", "").await;
+    assert_eq!(
+        (whole.body.as_str(), said(&whole, header::CONTENT_ENCODING)),
+        ("console.log('whole')", None)
+    );
+    // One with no copy beside it goes as it is, and is kept all the same.
+    let plain = ask("/assets/plain-3c4d.css", "gzip, deflate, br").await;
+    assert_eq!(
+        (plain.body.as_str(), said(&plain, header::CONTENT_ENCODING)),
+        ("body{}", None)
+    );
+    assert_eq!(
+        said(&plain, header::CACHE_CONTROL).as_deref(),
+        Some(FOR_GOOD)
+    );
+
+    // The page, by any of its addresses, is asked about each time.
+    for path in ["/", "/j/quiet-ember-4417", "/help"] {
+        let page = ask(path, "gzip").await;
+        assert_eq!(page.body, "<!doctype html>the page", "{path}");
+        assert_eq!(
+            said(&page, header::CACHE_CONTROL).as_deref(),
+            Some("no-cache"),
+            "{path}"
+        );
+    }
+    // And so is the page sent for an asset that is not there: a script a
+    // deploy removed, kept for a year as the page, would be a broken site
+    // for a year.
+    let gone = ask("/assets/app-0000.js", "gzip").await;
+    assert_eq!(gone.body, "<!doctype html>the page");
+    assert_eq!(
+        said(&gone, header::CACHE_CONTROL).as_deref(),
+        Some("no-cache")
+    );
+}
+
+#[tokio::test]
 async fn a_path_under_api_that_names_nothing_is_not_found() {
     // It fell through to the web client and answered 200 with index.html,
     // which a script reads as success and a browser shows as a page.

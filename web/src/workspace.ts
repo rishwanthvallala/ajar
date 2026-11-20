@@ -6,6 +6,9 @@ import type { SearchSurface } from "@ajar/workspace-ui/search";
 import type { Viewer, ViewerTools } from "./viewer";
 import type * as Monaco from "monaco-editor/editor/editor.api";
 
+/** The editor's files, by the names the build gave them (vite.config.ts writes them in); as it stands, in development. */
+const EDITOR_FILES = "__AJAR_EDITOR_FILES__";
+
 export type { LayoutStorage } from "@ajar/workspace-ui";
 
 const APPLE = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -206,6 +209,32 @@ export class EditorPane {
   get viewer() { return this.viewers.get(this.groups.current.id) ?? null; }
   get path() { return this.groups.current.active; }
   load() { return this.module ??= import("./viewer").catch(error => { this.module = null; throw error; }); }
+  /**
+   * The editor's files fetched while the page is idle, so that the first file
+   * opened does not wait for them: a megabyte, compressed, which was most of
+   * that wait — 0.9 s on an office link, two seconds from abroad. Fetched and
+   * compiled, not run: running is a tenth of a second of this thread, and
+   * waits for a file to be opened. Not on a link that cannot spare it — data
+   * saver, or one the browser takes for slow — where it comes when asked for,
+   * as it did.
+   */
+  warm() {
+    if (this.module || this.warmed || EDITOR_FILES.startsWith("__")) return;
+    const link = (navigator as { connection?: { saveData?: boolean; effectiveType?: string; downlink?: number } }).connection;
+    if (link?.saveData || (link?.effectiveType && link.effectiveType !== "4g") || (typeof link?.downlink === "number" && link.downlink < 5)) return;
+    this.warmed = true;
+    // Marked, so that what the page fetched to get here can be told from what
+    // it fetches now, unasked (scripts/perf/ajar-lab.mjs).
+    performance.mark("ajar-editor-warm");
+    for (const file of EDITOR_FILES.split(",")) {
+      const fetched = document.createElement("link");
+      if (file.endsWith(".css")) Object.assign(fetched, { rel: "preload", as: "style" });
+      else fetched.rel = "modulepreload";
+      fetched.href = `/${file}`;
+      document.head.append(fetched);
+    }
+  }
+  private warmed = false;
   /** Whether `path` is shown as a picture rather than opened as text: an image, where the host can send its bytes. */
   image(path: string) { return imageType(path) !== null && this.hooks.viewable(); }
   private saveView(id: string) {

@@ -22,6 +22,10 @@ COPY packages/workspace-ui/ packages/workspace-ui/
 COPY packages/complete/ packages/complete/
 COPY docs/use/ajar.md docs/use/ajar.md
 RUN npm run build:ajar
+# A compressed copy beside each file, which the relay sends in its place: with
+# no front before it, the page's files went out whole.
+COPY pad/scripts/compress-static.mjs pad/scripts/compress-static.mjs
+RUN node pad/scripts/compress-static.mjs web/dist
 
 FROM rust:1-alpine AS build
 RUN apk add --no-cache musl-dev

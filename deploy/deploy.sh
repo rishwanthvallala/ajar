@@ -170,6 +170,12 @@ npm ci --silent --no-audit --no-fund
 
 say "building the web client"
 npm run build:ajar --silent >/dev/null
+# A brotli and a gzip copy beside each of its files, which the relay sends in
+# place of the file (compress-static.mjs; `router` in the relay's main.rs).
+# Until 20 November the front compressed them on the way through, each time,
+# at gzip's ordinary setting: the editor went out as 1.1 MB where brotli at
+# its best makes it 0.8.
+node pad/scripts/compress-static.mjs web/dist
 
 say "building the pad"
 # The mirrored wasm packages are about 1.1 GB of binaries, so they are not in git.
